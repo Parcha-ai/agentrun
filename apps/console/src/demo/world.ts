@@ -6,7 +6,8 @@ import type { Agent } from "@/lib/agentForm";
 import type { AgentLearning } from "@/lib/learning";
 import type { Stats } from "@/lib/mission";
 import type { RunGraph } from "@/lib/runGraph";
-import type { Firing, LearningAudits, LearningCost, LearningLoop, Promotions, Run, RunLearningRead, RunTrace, RunUsage, TimelineRow, Trigger, WorkflowRevisions } from "@/lib/v2";
+import type { LearnedItem } from "@/lib/learning";
+import type { Firing, GradeAnswer, GradeBody, LearningAudits, LearningCost, LearningLoop, Promotions, RaiseAnswer, Run, RunLearningRead, TemplateApply, TemplateApplied, TemplateView, RunTrace, RunUsage, TimelineRow, Trigger, TriggerCreate, TriggerInput, TriggerSecret, WorkflowRevisions } from "@/lib/v2";
 import { type Beat, type GateAnswer, lengthOf, play, requestsOf, tokensFor, traceOf, usageOf, usageRow } from "./script";
 import { AGENTS, CORRECTIONS_MD, DAY, type DemoAgent, HOUR, heroes, history, LEARNED_README, MIN, MODELS, REFUND_WORKFLOW, type RunStory, TAKEOVER_DAYS_AGO } from "./tale";
 
@@ -32,7 +33,17 @@ type Held = {
   archivedAt?: number;
   /** A run whose end is in the past and can no longer move: its view, made once. */
   settled?: Run;
+  /** What a person added after the story began: a message while it ran (steer), a follow-up once it ended, or the rest of
+   *  a run a raised spend cap let go on. Each plays from its own start, after the story's own beats. */
+  later?: Later[];
+  /** A spend cap a person raised. */
+  cap?: number;
+  /** A workflow run paused now (since when), and how long its earlier pauses held it. */
+  pausedAt?: number;
+  pausedMs?: number;
+  grade?: GradeAnswer;
 };
+type Later = { kind: "steer" | "follow_up" | "resume"; start: number; beats: Beat[]; usd: number; stopAt?: number; cancelled?: boolean };
 
 /** What each sample graph's decisions cost in all: a workflow run's cost is its graph's. */
 const GRAPH_USD = { kyb: kybRun().totals.cost_usd ?? 0, jury: juryRun().totals.cost_usd ?? 0, batch: batchRunAt(BATCH_DURATION + 1).totals.cost_usd ?? 0 };
@@ -94,10 +105,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   };
   for (const s of [...history(opened), ...heroes()]) hold(s);
 
-  const revisionOf = (a: DemoAgent, version = a.notes.length) => hex(`${a.id}:rev:${version}`, 64);
+  const versionOf = (a: DemoAgent) => a.current ?? a.notes.length;
+  const revisionOf = (a: DemoAgent, version = versionOf(a)) => hex(`${a.id}:rev:${version}`, 64);
 
   // ---- Runs ----
 
+  /** Where a workflow run's own clock stands: the present, less the time its pauses held it. */
+  const graphClock = (h: Held, now: number) => (h.pausedAt ?? now) - (h.pausedMs ?? 0);
   const graphOf = (h: Held, now: number): RunGraph | null => {
     const kind = h.story.graph;
     if (!kind) return null;
@@ -105,11 +119,11 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const merchant = typeof h.story.input.merchant === "string" ? h.story.input.merchant : null;
     // A run stopped before its end stays as it stood then, whenever it is read.
     const stopped = h.stopAt !== undefined && h.stopAt < h.start + GRAPH_MS[kind];
-    const at = stopped ? h.stopAt! : now;
+    const at = stopped ? h.stopAt! : graphClock(h, now);
     const sample = kind === "batch" ? batchRunAt(Math.max(0, at - h.start)) : kind === "kyb" ? (h.story.review ? kybRun() : kybClean(kybRun())) : juryRun();
     const named = kind === "kyb" && merchant ? renamed(sample, "Corvane Analytics Inc.", merchant) : kind === "jury" && merchant ? renamed(sample, "Saltmarsh Outdoor Gear Co.", merchant) : sample;
     const g = retimed(named, h.start);
-    return { ...g, run: { ...g.run, id: h.story.id, agent: agent.id, revision: revisionOf(agent), ...(stopped ? { status: h.cancelled ? "cancelled" : "stopped", endedAt: iso(h.stopAt!) } : {}) }, read_at: iso(now) };
+    return { ...g, run: { ...g.run, id: h.story.id, agent: agent.id, revision: revisionOf(agent), paused: h.pausedAt !== undefined && !stopped && at < h.start + GRAPH_MS[kind], ...(stopped ? { status: h.cancelled ? "cancelled" : "stopped", endedAt: iso(h.stopAt!) } : {}) }, read_at: iso(now) };
   };
 
   /** A run as GET /v2/runs/{id} says it at `now`. */
@@ -139,22 +153,37 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       const length = GRAPH_MS[story.graph!];
       requests = story.graph === "batch" ? 20 : 4;
       if (h.stopAt !== undefined && h.stopAt < h.start + length) { status = h.cancelled ? "cancelled" : "completed"; state = "idle"; endedAt = h.stopAt; usd = whole * ((h.stopAt - h.start) / length); }
-      else if (now >= h.start + length) { status = "completed"; state = "idle"; endedAt = h.start + length; }
-      else usd = whole * Math.max(0, (now - h.start) / length);
+      else if (graphClock(h, now) >= h.start + length) { status = "completed"; state = "idle"; endedAt = h.start + length + (h.pausedMs ?? 0); }
+      else usd = whole * Math.max(0, (graphClock(h, now) - h.start) / length);
+    }
+    // What a person added once the story's own beats had ended: the last follow-up (or the rest a raised cap let go on)
+    // is what the run now does, and its answer is the run's.
+    const after = (h.later ?? []).filter((x) => x.kind !== "steer");
+    if (after.length) {
+      const last = after.at(-1)!;
+      const p = play(last.beats, { start: last.start, now, stopAt: last.stopAt });
+      usd += after.reduce((n, x) => n + x.usd * (x === last && !p.done ? p.requests / Math.max(p.requestsInAll, 1) : 1), 0);
+      requests += after.reduce((n, x) => n + requestsOf(x.beats), 0);
+      failed = false;
+      pending = null;
+      if (p.done) { status = "completed"; state = "idle"; endedAt = p.lastAt; }
+      else if (last.stopAt !== undefined) { status = last.cancelled ? "cancelled" : "completed"; state = "idle"; endedAt = last.stopAt; }
+      else { status = "working"; state = "working"; endedAt = null; }
+      finalAnswer = p.rows.findLast((r) => r.kind === "final_answer")?.text ?? finalAnswer;
     }
     const ended = endedAt !== null;
     const learns = !!agent.learning && ended && status === "completed";
     const merged = story.id === "demo-run-refund-by-agent";
     const run: Run = {
-      run_id: story.id, agent_id: agent.id, agent_version: agent.notes.length, revision: revisionOf(agent), kind: agent.kind, sha: null,
+      run_id: story.id, agent_id: agent.id, agent_version: versionOf(agent), revision: revisionOf(agent), kind: agent.kind, sha: null,
       status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: [], place: { mode: "runner" }, claim: null,
       created_at: iso(h.start), updated_at: iso(endedAt ?? Math.min(now, h.start + 60 * MIN)), ended_at: ended ? iso(endedAt!) : null,
       result: status === "completed" ? { output: story.output ?? null, final_answer: finalAnswer } : null,
-      error: status === "failed" && story.fails ? { code: story.fails.code, message: story.fails.message, retryable: false } : null,
+      error: status === "failed" && story.fails && !after.length ? { code: story.fails.code, message: story.fails.message, retryable: false } : null,
       review: ended && status === "completed" && story.review ? { ...story.review, at: iso(endedAt!) } : null,
       pending,
-      cost: { usd: Number(usd.toFixed(6)), basis: "estimate", charge_state: null, cap_usd: agent.maxCostUsd ?? null, tokens: tokensFor(usd, requests), tools_usd: 0, learning_usd: learns ? (merged ? 0.0312 : 0.0021) : 0, all_in_usd: Number((usd + (learns ? (merged ? 0.0312 : 0.0021) : 0)).toFixed(6)) },
-      stopped_for: story.fails?.code === "spend_cap_reached" && status === "failed" ? "budget" : null, budget_refused_calls: 0, audit_of: null,
+      cost: { usd: Number(usd.toFixed(6)), basis: "estimate", charge_state: null, cap_usd: h.cap ?? agent.maxCostUsd ?? null, tokens: tokensFor(usd, requests), tools_usd: 0, learning_usd: learns ? (merged ? 0.0312 : 0.0021) : 0, all_in_usd: Number((usd + (learns ? (merged ? 0.0312 : 0.0021) : 0)).toFixed(6)) },
+      stopped_for: story.fails?.code === "spend_cap_reached" && status === "failed" && !after.length ? "budget" : null, budget_refused_calls: 0, audit_of: null,
       path: story.path ?? (agent.kind === "agentic" ? "agent" : null),
       workflow: story.path && story.path !== "agent" ? { name: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, repick: null } : null,
       approvals: "ask", archived_at: h.archivedAt ? iso(h.archivedAt) : null, imported_from: null,
@@ -175,9 +204,17 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!h.beats) return [];
     const p = play(h.beats, { start: h.start, now, answers: h.answers, stopAt: h.stopAt });
     const rows = [...p.rows];
-    const ended = p.done || h.stopAt !== undefined;
-    if (ended && p.requests) rows.push(usageRow(p.lastAt, rows.length, h.story.usd * (p.done ? 1 : p.requests / Math.max(p.requestsInAll, 1)), p.requests, true));
-    return rows;
+    let requests = p.requests;
+    // Each later turn is a conversation of its own, after the story's.
+    for (const [k, x] of (h.later ?? []).entries()) {
+      const q = play(x.beats, { start: x.start, now, stopAt: x.stopAt });
+      requests += q.requests;
+      rows.push(...q.rows.map((r) => ({ ...r, id: `${k + 2}:${r.id}`, conversation_id: k + 2 })));
+    }
+    rows.sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    const run = viewOf(h, now);
+    if (run.ended_at && requests) rows.push(usageRow(Date.parse(run.ended_at), rows.length, run.cost.usd ?? 0, requests, true));
+    return rows.map((r, i) => ({ ...r, seq: i }));
   };
 
   // ---- Agents ----
@@ -188,7 +225,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     configuration: [{ path: a.native.runtime === "codex" ? "AGENTS.md" : "CLAUDE.md", sha256: hex(`${a.id}:config`, 64) }], skills: a.native.skills, mcp_servers: a.native.mcp,
     state: "ready" as const, issues: [], capabilities: { launch: true, learning: false, workflows: false as const, approval: "native" as const, usage: true }, connected: true, verified_at: iso(opened - 2 * HOUR),
   } : undefined);
-  const definitionOf = (a: DemoAgent, version = a.notes.length): Agent["definition"] => {
+  const definitionOf = (a: DemoAgent, version = versionOf(a)): Agent["definition"] => {
     if (a.saved) return { ...a.saved[version - 1], id: a.id, version, name: a.name } as Agent["definition"];
     const native = nativeOf(a);
     return {
@@ -202,7 +239,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const made = opened - a.madeDaysAgo * DAY;
     return {
       agent_id: a.id, definition: definitionOf(a), kind: a.kind, mcp_pin: null, revision: revisionOf(a), revisions: a.notes.length, source: null, template: null, skills: [], sign_ins: [],
-      runs: { count: runs.length, live: runs.filter((h) => !viewOf(h, now).ended_at).length }, own_computer: null, region: "local", home_etag: `"${revisionOf(a)}"`, archived_at: null,
+      runs: { count: runs.length, live: runs.filter((h) => !viewOf(h, now).ended_at).length }, own_computer: null, region: "local", home_etag: `"${revisionOf(a)}"`, archived_at: a.archivedAt ? iso(a.archivedAt) : null,
       ...(a.learning ? { learning: { pending: a.id === FULL_STORY && !pendingApproved ? 1 : 0 } } : {}),
       ...(a.native ? { native_status: nativeOf(a) } : {}),
       created_at: iso(made), updated_at: iso(made + (a.notes.length - 1) * 6 * DAY),
@@ -215,7 +252,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   };
   const revisionsOf = (a: DemoAgent) => {
     const made = opened - a.madeDaysAgo * DAY;
-    return a.notes.map((note, i) => ({ revision: revisionOf(a, i + 1), version: i + 1, parent: i ? revisionOf(a, i) : null, kind: a.kind, current: i === a.notes.length - 1, note, created_at: iso(made + i * 6 * DAY), definition: definitionOf(a, i + 1) })).reverse();
+    return a.notes.map((note, i) => ({ revision: revisionOf(a, i + 1), version: i + 1, parent: i ? revisionOf(a, i) : null, kind: a.kind, current: i + 1 === versionOf(a), note, created_at: iso(made + i * 6 * DAY), definition: definitionOf(a, i + 1) })).reverse();
   };
 
   // ---- Stats ----
@@ -294,7 +331,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   const briefAt = opened - 47 * MIN;
   let certificatesNext = opened + 9 * HOUR;
   while (![1, 2, 3, 4, 5].includes(new Date(certificatesNext).getUTCDay())) certificatesNext += DAY;
-  const TRIGGERS: { id: string; name: string; agent: string; source: Trigger["source"]; input: Record<string, unknown>; madeDaysAgo: number; nextIn?: number }[] = [
+  const TRIGGERS: { id: string; name: string; agent: string; source: Trigger["source"]; input: Record<string, unknown>; madeDaysAgo: number; nextIn?: number; secretAt?: number; target?: Trigger["target"]; catchup?: number; maxActive?: number | null }[] = [
     { id: "trg-demo-helpdesk-tickets", name: "New support ticket", agent: "support-triage", source: { kind: "webhook", signature: "standard" }, input: { content: "${body.subject}\n\n${body.text}" }, madeDaysAgo: 57 },
     { id: "trg-demo-helpdesk-refunds", name: "Refund request filed", agent: "refund-desk", source: { kind: "webhook", signature: "standard", accept: [{ event: "refund.requested" }] }, input: { content: "Refund request ${body.id}: ${body.buyer} asks for $${body.amount} back on order ${body.order}." }, madeDaysAgo: 40 },
     { id: "trg-demo-weekly-brief", name: "Weekly risk brief", agent: "weekly-risk-brief", source: { kind: "schedule", cron: cronAt(briefAt, String(new Date(briefAt).getUTCDay())), timezone: "UTC" }, input: { content: "Write this week's risk brief." }, madeDaysAgo: 36, nextIn: 7 * DAY - 47 * MIN },
@@ -313,17 +350,26 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const made = opened - t.madeDaysAgo * DAY;
     return {
       id: t.id, name: t.name, enabled: enabled.get(t.id) ?? true, source: t.source,
-      target: { kind: "start_run", agent_id: t.agent, input: t.input },
-      catchup_window_s: 3600, max_active_runs: null, failures_in_a_row: 0, disabled: null,
+      target: t.target ?? { kind: "start_run", agent_id: t.agent, input: t.input },
+      catchup_window_s: t.catchup ?? 3600, max_active_runs: t.maxActive ?? null, failures_in_a_row: 0, disabled: null,
       next_at: t.nextIn && (enabled.get(t.id) ?? true) ? iso(opened + t.nextIn) : null, last_run_id: firings[0]?.run_id ?? null,
       created_at: iso(made), updated_at: iso(made), last_firing: firings[0] ?? null,
-      ...(t.source.kind === "webhook" ? { hook_url: `https://agentrun.larkspur.example/v2/hooks/${t.id}`, secret: { name: `trigger:${t.id}`, set: true, source: "saved", changed_at: iso(made) } } : {}),
+      ...(t.source.kind === "webhook" ? { hook_url: `https://agentrun.larkspur.example/v2/hooks/${t.id}`, secret: { name: `trigger:${t.id}`, set: true, source: "saved", changed_at: iso(t.secretAt ?? made) } } : {}),
     } as Trigger;
   };
 
   // ---- What the Refund desk learned ----
 
   let pendingApproved = false;
+  /** Corrections a person wrote, by agent, in place of the story's. */
+  const corrections = new Map<string, string>();
+  const correctionsOf = (id: string): string => corrections.get(id) ?? (id === FULL_STORY ? CORRECTIONS_MD : agents.get(id)?.learned?.corrections ?? "");
+  /** A learned workflow's status a person changed (retired, restored, approved), by agent and workflow. */
+  const statusSet = new Map<string, LearnedItem["status"]>();
+  const withStatus = (agent: string, w: LearnedItem): LearnedItem => {
+    const set = statusSet.get(`${agent}/${w.name}`);
+    return set ? { ...w, status: set, etag: `"${hex(`${agent}:${w.name}:${set}`, 16)}"` } : w;
+  };
   const refundRuns = (now = clock()) => all().filter((h) => h.story.agent === "refund-desk" && h.start <= now).sort((a, b) => a.start - b.start);
   const takeoverAt = opened - TAKEOVER_DAYS_AGO * DAY;
   const learningOf = (id: string, now = clock()): AgentLearning => {
@@ -333,12 +379,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (id !== FULL_STORY) {
       // An agent earlier in its learning: the corrections it keeps, and for one, a workflow being checked against its past runs.
       const own = all().filter((h) => h.story.agent === id && h.start <= now);
-      const kept = (a.learned?.corrections.match(/^- /gm) ?? []).length;
+      const kept = (correctionsOf(id).match(/^- /gm) ?? []).length;
       const c = a.learned?.checking;
       const log = c ? [{ by: { run: own.at(-1)?.story.id ?? "" }, commit: hex(`${id}:learn:1`), at: iso(opened - 3 * DAY), reason: `Drafted ${c.name}`, files: [`workflows/${c.name}/workflow.json`] }] : [];
       return {
-        agent: id, main: a.learned ? hex(`${id}:learn:1`) : null, corrections: a.learned?.corrections ?? "",
-        workflows: c ? [{ name: c.name, file: `workflows/${c.name}/workflow.json`, readme: `workflows/${c.name}/README.md`, description: c.description, status: "checking", run: own.at(-1)?.story.id ?? null, bytes: JSON.stringify(c.workflow, null, 2).length, etag: `"${hex(`${id}:etag`, 16)}"`, last_change: { kind: "approved", by: "person", at: iso(opened - 3 * DAY) } }] : [],
+        agent: id, main: a.learned ? hex(`${id}:learn:1`) : null, corrections: correctionsOf(id),
+        workflows: (c ? [{ name: c.name, file: `workflows/${c.name}/workflow.json`, readme: `workflows/${c.name}/README.md`, description: c.description, status: "checking", run: own.at(-1)?.story.id ?? null, bytes: JSON.stringify(c.workflow, null, 2).length, etag: `"${hex(`${id}:etag`, 16)}"`, last_change: { kind: "approved", by: "person", at: iso(opened - 3 * DAY) } }] as LearnedItem[] : []).map((w) => withStatus(id, w)),
         log: { items: log, total: log.length, next_cursor: null }, counts: { merged: kept, dropped: { empty: Math.max(own.length - kept, 0) }, in_progress: c ? 1 : 0 }, impact: null, learning_model: model,
       };
     }
@@ -355,23 +401,33 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const after = runs.filter((h) => h.start >= takeoverAt);
     const seconds = (hs: Held[]) => { const xs = hs.map((h) => lengthOf(h.beats ?? []) / 1000).sort((x, y) => x - y); return xs.length ? Math.round(xs[Math.floor(xs.length / 2)]) : 0; };
     return {
-      agent: id, main: hex("learn:5"), corrections: CORRECTIONS_MD,
-      workflows: [
+      agent: id, main: hex("learn:5"), corrections: correctionsOf(id),
+      workflows: ([
         { name: LEARNING_WORKFLOW, file: `workflows/${LEARNING_WORKFLOW}/workflow.json`, readme: `workflows/${LEARNING_WORKFLOW}/README.md`, description: "Decides a refund request: policy line, refund amount, note and email draft.", status: "serving", run: first, bytes: JSON.stringify(REFUND_WORKFLOW).length, etag: `"${hex("etag:serving", 16)}"`, last_change: { kind: "approved", by: "person", at: iso(takeoverAt) } },
         { name: PENDING_WORKFLOW, file: `workflows/${PENDING_WORKFLOW}/workflow.json`, readme: `workflows/${PENDING_WORKFLOW}/README.md`, description: "Works out a changed-mind refund less the original shipping.", status: pendingApproved ? "checking" : "pending", run: runs.at(-9)?.story.id ?? null, bytes: 1412, etag: `"${hex(`etag:pending:${pendingApproved}`, 16)}"`, last_change: pendingApproved ? { kind: "approved", by: "person", at: iso(now) } : { kind: "learned", by: "run", at: iso(opened - 2 * DAY) } },
-      ],
+      ] as AgentLearning["workflows"]).map((w) => withStatus(id, w)),
       log: { items: log, total: log.length, next_cursor: null },
       counts: { merged: 5, dropped: { empty: Math.max(runs.length - 9, 0), checker: 4 }, in_progress: 0 },
       impact: before.length && after.length ? { before: { runs: before.length, median_duration_s: seconds(before) }, after: { runs: after.length, median_duration_s: seconds(after) } } : null,
       learning_model: model,
     };
   };
-  /** The owner's OK on the Refund desk's waiting workflow, the one learned workflow that waits for it; false for any other. */
-  const approvePending = (agent: string, file: string): boolean => {
-    if (agent !== FULL_STORY || file !== `workflows/${PENDING_WORKFLOW}/README.md`) return false;
-    pendingApproved = true;
-    return true;
+  /** What a person does to a learned workflow from its README: approve one that waits for an OK, retire one, or restore a
+   *  retired one to what it was. False when the workflow is not one this agent lists, or is not in a state for it. */
+  const workflowAction = (agent: string, readme: string, action: string): boolean => {
+    const w = learningOf(agent).workflows.find((x) => x.readme === readme);
+    if (!w) return false;
+    const key = `${agent}/${w.name}`;
+    if (action === "approve") {
+      if (w.status !== "pending") return false;
+      if (agent === FULL_STORY && w.name === PENDING_WORKFLOW) { pendingApproved = true; statusSet.delete(key); } else statusSet.set(key, "checking");
+      return true;
+    }
+    if (action === "retire") { if (w.status === "retired") return false; retiredFrom.set(key, w.status); statusSet.set(key, "retired"); return true; }
+    if (action === "restore") { if (w.status !== "retired") return false; statusSet.delete(key); const was = retiredFrom.get(key); if (was && was !== learningOf(agent).workflows.find((x) => x.readme === readme)?.status) statusSet.set(key, was); return true; }
+    return false;
   };
+  const retiredFrom = new Map<string, LearnedItem["status"]>();
 
   const mean = (xs: number[]) => (xs.length ? Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(4)) : 0);
   const learningCostOf = (id: string, now = clock()): LearningCost => {
@@ -463,12 +519,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   };
   /** An agent's learning files by path: the Refund desk's full story, or what an agent earlier in its learning keeps. */
   const learningFileOf = (agent: string, file: string): string | null => {
+    if (file === "corrections.md" && (agent === FULL_STORY || agents.get(agent)?.learned)) return correctionsOf(agent);
     if (agent === FULL_STORY) return learningFiles[file] ?? null;
     const learned = agents.get(agent)?.learned;
     if (!learned) return null;
     const c = learned.checking;
     const files: Record<string, string> = {
-      "corrections.md": learned.corrections,
       ...(c ? { [`workflows/${c.name}/README.md`]: c.readme, [`workflows/${c.name}/workflow.json`]: JSON.stringify(c.workflow, null, 2) } : {}),
     };
     return files[file] ?? null;
@@ -484,7 +540,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const run = viewOf(h, now);
     if (!run.learning) return null;
     const merged = run.learning.state === "merged";
-    return { run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
+    const graded = h.grade ? { ...h.grade, feedback_status: h.grade.feedback ? "ended" as const : null } : undefined;
+    return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
   };
 
   // ---- Files ----
@@ -541,6 +598,138 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     { k: "think", text: "Demo mode calls no model, so this run is a stand-in for what the agent would do." },
     { k: "final", text: "This is a sample answer. Demo mode calls no model and starts nothing on your server. Turn demo mode off in Settings → Demo to run this agent for real." },
   ];
+  // ---- A person's other writes: each changes only this page's memory, as the server would have changed its store ----
+
+  const later = (h: Held, x: Omit<Later, "start">) => { (h.later ??= []).push({ ...x, start: clock() }); delete h.settled; };
+  /** A message to a run, as the server takes one: the answer to its question; a steer while it runs (a call waiting for
+   *  approval is declined, and the agent reads the message); a follow-up once it has ended, which it answers. */
+  const message = (id: string, text: string): "answer" | "steer" | "follow_up" | null => {
+    const h = held.get(id);
+    if (!h) return null;
+    const run = viewOf(h);
+    if (run.pending?.kind === "question") { answer(id, { text }); return "answer"; }
+    if (run.pending?.kind === "approval") answer(id, { decision: "deny" });
+    if (!run.ended_at) { later(h, { kind: "steer", beats: [{ k: "user", text, wait: 0 }], usd: 0 }); return "steer"; }
+    const before = run.result?.final_answer;
+    later(h, { kind: "follow_up", usd: 0.0062, beats: [
+      { k: "user", text, wait: 0 },
+      { k: "think", text: "Reading the follow-up against what this run found and answered." },
+      { k: "final", text: before ? `On your follow-up: what this run found still holds, so its answer stands. ${before}` : "On your follow-up: nothing this run found changes, so there is nothing more to do." },
+    ] });
+    return "follow_up";
+  };
+  /** A grade of an ended run's answer: kept beside the run, and a wrong grade opens a correction round on a learning agent. */
+  const grade = (id: string, body: GradeBody): GradeAnswer | null => {
+    const h = held.get(id);
+    if (!h) return null;
+    const run = viewOf(h);
+    const learns = !!agents.get(h.story.agent)?.learning;
+    h.grade = { run_id: id, correct: body.correct, source: body.source ?? "feedback", graded_at: iso(clock()), path: (run.path === "handed_back" || run.path === "workflow" ? run.path : "agent"), workflow: run.workflow?.name ?? null, workflow_digest: run.workflow?.digest ?? null, feedback: !body.correct && learns ? "correction" : null, ...(body.expected ? { expected: body.expected } : {}) };
+    delete h.settled;
+    return h.grade;
+  };
+  /** A higher spend cap: a run the cap stopped goes on from where it stopped, and finishes. */
+  const raiseCap = (id: string, cap: number): RaiseAnswer | null => {
+    const h = held.get(id);
+    if (!h) return null;
+    h.cap = cap;
+    const run = viewOf(h);
+    const resumed = run.stopped_for === "budget";
+    if (resumed) later(h, { kind: "resume", usd: 0.38, beats: [
+      { k: "say", text: `The spend cap is now $${cap.toFixed(2)}. Picking up where the run stopped.`, wait: 300 },
+      { k: "tool", tool: "bash", label: "Ran git diff origin/main...pr-2210 -- payouts/ api/", input: "git diff origin/main...pr-2210 -- payouts/ api/", result: "diff --git a/payouts/cutoff.ts b/payouts/cutoff.ts\n…", ms: 1400 },
+      { k: "final", text: h.story.afterCap ?? "Finished with the higher cap." },
+    ] });
+    delete h.settled;
+    const now = viewOf(h);
+    return { run_id: id, max_cost_usd: cap, resumed, status: now.status, state: now.state };
+  };
+  /** Pauses or resumes a workflow run: its graph's clock holds while it is paused. */
+  const setPaused = (id: string, on: boolean): { run_id: string; paused: boolean; status: Run["status"] } | null => {
+    const h = held.get(id);
+    if (!h || !h.story.graph) return null;
+    if (on && h.pausedAt === undefined && !viewOf(h).ended_at) h.pausedAt = clock();
+    if (!on && h.pausedAt !== undefined) { h.pausedMs = (h.pausedMs ?? 0) + clock() - h.pausedAt; delete h.pausedAt; }
+    return { run_id: id, paused: h.pausedAt !== undefined, status: viewOf(h).status };
+  };
+  const archiveAgent = (id: string, on: boolean): Agent | null => { const a = agents.get(id); if (!a) return null; a.archivedAt = on ? clock() : undefined; return agentOf(a); };
+  /** Makes an earlier revision the agent's current one again. */
+  const setCurrent = (id: string, revision: string): Agent | null => {
+    const a = agents.get(id);
+    const version = a ? a.notes.findIndex((_, i) => revisionOf(a, i + 1) === revision) + 1 : 0;
+    if (!a || !version) return null;
+    a.current = version === a.notes.length ? undefined : version;
+    return agentOf(a);
+  };
+  const writeCorrections = (id: string, text: string): string | null => { if (!agents.get(id)?.learning) return null; corrections.set(id, text); return text; };
+  const triggerId = (name: string) => { const slug = `trg-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "trigger"}`; let id = slug; for (let n = 2; TRIGGERS.some((t) => t.id === id); n++) id = `${slug}-${n}`; return id; };
+  const signingSecret = (id: string) => `whsec_demo_${hex(`${id}:${clock()}`, 32)}`;
+  const createTrigger = (body: TriggerCreate): (Trigger & { signing_secret?: string }) | null => {
+    const target = body.target as Trigger["target"];
+    const agent = target.kind === "start_run" ? target.agent_id : held.get(target.run_id)?.story.agent;
+    if (!agent || !agents.has(agent)) return null;
+    const name = body.name?.trim() || `${agents.get(agent)!.name} trigger`;
+    const id = triggerId(name);
+    TRIGGERS.push({ id, name, agent, source: body.source as Trigger["source"], input: target.kind === "start_run" ? target.input : {}, madeDaysAgo: (opened - clock()) / DAY, target, catchup: body.catchup_window_s, maxActive: body.max_active_runs ?? null, secretAt: clock() });
+    enabled.set(id, body.enabled ?? true);
+    const made = triggerOf(TRIGGERS.at(-1)!);
+    return made.source.kind === "webhook" ? { ...made, signing_secret: signingSecret(id) } : made;
+  };
+  const updateTrigger = (id: string, body: TriggerInput): Trigger | null => {
+    const t = TRIGGERS.find((x) => x.id === id);
+    if (!t) return null;
+    if (body.name !== undefined) t.name = body.name;
+    if (body.enabled !== undefined) enabled.set(id, body.enabled);
+    if (body.source) t.source = body.source as Trigger["source"];
+    if (body.target) { t.target = body.target as Trigger["target"]; if (t.target.kind === "start_run") { t.agent = t.target.agent_id; t.input = t.target.input; } }
+    if (body.catchup_window_s !== undefined) t.catchup = body.catchup_window_s;
+    if (body.max_active_runs !== undefined) t.maxActive = body.max_active_runs;
+    return triggerOf(t);
+  };
+  const deleteTrigger = (id: string): boolean => { const i = TRIGGERS.findIndex((x) => x.id === id); if (i < 0) return false; TRIGGERS.splice(i, 1); enabled.delete(id); return true; };
+  const rotateTriggerSecret = (id: string): TriggerSecret | null => {
+    const t = TRIGGERS.find((x) => x.id === id);
+    if (!t || t.source.kind !== "webhook") return null;
+    t.secretAt = clock();
+    return { secret: { name: `trigger:${id}`, set: true, source: "console", changed_at: iso(t.secretAt) }, signing_secret: signingSecret(id) };
+  };
+
+  /** Applies a bundled template, as the server does: makes its agent (or a new revision of the one named), with no
+   *  trigger made. A dry run says what would happen and makes nothing. */
+  const applyTemplate = (t: TemplateView, body: TemplateApply): TemplateApplied => {
+    const definition = { version: 1, name: t.display_name ?? t.name, description: t.description, instructions: t.description, harness: t.harness?.[0] ?? "pi", tools: t.tools ?? [], skills: t.skills, ...(t.learning ? { learning: true } : {}) };
+    const onto = body.agent_id && agents.has(body.agent_id) ? body.agent_id : null;
+    const base = { template: t.id, version: t.version, servers: {}, triggers: [], warnings: [] };
+    if (body.dry_run) return { ...base, agent_id: onto ?? "", revision_id: null, revision_version: onto ? agents.get(onto)!.notes.length + 1 : 1, agent_change: onto ? "updated" : "made" };
+    const agent = onto ? saveDefinition(onto, definition, `Applied template ${t.id}`)! : createAgent(definition);
+    return { ...base, agent_id: agent.agent_id, revision_id: agent.revision, revision_version: agent.revisions, agent_change: onto ? "updated" : "made" };
+  };
+
+  // ---- Connected agents: a Claude Code or Codex setup found on the demo's laptop ----
+
+  const MACHINE = "mch_demo_laptop";
+  const targetOf = (runtime: "claude-code" | "codex", project: string, selector: { kind: "project" } | { kind: "agent"; name: string }) => ({
+    runtime, project, selector, machine_id: MACHINE, version: runtime === "codex" ? "0.164.0" : "2.1.330", model: runtime === "codex" ? "openai/gpt-6.1-sol" : MODELS.default,
+    fingerprint: hex(`${runtime}:${project}:setup`, 64), configuration: [{ path: runtime === "codex" ? "AGENTS.md" : "CLAUDE.md", sha256: hex(`${runtime}:${project}:config`, 64) }],
+    skills: [], mcp_servers: [], state: "ready" as const, issues: [], capabilities: { launch: true, learning: false, workflows: false as const, approval: "native" as const, usage: true },
+  });
+  /** What a project folder on the demo's laptop holds: a Claude Code and a Codex setup, each ready to connect. */
+  const discoverNative = (project: string, runtime?: "claude-code" | "codex") => ({ machine_id: MACHINE, targets: (runtime ? [runtime] : (["claude-code", "codex"] as const)).map((r) => targetOf(r, project, { kind: "project" })) });
+  /** Connects a setup as an agent, run from here as it is set up there. */
+  const connectNative = (body: { project: string; runtime: "claude-code" | "codex"; selector?: { kind: "project" | "agent" | "profile"; name?: string } }) => {
+    const selector = body.selector?.kind === "agent" && body.selector.name ? { kind: "agent" as const, name: body.selector.name } : { kind: "project" as const };
+    const folder = body.project.split(/[\\/]/).filter(Boolean).at(-1) ?? "project";
+    const name = `${folder} (${body.runtime === "codex" ? "Codex" : "Claude Code"})`;
+    const t = targetOf(body.runtime, body.project, selector);
+    const made = createAgent({ name, description: `The ${body.runtime === "codex" ? "Codex" : "Claude Code"} setup in ${body.project}, run as it is set up there.`, harness: body.runtime, model: t.model, tools: [] });
+    const a = agents.get(made.agent_id)!;
+    a.native = { runtime: body.runtime, project: body.project, selector, version: t.version, skills: [], mcp: [] };
+    a.saved = undefined;
+    a.instructions = undefined;
+    const agent = agentOf(a);
+    return { agent, native: { ...nativeOf(a)!, verified_at: iso(clock()) } };
+  };
+
   const answer = (id: string, a: Omit<GateAnswer, "at">): boolean => {
     const h = held.get(id);
     if (!h || !viewOf(h).pending) return false;
@@ -550,7 +739,9 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   const stop = (id: string, cancelled: boolean): boolean => {
     const h = held.get(id);
     if (!h || viewOf(h).ended_at) return false;
-    h.stopAt = clock(); h.cancelled = cancelled;
+    const last = (h.later ?? []).filter((x) => x.kind !== "steer").at(-1);
+    if (last) { last.stopAt = clock(); last.cancelled = cancelled; } else { h.stopAt = clock(); h.cancelled = cancelled; }
+    delete h.settled;
     return true;
   };
   const archive = (id: string, on: boolean): Run | null => {
@@ -577,8 +768,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, {}, "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
     learning: (id: string) => (agents.has(id) ? learningOf(id) : null),
     createAgent, saveDefinition, learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
-    learningFile: learningFileOf, approvePending,
-    start, answer, stop, archive,
+    learningFile: learningFileOf, workflowAction,
+    applyTemplate, discoverNative, connectNative, start, answer, stop, archive, message, grade, raiseCap, setPaused, archiveAgent, setCurrent, writeCorrections, createTrigger, updateTrigger, deleteTrigger, rotateTriggerSecret,
     /** A sample page image by its run-relative path, as a data URL. */
     page: (path: string) => fixturePages[path] ?? null,
   };

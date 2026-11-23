@@ -9,9 +9,21 @@ const KEY = "agentrun.console.demo";
 /** What demo mode answers a write it does not make. */
 export const DEMO_REFUSAL = "Demo mode shows sample data, so this change was not made. Turn demo mode off in Settings → Demo to work with your own server.";
 
-/** Demo mode's upload: a picked file is refused here, before any byte leaves the page. The start screens' own upload is
- *  an XMLHttpRequest to the server, which the demo's `fetch` never sees. */
-export const demoUpload: Upload = () => Promise.reject(new ClientError(403, "demo_mode", DEMO_REFUSAL));
+/** Demo mode's upload: a picked file is kept in this page, as the server would keep it, and never sent. The start screens'
+ *  own upload is an XMLHttpRequest to the server, which the demo's `fetch` never sees. */
+export const demoUpload: Upload = (file, onProgress, signal) => new Promise((resolve, reject) => {
+  if (signal.aborted) return reject(new ClientError(0, "aborted", "The upload was stopped."));
+  let sent = 0;
+  const tick = setInterval(() => {
+    sent = Math.min(1, sent + 0.34);
+    onProgress(sent);
+    if (sent < 1) return;
+    clearInterval(tick);
+    const at = new Date().toISOString();
+    resolve({ file_id: `file_demo_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, path: file.name, size_bytes: file.size, content_type: file.type || "application/octet-stream", sha256: "0".repeat(64), status: "ready", created_at: at, expires_at: null });
+  }, 120);
+  signal.addEventListener("abort", () => { clearInterval(tick); reject(new ClientError(0, "aborted", "The upload was stopped.")); }, { once: true });
+});
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const local = (): Store | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
 

@@ -32,7 +32,7 @@ describe("demo mode's backend", () => {
     await v2.listTriggers();
     await v2.agentLearning("refund-desk");
     await v2.listMcpServers();
-    expect(await v2.listSuggestions()).toMatchObject({ github: { connected: false }, suggestions: [] });
+    expect(await v2.listSuggestions()).toMatchObject({ github: { connected: true }, repositories: [{ repo: "larkspur/marketplace", scan: { status: "completed" } }] });
     expect(asked).toEqual([]);
     await v2.session();
     await v2.capabilities();
@@ -54,7 +54,7 @@ describe("demo mode's backend", () => {
     expect((await demo().v2.listTemplates()).templates.map((t) => t.id)).toEqual(["kyb"]);
   });
 
-  it("refuses a write the tour does not make, saying why, and sends none of it to the server", async () => {
+  it("refuses a write to the server's own settings, which demo mode hides, and sends none of it to the server", async () => {
     const { v2, asked } = demo();
     const refused = async (write: Promise<unknown>) => {
       const e = await write.then(() => null, (x: unknown) => x);
@@ -63,11 +63,7 @@ describe("demo mode's backend", () => {
       expect((e as ClientError).message).toBe(DEMO_REFUSAL);
     };
     await refused(v2.saveToolKey("openai", { OPENAI_API_KEY: "fake-test-key" }));
-    await refused(v2.archiveAgent("refund-desk"));
-    await refused(v2.applyTemplate("kyb", {}, "key-0"));
     await refused(v2.saveWebhook("https://hooks.example/x"));
-    await refused(v2.deleteTrigger("trg-demo-weekly-brief"));
-    await refused(v2.writeCorrections("refund-desk", "x", '"e"'));
     expect(asked).toEqual([]);
   });
 
@@ -116,11 +112,11 @@ describe("demo mode's backend", () => {
     await expect(v2.readLearningFile("support-triage", "workflows/refund-decision/workflow.json")).rejects.toMatchObject({ status: 404 });
   });
 
-  it("takes the owner's OK on the Refund desk's waiting workflow alone: another agent's workflow is refused, and approves nothing", async () => {
+  it("takes the owner's OK on a workflow that waits for it: one being checked already is refused as the server would, and approves nothing", async () => {
     const { v2 } = demo();
     const pending = async () => (await v2.agentLearning("refund-desk")).workflows.find((w) => w.status === "pending");
     const triage = (await v2.agentLearning("support-triage")).workflows[0];
-    await expect(v2.approveWorkflow("support-triage", triage.readme, triage.etag)).rejects.toMatchObject({ status: 403, code: "demo_mode" });
+    await expect(v2.approveWorkflow("support-triage", triage.readme, triage.etag)).rejects.toMatchObject({ status: 409 });
     const waiting = await pending();
     expect(waiting).toBeDefined();
     await v2.approveWorkflow("refund-desk", waiting!.readme, waiting!.etag);
@@ -256,5 +252,126 @@ describe("the demo's story", () => {
   });
   it("is the same at every load", () => {
     expect(JSON.stringify(history(OPENED))).toBe(JSON.stringify(history(OPENED)));
+  });
+});
+
+// Each write the tour reaches does what the server's would, on the sample data, and none of it reaches the server.
+describe("demo mode's writes", () => {
+  it("takes a grade of an ended run, as the server does, and keeps it beside the run", async () => {
+    const { v2, asked } = demo();
+    const graded = await v2.gradeRun("demo-run-refund-by-agent", { correct: false });
+    expect(graded).toMatchObject({ run_id: "demo-run-refund-by-agent", correct: false, source: "feedback", feedback: "correction" });
+    expect((await v2.runLearning("demo-run-refund-by-agent"))?.graded).toMatchObject({ correct: false, feedback_status: "ended" });
+    expect(asked).toEqual([]);
+  });
+
+  it("answers a follow-up to an ended run: the run works again, then ends with its answer", async () => {
+    const { v2, now } = demo();
+    const sent = await v2.sendMessage("demo-run-refund-by-agent", "Was the shipping refunded too?", "k1");
+    expect(sent).toMatchObject({ mode: "follow_up", status: "working" });
+    now.ms += 10_000;
+    const run = await v2.getRun("demo-run-refund-by-agent");
+    expect(run).toMatchObject({ status: "completed", state: "idle" });
+    expect(run.result?.final_answer).toMatch(/^On your follow-up/);
+    const rows = (await v2.getTimeline("demo-run-refund-by-agent")).rows;
+    expect(rows.some((r) => r.kind === "user_message" && r.text === "Was the shipping refunded too?")).toBe(true);
+    expect(rows.at(-1)?.kind).toBe("usage");
+  });
+
+  it("takes a message while a run works as a steer, shown on its timeline", async () => {
+    const { v2 } = demo();
+    const { run } = await v2.startRun("support-triage", { input: { content: "Ticket: my parcel is late" } }, "k2");
+    expect(await v2.sendMessage(run.run_id, "Mark it urgent", "k3")).toMatchObject({ mode: "steer" });
+    expect((await v2.getTimeline(run.run_id)).rows.some((r) => r.text === "Mark it urgent")).toBe(true);
+  });
+
+  it("lets a run stopped at its spend cap go on once the cap is raised, and finish", async () => {
+    const { v2, now } = demo();
+    expect((await v2.getRun("demo-run-review-capped")).stopped_for).toBe("budget");
+    expect(await v2.raiseCap("demo-run-review-capped", 3)).toMatchObject({ resumed: true, max_cost_usd: 3, status: "working" });
+    now.ms += 10_000;
+    const run = await v2.getRun("demo-run-review-capped");
+    expect(run).toMatchObject({ status: "completed", error: null, stopped_for: null, cost: { cap_usd: 3 } });
+    expect(run.result?.final_answer).toMatch(/^Reviewed PR #2210/);
+  });
+
+  it("pauses a workflow run's graph where it stands, and resumes it from there", async () => {
+    const { v2, now } = demo();
+    now.ms += 3_000;
+    expect(await v2.pauseRun("demo-run-certificates-live")).toMatchObject({ paused: true });
+    const held = await v2.getRunGraph("demo-run-certificates-live");
+    now.ms += 60_000;
+    const later = await v2.getRunGraph("demo-run-certificates-live");
+    expect(later.run.paused).toBe(true);
+    expect({ ...later, read_at: null }).toEqual({ ...held, read_at: null });
+    expect(await v2.resumeRun("demo-run-certificates-live")).toMatchObject({ paused: false });
+    now.ms += 5_000;
+    expect((await v2.getRunGraph("demo-run-certificates-live")).decisions.length).toBeGreaterThan(held.decisions.length);
+  });
+
+  it("makes, edits, rotates and deletes a trigger", async () => {
+    const { v2 } = demo();
+    const made = await v2.createTrigger({ name: "Nightly refunds", source: { kind: "schedule", cron: "0 2 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: "refund-desk", input: { content: "Clear the queue" } } }, "k4");
+    expect(made).toMatchObject({ name: "Nightly refunds", enabled: true, target: { agent_id: "refund-desk" } });
+    expect((await v2.listTriggers()).triggers.map((t) => t.id)).toContain(made.id);
+    expect(await v2.updateTrigger(made.id, { name: "Nightly refund queue", enabled: false })).toMatchObject({ name: "Nightly refund queue", enabled: false });
+    expect((await v2.rotateTriggerSecret("trg-demo-helpdesk-refunds")).signing_secret).toMatch(/^whsec_demo_/);
+    expect(await v2.deleteTrigger(made.id)).toMatchObject({ deleted: true });
+    expect((await v2.listTriggers()).triggers.map((t) => t.id)).not.toContain(made.id);
+  });
+
+  it("keeps an agent's edits: its corrections, a workflow retired and restored, an earlier revision made current, an archive", async () => {
+    const { v2 } = demo();
+    const before = await v2.corrections("refund-desk");
+    await v2.writeCorrections("refund-desk", `${before.text}- Always quote the order number.\n`, before.etag);
+    expect((await v2.corrections("refund-desk")).text).toMatch(/Always quote the order number/);
+    const serving = (await v2.agentLearning("refund-desk")).workflows.find((w) => w.status === "serving")!;
+    await v2.retireWorkflow("refund-desk", serving.readme, serving.etag);
+    expect((await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)?.status).toBe("retired");
+    const retired = (await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)!;
+    await v2.restoreWorkflow("refund-desk", retired.readme, retired.etag);
+    expect((await v2.agentLearning("refund-desk")).workflows.find((w) => w.name === serving.name)?.status).toBe("serving");
+    const revisions = (await v2.listRevisions("refund-desk")).revisions;
+    const first = revisions.at(-1)!;
+    await v2.setCurrent("refund-desk", first.revision);
+    expect((await v2.listRevisions("refund-desk")).revisions.find((r) => r.current)?.version).toBe(first.version);
+    await v2.archiveAgent("pr-reviewer");
+    expect((await v2.listAgents({ archived: true })).agents.map((a) => a.agent_id)).toEqual(["pr-reviewer"]);
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).not.toContain("pr-reviewer");
+    await v2.unarchiveAgent("pr-reviewer");
+    expect((await v2.listAgents({ archived: true })).agents).toEqual([]);
+  });
+
+  it("applies a bundled template: makes its agent in the page, reading only the catalogue from the server", async () => {
+    const { v2, asked } = demo();
+    const applied = await v2.applyTemplate("kyb", {}, "k5");
+    expect(applied).toMatchObject({ template: "kyb", agent_change: "made", triggers: [] });
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).toContain(applied.agent_id);
+    expect(asked).toEqual(["GET /v2/templates"]);
+  });
+
+  it("suggests agents from the sample repository: create one, discard and restore another, scan again", async () => {
+    const { v2, now } = demo();
+    const [first, second] = (await v2.listSuggestions()).suggestions;
+    expect((await v2.getSuggestion(first.id)).files.length).toBeGreaterThan(0);
+    const created = await v2.createSuggestedAgent(first.id);
+    expect(created).toMatchObject({ status: "created", created: { branch: `agentrun/${first.key}` } });
+    expect((await v2.listAgents()).agents.map((a) => a.agent_id)).toContain(created.created!.agent_id);
+    expect(await v2.discardSuggestion(second.id)).toMatchObject({ status: "discarded" });
+    expect(await v2.restoreSuggestion(second.id)).toMatchObject({ status: "open" });
+    expect(await v2.scanRepository("larkspur/marketplace")).toMatchObject({ status: "running", already_running: false });
+    expect((await v2.listSuggestions()).repositories[0].scan.status).toBe("running");
+    now.ms += 10_000;
+    expect((await v2.listSuggestions()).repositories[0]).toMatchObject({ scan: { status: "completed" }, counts: { created: 1, open: 2 } });
+  });
+
+  it("connects a Claude Code setup found on the demo's laptop as an agent, and enrolls a connector", async () => {
+    const { v2 } = demo();
+    const found = await v2.discoverNative("~/code/larkspur-web");
+    expect(found.targets.map((t) => t.runtime)).toEqual(["claude-code", "codex"]);
+    const { agent, native } = await v2.connectNative({ project: "~/code/larkspur-web", runtime: "claude-code", selector: { kind: "project" } });
+    expect(native).toMatchObject({ runtime: "claude-code", state: "ready", connected: true });
+    expect((await v2.getAgent(agent.agent_id)).agent.native_status).toMatchObject({ project: "~/code/larkspur-web" });
+    expect(await v2.enrollConnector("Build laptop")).toMatchObject({ workspace_id: "local" });
   });
 });

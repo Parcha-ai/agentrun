@@ -21,6 +21,10 @@ export type DemoAgent = {
   learned?: { corrections: string; checking?: { name: string; description: string; readme: string; workflow: object } };
   /** An agent made or edited in the demo: its definitions as saved, oldest first, in place of the story's. */
   saved?: Record<string, unknown>[];
+  /** The revision a person made current again, when it is not the latest. */
+  current?: number;
+  /** When a person archived it. */
+  archivedAt?: number;
 };
 
 /** The workflow Support triage drafted from its runs, checked against its past tickets before it may answer one alone. */
@@ -116,6 +120,8 @@ export type RunStory = {
   path?: "agent" | "workflow" | "handed_back";
   /** The tour stops here: listed under Settings → Demo. */
   hero?: true;
+  /** A run stopped at its spend cap: how it ends once a person raises the cap. */
+  afterCap?: string;
 };
 
 // A small seeded generator, so the month of runs is the same at every load.
@@ -369,7 +375,7 @@ export function heroes(): RunStory[] {
     { id: "demo-run-brief-question", agent: "weekly-risk-brief", title: "Write this week's risk brief", startAgo: 47 * MIN, input: { content: "Write this week's risk brief." }, beats: briefBeats(), usd: 0.412, effort: "high", trigger: "trg-demo-weekly-brief", hero: true, files: { "brief.md": BRIEF_MD, "sources.csv": SOURCES_CSV } },
     { id: "demo-run-certificates-live", agent: "certificate-review", title: "Certificates: 20 new merchants", startAgo: 6_000, input: { documents: ["bramblewood-freight.pdf", "corvane-analytics.pdf", "…18 more"] }, graph: "batch", usd: 0.0931, review: BATCH_REVIEW, hero: true },
     { id: "demo-run-triage-live", agent: "support-triage", title: `Ticket #5512: ${TICKETS[1].subject}`, startAgo: 1_500, input: { content: TICKETS[1].subject }, beats: triageBeats(TICKETS[1], 5512).map((b) => ({ ...b, wait: (b.wait ?? 0) + 2600 })), usd: 0.0094, trigger: "trg-demo-helpdesk-tickets", hero: true },
-    { id: "demo-run-review-capped", agent: "pr-reviewer", title: "Review PR #2210: Rewrite settlement batching", startAgo: 3 * HOUR + 12 * MIN, input: { content: "Review pull request #2210" }, beats: REVIEW_CAPPED, usd: 1.5, fails: { code: "spend_cap_reached", message: "The run reached its spend cap of $1.50 before it finished." }, trigger: "trg-demo-pull-requests", hero: true },
+    { id: "demo-run-review-capped", agent: "pr-reviewer", title: "Review PR #2210: Rewrite settlement batching", startAgo: 3 * HOUR + 12 * MIN, input: { content: "Review pull request #2210" }, beats: REVIEW_CAPPED, usd: 1.5, fails: { code: "spend_cap_reached", message: "The run reached its spend cap of $1.50 before it finished." }, afterCap: "Reviewed PR #2210. The settlement core is sound and its 142 tests pass. Two things to fix before merge: batch.ts retries a failed settlement without its idempotency key, and the new cut-off check reads the server's clock, not the bank's. Posted 2 review comments.", trigger: "trg-demo-pull-requests", hero: true },
     { id: "demo-run-kyb-review", agent: "kyb-check", title: "KYB: Corvane Analytics Inc.", startAgo: 2 * HOUR + 40 * MIN, input: { merchant: "Corvane Analytics Inc.", document: "corvane-analytics.pdf" }, graph: "kyb", usd: 0.0473, review: KYB_REVIEW, hero: true },
     { id: "demo-run-jury", agent: "prohibited-goods-jury", title: "Storefront: Saltmarsh Outdoor Gear Co.", startAgo: 5 * HOUR + 5 * MIN, input: { merchant: "Saltmarsh Outdoor Gear Co.", url: "https://saltmarsh-outdoor.example" }, graph: "jury", usd: 0.0188, review: JURY_REVIEW, hero: true },
     { id: "demo-run-brief-done", agent: "weekly-risk-brief", title: "Write this week's risk brief", startAgo: 7 * DAY + 47 * MIN, input: { content: "Write this week's risk brief." }, beats: briefBeats(), usd: 0.438, effort: "high", answered: [{ afterMs: 9 * MIN, text: "Use the bulletin's date. It is the primary source." }], trigger: "trg-demo-weekly-brief", files: { "brief.md": BRIEF_MD, "sources.csv": SOURCES_CSV }, hero: true },
