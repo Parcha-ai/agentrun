@@ -360,8 +360,11 @@ export const lineCount = (value: string): number => value.split("\n").length;
 // ---------- placeholders (ruling D): a marker for a value, never one, by its whole shape
 
 /** A value's text in a typed command: inside escaped double quotes (a JSON string's), double or single quotes, or bare
- *  to the next blank, quote or shell operator. Four groups, one defined; the cut is the group alone, the quotes kept. */
-const VALUE = String.raw`(?:\\"((?:[^"\\\n]|\\[^"\n]){1,1024})\\"|"([^"\n]{1,1024})"|'([^'\n]{1,1024})'|([^\s'"\x60;&|()<>]{1,1024}))`;
+ *  to the next blank, quote or shell operator. Four groups, one defined; the cut is the group alone, the quotes kept.
+ *  Each group reads at most 1024 characters: a quoted one is taken whole (a lookahead's capture, never backtracked
+ *  into) and then closes, or stands at the bound with the value going on, and valueHit reads the rest to the value's
+ *  end (ruling LXXXVIII). */
+const VALUE = String.raw`(?:\\"(?=(?<vj>(?:[^"\\\n]|\\[^"\n]){1,1024}))\k<vj>(?:\\"|(?=[^"\\\n]|\\[^"\n]))|"(?=(?<vd>[^"\n]{1,1024}))\k<vd>(?:"|(?=[^"\n]))|'(?=(?<vs>[^'\n]{1,1024}))\k<vs>(?:'|(?=[^'\n]))|([^\s'"\x60;&|()<>]{1,1024}))`;
 
 /** The whole-value shapes of a marker: a variable ($VAR, ${VAR}, ${{ expr }}, %VAR%), a <slot>, a {{template}}, YOUR_...
  *  (your-..., your_...), the upper-case markers REPLACE_ME, CHANGEME, CHANGE_ME and TODO, x-runs (xxx, XXXX-XXXX), ***
@@ -499,13 +502,49 @@ export function isPlaceholder(value: string, slot: Slot = {}): boolean {
   return MEMBER_CHAIN.test(whole) || (CODE_CASE.test(whole) && CAMEL_OR_SNAKE.test(whole));
 }
 
-/** The defined one of VALUE's four groups at `first`, as a hit, when at least `min` characters long. */
+/** The end of the value VALUE's group `kind` (0 escaped-quoted, 1 double-, 2 single-quoted, 3 bare) stopped at `end`
+ *  (ruling LXXXVIII, Greptile's P1 on 55b0239695: a 1500-character token was cut to its first 1024, the rest shown). A
+ *  value that ended there ends there; one VALUE's bound stopped runs on to its closing quote, its line's end or, bare,
+ *  to the next blank, quote or shell operator. The run last read is kept, so a value that stops inside it is answered
+ *  without reading it again: linear in the text. */
+let valueRun: { text: string; kind: number; from: number; to: number } | undefined;
+const BARE_STOP = /[\s'"\x60;&|()<>]/;
+function valueEnd(text: string, kind: number, end: number): number {
+  const c = text.charAt(end);
+  if (c === "" || c === "\n") return end;
+  if (kind === 0 ? c === "\\" && text.charAt(end + 1) === '"' : kind === 1 ? c === '"' : kind === 2 ? c === "'" : BARE_STOP.test(c)) return end;
+  const run = valueRun;
+  if (run !== undefined && run.kind === kind && run.from <= end && end <= run.to && run.text === text) return run.to;
+  let at = end;
+  if (kind === 0) {
+    while (at < text.length) {
+      const d = text.charAt(at);
+      if (d === '"' || d === "\n") break;
+      if (d === "\\") {
+        const e = text.charAt(at + 1);
+        if (e === "" || e === '"' || e === "\n") break;
+        at += 2;
+      } else at++;
+    }
+  } else if (kind === 3) {
+    while (at < text.length && !BARE_STOP.test(text.charAt(at))) at++;
+  } else {
+    const quote = kind === 1 ? '"' : "'";
+    while (at < text.length && text.charAt(at) !== quote && text.charAt(at) !== "\n") at++;
+  }
+  valueRun = { text, kind, from: end, to: at };
+  return at;
+}
+
+/** The defined one of VALUE's four groups at `first`, as a hit, when at least `min` characters long, to the value's
+ *  end (valueEnd). */
 function valueHit(m: RegExpExecArray, first: number, min = 3, name?: string): Hit | undefined {
   for (let group = first; group < first + 4; group++) {
     const value = m[group];
     if (value === undefined) continue;
     if (value.length < min) return undefined;
-    const [start, end] = m.indices![group]!;
+    const [start, matched] = m.indices![group]!;
+    const end = valueEnd(m.input, group - first, matched);
     return name === undefined ? { start, end } : { start, end, name };
   }
   return undefined;
@@ -1301,8 +1340,10 @@ const commandEnv = (text: string, at: number, end: number, lines: LineBounds): "
 /** A flag whose value is itself NAME=value (ruling LXX): `docker run -e NAME=v`, `--env NAME=v`, `--env=NAME=v`,
  *  `kubectl create secret generic x --from-literal=NAME=v`, a quote maybe before the name (group 1). The name may be
  *  dotted, a value's path (ruling LXXXI: `helm install --set auth.postgresPassword=v`, `--from-literal=db.password=v`):
- *  its last segment decides, as secretName reads any name. The value is a flag's, a slot code does not fill. */
-const ENV_FLAG = new RegExp(String.raw`(?<![\w-])-{1,2}[A-Za-z][A-Za-z0-9-]{0,63}(?:=|[ \t]{1,3})(["']?)([A-Za-z_][A-Za-z0-9_]{0,63}(?:\.[A-Za-z_][A-Za-z0-9_-]{0,63}){0,8})=(?!=)${VALUE}`, "gd");
+ *  its last segment decides, as secretName reads any name. Each segment may be dashed, as a Helm path's (ruling LXXXVI:
+ *  `--from-literal=postgres-password=v`, Bitnami's keys, read as `--set postgres-password=v` is). The value is a
+ *  flag's, a slot code does not fill. */
+const ENV_FLAG = new RegExp(String.raw`(?<![\w-])-{1,2}[A-Za-z][A-Za-z0-9-]{0,63}(?:=|[ \t]{1,3})(["']?)([A-Za-z_][A-Za-z0-9_-]{0,63}(?:\.[A-Za-z_][A-Za-z0-9_-]{0,63}){0,8})=(?!=)${VALUE}`, "gd");
 const envFlag = (m: RegExpExecArray): Hit | undefined => {
   if (HELM_LIST_FLAG.test(m[0])) return undefined; // helmSetLists reads the whole list
   if (!labelsSecret(m[2]!, m[6])) return undefined;
@@ -1316,15 +1357,19 @@ const HELM_LIST_FLAG = /^--set(?:-string|-file)?(?:=|[ \t])/;
 const HELM_SET = /(?<![\w-])--set(?:-string|-file)?(?:=|[ \t]{1,3})(["']?)/g;
 /** A list item's name (a Helm path: dots, `[0]` indices, `\.` escaped dots, `/` in annotation keys) and its `=`. */
 const HELM_NAME = /[A-Za-z_][A-Za-z0-9_.[\]\/\\-]{0,255}=(?!=)/y;
-/** How many items of one list helmSetLists reads, and how far one value runs. */
+/** How many items of one list helmSetLists reads. A value runs to its end, however long (ruling LXXXVIII): each list is
+ *  read once, so the reading stays linear without a bound on it. */
 const HELM_PAIRS = 64;
-const HELM_VALUE = 1024;
 /** Each credential's value in each Helm list (ruling LXXXI): every item's name decides its own value, which runs to the
  *  next unescaped `,`, a blank (the list's quote when one opened it) or the line's end. A flag's slot: code does not
  *  fill it. */
 function helmSetLists(text: string): Hit[] {
   const hits: Hit[] = [];
+  // Where the last list read ended: a `--set` inside it is a value's text, read already, and read again from each
+  // such `--set` a list of them was read up to 64 x 1024 over (ruling LXXXV).
+  let scanned = 0;
   for (const m of text.matchAll(HELM_SET)) {
+    if (m.index < scanned) continue;
     const quote = m[1]!;
     let at = m.index + m[0].length;
     for (let pairs = 0; pairs < HELM_PAIRS; pairs++) {
@@ -1332,7 +1377,7 @@ function helmSetLists(text: string): Hit[] {
       const name = HELM_NAME.exec(text);
       if (name === null) break;
       const start = at + name[0].length;
-      const limit = Math.min(text.length, start + HELM_VALUE);
+      const limit = text.length;
       let end = start;
       while (end < limit) {
         const c = text.charAt(end);
@@ -1345,6 +1390,7 @@ function helmSetLists(text: string): Hit[] {
       }
       const key = name[0].slice(0, -1);
       if (end - start >= 3 && labelsSecret(key, text.slice(start, end))) hits.push({ start, end, name: key, code: false });
+      scanned = end;
       if (text.charAt(end) !== ",") break;
       at = end + 1;
     }
@@ -1471,24 +1517,42 @@ const connectionKeyBeside = (source: string, at: number, stop: number, from: num
 };
 /** The ADO pair after the `;` at `semi` (ruling LXXXIII: `Password = x; Server=db`, the key first). */
 const adoPairAfter = (text: string, semi: number): AdoPair => (text.charAt(semi) === ";" ? adoPair(text.slice(semi + 1, semi + 1 + 160)) : undefined);
-/** An ADO value's run over blanks (ruling LXXXIII): from a value's end, the offset of its stop, its `;`, a tab, a
- *  line break or its line's end, at most CONNECTION_BEFORE on. A view blanks each escape it decodes (`\n`, `\t`,
- *  `\"`, whatever the encodings around it put), so where the view's character is not the source's an escape stands:
- *  the decoded view holds a line break, a tab or a quote there, and the run stops at it as it does there. The text's
- *  next stop is read forward once and kept while the values asked about stand before it: linear in the text. */
+/** An ADO value's run over blanks (ruling LXXXIII): from a value's end, the offset of its stop, its `;`, a line break
+ *  or its line's end, at most CONNECTION_BEFORE on. A tab is the value's when its `;` follows on the line
+ *  (`Pwd=Copper\tlumen x;`, ruling LXXXVII); with none in reach the first tab stops it (a tab-separated column after
+ *  it). A view blanks each escape it decodes (`\n`, `\t`, `\"`, whatever the encodings around it put), so where the
+ *  view's character is not the source's an escape stands, and the run stops at it: the decoded view holds the line
+ *  break, tab or quote there, and reads it as above. The text's next stop, and the tabs before it, are read forward
+ *  once and kept while the values asked about stand before it: linear in the text. */
 const adoRun = (text: string, source: string, lines: LineBounds) => {
   let from = Infinity;
   let next = -1;
+  let tabs: number[] = [];
   return (end: number): number => {
     if (end < from || end > next) {
       from = end;
       next = end;
+      tabs = [];
       for (; next < text.length; next++) {
         const c = text.charAt(next);
-        if (c === ";" || c === "\t" || c === "\r" || c === "\n" || c !== source.charAt(next)) break;
+        if (c === "\t" && source.charAt(next) === "\t") {
+          tabs.push(next);
+          continue;
+        }
+        if (c === ";" || c === "\r" || c === "\n" || c !== source.charAt(next)) break;
       }
     }
-    return Math.min(next, lines.end(end), end + CONNECTION_BEFORE);
+    const bound = Math.min(lines.end(end), end + CONNECTION_BEFORE);
+    if (next <= bound && text.charAt(next) === ";") return next;
+    // No `;` in reach: the first tab at or after the value's end stops it.
+    let lo = 0;
+    let hi = tabs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (tabs[mid]! < end) lo = mid + 1;
+      else hi = mid;
+    }
+    return Math.min(lo < tabs.length ? tabs[lo]! : next, bound);
   };
 };
 const connectionPassword = (text: string, lines: LineBounds, source = text) => {
@@ -1503,7 +1567,7 @@ const connectionPassword = (text: string, lines: LineBounds, source = text) => {
     const before0 = adoKey(source, m.index, from);
     // The value's end as matched, and where an ADO run over blanks from it would stop (ruling LXXXIII).
     const matched = m.indices![0]![1];
-    const blankAfter = text.charAt(matched) === " ";
+    const blankAfter = text.charAt(matched) === " " || text.charAt(matched) === "\t";
     const stop = blankAfter ? runTo(matched) : matched;
     // An ADO string's: a pair before the key's `;`, or one after the value's `;` (the key first, ruling LXXXIII).
     const after0 = adoPairAfter(text, stop);
@@ -2205,7 +2269,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
  *  and fails on an unbounded quantifier outside its allowlist, and fails on a module-level pattern missing here. */
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
-  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
+  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_SET_COMMAND, NPM_SET_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
   REDIS_COMMAND, REDIS_A, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_USER, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,

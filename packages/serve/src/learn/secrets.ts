@@ -29,7 +29,10 @@ const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]{0,16384}\d)[A-Za-z0-
  *  name stays. A signed URL's signature is one: whoever holds the URL holds what it grants. No bracket is a value's
  *  character (a URL writes one percent-encoded), so a value already cut to "[redacted]" is never read as one. */
 const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,16384}/i;
-const URL_PASSWORD = /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/;
+/** A URL with a password: `://`, a user, `:`, the password, `@`. Each is bounded far past a real one's (as the other
+ *  shapes, 16384), and the reading stays linear: neither holds a `/`, so no match reads across another URL's `://`
+ *  (ruling LXXXIX, Greptile's P1 on 55b0239695: at 1024 a longer password was no URL with a password at all). */
+const URL_PASSWORD = /:\/\/[^\s/?#@:]{1,16384}:[^\s/?#@]{0,16384}@/;
 /** A complete, single-quoted sed search expression whose password is only a capture pattern.
  * The @ inside [^@] is regex syntax, not a password terminator. Require the closing capture,
  * substitution/backreference and quote too; bracketed passwords or bare URLs are never exempt. */

@@ -1719,6 +1719,12 @@ test("LVIII: an npm `_`-key is its own anchor: any character but a letter, a dig
 });
 
 /** The four ways a run's text reaches the scrubber: raw, a JSON string, a JSON string in a JSON string, a tool result. */
+/** This process's CPU time in ms: the timing pins measure the reading's own work, never the wall clock a shared CI
+ *  runner stretches (eight test files at once: 55b0239695's shard ran LXXXIII's 2 MB at 3.4 s wall). */
+const cpuNow = () => {
+  const used = process.cpuUsage();
+  return (used.user + used.system) / 1000;
+};
 const FOUR_WRAPS = [
   (s) => s,
   (s) => JSON.stringify({ type: "text", text: s }),
@@ -1892,9 +1898,9 @@ test("LXIII: a 2 MB line of minified JSON scrubs in cut mode in under 5 s (pairQ
   const rows = Array.from({ length: 20_000 }, (_, i) => ({ id: i, name: `item${i}`, ok: true, tags: ["a", "b"], note: "plain words here" }));
   const text = JSON.stringify({ tool_result: JSON.stringify(rows) });
   assert.ok(text.length > 2_000_000 && !text.includes("\n"));
-  const started = performance.now();
+  const started = cpuNow();
   const out = await scrub(text, { mode: "cut" });
-  const took = performance.now() - started;
+  const took = cpuNow() - started;
   assert.equal(out.ok, true);
   assert.ok(took < 5_000, `${Math.round(took)} ms`);
 });
@@ -1944,9 +1950,9 @@ test("LXIX: connection-string reads one long line in time linear in it (`;passwo
   for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
     const n = Math.floor(size / unit.length);
     const text = unit.repeat(n);
-    const started = performance.now();
+    const started = cpuNow();
     const out = await scrubWith([rule], text, { mode: "count" });
-    const took = performance.now() - started;
+    const took = cpuNow() - started;
     assert.equal(out.cuts.length, n);
     assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
   }
@@ -2158,9 +2164,9 @@ test("LXXXI: a flag's NAME=value takes a dotted name (helm --set, --set-string, 
   const rule = SCRUB_RULES.find((each) => each.id === "secret-assign");
   for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
     const n = Math.floor(size / unit.length);
-    const started = performance.now();
+    const started = cpuNow();
     const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
-    const took = performance.now() - started;
+    const took = cpuNow() - started;
     assert.equal(out.cuts.length, n);
     assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
   }
@@ -2168,9 +2174,9 @@ test("LXXXI: a flag's NAME=value takes a dotted name (helm --set, --set-string, 
   const list = `--set ${Array.from({ length: 16 }, (_, i) => `app${i}.tag=v1,db${i}.password=abcdefghij`).join(",")} `;
   for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
     const n = Math.floor(size / list.length);
-    const started = performance.now();
+    const started = cpuNow();
     const out = await scrubWith([rule], list.repeat(n), { mode: "count" });
-    const took = performance.now() - started;
+    const took = cpuNow() - started;
     assert.equal(out.cuts.length, n * 16);
     assert.ok(took < bound, `${size} chars of lists: ${Math.round(took)} ms`);
   }
@@ -2197,9 +2203,9 @@ test("LXXXII: a command's environment after `sudo`'s or `env`'s options and thei
   const rule = SCRUB_RULES.find((each) => each.id === "secret-assign");
   for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
     const n = Math.floor(size / unit.length);
-    const started = performance.now();
+    const started = cpuNow();
     const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
-    const took = performance.now() - started;
+    const took = cpuNow() - started;
     assert.equal(out.cuts.length, n);
     assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
   }
@@ -2261,9 +2267,9 @@ test("LXXXIII: an ADO value runs over blanks only to its `;`, a tab, a line brea
   const rule = SCRUB_RULES.find((each) => each.id === "connection-string");
   for (const [size, bound] of [[600_000, 1_000], [2_000_000, 2_000]]) {
     const n = Math.floor(size / unit.length);
-    const started = performance.now();
+    const started = cpuNow();
     const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
-    const took = performance.now() - started;
+    const took = cpuNow() - started;
     assert.equal(out.cuts.length, n);
     assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
   }
@@ -2285,6 +2291,144 @@ test("LXXXIV: an empty ADO field (`Application Name=;`) is a pair beside the key
   assert.equal((await oneCut(`Server=db;Application Name=;Password=Copper lumen ${pw};`)).text, "Server=db;Application Name=;Password=[redacted:connection-string];");
   // Code's `==` is no empty pair: beside it a spaced key stays code's.
   for (const wrap of FOUR_WRAPS) await kept(wrap("x == 1; password = userInput;"));
+});
+
+test("LXXXV: helmSetLists reads each list once: a `--set` inside an earlier list's value is not read again (2 MB under 2 s, the rule alone)", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  // A `--set` in every value of a long list: read from each, a list re-read up to 64 x 1024 (87 s at 2 MB).
+  const piece = `x=${".--set=x=".repeat(113)},`;
+  for (const [size, bound] of [[50_000, 250], [400_000, 1_000], [2_000_000, 2_000]]) {
+    const { ms } = await ruleAlone("secret-assign", repeatTo(piece, size));
+    assert.ok(ms < bound, `${size} chars: ${Math.round(ms)} ms CPU`);
+  }
+  // A list after them is still read, its credential cut.
+  const out = await gone(`${repeatTo(piece, 20_000)}\nhelm install x . --set db.user=u,db.password=${pw},image.tag=v1`, [pw]);
+  assert.ok(out.text.endsWith("--set db.user=u,db.password=[redacted:secret-assign],image.tag=v1"), out.text.slice(-120));
+});
+
+test("LXXXVI: a flag's NAME=value takes a dashed name (`--from-literal=postgres-password=v`, Bitnami's keys), as `--set` reads it: a credential's is cut, any other's is kept", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `kubectl create secret generic pg --from-literal=postgres-password=${pw}`,
+    `kubectl create secret generic db --from-literal=db-password=${pw}`,
+    `kubectl create secret generic r --from-literal=redis-password=${pw}`,
+    `kubectl create secret generic a --from-literal=api-key=${pw}`,
+    `kubectl create secret generic pg --from-literal postgres-password=${pw}`,
+    `kubectl create secret generic pg --from-literal=my-app.db-password=${pw}`,
+    `helm install pg bitnami/postgresql --set-literal postgres-password=${pw}`,
+    `helm install pg bitnami/postgresql --set postgres-password=${pw}`,
+    `docker build --build-arg api-key=${pw} .`,
+  ], pw, "secret-assign");
+  for (const text of [
+    "kubectl create secret generic pg --from-literal=postgres-user=app",
+    "kubectl create secret generic pg --from-literal=log-level=debug",
+    "kubectl create secret generic pg --from-literal=postgres-password=$PG_PASSWORD",
+    "kubectl create secret generic pg --from-literal=postgres-password=${PG_PASSWORD}",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  // The rule alone reads a long line of them in time linear in it (as LXIX).
+  const unit = "--from-literal=postgres-password=abcdefghij --from-literal=log-level=debug ";
+  const rule = SCRUB_RULES.find((each) => each.id === "secret-assign");
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = cpuNow();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = cpuNow() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXXXVII: a tab inside an ADO value is the value's when its `;` follows on the line (`Pwd=Copper\\tlumen x;`), every word in one cut; with no `;` after it a tab ends the value (LXXXIII's column)", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  for (const text of [
+    `Server=db;Pwd=Copper\tlumen ${pw};`,
+    `Server=db;Pwd=Copper \tlumen ${pw};Database=app`,
+    `Password=Copper\tlumen ${pw};Server=db`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, ["Copper", "lumen", pw]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["connection-string", "label", true]], wrapped);
+      if (wrapped.startsWith("{")) JSON.parse(out.text);
+    }
+  }
+  assert.equal((await oneCut(`Server=db;Pwd=Copper\tlumen ${pw};`)).text, "Server=db;Pwd=[redacted:connection-string];");
+  // No `;` after it on the line: a tab ends the value, what follows stays.
+  for (const text of [`Server=db;Pwd=${pw}\tOK connected\trows: 5`, `Server=db;Pwd=${pw} \tOK connected\nrows: 5;`]) {
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), [pw]);
+      assert.ok(out.text.includes("OK connected"), out.text);
+    }
+  }
+  // The rule alone reads a long line of tabbed values in time linear in it (as LXIX).
+  const unit = "Server=db;Pwd=ab\tcd ef\tgh;";
+  const rule = SCRUB_RULES.find((each) => each.id === "connection-string");
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = cpuNow();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = cpuNow() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXXXVIII: a value past VALUE's 1024-character bound is cut to its end (Greptile P1 on 55b0239695): bare to its run's end, quoted to its closing quote", async () => {
+  const long = "Tq7Wm2Rk9Zx".repeat(137);
+  const [head, tail] = [long.slice(0, 200), long.slice(-200)];
+  for (const [text, after] of [
+    [`curl --token ${long} https://x.io`, " https://x.io"],
+    [`mysql --password=${long} -h db`, " -h db"],
+    [`mysql --password="${long}" -h db`, '" -h db'],
+    [`export DB_PASSWORD=${long}; make`, "; make"],
+    [`export DB_PASSWORD='${long}'; make`, "'; make"],
+    [`Server=db;Password=${long};Database=x`, ";Database=x"],
+    [`helm install x . --set db.user=u,db.password=${long},image.tag=v1`, ",image.tag=v1"],
+  ]) {
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), [head, tail]);
+      assert.equal(out.cuts.length, 1, `${JSON.stringify(out.cuts.map((cut) => cut.rule))} in ${wrap(text).slice(0, 60)}`);
+      if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.endsWith(after), out.text.slice(-80));
+    }
+  }
+  // Under the bound nothing moves: the cut ends where the value does.
+  assert.equal((await oneCut("mysql --password=Tq7Wm2Rk9Zx -h db")).text, "mysql --password=[redacted:password-flag] -h db");
+  // The rule alone reads a long line of long values in time linear in it (as LXIX).
+  const unit = `--token ${long} --token "${long}" `;
+  const rule = SCRUB_RULES.find((each) => each.id === "password-flag");
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = cpuNow();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = cpuNow() - started;
+    assert.equal(out.cuts.length, 2 * n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXXXIX: a URL's password past 1024 characters is still SHAPES' URL with a password (Greptile P1 on 55b0239695): url-password cuts it, the final check sees it", async () => {
+  const pw = "a1B2".repeat(275);
+  const url = SHAPES.find(([kind]) => kind === "URL with a password")[1];
+  for (const text of [`redis://default:${pw}@cache:6379/0`, `postgres://app:${pw}@db:5432/x`]) {
+    assert.ok(url.test(text), text.slice(0, 40));
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), [pw.slice(0, 200), pw.slice(-200)]);
+      assert.deepEqual(out.cuts.map((cut) => cut.rule), ["url-password"], wrap(text).slice(0, 60));
+      if (wrap === FOUR_WRAPS[0]) assert.ok(/@(?:cache:6379\/0|db:5432\/x)$/.test(out.text), out.text.slice(-60));
+    }
+  }
+  // Linear: SHAPES' URL shape on 2 MB of userinfos that never reach an `@`, and of long ones that do.
+  for (const piece of ["a://b:", `x://u:${"p".repeat(3000)} `, `x://u:${"p".repeat(3000)}@h `]) {
+    const text = repeatTo(piece, 2_000_000);
+    const every = new RegExp(url.source, "g");
+    const started = cpuNow();
+    const found = [...text.matchAll(every)].length;
+    const ms = cpuNow() - started;
+    assert.equal(found, piece.endsWith("@h ") ? Math.ceil(2_000_000 / piece.length) : 0);
+    assert.ok(ms < 2_000, `${JSON.stringify(piece.slice(0, 12))} x 2 MB: ${Math.round(ms)} ms CPU`);
+  }
 });
 
 test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
