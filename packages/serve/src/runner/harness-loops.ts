@@ -31,7 +31,9 @@ import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
 import { storeSettings } from "./adapter-run-spec.js";
-import { claimPlane } from "../tool-plane.js";
+import { claimPlane, overCeilings } from "../tool-plane.js";
+import { SECRET_NAMES } from "../secrets.js";
+import { sealedKeyNames } from "../server-keys.js";
 import { toolingOf } from "../tools.js";
 import type { Revision } from "../agent-rows.js";
 
@@ -87,12 +89,31 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
 /** `launch` as this claim runs it: its plane, resolved at the run's start, under the server's tool settings now
  *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel or
  *  web_search to native sends nothing to a keyless third party. The settings unread, none apply (the gate then refuses
- *  every tool: storeSettings). */
-async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
+ *  every tool: storeSettings). It resolves on the run's pinned model (the launch's, chosen at its start), never the host's
+ *  default in this environment, which holds no key saved on the server (claim-secrets.ts opens those later), and with
+ *  the saved keys' names (savedNamesOver) for the route its model requests take. */
+export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
   if (!launch.plane) return launch;
   const { settings } = await storeSettings(deps.store);
-  const plane = claimPlane(launch.plane, deps.env ?? process.env, await toolingOf(revision), settings, { capped: launch.maxCostUsd !== undefined });
-  return plane === launch.plane ? launch : { ...launch, plane };
+  if (!overCeilings(launch.plane, settings)) return launch;
+  const model = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined;
+  const plane = claimPlane(launch.plane, await savedNamesOver(deps), await toolingOf(revision), settings, { capped: launch.maxCostUsd !== undefined, ...(model ? { model } : {}) });
+  return { ...launch, plane };
+}
+
+/** `deps.env` where a key saved on the server, not set in it, is present by name: its row read, never opened (its value
+ *  a stand-in only a resolution's presence checks read: provider.ts openRouterOnly), for a plane resolved in it alone, never
+ *  handed on. A runner holds the seal key and reads the store's rows; a run's own process (no seal key) was handed its
+ *  claim's keys, which its environment already holds. */
+async function savedNamesOver(deps: AdapterSpecDeps): Promise<NodeJS.ProcessEnv> {
+  const env = deps.env ?? process.env;
+  if (!deps.sealKey) return env;
+  const names = (await sealedKeyNames(deps.store)).filter((name) => SECRET_NAMES.includes(name) && !env[name]);
+  if (!names.length) return env;
+  // Over `env` (its prototype), so its own secrets and marks (non-enumerable, or symbols) still read.
+  const out = Object.create(env) as NodeJS.ProcessEnv;
+  for (const name of names) Object.defineProperty(out, name, { value: "saved", enumerable: false });
+  return out;
 }
 
 /** The loop a claimed run runs on, over `deps` (the saved gateway laid over its environment). */

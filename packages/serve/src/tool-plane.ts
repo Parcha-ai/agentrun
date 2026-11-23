@@ -454,14 +454,19 @@ export function keptVendor(plane: Plane): Plane {
  *  it is saved on. */
 export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
 
+/** Whether a capability of `kept` (a launch's Plane) is on a keyless third party the server's `settings` now set a
+ *  ceiling over (CEILINGS). */
+export const overCeilings = (kept: Plane, settings: ToolSettingsMap): boolean => PICKABLE.some((name) => ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined);
+
 /** The Plane a claim hands its run (runner/harness-loops.ts, before anything binds): `kept`, the launch's (resolved at
  *  the run's start), under the server's `settings` now. A capability kept on a keyless third party (Firecrawl, Exa),
  *  where the server's setting is now a ceiling over it (CEILINGS), takes today's resolution (planeFor in `env` for
- *  `tooling`), so a resume, a follow-up or a reclaim sends nothing the setting keeps on the server. Every other value
- *  stays as kept; the same Plane where nothing is over a ceiling. */
-export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
-  if (!PICKABLE.some((name) => ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined)) return kept;
-  const fresh = planeFor(env, tooling, settings, { capped, run: true });
+ *  `tooling`) on `model`, the run's pinned one (its launch's), so a resume, a follow-up or a reclaim sends nothing the
+ *  setting keeps on the server, and its native search asks the model the run sends. Every other value stays as kept;
+ *  the same Plane where nothing is over a ceiling. */
+export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model }: { capped?: boolean; model?: string } = {}): Plane {
+  if (!overCeilings(kept, settings)) return kept;
+  const fresh = planeFor(env, model ? { ...tooling, model } : tooling, settings, { capped, run: true });
   const out: Plane = { ...kept };
   for (const name of PICKABLE) {
     if (fresh[name] !== undefined && ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined) out[name] = fresh[name];
