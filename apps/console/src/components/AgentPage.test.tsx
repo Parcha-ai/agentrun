@@ -47,7 +47,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label)!;
   const click = async (label: string) => { await act(async () => button(label).click()); await settle(); };
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling as HTMLElement | undefined;
+  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === name)?.nextElementSibling as HTMLElement | undefined;
   const rows = () => [...host.querySelectorAll('table[aria-label="Runs"] tbody tr')];
   const focus = async () => { await act(async () => window.dispatchEvent(new Event("focus"))); await settle(); };
   return { host, went, asked, starts, timelines, statsAsked, button, click, tabs, fact, rows, focus };

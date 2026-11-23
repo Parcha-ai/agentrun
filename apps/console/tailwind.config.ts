@@ -10,7 +10,7 @@ export default {
   darkMode: ["class"],
   content: ["./index.html", "./share.html", "./src/**/*.{ts,tsx}"],
   theme: {
-    borderRadius: { none: "0", DEFAULT: "var(--radius)", composer: "var(--radius-composer)", action: "var(--radius-action)" },
+    borderRadius: { none: "0", DEFAULT: "var(--radius)", action: "var(--radius-action)" },
     // The type scale. The six small steps carry no line height: text takes its parent's (1.5 from the page) or a
     // `leading-*` class. Sizes are px on purpose: the console is a dense tool and its text does not scale with a root size.
     fontSize: {
@@ -54,6 +54,7 @@ export default {
         accent: { DEFAULT: hsl("accent"), foreground: hsl("accent-foreground") },
         overlay: hsl("overlay"),
         primary: { DEFAULT: hsl("primary"), foreground: hsl("primary-foreground"), text: hsl("primary-text"), "action-text": hsl("primary-action-text") },
+        "brand-surface": hsl("brand-surface"),
         destructive: { DEFAULT: hsl("destructive"), text: hsl("destructive-text") },
         success: { DEFAULT: hsl("success"), text: hsl("success-text") },
         warning: { DEFAULT: hsl("warning"), text: hsl("warning-text") },

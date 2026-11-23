@@ -2460,6 +2460,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "export/1",
     },
   },
+  "/agents/{agent_id}/revisions/{revision}/skills": {
+    get: {
+      operationId: "getRevisionSkills", tags: ["agents"], summary: "Read all skill files saved with one agent revision",
+      description: "Returns the exact revision's complete skill file map, including SKILL.md and supporting text files, without changing the agent. Use these files when preparing a replacement skills map for PUT /agents/{agent_id}/definition, with the ETag of the revision being edited. An unknown revision or a revision belonging to another agent is 404; there is no fallback to the current revision. Only files stored in the revision are returned: detected skills on a connected native agent's source machine are not read. Revisions with no stored skill files return an empty map.",
+      parameters: [ref("parameters/AgentId"), { name: "revision", in: "path", required: true, description: "The immutable revision ID from the agent or its revisions list.", schema: { type: "string" } }],
+      responses: {
+        "200": json({
+          type: "object", additionalProperties: false, required: ["revision", "skills"],
+          properties: {
+            revision: { type: "string" },
+            skills: { type: "object", additionalProperties: { type: "string" }, description: "Paths relative to .agents/skills/ mapped to their complete text." },
+          },
+        }, "The requested revision's saved skill files."),
+        ...errors(401, 404, 429, 500),
+      },
+      "x-agentrun-serve": "skills/1",
+    },
+  },
   "/agents/{agent_id}/current": {
     post: {
       operationId: "setCurrent", tags: ["agents"], summary: "Make one of the agent's revisions current again",

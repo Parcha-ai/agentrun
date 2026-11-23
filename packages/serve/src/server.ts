@@ -724,6 +724,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/agents\/([^/]+)\/definition$/, name: "updateDefinition" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions$/, name: "listRevisions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/package$/, name: "getAgentPackage" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/revisions\/([^/]+)\/skills$/, name: "getRevisionSkills" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/current$/, name: "setCurrent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/archive$/, name: "archiveAgent" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/unarchive$/, name: "unarchiveAgent" },
@@ -5487,6 +5488,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // agentRevisions already carries each row's version and current flag; revisionView builds the v2 shape from it.
         const page = all.slice(offset, offset + limit).map((row) => revisionView(entry.agent, row));
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
+      }
+      case "getRevisionSkills": {
+        await needAgent(id);
+        const selected = await agents.revision(id, decodeURIComponent(second!));
+        if (!selected) throw new ApiError("not_found", "no such revision for this agent");
+        // The complete immutable file map is needed before replacing skills in a definition edit. Native discovery
+        // metadata is separate: this read never follows a connection to its source machine or filesystem.
+        return send(res, 200, { revision: selected.revision.id, skills: selected.revision.skills ?? {} });
       }
       case "getAgentPackage": {
         const entry = await needAgent(id);

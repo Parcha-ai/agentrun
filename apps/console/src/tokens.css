@@ -25,6 +25,8 @@
   /* The brand. --primary is a fill and an indicator; text on it is --primary-foreground. Orange words on a page
      surface are --primary-text, which passes 4.5:1 where the fill does not. */
   --primary: 30 100% 50%;
+  /* Fixed backing for the supplied light-lettered logo, whose bitmap colours do not change with the theme. */
+  --brand-surface: 0 0% 0%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 34%;
   /* Action labels also sit on the stronger 20% hover/open wash. */
@@ -69,9 +71,8 @@
   --trace-model: 251 55% 53%;
   --trace-tool: 174 72% 33%;
 
-  /* Square fields and surfaces; rounded action buttons and a softer build composer. */
+  /* Square fields and surfaces; rounded action buttons. */
   --radius: 0px;
-  --radius-composer: 0.875rem;
   --radius-action: 0.5rem;
   /* Lines are 1px. 2px marks where you are (the active nav item, the open tab) and the focus ring. */
   --border-width: 1px;
@@ -118,6 +119,7 @@
   --accent-foreground: 0 0% 98%;
   --overlay: 240 10% 3.9%;
   --primary: 30 100% 50%;
+  --brand-surface: 0 0% 0%;
   --primary-foreground: 240 10% 3.9%;
   --primary-text: 30 100% 50%;
   --primary-action-text: var(--primary-text);

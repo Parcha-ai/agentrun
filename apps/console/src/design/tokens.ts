@@ -5,7 +5,7 @@
 export const COLOR_TOKENS = {
   surface: ["background", "card", "muted", "accent", "overlay", "run-error-surface"],
   text: ["foreground", "card-foreground", "muted-foreground", "accent-foreground"],
-  brand: ["primary", "primary-foreground", "primary-text", "primary-action-text"],
+  brand: ["primary", "primary-foreground", "primary-text", "primary-action-text", "brand-surface"],
   tone: ["success", "success-text", "warning", "warning-text", "destructive", "destructive-text", "info", "info-text"],
   line: ["border", "border-strong", "input", "ring"],
   run: ["run-active"],
@@ -53,7 +53,6 @@ export const CONTROL_SIZES = [
 ] as const;
 
 export const SHAPES = [
-  { name: "composer", use: "The integrated build-agent prompt and its actions." },
   { name: "action", use: "All action buttons, including the unified coding-agent action and chooser." },
 ] as const;
 

@@ -4,11 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage, AgentsPage } from "./AgentsPage";
 import { AgentPage } from "./AgentPage";
 import { ClientError } from "@/lib/client";
+import { pick, picker } from "@/test/picker";
 import { type Agent, DECISION, WORKFLOW } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
-const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
+const withoutComputers = (v2: object) => ({ getRevisionSkills: async (_agentId: string, revision: string) => ({ revision, skills: {} }), computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
 
 // The agent page keeps what it shows true to the server: an action's committed write is never reported as failed, a
 // revision another tab saved is never hidden under an old form, and a failed reload never takes the editor away.
@@ -29,7 +30,7 @@ async function open(v2: Record<string, unknown>) {
   act(() => root!.render(createElement(AgentEditPage, { v2: withoutComputers(v2) as never, caps: caps as never, agentId: "calc", go: () => {} })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
-  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
+  const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.getAttribute("aria-label") ?? b.textContent ?? "").trim()));
   const click = async (label: RegExp) => { await act(async () => { button(label)!.click(); }); await settle(); };
   return { host, click, button, settle };
 }
@@ -102,7 +103,7 @@ describe("AgentEditPage, a new agent from a starter", () => {
     const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
     act(() => root!.render(page(null)));
     await act(async () => { button(/Settings/)!.click(); });
-    await act(async () => { host.querySelector<HTMLInputElement>(`input[type=radio][value="${choice}"]`)!.click(); });
+    await pick(picker(host, "Runtime")!, choice);
     await act(async () => { button(/Context/)!.click(); });
     await act(async () => {
       const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]')!;
