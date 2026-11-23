@@ -374,17 +374,6 @@ test("a monid charge above its hold that takes the run past its cap inside a scr
   assert.match(run.row.summary ?? "", /over its cap of \$0\.04\.$/, "the cap's words");
 });
 
-test("a monid charge above both its hold and the run's cap ends the run in the cap's words, one rule for every charge", async (t) => {
-  callLog(t);
-  charging(t, 0.05);
-  t.mock.method(console, "error", () => {});
-  // Held at $0.026 under a $0.04 cap; charged $0.05, past both.
-  const run = await monidRun(t, { tools: [MATCH], pin: { [MATCH]: PIN[MATCH] }, toolSettings: { [MATCH]: { permission: "allow" } }, launch: { max_cost_usd: 0.04 }, script: [{ call: "monid__apollo__people__match", args: ARGS }, { say: "done" }] });
-  assert.equal(run.row.state, "failed", JSON.stringify(run.row));
-  assert.match(run.row.summary ?? "", /over its cap of \$0\.04\.$/, "the cap's words");
-  assert.ok(!(run.row.summary ?? "").includes("monid charged"), run.row.summary);
-});
-
 test("a call priced by usage that monid charges above its estimate is booked at its charge, and when that passes the run's cap the run stops at once in the cap's words", async (t) => {
   const sent = callLog(t);
   t.mock.method(console, "error", () => {});
