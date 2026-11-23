@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "./timeline/index.js";
-import { type MediaReader, meterFor, meterNamed } from "./fal-price.js";
+import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -42,7 +42,7 @@ export const CONNECT_MS = 30_000;
 
 /** Each pinned server: its URL then, the granted tools as it listed them, the prices its owner declared for them, and
  *  the meter that prices its other calls (`fal`: fal-price.ts). */
-export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number>; meter?: string }>;
+export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number>; meter?: FalMeterName }>;
 /** Each granted server's URL now, and its credential's headers when that URL is the pinned one (the claim step's). */
 export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** What every request to it adds to its address's query for this run alone: a per-run Composio server's Composio user and connected account (the run's mcp_auth binding), never stored, held for the scrub as headers are. */ query?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
@@ -145,7 +145,7 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
     const declared = mcpHeaderProblem(tool.inputSchema);
     if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
-    const meter = saved.meter ?? meterNamed(saved.url, saved.toolkit);
+    const meter = meterNamed(saved.url, saved.meter ?? saved.toolkit);
     if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [], ...(meter ? { meter } : {}) };
     const pinned = pin[parsed.server]!;
     pinned.tools.push(tool);

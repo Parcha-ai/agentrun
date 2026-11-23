@@ -35,7 +35,7 @@ export const PARALLEL_EXTRACT_USD = 0.001;
 export type Fee = { name: string; by: string; usd: number; basis: string };
 
 /** In whole millionths of a dollar, so a sum of prices is the price. */
-const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
+export const usd = (dollars: number) => Math.round(dollars * 1e6) / 1e6;
 
 const isSearchMode = (mode: unknown): mode is ParallelSearchMode => typeof mode === "string" && Object.hasOwn(PARALLEL_SEARCH_MODE_USD, mode);
 

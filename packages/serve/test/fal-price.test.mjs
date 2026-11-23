@@ -9,14 +9,14 @@ const load = () => import("../dist/fal-price.js");
 const near = (actual, expected, what) => assert.ok(typeof actual === "number" && Math.abs(actual - expected) < 1e-9, `${what}: ${actual}, not ${expected}`);
 
 test("a server is fal's by its toolkit or by its host, never by a name that only looks like it", async () => {
-  const { falServer } = await load();
-  assert.equal(falServer("https://mcp.fal.ai/mcp"), true, "the key endpoint");
-  assert.equal(falServer("https://mcp.fal.ai/mcp-relay", null), true, "the sign-in endpoint");
-  assert.equal(falServer("http://127.0.0.1:9/mcp", "fal"), true, "the toolkit its owner gave it");
-  assert.equal(falServer("https://example.com/mcp", null), false);
-  assert.equal(falServer("https://example.com/mcp", "linear"), false);
-  assert.equal(falServer("https://mcp.fal.ai.example.com/mcp"), false, "another host");
-  assert.equal(falServer("not a url"), false);
+  const { meterNamed } = await load();
+  assert.equal(meterNamed("https://mcp.fal.ai/mcp"), "fal", "the key endpoint");
+  assert.equal(meterNamed("https://mcp.fal.ai/mcp-relay", null), "fal", "the sign-in endpoint");
+  assert.equal(meterNamed("http://127.0.0.1:9/mcp", "fal"), "fal", "the toolkit its owner gave it");
+  assert.equal(meterNamed("https://example.com/mcp", null), undefined);
+  assert.equal(meterNamed("https://example.com/mcp", "linear"), undefined);
+  assert.equal(meterNamed("https://mcp.fal.ai.example.com/mcp"), undefined, "another host");
+  assert.equal(meterNamed("not a url"), undefined);
 });
 
 test("run_model and submit_job submit one job, submit_jobs one per request; any other tool submits none", async () => {
