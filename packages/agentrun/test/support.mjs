@@ -55,12 +55,21 @@ export const cli = (env, args, { input = "", timeout = 60_000, cwd } = {}) => ne
  *  it), which is watched for, never polled; rejects if it exits first. `{child, exited, data, base, token, api}`, `api`
  *  a request with its token answering `{status, body}`. Killed at the test's end. */
 export async function server(t, { data, env, faux = 'export default (context, faux) => faux.message("Done.");\n' }) {
-  mkdirSync(data, { recursive: true });
+  // Under umask 022, a common default (CI's), whatever this machine's: a mode left to the umask shows here as it would
+  // there. The server takes the umask it is spawned under, and spawn forks before it returns.
+  const umask = process.umask(0o022);
+  let child;
+  let watcher;
   const fauxFile = `${data}-faux.mjs`;
-  writeFileSync(fauxFile, faux);
   const record = join(data, ".server.json");
-  const watcher = watch(data);
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", fauxFile], { stdio: ["ignore", "ignore", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
+  try {
+    mkdirSync(data, { recursive: true });
+    writeFileSync(fauxFile, faux);
+    watcher = watch(data);
+    child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", fauxFile], { stdio: ["ignore", "ignore", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
+  } finally {
+    process.umask(umask);
+  }
   const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
   t.after(() => child.exitCode === null && child.kill("SIGKILL"));
   let err = "";
