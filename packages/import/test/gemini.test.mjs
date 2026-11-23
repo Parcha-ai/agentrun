@@ -92,6 +92,20 @@ test("a legacy session-*.json is read as the whole record it is, and the same se
   assert.deepEqual([both[0].tokens.input, both[0].tokens.output, both[0].calls, both[0].turns], [50, 21, 2, 1]);
 });
 
+test("a legacy .json beside its migrated .jsonl is a copy: a turn the .jsonl rewound does not come back from the .json", async (t) => {
+  const home = await tempHome(t);
+  const messages = [geminiUser("u1", "First."), geminiAnswer("a1", "One.", geminiTokens(100, 20), 2), geminiUser("u2", "Second."), geminiAnswer("a2", "Two.", geminiTokens(50, 10), 3)];
+  await writeLegacy(geminiFile(home, GEMINI_SESSION, { ext: "json" }), { messages });
+  // The migrated file holds the same messages, then rewinds to u2: a2 is gone from the session.
+  await writeGemini(geminiFile(home), [geminiMeta(), ...messages, { $rewindTo: "u2" }]);
+  const lines = await totals(home);
+  assert.equal(lines.length, 1, "one session");
+  assert.deepEqual([lines[0].tokens.input, lines[0].tokens.output, lines[0].calls], [100, 20, 1], "a2 stays removed");
+  // The same in the other order of discovery: the .json sorts first or last by name, the result does not move.
+  const [reread] = await totals(home);
+  assert.deepEqual(reread, lines[0]);
+});
+
 test("a cursor: an unchanged file reads nothing; an appended record is counted once on the next pass, never twice", async (t) => {
   const home = await tempHome(t);
   const file = await writeGemini(geminiFile(home), [geminiMeta(), geminiUser("u1", "Fixture question."), geminiAnswer("a1", "Done.", geminiTokens(100, 20), 2)]);

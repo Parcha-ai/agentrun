@@ -441,8 +441,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
+    // Every session file the source lists, kept or left out: a subagent whose owner is none of them ran under a session
+    // that is gone.
+    const listed = new Set<string>();
     for (const { locator, stats } of await inOrder(await sessionLocators(home, source), source)) {
       const { file } = locator;
+      listed.add(locatorKey(locator));
       if (signal?.aborted) {
         stopped = true;
         break;
@@ -511,7 +515,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       rank.set(session, rank.size);
       project.sessions.push(session);
     }
-    for (const { locator, of } of await childrenOf(home, source)) child(locatorKey(of), locator);
+    // A subagent whose session's file is gone (Claude Code's folder or Gemini's with no file beside it) is untied: it counts
+    // in the totals alone, as a Codex thread naming no parent does.
+    for (const { locator, of } of await childrenOf(home, source)) {
+      if (listed.has(locatorKey(of))) child(locatorKey(of), locator);
+      else untied.push({ locator, source });
+    }
   }
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.

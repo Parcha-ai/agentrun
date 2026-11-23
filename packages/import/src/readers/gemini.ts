@@ -17,7 +17,7 @@
 // A message with `tokens` is one model request, keyed by its message id; a message id is a random UUID, so the key is
 // the same in every file that holds it. The whole file is read each time it changed (a rewrite on resume can be anywhere
 // in it), and the cursor holds the keys this file counted, so a pass over a grown file counts nothing twice.
-import { open, readFile, type FileHandle } from "node:fs/promises";
+import { open, readFile, stat, type FileHandle } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { type Env, entries, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
 import { argsOf, isObject, str, textOf, timeOf } from "../text.js";
@@ -27,7 +27,7 @@ import { normalizeUsage } from "../usage.js";
 type Session = SessionOf<"gemini">;
 type Meta = { sessionId?: string; kind?: string; summary?: string; startTime?: string; lastUpdated?: string };
 /** One file read whole: where it stopped being the same file, what it counted, and the session it made. Plain data. */
-type Cursor = { source: "gemini"; dev: number; ino: number; size: number; mtimeMs: number; keep: boolean; claimed: string[]; session: Session; requests: Answer[] };
+type Cursor = { source: "gemini"; dev: number; ino: number; size: number; mtimeMs: number; keep: boolean; copy: boolean; claimed: string[]; session: Session; requests: Answer[] };
 
 const SESSION_FILE = /^session-.*\.jsonl?$/;
 const SUBAGENT_FILE = /\.jsonl?$/;
@@ -96,8 +96,9 @@ function conversation(text: string): { meta: Meta; messages: Record<string, unkn
 /** A session's id: the one its metadata record names, else its file's name without the extension. */
 export const sessionIdOf = (file: string, recorded?: string): string => recorded ?? basename(file).replace(/\.jsonl?$/, "");
 
-/** One file read into its session, each message not counted elsewhere kept (and claimed). */
-function sessionOf(file: string, text: string, claimed: Set<string>, seen: Set<string>, keep: boolean): { session: Session; requests: Answer[] } {
+/** One file read into its session, each message not counted elsewhere kept (and claimed). A copy (a legacy .json whose
+ *  migrated .jsonl is beside it) keeps none: the .jsonl is the session as the CLI left it, rewinds and all. */
+function sessionOf(file: string, text: string, claimed: Set<string>, seen: Set<string>, keep: boolean, copy: boolean): { session: Session; requests: Answer[] } {
   const { meta, messages } = conversation(text);
   const session: Session = { source: "gemini", id: sessionIdOf(file, meta.sessionId), file, state: "completed", child: meta.kind === "subagent", turns: [], users: 0, activeMs: 0, copies: 0 };
   if (keep && meta.summary) session.sourceTitle = meta.summary;
@@ -117,7 +118,11 @@ function sessionOf(file: string, text: string, claimed: Set<string>, seen: Set<s
     // What is not a turn: the CLI's own empty user records, a reply of only thoughts.
     if (kind === "user" ? !text.trim() : !usage && !text && calls.length === 0) continue;
     const key = `${kind === "user" ? "u" : "m"}:${id}`;
-    // A message a file of the import counted already (a legacy file's copy in its migrated .jsonl) counts there.
+    if (copy) {
+      session.copies += 1;
+      continue;
+    }
+    // A message a file of the import counted already counts there.
     if (!claimed.has(key)) {
       if (seen.has(key)) {
         session.copies += 1;
@@ -166,17 +171,18 @@ async function read(locator: Locator, cursor?: Cursor, { turns: keep = true, see
   const handle: FileHandle = await open(locator.file, "r");
   try {
     const stats = await handle.stat();
-    const same = cursor !== undefined && cursor.source === "gemini" && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino;
+    const copy = locator.file.endsWith(".json") && (await stat(`${locator.file}l`).then((s) => s.isFile(), () => false));
+    const same = cursor !== undefined && cursor.source === "gemini" && cursor.keep === keep && cursor.copy === copy && cursor.dev === stats.dev && cursor.ino === stats.ino;
     const out = (session: Session, requests: Answer[]): SessionRead<"gemini">[] => [{ locator: { file: locator.file }, session, requests }];
     if (same && cursor.size === stats.size && cursor.mtimeMs === stats.mtimeMs) return { sessions: out(cursor.session, cursor.requests), cursor, read: 0, resumed: true };
     const text = await handle.readFile("utf8");
     // The keys this file counted before stay its own; a key another file holds is a copy there.
     const claimed = new Set(same ? cursor.claimed : []);
-    const { session, requests } = sessionOf(locator.file, text, claimed, seen ?? new Set(), keep);
+    const { session, requests } = sessionOf(locator.file, text, claimed, seen ?? new Set(), keep, copy);
     // Where it ran, as every source's listing has it (an import needs the project); the cursor holds none of it.
     const cwd = await geminiCwd(locator.file);
     if (cwd) session.cwd = cwd;
-    return { sessions: out(session, requests), cursor: { source: "gemini", dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, keep, claimed: [...claimed], session: keep ? session : withoutCwd(session), requests }, read: Buffer.byteLength(text), resumed: same };
+    return { sessions: out(session, requests), cursor: { source: "gemini", dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, keep, copy, claimed: [...claimed], session: keep ? session : withoutCwd(session), requests }, read: Buffer.byteLength(text), resumed: same };
   } finally {
     await handle.close();
   }

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agentIdOf, planImport } from "../dist/import.js";
+import { agentIdOf, planImport, untiedFound } from "../dist/import.js";
 
 /** A Gemini home with one project and one session in it, written an hour ago unless `fresh`. */
 function home(t, { fresh = false } = {}) {
@@ -47,4 +47,25 @@ test("a Gemini CLI session still being written, in the project chosen, is report
   assert.deepEqual(found.skipped.map((s) => s.kind), ["live"]);
   const other = await planImport({ home: h.home, env: { PATH: "/usr/bin" }, temp: h.temp, sources: ["gemini"], only: [agentIdOf(join(h.project, "elsewhere"))] });
   assert.deepEqual(other.skipped, [], "a project not chosen has none of it");
+});
+
+test("a Gemini subagent whose parent's file is gone is untied, not lost: its usage is in the summary's totals, and it is no session or run", async (t) => {
+  const h = home(t);
+  const folder = join(h.home, ".gemini", "tmp", "gemini-app", "chats", "ffffffff-0000-4000-8000-000000000000");
+  mkdirSync(folder, { recursive: true });
+  const file = join(folder, "orphan.jsonl");
+  const at = (i) => new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+  writeFileSync(
+    file,
+    [
+      { sessionId: "orphan", projectHash: "0".repeat(64), startTime: at(0), lastUpdated: at(3), kind: "subagent" },
+      { id: "oa1", timestamp: at(3), type: "gemini", content: "Orphan.", model: "gemini-fixture-pro", tokens: { input: 500, output: 70, cached: 0, total: 570 } },
+    ].map((record) => `${JSON.stringify(record)}\n`).join(""),
+  );
+  const old = new Date(Date.now() - 60 * 60_000);
+  utimesSync(file, old, old);
+  const plan = await planImport({ home: h.home, env: { PATH: "/usr/bin" }, temp: h.temp, sources: ["gemini"] });
+  assert.deepEqual(plan.projects.map((p) => [p.name, p.sessions.length]), [["gemini-app", 1]], "no session of its own");
+  const found = await untiedFound(plan);
+  assert.deepEqual(found.map((f) => [f.source, f.metrics.input, f.metrics.output]), [["gemini", 500, 70]]);
 });
