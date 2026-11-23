@@ -8,11 +8,12 @@
 // row. One left behind by a removal that raced a save, or by a removal cut short, is never read as what a server saved
 // again under the name is.
 // The record also says who saved the row: `by: "token"` when the API token saved it (a request the secret-write gate read,
-// server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts), and, for a per_run
-// server an API-only server's token saved at a listed origin (`listed`), for each run's start and claim to check that
-// origin against the operator's list again (mcp-token-origins.ts). A row the owner saved has no mark, and stays the
-// owner's: the token's save over it leaves it unmarked (on an API-only server, the gate refuses that save), and the
-// owner's save over the token's row drops the mark before it writes the row.
+// server.ts), for the gate's check that the token saves over and deletes only a server it saved (mcp-secret-writes.ts),
+// and, for a per_run server an API-only server's token saved at a listed origin (`listed`), for each run's start and claim
+// to check that origin against the operator's list again (mcp-token-origins.ts). A row the owner saved has no mark, and
+// stays the owner's: the token's save over it is refused, and the owner's save over the token's row drops both marks in
+// the store's transaction that writes the row, once the row is written (McpOwnersMark): an owner's save refused leaves
+// them, and the server the token's.
 import type { InputIssue } from "./errors.js";
 import { tokenOriginGone, tokenOriginListed } from "./mcp-token-origins.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
@@ -63,8 +64,13 @@ export const savedAtListedOrigin = (value: unknown, createdAt: number | undefine
  *  claim. */
 export const tokenOriginRefusal = (value: unknown, row: { name: string; url: string; createdAt: number }, origins: readonly string[]): string | undefined => (savedAtListedOrigin(value, row.createdAt) && !tokenOriginListed(row.url, origins) ? tokenOriginGone(row.name) : undefined);
 
-/** A stored record as it stands once the owner saves over the token's row: the same, without the token's marks. */
-export const ownersRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => field !== "by" && field !== "listed"));
+/** The fields that say the token saved a row (`by`) and where (`listed`): the owner's save over it drops both. */
+export const TOKENS_MARKS: readonly string[] = ["by", "listed"];
+
+/** A stored record as it stands once the owner saves over the token's row: the same, without the token's marks. The store
+ *  writes it so in the owner's write's own transaction (store/sqlite/store.ts dropTokensMark); tests write it to stand for
+ *  that save. */
+export const ownersRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => !TOKENS_MARKS.includes(field)));
 
 /** A stored record as it stands once the token saves over its own row other than at a listed origin (a full server's save,
  *  which no list holds): the same, still the token's, without `listed`. */

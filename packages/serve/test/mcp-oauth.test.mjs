@@ -31,17 +31,18 @@ const CALLBACK = "/v2/settings/mcp-servers/oauth/callback";
 const sealKey = () => randomBytes(32).toString("base64");
 const holdsNone = (text, values, where) => { for (const value of values) assert.ok(!String(text).includes(value), `${where} holds a token or secret`); };
 
-/** A store as a run's claim step reads it, each of its MCP calls watched: `when(check)` answers once `check()` holds,
- *  looked at again each time one of those calls answers, after the claim's own work on that answer has run (the next
- *  turn of the event loop), never on a timer. A refresh behind a launch ends in such a call (its keep, or its lease let
- *  go), and a launch waiting on another's refresh reads the row it left. */
+/** A store as a run's claim step reads it, each of its MCP and settings calls watched: `when(check)` answers once
+ *  `check()` holds, looked at again each time one of those calls answers, after the claim's own work on that answer has
+ *  run (the next turn of the event loop), never on a timer. A refresh behind a launch ends in such a call (its keep, or
+ *  its lease let go), and a launch waiting on another's refresh reads the row it left, then the server's record (whether
+ *  the token saved it at a listed origin) before it opens the row. */
 const watching = new WeakMap();
 function watchOf(store) {
   let watched = watching.get(store);
   if (watched) return watched;
   const waiters = new Set();
   const look = () => setImmediate(() => { for (const waiter of [...waiters]) void waiter(); });
-  const mcp = new Proxy(store.mcp, {
+  const watch = (part) => new Proxy(part, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
       if (typeof value !== "function") return value;
@@ -53,7 +54,7 @@ function watchOf(store) {
     },
   });
   watched = {
-    store: { where: store.where, mcp, runs: store.runs, settings: store.settings },
+    store: { where: store.where, mcp: watch(store.mcp), runs: store.runs, settings: watch(store.settings) },
     when: (check) => new Promise((resolve, reject) => {
       const waiter = async () => {
         try {

@@ -824,8 +824,8 @@ Settings → Computers. The kind says what the agent is given, and the provider 
 | Kind | What the agent gets | Providers |
 |---|---|---|
 | `none` | The run's folder alone: no computer, and no provider (`{"kind": "none"}`) | |
-| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `cloudflare` (through a relay Worker you deploy) |
-| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, or [a paired computer](#a-persons-own-computer) by its id |
+| `sandbox` | A Linux shell, with files and processes | `docker`, `daytona`, `modal`, `e2b`, `boxd`, `smolcloud`, `groundbox`, `cloudflare` (through a relay Worker you deploy) |
+| `desktop` | The computer's tools (`computer_observe`, `computer_act`, `computer_screenshot`), the computer as `codemode`'s `computer`, and a shell where its provider mounts the run's folder | `docker` (with an image that has an X server), `e2b`, `orgo`, `boxd`, `groundbox`, or [a paired computer](#a-persons-own-computer) by its id |
 | `phone` | A rented Android, through the same computer tools | `phone-harness` |
 | `browser` | A hosted browser (the browser tools) | `browserbase`, `kernel` |
 
@@ -861,7 +861,7 @@ the provider with them and starts nothing. A key set in the server's environment
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
 `E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
-`BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
+`BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
 `packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
 The vendors bill their computers by time on their own pages: this server meters no
 computer time. The older [`place`](#place) is this setting's v2 view: `{"mode": "runner"}` is kind `none`, and
@@ -2198,7 +2198,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
-`url` is `https`, or `http` on loopback.
+`url` is `https`, or `http` on loopback when the server was started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`
+([start-time switches](#start-time-switches)); without it a loopback URL is `422` on `url`, in words that name the switch.
 
 A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
 tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
@@ -2271,9 +2272,13 @@ refused, so a host must not bind a per-run server to a `user_id` that a single-u
 What can go wrong, told apart:
 
 - `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
-  owner's console saves, or deleted a server the token did not save (the owner's, sealing a credential or not), which
-  only the owner's console deletes. The link opens Settings → MCP servers with the form filled in (name, URL, kind of
-  credential, toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
+  owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
+  not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
+  (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
+  hold one is left out.
+- `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
+  nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
+  of a server it saved is under way makes the server the owner's, and the token's is this `412`.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
@@ -3245,9 +3250,9 @@ serves these routes alone:
   the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
-- a Composio server's save, a `per_run` server's save at an origin the operator listed, and the delete of a server the
-  token saved, for a backend that grants its runs MCP tools. The token here never writes a secret, so the save keeps
-  none:
+- a Composio server's save (a new name, or a server the token saved), a `per_run` server's save at an origin the
+  operator listed, and the delete of a server the token saved, for a backend that grants its runs MCP tools. The token
+  here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
     `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
@@ -3264,8 +3269,7 @@ serves these routes alone:
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
     and nothing is sent;
   - a server at an address (`PUT /settings/mcp-servers/{name}`) is saved with `"auth": {"type": "per_run"}` alone: it
-    keeps no credential, and each run hands its own (`mcp_auth`). Any other `auth.type`, or none, is `403`, as is a save
-    over a server the token did not save (it stays as it was, and its address gets nothing). Its URL's
+    keeps no credential, and each run hands its own (`mcp_auth`). Any other `auth.type`, or none, is `403`. Its URL's
     origin (scheme, host and port) must be exactly one listed in `AGENTRUN_MCP_TOKEN_ORIGINS`, the operator's
     comma-separated list of `https://host[:port]` origins, plus at most one `http://127.0.0.1:<port>` (or
     `http://[::1]:<port>`) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. An entry with a path, query,
@@ -3276,8 +3280,11 @@ serves these routes alone:
     checks the origin again at each run's start, against its own list, and the runner at each run's claim, against its
     own `AGENTRUN_MCP_TOKEN_ORIGINS` (set it on every runner too): a server whose origin is no longer listed is refused
     by its name (`409 agent_not_runnable` at the start, before any run is made), and nothing is sent;
-  - a delete (`DELETE /settings/mcp-servers/{name}`) takes only a server the token saved. One saved any other way (by the
-    owner, sealing a credential or not) is `403`, it stays, and nothing is sent to Composio.
+  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
+    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
+    `412`.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
