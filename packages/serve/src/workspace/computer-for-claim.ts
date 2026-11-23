@@ -1127,6 +1127,13 @@ export async function computerForClaim(
   // The run's mount credential (Mode 2), minted when the mount was made: removed with the computer, or at once when the
   // start fails after it was minted.
   const revoke = async (): Promise<void> => { await deps.revokeMount?.(); };
+  // What a start that cannot go on lets go of, each step tried whatever the one before did: the computer it started (none
+  // when the start itself failed), the computers' time booked up to now, and the run's mount credential.
+  const abandonStart = async (computerRelease?: () => Promise<unknown>): Promise<void> => {
+    await computerRelease?.().catch(() => undefined);
+    await meter?.stopAll().catch(() => undefined);
+    await revoke().catch(() => undefined);
+  };
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
@@ -1134,8 +1141,7 @@ export async function computerForClaim(
     started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     // A computer made before the start failed is the claim's no more: its time booked up to now.
-    await meter?.stopAll().catch(() => undefined);
-    await revoke().catch(() => undefined);
+    await abandonStart();
     throw error;
   }
   const computer = started.computer;
@@ -1146,9 +1152,7 @@ export async function computerForClaim(
     // A sandbox setting whose start gave no sandbox is no box to check: refused as one that could not be asked.
     const answer = computer?.kind === "sandbox" ? await missingNeeds(computer.computer.client, needs, deps.signal) : { unchecked: "its start gave no sandbox" };
     if ("unchecked" in answer || answer.missing.length > 0) {
-      await started.release().catch(() => undefined);
-      await meter?.stopAll().catch(() => undefined);
-      await revoke().catch(() => undefined);
+      await abandonStart(() => started.release());
       throw unavailable(needsWords(answer, needs, kinds.PROVIDERS.find((one) => one.id === resolved.provider)));
     }
   }
@@ -1176,9 +1180,7 @@ export async function computerForClaim(
       const input = computer.kind === "desktop" ? "desktop" : phonePlatform(made.machine, madeBy);
       const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold, ...(made.gone ? { gone: made.gone } : {}) });
       if (!opened.ok) {
-        await started.release().catch(() => undefined);
-        await meter?.stopAll().catch(() => undefined);
-        await revoke().catch(() => undefined);
+        await abandonStart(() => started.release());
         if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
         throw unavailable(`the ${computer.kind}'s live view could not be opened: ${opened.message}`);
       }
