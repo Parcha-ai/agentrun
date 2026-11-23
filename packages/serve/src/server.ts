@@ -108,7 +108,7 @@ import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-serv
 import { servedRunTrace } from "./run-trace.js";
 import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
-import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, retiredValues, WITHHELD_LEARNING } from "./handed-values.js";
+import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_MAX, retiredValues, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
@@ -3872,8 +3872,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  its revision reads (else 422 by name); under the run-keys setting, a message that would leave the run without a tool
    *  key its template declared and this host does not hold (its last turn's end erased them) is refused, 409, nothing
    *  written. A value the run held that the message replaces is kept sealed as `retired`, only to be cut, until the turn's
-   *  end erases the seal; where what the run holds does not open here, the seal says so (`lost`), and the run is
-   *  withheld until its end, which counts nothing (handed-values.ts launchValuesOf). */
+   *  end erases the seal; where what the run holds does not open here, or past RETIRED_MAX values replaced, the seal says
+   *  so (`lost`), and the run is withheld until its end, which counts nothing (handed-values.ts launchValuesOf). */
   async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
     const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
@@ -3901,8 +3901,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
       if (unpaid.length) throw keysOwedRefusal(unpaid);
       const next = { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) };
-      const lost = opened === undefined || held.lost === true;
-      return sealRunLaunch(sealKey, run.id, { ...next, retired: retiredValues(held, next), ...(lost ? { lost: true as const } : {}) });
+      const retired = retiredValues(held, next);
+      const lost = opened === undefined || held.lost === true || retired.length > RETIRED_MAX;
+      return sealRunLaunch(sealKey, run.id, { ...next, ...(lost ? { lost: true as const } : { retired }) });
     };
   }
 

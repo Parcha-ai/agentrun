@@ -107,6 +107,10 @@ export function retiredValues(before: object, after: object): string[] {
   return [...new Set(launchSecrets(JSON.stringify(before)).filter((value) => !kept.has(value)))];
 }
 
+/** The most values a launch keeps as `retired` in one turn. A message past it seals none and marks the launch `lost`
+ *  instead (store/seal.ts RunLaunchSecrets), so the run is withheld until its end, never cut of fewer values than it held. */
+export const RETIRED_MAX = 256;
+
 /** The values a start or a message hands (`mcp_auth`, `model_key`, `keys`: server.ts Handed), as launchValuesIn lists
  *  them from the launch they are sealed in. None when it hands none. */
 export function handedSecretValues(handed: { readonly mcp?: unknown; readonly model?: string; readonly keys?: Readonly<Record<string, string>> }): string[] {
