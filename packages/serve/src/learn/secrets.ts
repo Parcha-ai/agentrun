@@ -3,10 +3,12 @@ import { posix } from "node:path";
 const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
 const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
 const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
-/** A JWT: three base64url parts, the first two JSON objects ("eyJ"). It starts only where no part's character is before
- *  it: unanchored, every "eyJ" inside a long dotless run was a fresh start that read the run to its end, quadratic in its
- *  length (180 s over 256 KiB of "eyJ"). Anchored, a run is read once from its start. */
-const JWT = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+/** A JWT: three base64url parts, the first two JSON objects ("eyJ"). It starts at the first "eyJ" of a run of a part's
+ *  characters, wherever that run starts ("token-eyJ…" too), and not at a later "eyJ" in the same run: read from every
+ *  "eyJ", a long dotless run was read to its end from each, quadratic in its length (180 s over 256 KiB of "eyJ"). A
+ *  later start reaches the same "." the first does with fewer characters, so it finds nothing the first doesn't, and
+ *  the lookbehind reads back only to the "eyJ" before it. */
+const JWT = /eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 /** A private key block's header, its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each side: two
  *  unbounded runs read a long header of repeated words in quadratic time (24 s over 256 KiB of "PRIVATE KEY "). */
 const PRIVATE_KEY = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/;
