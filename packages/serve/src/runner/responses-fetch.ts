@@ -11,7 +11,8 @@
 //     reasoning, function_call) with its deltas and its done events, then response.completed, or response.incomplete
 //     with `incomplete_details.reason: "max_output_tokens"` where the model stopped at its output limit, both carrying
 //     the usage (OpenAI's shape: cached tokens inside input_tokens). A failure is response.failed, with the usage the
-//     translation reported before it, so the proxy books the tokens a failed answer used.
+//     translation reported before it, so the proxy books the tokens a failed answer used. A part of the Messages stream
+//     that does not read, or a stream that breaks, is a failure in words of its own (UNREAD), never that part's text.
 // State: none is kept. A request is its whole conversation: one that asks `store: true` or names `previous_response_id`
 // is refused, since nothing is stored here to continue from. `include` is read for nothing: this writes no encrypted
 // reasoning, and a replayed reasoning item (OpenAI's encrypted one included) is dropped, never refused.
@@ -139,8 +140,12 @@ export function messagesOfResponses(body: Json, reasons: boolean): Json {
   };
 }
 
-/** One Messages SSE event: its JSON data, or, for an error event whose data is the error's words alone, those words. */
-type MessagesEvent = { json?: Json; words?: string; name?: string };
+/** One Messages SSE event: its JSON data, or, for an error event whose data is the error's words alone, those words; any
+ *  other part that is not a JSON object is `unread`, its text never said. */
+type MessagesEvent = { json?: Json; words?: string; name?: string; unread?: true };
+
+/** What a failed response says of a Messages stream a part of which does not read: never that part's own text. */
+const UNREAD = "The model's answer could not be read: a part of it is not JSON, or its stream broke.";
 
 /** The events of a Messages SSE body, as they come. */
 async function* messagesEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<MessagesEvent> {
@@ -159,7 +164,8 @@ async function* messagesEvents(body: ReadableStream<Uint8Array>): AsyncGenerator
       const json = JSON.parse(text) as unknown;
       if (isPlain(json)) return { json, ...(name ? { name } : {}) };
     } catch {}
-    return { words: text, ...(name ? { name } : {}) };
+    // An error event's words alone (messagesFetch sendWords); anything else that does not read is said as UNREAD.
+    return name === "error" ? { words: text, name } : { unread: true };
   };
   for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
     held += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, "\n");
@@ -256,13 +262,13 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
       async start(controller) {
         const send = (event: Json) => controller.enqueue(encoder.encode(`event: ${String(event.type)}\ndata: ${JSON.stringify({ ...event, sequence_number: sequence++ })}\n\n`));
         try {
+          // translate never throws on the Messages stream (a part that does not read is its own failed end); what throws
+          // here is the client gone, whose stream takes nothing more.
           await translate(events, response, send);
-        } catch (error) {
-          response.status = "failed";
-          response.error = { code: "server_error", message: (error as Error)?.message ?? String(error) };
-          send({ type: "response.failed", response: snapshot(response) });
+          controller.close();
+        } catch {
+          // Its loop has already let go of the Messages stream (for await returns it), which ends the route's request.
         }
-        controller.close();
       },
     });
     return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -301,81 +307,86 @@ async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, 
   };
   send({ type: "response.created", response: snapshot(response) });
   send({ type: "response.in_progress", response: snapshot(response) });
-  for await (const event of events) {
-    const json = event.json;
-    if (!json || event.words !== undefined) {
-      fail(event.words ?? "the model's request failed", false);
-      break;
+  try {
+    for await (const event of events) {
+      const json = event.json;
+      if (!json || event.words !== undefined) {
+        fail(event.unread ? UNREAD : (event.words ?? "the model's request failed"), false);
+        break;
+      }
+      const type = json.type;
+      if (type === "content_block_start" && typeof json.index === "number" && isPlain(json.content_block)) {
+        const block = json.content_block;
+        const index = output.length;
+        if (block.type === "text") {
+          const item: Json = { id: idOf("msg"), type: "message", status: "in_progress", role: "assistant", content: [] };
+          open.set(json.index, { index, item, text: "", kind: "message" });
+          output.push(item);
+          send({ type: "response.output_item.added", output_index: index, item: { ...item, content: [] } });
+          send({ type: "response.content_part.added", item_id: item.id, output_index: index, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+        } else if (block.type === "thinking") {
+          const item: Json = { id: idOf("rs"), type: "reasoning", summary: [] };
+          open.set(json.index, { index, item, text: "", kind: "reasoning" });
+          output.push(item);
+          send({ type: "response.output_item.added", output_index: index, item: { ...item, summary: [] } });
+          send({ type: "response.reasoning_summary_part.added", item_id: item.id, output_index: index, summary_index: 0, part: { type: "summary_text", text: "" } });
+        } else if (block.type === "tool_use") {
+          const item: Json = { id: idOf("fc"), type: "function_call", status: "in_progress", call_id: String(block.id ?? ""), name: String(block.name ?? ""), arguments: "" };
+          open.set(json.index, { index, item, text: "", kind: "function_call" });
+          output.push(item);
+          send({ type: "response.output_item.added", output_index: index, item: { ...item } });
+        }
+      } else if (type === "content_block_delta" && typeof json.index === "number" && isPlain(json.delta)) {
+        const at = open.get(json.index);
+        if (!at) continue;
+        const delta = json.delta;
+        if (delta.type === "text_delta" && at.kind === "message") {
+          const text = String(delta.text ?? "");
+          at.text += text;
+          send({ type: "response.output_text.delta", item_id: at.item.id, output_index: at.index, content_index: 0, delta: text, logprobs: [] });
+        } else if (delta.type === "thinking_delta" && at.kind === "reasoning") {
+          const text = String(delta.thinking ?? "");
+          at.text += text;
+          send({ type: "response.reasoning_summary_text.delta", item_id: at.item.id, output_index: at.index, summary_index: 0, delta: text });
+        } else if (delta.type === "input_json_delta" && at.kind === "function_call") {
+          const text = String(delta.partial_json ?? "");
+          at.text += text;
+          send({ type: "response.function_call_arguments.delta", item_id: at.item.id, output_index: at.index, delta: text });
+        }
+      } else if (type === "content_block_stop" && typeof json.index === "number") {
+        const at = open.get(json.index);
+        if (!at) continue;
+        open.delete(json.index);
+        if (at.kind === "message") {
+          const part = { type: "output_text", text: at.text, annotations: [] };
+          Object.assign(at.item, { status: "completed", content: [part] });
+          send({ type: "response.output_text.done", item_id: at.item.id, output_index: at.index, content_index: 0, text: at.text, logprobs: [] });
+          send({ type: "response.content_part.done", item_id: at.item.id, output_index: at.index, content_index: 0, part });
+        } else if (at.kind === "reasoning") {
+          const part = { type: "summary_text", text: at.text };
+          at.item.summary = [part];
+          send({ type: "response.reasoning_summary_text.done", item_id: at.item.id, output_index: at.index, summary_index: 0, text: at.text });
+          send({ type: "response.reasoning_summary_part.done", item_id: at.item.id, output_index: at.index, summary_index: 0, part });
+        } else {
+          const args = at.text || "{}";
+          Object.assign(at.item, { status: "completed", arguments: args });
+          send({ type: "response.function_call_arguments.done", item_id: at.item.id, output_index: at.index, arguments: args });
+        }
+        send({ type: "response.output_item.done", output_index: at.index, item: { ...at.item } });
+      } else if (type === "message_delta") {
+        if (isPlain(json.usage)) usage = json.usage;
+        if (isPlain(json.delta) && typeof json.delta.stop_reason === "string") stop = json.delta.stop_reason;
+      } else if (type === "message_stop") {
+        end(stop === "max_tokens" ? "incomplete" : "completed");
+      } else if (type === "error") {
+        const error = isPlain(json.error) ? json.error : {};
+        fail(String(json.message ?? error.message ?? "the model's request failed"), error.type === "rate_limit_error");
+        break;
+      }
     }
-    const type = json.type;
-    if (type === "content_block_start" && typeof json.index === "number" && isPlain(json.content_block)) {
-      const block = json.content_block;
-      const index = output.length;
-      if (block.type === "text") {
-        const item: Json = { id: idOf("msg"), type: "message", status: "in_progress", role: "assistant", content: [] };
-        open.set(json.index, { index, item, text: "", kind: "message" });
-        output.push(item);
-        send({ type: "response.output_item.added", output_index: index, item: { ...item, content: [] } });
-        send({ type: "response.content_part.added", item_id: item.id, output_index: index, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
-      } else if (block.type === "thinking") {
-        const item: Json = { id: idOf("rs"), type: "reasoning", summary: [] };
-        open.set(json.index, { index, item, text: "", kind: "reasoning" });
-        output.push(item);
-        send({ type: "response.output_item.added", output_index: index, item: { ...item, summary: [] } });
-        send({ type: "response.reasoning_summary_part.added", item_id: item.id, output_index: index, summary_index: 0, part: { type: "summary_text", text: "" } });
-      } else if (block.type === "tool_use") {
-        const item: Json = { id: idOf("fc"), type: "function_call", status: "in_progress", call_id: String(block.id ?? ""), name: String(block.name ?? ""), arguments: "" };
-        open.set(json.index, { index, item, text: "", kind: "function_call" });
-        output.push(item);
-        send({ type: "response.output_item.added", output_index: index, item: { ...item } });
-      }
-    } else if (type === "content_block_delta" && typeof json.index === "number" && isPlain(json.delta)) {
-      const at = open.get(json.index);
-      if (!at) continue;
-      const delta = json.delta;
-      if (delta.type === "text_delta" && at.kind === "message") {
-        const text = String(delta.text ?? "");
-        at.text += text;
-        send({ type: "response.output_text.delta", item_id: at.item.id, output_index: at.index, content_index: 0, delta: text, logprobs: [] });
-      } else if (delta.type === "thinking_delta" && at.kind === "reasoning") {
-        const text = String(delta.thinking ?? "");
-        at.text += text;
-        send({ type: "response.reasoning_summary_text.delta", item_id: at.item.id, output_index: at.index, summary_index: 0, delta: text });
-      } else if (delta.type === "input_json_delta" && at.kind === "function_call") {
-        const text = String(delta.partial_json ?? "");
-        at.text += text;
-        send({ type: "response.function_call_arguments.delta", item_id: at.item.id, output_index: at.index, delta: text });
-      }
-    } else if (type === "content_block_stop" && typeof json.index === "number") {
-      const at = open.get(json.index);
-      if (!at) continue;
-      open.delete(json.index);
-      if (at.kind === "message") {
-        const part = { type: "output_text", text: at.text, annotations: [] };
-        Object.assign(at.item, { status: "completed", content: [part] });
-        send({ type: "response.output_text.done", item_id: at.item.id, output_index: at.index, content_index: 0, text: at.text, logprobs: [] });
-        send({ type: "response.content_part.done", item_id: at.item.id, output_index: at.index, content_index: 0, part });
-      } else if (at.kind === "reasoning") {
-        const part = { type: "summary_text", text: at.text };
-        at.item.summary = [part];
-        send({ type: "response.reasoning_summary_text.done", item_id: at.item.id, output_index: at.index, summary_index: 0, text: at.text });
-        send({ type: "response.reasoning_summary_part.done", item_id: at.item.id, output_index: at.index, summary_index: 0, part });
-      } else {
-        const args = at.text || "{}";
-        Object.assign(at.item, { status: "completed", arguments: args });
-        send({ type: "response.function_call_arguments.done", item_id: at.item.id, output_index: at.index, arguments: args });
-      }
-      send({ type: "response.output_item.done", output_index: at.index, item: { ...at.item } });
-    } else if (type === "message_delta") {
-      if (isPlain(json.usage)) usage = json.usage;
-      if (isPlain(json.delta) && typeof json.delta.stop_reason === "string") stop = json.delta.stop_reason;
-    } else if (type === "message_stop") {
-      end(stop === "max_tokens" ? "incomplete" : "completed");
-    } else if (type === "error") {
-      const error = isPlain(json.error) ? json.error : {};
-      fail(String(json.message ?? error.message ?? "the model's request failed"), error.type === "rate_limit_error");
-      break;
-    }
+  } catch {
+    // The stream broke while it was read: said as a part that does not read is, never the error's own text.
+    fail(UNREAD, false);
   }
   // A Messages stream that closed with no stop: the answer was cut short, never a whole one.
   if (!ended) fail("the model's answer ended before it was complete", false);

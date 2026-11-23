@@ -187,6 +187,27 @@ test("what the route does not take is refused with a 400 naming it, and Ollama i
   assert.equal(ollama.got.chat.length, 0, "no refused request reached Ollama");
 });
 
+// The edge reads the route's own Messages stream; a part of it that does not read is a failed response with words of its
+// own, never the part's raw text and never a throw out of the fetch (as PR 1's wholeOf answers a Messages client).
+test("a Messages stream that does not read (a data line not JSON, a body that breaks mid-read) is response.failed with words, or a 502 when asked whole; never its raw text, never a throw", async () => {
+  const sse = (...events) => events.map(([event, data]) => `event: ${event}\ndata: ${data}\n\n`).join("");
+  const start = ["message_start", JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: TOOLS, content: [], usage: { input_tokens: 3, output_tokens: 0 } } })];
+  const notJson = () => new Response(sse(start, ["content_block_start", `{not json ${SECRET}`]), { status: 200, headers: { "content-type": "text/event-stream" } });
+  const broken = () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(sse(start))); controller.error(new Error(`socket hang up ${SECRET}`)); } }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  for (const [what, answer] of Object.entries({ "a data line not JSON": notJson, "a body that breaks mid-read": broken })) {
+    const fetcher = responsesFetch(async () => answer());
+    const { status, text, events } = await answerOf(fetcher, ASK);
+    assert.equal(status, 200, what);
+    assert.equal(events.at(-1).type, "response.failed", `${what}: ${text}`);
+    assert.match(events.at(-1).response.error.message, /could not be read/, what);
+    assert.doesNotMatch(text, new RegExp(SECRET), `${what}: the part's own text is never said`);
+    const whole = await answerOf(fetcher, { ...ASK, stream: false });
+    assert.equal(whole.status, 502, `${what}: ${whole.text}`);
+    assert.match(JSON.parse(whole.text).error.message, /could not be read/, what);
+    assert.doesNotMatch(whole.text, new RegExp(SECRET), what);
+  }
+});
+
 test("stream: false gets the final response as one JSON body", async (t) => {
   const ollama = await fakeOllama(t, { reply: () => ({ calls: [{ name: "read", arguments: { path: "c.ts" } }], usage: { input: 9, output: 2 } }) });
   const response = await (await responsesOn(ollama, TOOLS))(`${ROUTE_ORIGIN}/v1/responses`, { method: "POST", body: JSON.stringify({ ...ASK, stream: false }) });
