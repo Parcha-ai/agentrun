@@ -1,6 +1,8 @@
-# Decision-workflow fixtures (synthetic)
+# Decision-workflow samples (synthetic)
 
-Unlike the recorded fixtures one folder up, these are written by hand: `GET /v2/runs/{id}/graph` did not exist when the
+The workflow runs demo mode shows (`../world.ts`), and the graphs the console's stories and tests draw. They are part of
+the console's bundle, loaded with demo mode, so the build's credential gate reads them too. Unlike the recorded fixtures
+in `src/fixtures`, these are written by hand: `GET /v2/runs/{id}/graph` did not exist when the
 console's graph view was built. Serve answers it now, so these can be re-recorded from a live serve.
 
 - `workflows.ts`: the three demo workflows in the DSL's v2 shape (batch-20, kyb, jury).
