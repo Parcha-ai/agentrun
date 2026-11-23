@@ -21,7 +21,7 @@ import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
 import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
-import { OLLAMA_PROVIDER, ollamaBase, ollamaHostRefused, ollamaModels, ollamaProvider, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
+import { OLLAMA_PROVIDER, ollamaBase, ollamaHostRefused, ollamaModels, ollamaProvider, ollamaRelisted, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -155,13 +155,19 @@ export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string)
  *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, on pi, the first
  *  model of the Ollama here that calls tools (localDefault). Undefined when none is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
+  return settingsModel(env, tier, harness) ?? localDefault(env, harness);
+}
+
+/** hostModel's choice from this host's own settings (a tier variable, AGENT_MODEL, the plan, Claude Code's login, a key,
+ *  the server's default): undefined where none names one, and only then is the Ollama here asked (localDefault). */
+function settingsModel(env: NodeJS.ProcessEnv, tier: Tier, harness: string): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   // Signed in to a ChatGPT plan, codex and pi run on it by default: a key's model is then named (`openai/<id>`).
   if (PLAN_HARNESSES.includes(harness) && signedIn(env) && !env.AGENT_MODEL_BASE_URL) return `${PLAN_PROVIDER}/${planModel(env)}`;
   // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
   if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
   const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses.includes(harness) || keyHarnesses(row, env).includes(harness)));
-  return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || localDefault(env, harness);
+  return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || undefined;
 }
 
 /** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
@@ -251,15 +257,19 @@ type Choice = { model: ModelRef; namedProvider?: string } | { why: string; host:
  * when `ref` is absent (hostModel). A PinnedModel is the pin itself, never chosen again (pinnedChoice).
  */
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<Choice> {
+  return choose(env, ref, tier, harness, false);
+}
+
+/** chooseModel, `relisted` once the Ollama here was listed again for the host's default (below): never a second time. */
+async function choose(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier, harness: string, relisted: boolean): Promise<Choice> {
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
-  // A host whose own settings name no model reads its default from the Ollama here (hostModel's localDefault), listed
-  // first; one with a key, a default or a plan never waits on that listing.
-  let named = ref ?? hostModel(env, tier, harness);
-  if (named === undefined && asksOllama(env)) {
-    await ollamaModels(env);
-    named = hostModel(env, tier, harness);
-  }
+  // A host whose own settings name no model reads its default from the Ollama here (hostModel's localDefault): its
+  // listing first (ollamaModels: kept while fresh, asked now where none is, and a stale one asked again behind this
+  // choice), so a tag it took is never the last listing's for good. A ref, a key, a default or a plan never waits on it.
+  const local = ref === undefined && settingsModel(env, tier, harness) === undefined && asksOllama(env);
+  if (local && !relisted) await ollamaModels(env);
+  const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (named?.startsWith(`${PLAN_PROVIDER}/`)) return planChoice(env, named.slice(PLAN_PROVIDER.length + 1));
@@ -288,6 +298,13 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
   const models = await providerModels(env, { ollama: provider === OLLAMA_PROVIDER ? [modelId] : [] });
   const model = models.getModel(provider, modelId);
+  // The host's Ollama default no longer answers (removed, or that Ollama restarted without it) past its listing's TTL:
+  // that listing is dropped and asked again now, and the default chosen once more from it (the next model that calls
+  // tools, else the no-model words). Once: a tag the fresh listing still names and /api/show refuses is said as it is.
+  if (!model && local && !relisted) {
+    await ollamaRelisted(env);
+    return choose(env, ref, tier, harness, true);
+  }
   if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
   const refused = provider === "anthropic" ? anthropicRefusal(models) : undefined;
