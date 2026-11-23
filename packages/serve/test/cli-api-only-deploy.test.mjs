@@ -20,7 +20,7 @@ test("an API-only server takes a deploy through its API: apply, read, run, redep
     await exited;
   });
   const out = await printed(child, /^API only /m);
-  assert.match(out, /^API only \(AGENTRUN_API_ONLY=1\): the run and deploy routes are served; /m, out);
+  assert.match(out, /^API only \(AGENTRUN_API_ONLY=1\): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; /m, out);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
 
