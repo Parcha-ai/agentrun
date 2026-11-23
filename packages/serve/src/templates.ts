@@ -682,7 +682,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   if (f.author !== undefined && !(isObject(f.author) && !unknownFields(f.author, ["name", "email", "url"]).length && typeof f.author.name === "string" && Object.values(f.author).every((v) => typeof v === "string"))) bad(MANIFEST, "author is {name, email?, url?}");
   if (f.repository !== undefined && !(typeof f.repository === "string" && URL.canParse(f.repository) && /^https?:$/.test(new URL(f.repository).protocol))) bad(MANIFEST, "repository is an http(s) URL");
   // Display only: what a marketplace page and the console's list file it under, and its tags.
-  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}`);
+  if (f.category !== undefined && !(CATEGORIES as readonly unknown[]).includes(f.category)) bad(MANIFEST, `category is one of ${CATEGORIES.join(", ")}, not ${JSON.stringify(f.category)}`);
   const tags = f.tags === undefined ? [] : Array.isArray(f.tags) && f.tags.length <= MAX_TAGS && f.tags.every((tag) => typeof tag === "string" && TAG.test(tag)) && new Set(f.tags).size === f.tags.length ? (f.tags as string[]) : (bad(MANIFEST, `tags is a list of at most ${MAX_TAGS} tags, each once, each lowercase letters, digits and dashes (${TAG.source})`), []);
   const harness = f.harness === undefined ? undefined : list(f.harness, "harness", (id) => (HARNESSES as readonly string[]).includes(id));
   if (harness && !harness.length) bad(MANIFEST, `harness is a non-empty preference list of ${HARNESSES.join(", ")}; leave it out for any`);

@@ -11,6 +11,7 @@
 // the target, not confirmed), 3 not runnable yet (keys or MCP servers the target lacks: nothing is made, the setup page
 // printed when the target gives one), 1 the target refused otherwise or could not be reached, 4 no token for it, 5 an
 // operation the target does not offer.
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -54,6 +55,22 @@ async function serverManifest(fail) {
   } catch {
     throw fail(2, `AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command, and it is the server's reader that reads agent.md: nothing was sent.`);
   }
+}
+
+/** The package checked as the target's import checks it, before anything is sent: the server installed beside this
+ *  command runs the import's own check (agentrun-serve check-upload, template-import.ts checkUpload) on the body this
+ *  deploy is about to send. A package the target would refuse (a category it has not, an answer's schema it would not
+ *  read, a file over its limits) exits 2 here, in the target's words, with no request made. */
+async function checkedHere(files, fail) {
+  // Loaded here: start.mjs loads cli.mjs, which loads this module.
+  const { installedServer } = await import("./start.mjs");
+  const launcher = installedServer();
+  if (launcher === undefined) throw fail(2, "AgentRun's server is not installed beside this command, and it is the server's import that checks a package: nothing was sent.");
+  const checked = spawnSync(launcher, ["check-upload"], { input: JSON.stringify({ files: filesBody(files) }), encoding: "utf8", maxBuffer: 4 * MAX_BYTES });
+  if (checked.status === 0) return;
+  const reasons = (checked.stderr ?? "").trim().split("\n").filter(Boolean);
+  if (checked.status === 1 && reasons.length) throw fail(2, `The package does not check, so nothing was sent: ${reasons.join("; ")}`);
+  throw fail(2, `The server beside this command could not check the package (${checked.error?.code ?? `exit ${checked.status ?? checked.signal}`}): nothing was sent.`);
 }
 
 /** The answer's schema file agent.md names (`output: {schema}`) when it is a file at the package's root other than
@@ -465,6 +482,7 @@ async function deploy(ctx) {
   const fail = cli.fail;
   const from = await sourceOf(ctx, fail);
   const files = await from.files();
+  await checkedHere(files, fail);
   const sha = packageSha256(files);
   let parameters;
   if (values.params !== undefined) {
