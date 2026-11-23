@@ -248,6 +248,31 @@ test("a failed deploy is reported with its last log lines, the setup code's line
   assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
 });
 
+test("a deploy that never succeeds in its 20 minutes is reported with the status it was left in and its last log lines, or as none listed, and its project still deleted", async () => {
+  // The walk's clock: each of its waits moves it on by what it asked to wait, so 20 minutes pass in no time.
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    for (const [listed, expected] of [
+      [[{ node: { id: "<deployment>", status: "DEPLOYING" } }], /deploy succeeded: not within 1200 s: deployment <deployment> was still DEPLOYING; its last log lines:[\s\S]*Healthcheck failed![\s\S]*\(a line with the setup code, not shown\)/],
+      [[], /deploy succeeded: not within 1200 s: Railway listed no deployment for the service$/],
+    ]) {
+      const client = planClient({ log: quiet, workspaceId: "ws" });
+      const call = client.call.bind(client);
+      client.sleep = async (ms) => { now += ms; };
+      client.call = async (op, v) => (op === "Deployments" ? (await call(op, v), { deployments: { edges: listed } }) : call(op, v));
+      const rows = await run(client, { workspaceId: "ws", log: quiet });
+      const stopped = rows.find((r) => r[0] === "stopped")[2];
+      assert.match(stopped, expected);
+      assert.doesNotMatch(stopped, /#code=/);
+      assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("the walk's Railway cost: each metric sample held until the next, the last until the reading, at the list prices", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws" });
   const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0, now: 120_000 });
