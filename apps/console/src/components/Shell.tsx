@@ -1,4 +1,4 @@
-import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
+import { BadgeDollarSign, Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { DojoIcon } from "@/components/DojoIcon";
@@ -6,11 +6,11 @@ import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "settings" | "free";
 
 /** Each section as the browser's tab names it. */
-const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", settings: "Settings" };
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", settings: "#/settings/keys" };
+const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", settings: "Settings", free: "Free" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", settings: "#/settings/keys", free: "#/free" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -80,6 +80,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
           <div className="space-y-0.5">
             <NavItem className="w-full" active={active === "mission"} onClick={() => navigate("mission")}><LayoutGrid className="size-4 shrink-0" aria-hidden />Mission Control</NavItem>
             <NavItem className="w-full" active={active === "playground"} onClick={() => navigate("playground")}><Code className="size-4 shrink-0" aria-hidden />API playground</NavItem>
+            <NavItem className="w-full" active={active === "free"} onClick={() => navigate("free")}><BadgeDollarSign className="size-4 shrink-0" aria-hidden />Free</NavItem>
             <div>
               <NavItem className={cn("w-full", agentsActive && "text-primary-text")} aria-expanded={agentsExpanded} aria-controls="agent-navigation" onClick={() => setAgentsExpanded((value) => !value)}>
                 <Brain className="size-4 shrink-0" aria-hidden /><span className="flex-1">Agents</span><ChevronDown className={cn("size-3.5 transition-transform", !agentsExpanded && "-rotate-90")} aria-hidden />
