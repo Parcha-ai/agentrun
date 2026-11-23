@@ -401,7 +401,7 @@ test("prices by provider: Browserbase, Kernel and local Chrome, each overridden 
   assert.deepEqual([refused.booked, refused.backend.tally().creates], [[], 0]);
 });
 
-test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", { skip: "bug (main's runner has it too): the run's ledger keeps a reopened session's reserve at its stretch and down time ($0.039) after the charge that books the down time (browser-cost.ts booked() resets reserve.usd locally only), and the call's hold whole beside that charge, so spent and held reach $0.1071 over the $0.10 cap while the call runs" }, async (t) => {
+test("after a reopen, a kept session's down time is held once: its first call fits where its true exposure does; a session already billed is not held", async (t) => {
   // 15 min down at Browserbase's price ($0.03), with $0.02 spent under a $0.10 cap: the kept session holds a stretch and its
   // down time ($0.039), the call two stretches ($0.018); $0.077 fits. Holding the down time on the call too ($0.048) would not.
   t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
@@ -440,10 +440,11 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
   assert.deepEqual(releases, [], "the kept session was not released");
   assert.ok(Math.abs(held[0] - 0.077) < 1e-6, `spent and held as the call runs: ${held[0]}`);
+  // Its charge booked the down time and the call's 3 s ($0.0301): the reserve is one stretch again on the run's ledger
+  // ($0.009), beside the call's two ($0.018) and the $0.0501 spent, never the down time held beside the charge that booked it.
+  assert.ok(Math.abs(held[1] - 0.0771) < 1e-6, `spent and held once the charge is booked: ${held[1]}`);
   await spend.ledgerIdle();
-  // The browser resets the reserve to one stretch once its charge books the down time; the run's ledger keeps the reserve
-  // step at what it was admitted at, the stretch and the down time, until the session's release lets it go.
-  assert.ok(Math.abs(paidHolds() - base - 0.039) < 1e-9, `after its charge the ledger still holds the reserve as admitted: ${paidHolds() - base}`);
+  assert.ok(Math.abs(paidHolds() - base - 0.009) < 1e-9, `after its charge the ledger holds the reserve at one stretch: ${paidHolds() - base}`);
   for (const figure of [...held, spentNow() + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
 });
 
