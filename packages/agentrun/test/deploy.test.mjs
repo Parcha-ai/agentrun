@@ -321,20 +321,27 @@ test("a folder's upload is its package alone: agent.md, skills/, rules/, evals/ 
   // Each hidden path left out is said by name, a hidden folder once, before anything is sent; never what one holds.
   assert.match(first.err, /Left out, hidden: \.env, evals\/today\/\.cache\/, skills\/check\/\.DS_Store, skills\/check\/\.env\n/, first.err);
   assert.ok(!first.err.includes("not-a-secret"), first.err);
-  // agent.md naming a hidden file at the root as the answer's schema: never sent, and said left out.
+  // agent.md naming a hidden file at the root as the answer's schema: said left out, and the package the target would
+  // refuse is refused here, in the target's words, with nothing sent.
   const dotted = folder(dir, { name: "dotted", extra: ["output: { schema: .answer.json }"] });
   writeFileSync(join(dotted, ".answer.json"), "{}\n");
+  let from = fake.seen.length;
   const hiddenSchema = await cli(env, ["deploy", dotted, "--to", fake.base, "--yes"], key);
-  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"]);
+  assert.equal(hiddenSchema.code, 2, hiddenSchema.err);
   assert.match(hiddenSchema.err, /Left out, hidden: \.answer\.json\n/, hiddenSchema.err);
+  assert.match(hiddenSchema.err, /output\.schema \.answer\.json is a hidden file/, hiddenSchema.err);
+  assert.deepEqual(fake.seen.slice(from), [], "nothing sent");
   // A schema named in another folder is not sent, nor anything of that folder: the target takes no folder but skills/,
-  // rules/ and evals/, and refuses such a package in its own words.
+  // rules/ and evals/, so the package does not check, and that is said here with nothing sent.
   const nested = folder(dir, { name: "nested", extra: ["output: { schema: schemas/answer.schema.json }"] });
   mkdirSync(join(nested, "schemas"));
   writeFileSync(join(nested, "schemas", "answer.schema.json"), "{}\n");
   writeFileSync(join(nested, "schemas", "draft.schema.json"), "{}\n");
-  await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
-  assert.deepEqual(fake.bodies["POST /templates/import"]?.files?.map((file) => file.path), ["agent.md", "skills/check/SKILL.md"]);
+  from = fake.seen.length;
+  const elsewhere = await cli(env, ["deploy", nested, "--to", fake.base, "--yes"], key);
+  assert.equal(elsewhere.code, 2, elsewhere.err);
+  assert.match(elsewhere.err, /does not check, so nothing was sent/, elsewhere.err);
+  assert.deepEqual(fake.seen.slice(from), [], "nothing sent");
 
   // A real target takes it whole (its answer's schema read from the root), and deploy delete leaves no upload there.
   const b = await server(t, dir, env, "b");
@@ -733,6 +740,23 @@ test("agentrun deploy with no lock for a target that has an agent made from the 
   assert.equal(another.code, 0, another.err);
   assert.notEqual(another.json().agent_id, made.agent_id);
   assert.deepEqual([await agents(), lockAgent()], [[made.agent_id, another.json().agent_id].sort(), another.json().agent_id]);
+});
+
+test("agentrun deploy checks the package as the target's import does before it sends anything: a category the target has not is refused, exit 2, naming the field, the value and the categories, with no request sent", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const fake = await fakeTarget(t, {});
+  const pkg = folder(dir, { extra: ["category: productivity"] });
+  const refused = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /category is one of engineering, security, sales, marketing, research, finance, operations, compliance, personal, not "productivity"/, refused.err);
+  assert.match(refused.err, /does not check, so nothing was sent/, refused.err);
+  assert.deepEqual(fake.seen, [], "no request sent");
+  assert.equal(existsSync(join(pkg, ".agentrun")), false, "no lock written");
+  // The same package with a category the target has goes on to the upload.
+  writeFileSync(join(pkg, "agent.md"), readFileSync(join(pkg, "agent.md"), "utf8").replace("category: productivity", "category: engineering"));
+  await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
+  assert.deepEqual(fake.seen.slice(0, 1), ["POST /templates/import"]);
 });
 
 test("agentrun deploy whose lock names an agent gone from the target: --agent ID deploys onto the agent the hint names, --agent new makes another, and a missing one is refused; while the locked agent is there, --agent naming another is refused with nothing written", { timeout: 300_000 }, async (t) => {
