@@ -33,6 +33,12 @@ export const recordIndex = (slots = 1024): RecordIndex => ({
   numbers: new Map(),
 });
 
+/** Whether `value` is a RecordIndex: a HomeState kept by an earlier version holds its records in a Map instead. */
+export function isRecordIndex(value: unknown): value is RecordIndex {
+  const index = value as Partial<RecordIndex> | null;
+  return typeof index === "object" && index !== null && index.uuids?.slots instanceof Int32Array && index.others?.bytes instanceof Uint8Array && Array.isArray(index.locators) && index.numbers instanceof Map;
+}
+
 /** The number of `locator` in `index`, given one when it has none. */
 export function locatorNumber(index: RecordIndex, locator: string): number {
   let n = index.numbers.get(locator);
