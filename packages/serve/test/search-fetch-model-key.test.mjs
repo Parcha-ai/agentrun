@@ -71,13 +71,13 @@ test("with only model keys: native search on claude-agent and codex, and the ker
   assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, true);
 
   // claude-agent and codex: each its own search, on the adapter it was opened with, and no web_search host tool.
-  for (const [harness, option, tools] of [["claude-agent", { webSearch: true, webSearchAllowance: 200_000 }, ["web_fetch", "write"]], ["codex", { webSearch: "live" }, ["web_fetch", "write"]]]) {
+  for (const [harness, option, tools] of [["claude-agent", { webSearch: true, webSearchAllowance: 200_000 }, ["web_fetch", "write", "codemode"]], ["codex", { webSearch: "live" }, ["web_fetch", "write"]]]) {
     const before = (await seen()).opened.length;
     const run = await research(api, `on-${harness}`, { harness, instructions: HARNESS_RESEARCH });
     const opened = (await seen()).opened.slice(before);
     assert.deepEqual(opened.filter((line) => line.harness), [{ harness, options: option }], `${harness}: the options its adapter was opened with`);
     assert.deepEqual(opened.filter((line) => line.tools).map((line) => line.tools), [tools], `${harness}: its host tools`);
-    assert.deepEqual(Object.keys(run.results).sort(), [...tools].sort());
+    assert.deepEqual(Object.keys(run.results).sort(), ["web_fetch", "write"], `${harness}: its fetch and its write ran as host tools, its search inside the harness`);
     assert.match(run.results.web_fetch, /"via":"direct"/);
     assert.match(run.report, /Public page, http:\/\/public\.example\//);
   }

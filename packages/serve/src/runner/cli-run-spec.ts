@@ -22,7 +22,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimi
 import { type AdapterFacts, type HarnessWire, type HostTool, PLAN_LIMIT_WORDS, type Refusal, type SessionSpec } from "@parcha/agentrun-kernel";
 import { modelWire } from "../wires.js";
 import type { AdapterNeeds } from "../adapters.js";
-import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
+import { confineOf, noNewPrivsPrefix, ownSearchRuns, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, claudeCliIn, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -610,7 +610,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
   const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
-  const webNames = granted.filter(isWebHostTool);
+  // A run whose web_search is the harness's own search (ownSearchRuns: native on its plane, Claude's WebSearch, Codex's
+  // live search) is not handed the host's web_search beside it.
+  const webGranted = ownSearchRuns(ownerFacts, launch.plane) ? granted.filter((name) => name !== "web_search") : granted;
+  const webNames = webGranted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
   let life: ReturnType<typeof hostLifecycle> | undefined;
@@ -670,7 +673,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const liveAt = await claimLiveAt(deps, claim.runId);
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) });
       gate.askedOn(host);
-      webTools = await webHostTools(host, granted, ctx);
+      webTools = await webHostTools(host, webGranted, ctx);
     }
     if (learns) {
       // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
