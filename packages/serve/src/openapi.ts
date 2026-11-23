@@ -4237,7 +4237,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         started_at: { type: "boolean", description: "An SDK run's start (POST /agents/{agent_id}/sdk-runs) takes `started_at`, the run's created_at." },
         title: { type: "boolean", description: "An SDK run's start takes `title`." },
         labels: { type: "boolean", description: "An SDK run's start takes `labels`, as RunCreate.labels." },
-        max_open_s: { type: "integer", description: "The longest an SDK run takes evidence and its completion, in seconds after its start: each events batch keeps it open an hour more, up to this." },
+        max_open_s: { type: "integer", description: "The longest an SDK run takes evidence and its completion, in seconds after its start: each events batch keeps it open an hour more, up to this. Not how long one nobody sends to stays open: a run that gets no events batch closes an hour after its start, and fails as not completed before its deadline." },
       },
       description: "Backend SDK runs: what their start takes, and how long one may stay open.",
       "x-agentrun-serve": "sdk/1",
