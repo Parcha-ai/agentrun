@@ -126,12 +126,13 @@ test("the owner's write over a row the token saved drops the token's marks from 
   assert.deepEqual(await store.settings.get(owns.record), { source: "url", toolkit: null, of: row.createdAt });
 });
 
-test("a rewrite lands only on the row as its writer read it: the same credential, address and auth type, compared in its one statement", async (t) => {
+test("a rewrite lands only on the row as its writer read it: the same credential, address, auth type and last edit, compared in its one statement", async (t) => {
   const { store, clock } = await storeOn(t);
   const read = await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
   const listing = { ...SERVER, auth: "none", tools: [{ name: "listed_again" }] };
-  // A save since that moved the row, or changed its auth type, sealing nothing either way: the sealed column is the same.
-  for (const since of [{ url: "https://owners.example.com/mcp" }, { auth: "per_run" }]) {
+  // A save since that moved the row, or changed its auth type, or only its prices (the same address and auth type), sealing
+  // nothing each time: the sealed column is the same, and the row's updated_at is not the one read.
+  for (const since of [{ url: "https://owners.example.com/mcp" }, { auth: "per_run" }, { prices: { create_issue: 0.5 } }]) {
     clock.now += 1_000;
     const saved = await store.mcp.put({ ...SERVER, auth: "none", sealed: null, ...since });
     assert.equal(await store.mcp.rewrite(listing, read), undefined, `${JSON.stringify(since)}: nothing written`);

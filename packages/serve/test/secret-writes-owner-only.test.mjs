@@ -205,6 +205,35 @@ test("the token's refresh never undoes the owner's save made while it listed: th
   assert.deepEqual([row?.updatedAt, row?.listedAt, row?.serverInfo], [owned.updatedAt, owned.listedAt, owned.serverInfo], "nothing of the refresh was written");
 });
 
+test("the token's refresh never writes back what it read over the owner's save made while it listed, even one at the same address, auth type and credential: the owner's prices stand", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing waits until released, once.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  t.after(() => (release(), fake.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists, the owner prices a tool: the same address, auth type and (no) credential as the refresh read.
+  const priced = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, prices: { add: 0.05 } });
+  assert.equal(priced.status, 200, priced.text);
+  const owned = await server.store.mcp.server("fake");
+  assert.deepEqual(owned.prices, { add: 0.05 });
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 200, `the refresh re-lists onto the owner's save: ${refreshed.text}`);
+  const row = await server.store.mcp.server("fake");
+  assert.deepEqual(row?.prices, { add: 0.05 }, "the owner's prices stand");
+  assert.equal(row?.updatedAt, owned.updatedAt, "the owner's save is the last edit");
+});
+
 test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
   const server = await serve(t);
   const token = asToken(server);
