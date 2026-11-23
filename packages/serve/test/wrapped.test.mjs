@@ -139,3 +139,19 @@ test("a harness row lists the source behind it, a source of a reader outside the
   const body = wrappedView({ year: 2026, sessions: 3, turns: 0, requests: 3, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, cost: 0, unpricedRequests: 0, days: [], hours: [], weekdays: [], activeMs: 0, harnesses: [row("pi"), row("claude-agent"), row("own-harness")], models: [], sources: [src("pi"), src("claude-code"), src("own-harness")] }, []);
   assert.deepEqual(body.harnesses.map((h) => [h.harness, h.sources]), [["pi", ["pi"]], ["claude-agent", ["claude-code"]], ["own-harness", ["own-harness"]]]);
 });
+
+test("a read still going is shared past the minute, and its minute starts when it ends", { timeout: 120_000 }, async (t) => {
+  await homeWith(t);
+  const { readWrapped } = await import("../dist/wrapped.js");
+  // A year no other test reads: readWrapped keeps a result per home and year.
+  const started = Date.now();
+  const first = readWrapped(2024, started);
+  // By the clock it is handed a minute and more has gone, but the first read has not ended: the same read, not a second.
+  assert.equal(readWrapped(2024, started + 61_000), first, "a read still going is shared");
+  await first;
+  const ended = Date.now();
+  assert.equal(readWrapped(2024, ended + 59_000), first, "kept for the minute after it ended");
+  const again = readWrapped(2024, ended + 61_000);
+  assert.notEqual(again, first, "read again once that minute is over");
+  await again;
+});
