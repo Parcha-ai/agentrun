@@ -10,6 +10,7 @@
 // its tokens in the item with no suffix. A run has a config dir of its own, which would hash that item's name.
 // Stand-in CLIs note what they were started with beside themselves.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,7 +85,24 @@ test("this machine's login on the CLI's default folder: the status check, the si
   assert.deepEqual(folderVars(signIn), { ANTHROPIC_CONFIG_DIR: login.profiles });
   assert.equal(signIn.HOME, home);
   assert.deepEqual(shown, { ANTHROPIC_CONFIG_DIR: login.profiles });
-  assert.equal(line, `ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+  // The line clears both folder variables, which a person's terminal may export.
+  assert.equal(line, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+});
+
+test("the shown line on the CLI's default folder, run in a terminal that exports CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR, starts the CLI with neither, its profiles quoted whole", () => {
+  const home = scratch();
+  // A folder name the shell must quote: a space and a quote.
+  const login = { dir: join(home, '.claude'), profiles: join(home, "it's here", 'anthropic'), home };
+  const shells = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh'].filter((shell) => existsSync(shell));
+  assert.ok(shells.length >= 1);
+  for (const shell of shells) {
+    const cli = fakeCli();
+    const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' } });
+    const seen = cli.seen();
+    assert.ok(seen, `${shell} started the CLI: ${ran.stderr}`);
+    assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
+    assert.deepEqual(seen.argv, ['auth', 'login'], shell);
+  }
 });
 
 test("a run on this machine's login on the CLI's default folder reaches the person's own store: on macOS an empty credentials dir (the Keychain item with no suffix), elsewhere the folder's credentials file", () => {

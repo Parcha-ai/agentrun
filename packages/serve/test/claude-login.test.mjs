@@ -427,8 +427,9 @@ test("this machine's login on the CLI's default folder is asked as the person's 
   assert.equal(on.state, "signed_in", JSON.stringify(on));
   assert.equal(on.account?.email, "person@example.com", JSON.stringify(on));
   assert.equal(on.folder, join(home, ".claude"));
-  // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads.
-  assert.equal(on.command, `ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
+  // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads: it clears both folder
+  // variables, which their terminal may export while the server has neither.
+  assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
   const asked = fake.calls().filter((call) => call.argv === "auth status --json");
   assert.ok(asked.length >= 1);
   for (const call of asked) assert.deepEqual([call.configSet, call.secureSet, call.home], ["", "", home], JSON.stringify(call));
