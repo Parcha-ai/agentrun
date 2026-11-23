@@ -2261,8 +2261,8 @@ handed none, so a per-run server never calls as a default account. A malformed u
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
-With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
-each run binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
+binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
 refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
 
 What can go wrong, told apart:
