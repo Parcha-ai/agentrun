@@ -197,7 +197,7 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.row()!.textContent).toMatch(/start AgentRun with CLAUDE_CONFIG_DIR set to that folder/);
     await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
     await page.click(/^Turn on$/);
-    expect(page.row()!.textContent).toMatch(/AgentRun asks the CLI about the login in \/home\/person\/\.claude\./);
+    expect(page.row()!.textContent).toMatch(/AgentRun asks the CLI about the login in \/u\/p\/\.claude\./);
     expect(page.row()!.textContent).toMatch(/start AgentRun with CLAUDE_CONFIG_DIR set to that folder/);
 
     // A server started with CLAUDE_CONFIG_DIR: that folder, and nothing to add.
