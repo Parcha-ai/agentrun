@@ -2,7 +2,8 @@
 // that never exits is killed at the shard's limit with everything it started, the shard failing with a line that names it.
 // A suite that fails says how: its exit status, or the signal that ended it.
 // A script of a shape ci-shard does not know fails the shard before anything runs. A cancel that reaches ci-shard stops its
-// suite the same way the limit does. On a pull request (CI_AFFECTED_BASE) an affected pool runs only what the changes reach.
+// suite the same way the limit does. On a pull request (CI_AFFECTED_BASE) an affected pool runs only what the changes reach,
+// and a selection that cannot be worked out fails the shard rather than running a different plan.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -185,6 +186,43 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   assert.doesNotMatch(run.output(), /::group::npm exec -c/, 'the suites after it were not started');
 });
 
+// `root`'s files committed as main. The function returned merges a branch that writes `text` to `path` into main, so HEAD is a
+// pull request's checkout: the merge commit, whose first parent is the base.
+const pullRequests = (root) => {
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'base');
+  return (path, text) => {
+    const branch = `topic-${path.replaceAll('/', '-')}`;
+    git('switch', '-q', '-c', branch);
+    write(join(root, path), text);
+    git('add', '-A');
+    git('commit', '-q', '-m', `change ${path}`);
+    git('switch', '-q', 'main');
+    git('merge', '-q', '--no-ff', '-m', `merge ${path}`, branch);
+  };
+};
+
+test("a selection that cannot be worked out fails the affected shard before anything runs; without CI_AFFECTED_BASE the same shard runs every test", { timeout: 90_000 }, async (t) => {
+  const root = join(scratch, 'unselectable');
+  // A whole suite whose runner cannot list its files: the selection reads that list, the plan of every test does not.
+  write(join(root, 'package.json'), { name: 'unselectable', private: true, workspaces: ['packages/*'], scripts: { 'test:release': "node --test 'release/*.test.mjs'" } });
+  write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:release'], whole: { w: 'node run.mjs' }, pools: { any: { shards: 1, affected: true } } });
+  write(join(root, 'release/ok.test.mjs'), "import test from 'node:test'; test('release', () => {});");
+  write(join(root, 'packages/w/package.json'), { name: 'w', scripts: { test: 'node run.mjs' } });
+  write(join(root, 'packages/w/run.mjs'), "if (process.argv.includes('--list')) { console.error('w cannot list its files'); process.exit(1); }\n");
+  write(join(root, 'packages/w/src/w.mjs'), 'export const w = 1;\n');
+  pullRequests(root)('packages/w/src/w.mjs', 'export const w = 2;\n');
+  const failed = await shard(t, root, 'any-1', { CI_AFFECTED_BASE: 'HEAD^1' });
+  assert.equal(failed.status, 1, failed.output);
+  assert.match(failed.output, /^ci-shard: the tests the changes since HEAD\^1 reach cannot be worked out: w: `node run\.mjs --list` exited 1/m, failed.output);
+  assert.doesNotMatch(failed.output, /::group::|every test runs/, 'it neither ran a test nor fell back to every test');
+  const every = await shard(t, root, 'any-1', {});
+  assert.equal(every.status, 0, every.output);
+  for (const command of ['npm run test -w w', 'release/ok.test.mjs']) assert.match(every.output, new RegExp(`^::group::.*${command.replaceAll('.', '\\.')}`, 'm'), every.output);
+});
+
 test("on a pull request an affected pool's shards run only the tests the changes since CI_AFFECTED_BASE reach, a shard left with none passing; a shared root runs every test", { timeout: 90_000 }, async (t) => {
   const root = join(scratch, 'affected');
   write(join(root, 'package.json'), { name: 'affected', private: true, workspaces: ['packages/*'], scripts: { 'test:release': "node --test 'release/*.test.mjs'" } });
@@ -194,19 +232,7 @@ test("on a pull request an affected pool's shards run only the tests the changes
   write(join(root, 'packages/p/src/one.mjs'), 'export const one = 1;\n');
   write(join(root, 'packages/p/test/one.test.mjs'), "import test from 'node:test'; import { one } from '../src/one.mjs'; test('one', () => {});");
   write(join(root, 'packages/p/test/two.test.mjs'), "import test from 'node:test'; test('two', () => {});");
-  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  // A pull request's checkout: the merge of its branch into the base, whose first parent is the base.
-  const merge = (path, text) => {
-    git('switch', '-q', '-c', `topic-${path.replaceAll('/', '-')}`);
-    write(join(root, path), text);
-    git('add', '-A');
-    git('commit', '-q', '-m', `change ${path}`);
-    git('switch', '-q', 'main');
-    git('merge', '-q', '--no-ff', '-m', `merge ${path}`, `topic-${path.replaceAll('/', '-')}`);
-  };
-  git('init', '-q', '-b', 'main');
-  git('add', '-A');
-  git('commit', '-q', '-m', 'base');
+  const merge = pullRequests(root);
   merge('packages/p/src/one.mjs', 'export const one = 2;\n');
   const env = { CI_AFFECTED_BASE: 'HEAD^1' };
   const first = await shard(t, root, 'any-1', env);
