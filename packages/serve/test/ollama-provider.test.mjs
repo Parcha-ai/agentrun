@@ -304,9 +304,10 @@ test("with no key and Ollama up, the default is the first Ollama model that call
   withEnv(t, {}, KEYS);
   const ollama = await fakeOllama(t);
   // A harness module on Anthropic's Messages beside the built-ins: offered as they are, by its wire alone.
-  const modules = { [HARNESS_MODULES_ENV]: JSON.stringify([messagesModule(await scratch(t))]) };
-  withEnv(t, { OLLAMA_HOST: ollama.host, ...modules });
-  const { api } = await serve(t, { faux: undefined });
+  const module = messagesModule(await scratch(t));
+  const modules = { [HARNESS_MODULES_ENV]: JSON.stringify([module]) };
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api } = await serve(t, { faux: undefined, harnessModules: [module] });
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
   assert.equal(caps.models.ready, true);

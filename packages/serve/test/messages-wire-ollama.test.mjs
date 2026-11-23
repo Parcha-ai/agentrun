@@ -76,9 +76,9 @@ test("on every harness of the wire, built-in or a module's, an Ollama model's pr
     assert.equal(provider.credential(), "model-route", `${id}: no key`);
   }
   for (const id of ["codex", "opencode"]) assert.throws(() => providerFor("openai-responses", env, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, id);
-  // Behind serve's gateway every request is the gateway's: no route of serve's own.
+  // Behind serve's gateway every request is the gateway's: no route of serve's own, so an Ollama model is refused there.
   const gateway = { ...env, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" };
-  assert.notEqual(providerFor(MESSAGES, gateway, ollamaRef(TOOLS), "claude-agent").origin, ROUTE_ORIGIN);
+  for (const id of ["claude-agent", MESSAGES_MODULE]) assert.throws(() => providerFor(MESSAGES, gateway, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, `${id} behind the gateway`);
 });
 
 test("a harness module on Messages is handed the route's fetch: its requests reach the fake's /api/chat with num_ctx, its tools native on a tools model and as text on one without", async (t) => {
