@@ -8,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, LocalModel, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, LocalModel, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -50,15 +50,16 @@ export type ImportState = { state: "running" } | { state: "done"; agents: number
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
-/** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
- *  the others. */
-export type RunsFilter = { status?: RunStatus; archived?: boolean };
+/** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
+ *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (label) q.set("label", label);
   return `?${q}`;
 };
 
@@ -336,6 +337,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
+    runningComputers: () => call<RunningComputers>("GET", "/computers/running"),
     /** Saves a provider's keys, declared names only; null removes one. No Idempotency-Key: the same PUT twice is the same
      *  state. The answer is the provider, never a value. */
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),

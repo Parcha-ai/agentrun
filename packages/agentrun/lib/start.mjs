@@ -8,13 +8,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { main as cli, NOUNS, words } from "./cli.mjs";
+import { OWN_VERSION } from "./own.mjs";
 import { chosenPublicUrl } from "./public-url.mjs";
 import { tailnetHint, tailnetNameOf } from "./tailscale.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
  *  name this command. */
-export const OWN_SPEC = `@parcha/agentrun@${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
+export const OWN_SPEC = `@parcha/agentrun@${OWN_VERSION}`;
 /** Where the server listens and the console is opened: this machine only. */
 export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this starts listens on this machine only
 

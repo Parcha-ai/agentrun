@@ -234,8 +234,9 @@ import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
-import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
+import { runningComputers } from "./computers-running.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
@@ -733,6 +734,7 @@ export const ROUTES: readonly Route[] = [
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "GET", pattern: /^\/computers\/running$/, name: "listRunningComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
   { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
@@ -1806,10 +1808,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
-    return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
+    return shellOf(settingOfDefinition(body)?.computer ?? computerOfPlace(fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
   };
-  /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown.
@@ -2160,6 +2160,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
   const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
+  /** A run as GET /v2/runs/{run_id} answers it, its links at `origin`. */
+  const runRead = async (runId: string, origin: string): Promise<Record<string, unknown> | undefined> => {
+    const view = await viewOverStore(store, runId, runReadDepsFor(origin));
+    return view && { ...view, ...(await runComputerRead(store, runId, view, { context: ctx })), ...(await allInViewOf(runId, view)) };
+  };
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -5181,9 +5186,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun": {
-        const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
-        if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, { ...view, ...(await runComputerOf(id, view)), ...(await allInViewOf(id, view)) });
+        const run = await runRead(id, linkOrigin(req));
+        if (!run) throw new ApiError("not_found", `no run ${id}`);
+        return send(res, 200, run);
       }
       case "getTimeline":
         await needRun(id);
@@ -5411,6 +5416,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComputer":
         await attach.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "listRunningComputers": {
+        const origin = linkOrigin(req);
+        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin)), { "cache-control": "no-store" });
+      }
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer":
