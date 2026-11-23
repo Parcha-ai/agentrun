@@ -105,10 +105,11 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
 
 /** `text`, a call's result as a grader's read shows it (timeline calls, tool_result_text), with no held secret in it:
  *  read in pieces as redactedAnswer reads an answer, then one pass over what the pieces show (heldIn). Only the head
- *  the reader is shown is read: pieces stop once they show more than `shown` characters and the longest held value's
- *  widest form (6 times it, plus 16) in characters other than whitespace is read past them, so a value whose start they
- *  show ends inside what was read, split by whitespace or not; the caller cuts to `shown`. So no redaction pass reads
- *  more than a piece, however long the result or its head. */
+ *  the reader is shown is read: pieces stop once they show more than `shown` characters, and the pass also reads the
+ *  text where they stopped, as far as the longest held value's widest form (6 times it, plus 16) in characters other
+ *  than whitespace, so a value or a shape the stop split, by whitespace or not, is seen whole. Every character returned
+ *  was read, and the caller cuts to `shown` what it returns, unchanged: a reader that changes the text (scrubUrls) does
+ *  so before. So no redaction pass reads more than a piece, however long the result or its head. */
 export function redactedCall(text: string, secrets: readonly string[], shown: number): string {
   if (!text) return text;
   const { out, seen } = inPieces(text, secrets, shown);
@@ -124,23 +125,23 @@ function heldIn(seen: { values: string; shapes: string }, secrets: readonly stri
 
 /** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
  *  what the pass after them reads (heldIn), the same with the head of each unread run put back before its "[redacted]"
- *  (raw for the held values, redacted by itself for the shapes). A run runCut cut that then goes on past a piece with no place to cut is unread from its
- *  start, the pieces of it already read taken back, so no piece shows the head of a value or a shape the cut split. With
- *  `enough`, no piece is read once the pieces show more than `enough` characters and `hold` characters other than
- *  whitespace are read past those. */
+ *  (raw for the held values, redacted by itself for the shapes). A run runCut cut that then goes on past a piece with
+ *  no place to cut is unread from its start, the pieces of it already read taken back, so no piece shows the head of a
+ *  value or a shape the cut split. With `enough`, no piece is read once the pieces show more than `enough` characters,
+ *  and the text where they stopped, `hold` characters other than whitespace of it (peek), goes to the pass the same
+ *  way. */
 function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): { out: string; seen: { values: string; shapes: string } } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
   const out: string[] = [];
   const values: string[] = [];
   const shapes: string[] = [];
   let shown = 0;
-  let past = 0;
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
   let run: { from: number; at: number } | undefined;
-  for (let from = 0; from < text.length && (shown <= enough || past < hold); ) {
+  let from = 0;
+  while (from < text.length && shown <= enough) {
     const to = pieceEnd(text, from);
     const raw = text.slice(from, to);
-    if (shown > enough) past += raw.replace(/\s+/g, "").length;
     if (raw.length > ANSWER_PIECE) {
       const start = run?.from ?? from;
       if (run) {
@@ -166,7 +167,19 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     }
     from = to;
   }
+  if (from < text.length) {
+    const rest = peek(text, from, hold);
+    values.push(rest);
+    shapes.push(redactSecrets(rest, secrets, Buffer.byteLength(rest)));
+  }
   return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join("") } };
+}
+
+/** text from `from` on, as far as `count` characters other than whitespace (all of it, if it holds fewer). */
+function peek(text: string, from: number, count: number): string {
+  let at = from;
+  for (let found = 0; at < text.length && found < count; at++) if (!/\s/.test(text[at]!)) found++;
+  return text.slice(from, at);
 }
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at

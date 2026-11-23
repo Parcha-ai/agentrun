@@ -6,6 +6,9 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
+import { CALL_RESULT_CHARS, timelineOf } from "../dist/timeline/index.js";
+import { cut } from "../dist/timeline/util.js";
+import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 const { redactedAnswer, redactedOutput } = refusal;
 
@@ -205,6 +208,41 @@ test("a held value split by a line break before a run too long to read withholds
   const both = `the key: ${longer.slice(0, 20)}\n${longer.slice(20)}${"z".repeat(9000)} end`;
   assert.equal(redactedAnswer(both, [longer, shorter]), "[redacted]");
   assert.equal(refusal.redactedCall(both, [longer, shorter], 120_000), "[redacted]");
+});
+
+/** A held value of 64 characters in no secret's shape, made at runtime. */
+const SPLIT = `${["not-a-secret", "split-key"].join("-")}-${"0123456789abcdef".repeat(3)}`.slice(0, 64);
+const resultTextOf = (text) => {
+  const options = { calls: { result: CALL_RESULT_CHARS, redact: (part) => refusal.redactedCall(part, [SPLIT], CALL_RESULT_CHARS) } };
+  const rows = timelineOf([user("Run it."), assistant([call("c1", "bash", { command: "run" })]), result("c1", "bash", text)], options);
+  return rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1").tool_result_text;
+};
+
+test("a held value split by a line break where a call's read stops shows none of it, after a run its pieces took back", () => {
+  // A run cut at a quote crosses the head, then goes unread and is taken back; the read stops again at the line break.
+  const text = `${"y ".repeat(59_000)}["${"a".repeat(7000)}",${"B".repeat(30_000)} ${"y ".repeat(975)}${SPLIT.slice(0, 40)}\n${SPLIT.slice(40)}${"z".repeat(9000)} end`;
+  const shown = cut(refusal.redactedCall(text, [SPLIT], CALL_RESULT_CHARS), CALL_RESULT_CHARS);
+  assert.ok(!shown.includes(SPLIT.slice(0, 8)), shown.slice(-80));
+  assert.ok(!resultTextOf(text).includes(SPLIT.slice(0, 8)));
+});
+
+test("a call's result whose URLs lose their query values is redacted as it is shown: no held value's prefix past what its redaction read, and words past 120,000 raw characters reach the grader", () => {
+  // 21 query values of 5,000 and 6,000 characters elided bring text past the head the redaction read into the 120,000.
+  const urls = Array.from({ length: 20 }, () => `https://h.example/p?q=${"a".repeat(5000)} `).join("");
+  const text = `${urls}${"y ".repeat(10_000)}https://h.example/u?q=${"b".repeat(6000)} ${"y ".repeat(400)}${SPLIT.slice(0, 40)}\n${SPLIT.slice(40)}${"z".repeat(9000)} end`;
+  const shown = resultTextOf(text);
+  assert.ok(!shown.includes(SPLIT.slice(0, 8)), `${shown.length}: ${shown.slice(-80)}`);
+  // Elided first, the redactor reads the text as it is shown: words past 120,000 raw characters, well inside 120,000
+  // shown ones, reach the grader.
+  const figure = `${urls}${"y ".repeat(10_000)}https://h.example/u?q=${"b".repeat(6000)} the figure is 4,217. end`;
+  assert.ok(figure.indexOf("4,217") > CALL_RESULT_CHARS);
+  assert.ok(resultTextOf(figure).endsWith("the figure is 4,217. end"), resultTextOf(figure).slice(-80));
+  // As a web_fetch's page text, each string read alone, the same.
+  const page = JSON.stringify({ ok: true, url: "https://h.example/page", status: 200, title: "A page", text });
+  const options = { calls: { result: CALL_RESULT_CHARS, redact: (part) => refusal.redactedCall(part, [SPLIT], CALL_RESULT_CHARS) } };
+  const rows = timelineOf([user("Fetch it."), assistant([call("c1", "web_fetch", { url: "https://h.example/page" })]), result("c1", "web_fetch", page)], options);
+  const web = rows.find((row) => row.kind === "tool_result" && row.tool_use_id === "c1").tool_result_text;
+  assert.ok(!web.includes(SPLIT.slice(0, 8)), `${web.length}: ${web.slice(-80)}`);
 });
 
 test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {

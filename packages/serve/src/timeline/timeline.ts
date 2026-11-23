@@ -822,10 +822,12 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, its
-   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut (web-calls.ts). */
+  /** A call's output as a `calls` read shows it (tool_result_text): its URLs' query values elided, then redacted by its
+   *  redactor, else the rows' own, cut at `calls.result`; a web call's every url whole, only its long texts cut
+   *  (web-calls.ts). Elided first, so the redactor reads the text as it is shown: redactedCall reads only the head that
+   *  is shown, and an elision after it would bring text past that head into the cut. */
   const wholeRedact = options.calls?.redact ?? options.redact;
-  const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
+  const callShown = (text: string) => (wholeRedact ? wholeRedact(scrubUrls(text)) : scrubUrls(text));
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
     const web = webShownOf(tool, text, callShown);
