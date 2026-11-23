@@ -2,7 +2,8 @@
 // run's requests and calls add up to, and the same broken down by tool and by model. Every figure here is a sum, a share
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
 import { matchesFilter } from "./filter";
-import type { RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
+import { capDollars } from "./format";
+import type { Run, RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
 export type SpanSort = "started" | "duration" | "cost" | "tokens";
@@ -354,6 +355,22 @@ function conversationOf(trace: Pick<RunTrace, "spans" | "model_requests">): (s: 
   };
 }
 
+/** What of a run says it wound down for its spend cap. */
+export type BudgetRun = Pick<Run, "stopped_for" | "budget_refused_calls"> & { cost?: Pick<NonNullable<Run["cost"]>, "cap_usd"> | null };
+/** A run that wound down for its spend cap, in words: it stopped short (`stopped_for`: its model was told to wrap up
+ *  near the cap, and it answered from what it had), or tool calls of it were refused, unrun, near the cap
+ *  (`budget_refused_calls`, each call once). Null for a run that did neither. The cap is said as it was set. */
+export function budgetStop(run: BudgetRun): { title: string; detail: string } | null {
+  const refused = run.budget_refused_calls ?? 0;
+  const stopped = run.stopped_for === "budget";
+  if (!stopped && refused === 0) return null;
+  const cap = typeof run.cost?.cap_usd === "number" ? `its ${capDollars(run.cost.cap_usd)} cap` : "its spend cap";
+  const calls = `${refused} tool call${refused === 1 ? " was" : "s were"} refused, unrun, near ${cap}`;
+  return stopped
+    ? { title: "The run stopped short for its budget", detail: refused > 0 ? `${calls}. The run answered from what it had.` : `Its model was told to wrap up near ${cap}, and answered from what it had.` }
+    : { title: `${refused} call${refused === 1 ? "" : "s"} refused for the run's budget`, detail: `${calls}.` };
+}
+
 /** One thing about the run worth a look, with the span it is about. */
 export type Finding = { id: string; title: string; detail: string; span?: string; bad?: boolean };
 /** What stands out in a trace, most pressing first: what failed, the call and the request that took the longest, the
@@ -362,11 +379,14 @@ export type Finding = { id: string; title: string; detail: string; span?: string
  *  between calls. (Calls repeated with the same arguments are not found: the trace keeps one field of a call's
  *  arguments, not all of them.)
  *  Each is a figure of the trace, never advice. `more.usage`: the run's cost by line, where it was read: what its
- *  repeated requests cost (redoOf) is then said after what failed. */
-export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number, more: { usage?: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null } = {}): Finding[] {
+ *  repeated requests cost (redoOf) is then said after what failed. `more.run`: the run, where it wound down for its spend cap
+ *  (budgetStop): said first, since it is why the run did less than it was asked. */
+export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number, more: { usage?: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null; run?: BudgetRun } = {}): Finding[] {
   const { spans } = trace;
   const totals = traceTotals(trace, now);
   const out: Finding[] = [];
+  const budget = more.run ? budgetStop(more.run) : null;
+  if (budget) out.push({ id: "budget", bad: true, ...budget });
   const longest = (kind: TraceSpan["kind"]) => spans.filter((s) => s.kind === kind && spanMs(s, now) !== null).sort((a, b) => spanMs(b, now)! - spanMs(a, now)!)[0];
   const ofWall = (ms: number) => (totals.time.wall > 0 ? ` · ${percent(ms / totals.time.wall)} of the run's time` : "");
   const failed = spans.filter((s) => s.status === "failed");

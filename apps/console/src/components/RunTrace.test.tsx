@@ -55,6 +55,17 @@ describe("the Dev tools tab", () => {
     expect(tile(host, "Time")?.textContent).toMatch(/3m 45s.*model 38% · tools 60%/);
   });
 
+  it("says how much of its spend cap the run's cost is, and that it stopped short for it", async () => {
+    // $0.6336 of a $0.75 cap.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 3 };
+    const host = await open(TRACE, { run, view: "breakdown" });
+    expect(tile(host, "Cost, estimated")?.textContent).toMatch(/\$0\.6336.*84% of its \$0\.75 cap · requests \$0\.6132 · tools \$0\.0204/);
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budget3 tool calls were refused, unrun, near its $0.75 cap. The run answered from what it had.");
+    // A run with no cap says none, and one that never came near its cap says nothing of a stop.
+    const plain = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 5 } }, view: "breakdown" });
+    expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);
+    expect(plain.textContent).not.toMatch(/stopped short|refused for the run/);
+  });
   it("lists every request and call in the order they started, each call under the request that made it", async () => {
     const host = await open(TRACE);
     const listed = callRows(host);
