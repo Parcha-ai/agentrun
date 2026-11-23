@@ -911,6 +911,12 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+/** The cookies a browser holds at `host` (`name:port`): the same sessions, each http per-port cookie (`agentrun-<port>…`)
+ *  named for the port it opened there, as a sign-in through that port (a tunnel) sets them (page.ts). */
+export const cookieAt = (cookie, host) => {
+  const port = /:(\d+)$/.exec(host)?.[1];
+  return port ? cookie.replace(/(^|; )agentrun-\d+(-session)?=/g, `$1agentrun-${port}$2=`) : cookie;
+};
 
 /** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
 function takenBack(data, runId) {

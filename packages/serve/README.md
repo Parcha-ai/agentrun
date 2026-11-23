@@ -3387,7 +3387,8 @@ serves these routes alone:
   the backend whose inline runs made it;
 - the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
   backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
-  run of an agent made here is refused, as every address not listed here is;
+  run of an agent made here (a deploy's, below) is purged the same way, since the token may archive and delete that
+  whole agent, every run of it purged;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
@@ -3499,13 +3500,19 @@ The 10 minutes run from the answer, not from `fired_at`, so a firing that reache
 waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
 firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
 would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
-firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed. A start that
+begins by `start_by` holds the room until its run is written: when `start_by` is less than a minute away, the server
+moves it to a minute after the start began, before it writes the run. A start that fails without writing its run
+moves `start_by` back, so failed starts never extend the window.
 
-The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+The firing is the run's key, so a second start for the same firing answers the same run, also while the first is
+still writing it (202 with `idempotent-replayed: true`), and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
 another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
 by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
-whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why. So is one whose place
+another firing is taking: a firing whose hook has not answered yet, or whose host's start is being written, holds the
+room as a run in progress until that is done.
 
 A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
 then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
@@ -3918,7 +3925,7 @@ stays in every total.
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
-  an agent another system owns alone; a run of an agent made here is its profile's `404` there.
+  any agent with its token, as it deletes or purges the whole agent.
 
 An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.

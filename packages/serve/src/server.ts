@@ -83,7 +83,7 @@ import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
-import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
@@ -139,7 +139,7 @@ import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
-import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
+import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
@@ -437,6 +437,9 @@ export type ServeOptions = {
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
+  /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
+   *  in place of its own marks; a faux server's is a host's. */
+  probeContainer?: ContainerFacts;
   /** For tests: the wait before each read again of the Docker host's addresses after the start's failed
    *  (docker-host-addresses.ts retryHostAddresses), in place of the backoff's timer. */
   hostReadWait?: Wait;
@@ -1610,7 +1613,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker });
+  // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
+  // `probeContainer` sets it for a test of a real one.
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -3946,14 +3951,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const fixed = HANDED_FIXED.filter((field) => body[field] !== undefined);
       if (fixed.length) throw invalid(fixed.map((field) => ({ field, reason: "not_allowed", message: `A run for a trigger firing starts on its trigger's target, on the agent's current revision and holding no computer: send it without ${field}.` })));
       const { trigger_firing: given, ...rest } = body;
-      const firing = await triggers.handedStart(given, agentId);
-      if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
-      const secrets = await handed();
-      const seal = startSeal(secrets);
-      const run = await targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
-      // A host that answered its hook first, or whose hook timed out, started this run after: the firing is started with it now.
-      await triggers.handedRan(firing.trigger.id, firing.key, run.run_id);
-      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}` } };
+      // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
+      const run = await triggers.handedStart(given, agentId, async (firing) => {
+        const secrets = await handed();
+        const seal = startSeal(secrets);
+        return targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      });
+      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -4468,13 +4472,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
-      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off. Its sessions at this
+      // server's other ports go too (page.ts sessionsAtEveryPort: a browser sends a host's cookies to every port), each
+      // name cleared; a cookie this server did not make (another server's on the same host) is left as it is.
       case "/auth/sign-out": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
-        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        const ended = sessionsAtEveryPort(req).filter(({ value }) => me.valid(value));
+        for (const { value } of ended) me.revoke(value);
         viewers.recheck();
-        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+        const names = new Set([ownerCookieName(req), ...ended.map(({ name }) => name)]);
+        return send(res, 200, { signed_out: true }, { "set-cookie": [...names].map((name) => ownerCookie(req, "", 0, name)) });
       }
       // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
       case "/auth/sign-out-everywhere": {
@@ -5218,12 +5226,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
-        // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,
-        // as it deletes that agent; a run of an agent made here is the profile's refusal, in its words, as before.
-        if (options.apiOnly) {
-          const agent = await store.agents.get(row.agentId);
-          if (!agent || !ownedElsewhere(agent)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
-        }
+        // API-only (api-only.ts) purges a run wherever its token may delete the run's whole agent, which is any agent:
+        // another system's, and one made here once archived. One run is less than all of them, so it is served alike.
         await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -6187,7 +6191,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
   const mcp = mcpEndpoint({ route, authorized: (header, req) => bearer(header, req), authFailed, version: VERSION });
 
-  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
     res.end(text);
