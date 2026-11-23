@@ -1,0 +1,13 @@
+{
+  "apiRow": {
+    "run_id": "01a20799-aa97-7000-b622-fd2c879e6f22",
+    "status": "working",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "taken_over"
+    }
+  },
+  "pageRow": "Look at the desktop. desk · Desktop · Faux desktop · started Nov 23, 8:50 AM WORKING YOU DRIVE",
+  "screenshot": "U2-you-drive-1440.png"
+}

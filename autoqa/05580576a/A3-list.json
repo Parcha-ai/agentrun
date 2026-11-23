@@ -1,0 +1,20 @@
+{
+  "status": 200,
+  "runs": [
+    {
+      "run_id": "01a20799-aa97-7000-b622-fd2c879e6f22",
+      "agent_id": "desk",
+      "kind": "agentic",
+      "title": "Look at the desktop.",
+      "status": "working",
+      "state": "working",
+      "created_at": "2026-11-23T08:50:40.919Z",
+      "computer": {
+        "kind": "desktop",
+        "provider": "faux-desktop",
+        "state": "ready"
+      },
+      "fields": 37
+    }
+  ]
+}

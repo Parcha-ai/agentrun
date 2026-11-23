@@ -1,0 +1,18 @@
+{
+  "list": "A3-list.json",
+  "deskRunRead": {
+    "title": "Look at the desktop.",
+    "status": "working",
+    "state": "working",
+    "created_at": "2026-11-23T08:50:40.919Z",
+    "computer": {
+      "kind": "desktop",
+      "provider": "faux-desktop",
+      "state": "ready"
+    }
+  },
+  "plainRunRead": {
+    "status": "working",
+    "computer": null
+  }
+}

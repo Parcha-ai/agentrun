@@ -1,0 +1,12 @@
+{
+  "status": 401,
+  "body": {
+    "error": {
+      "code": "unauthenticated",
+      "message": "this route needs Authorization: Bearer <the token in the data directory>",
+      "retryable": false,
+      "request_id": "req_6ac2ff48dce952cc"
+    }
+  },
+  "cache": "no-store"
+}

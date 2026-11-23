@@ -1,0 +1,10 @@
+{
+  "operationId": "listRunningComputers",
+  "summary": "Every run still going that has a computer",
+  "responses": [
+    "200",
+    "401",
+    "429",
+    "500"
+  ]
+}
