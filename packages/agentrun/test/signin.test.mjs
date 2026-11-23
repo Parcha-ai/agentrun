@@ -237,6 +237,9 @@ test("a URL off the target's origin, a redirect, or a malformed answer is refuse
     "grant with no expiry": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, expires_in: 0 }) }),
     "grant interval a string": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, interval: "5" }) }),
     "grant user code with a control character": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7\u001b[2J" }) }),
+    // The code is printed right after the cross-origin line: a server's own words there could talk over it.
+    "grant user code with a space": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7-4MZ. This server is safe, approve it" }) }),
+    "grant user code past 32 characters": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "K".repeat(33) }) }),
     "grant verification over http elsewhere": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: "http://console.agentrun.example/device" }) }),
     "grant refused": () => ({ "POST /auth/device/code": () => json(400, { error: "invalid_client" }) }),
   };
@@ -334,7 +337,7 @@ test("login reads the token from stdin off a terminal: --to a server with no sig
   assert.equal(both.code, 2, both.err);
 });
 
-test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one, else refuses a typed token as before", async (t) => {
+test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one; offering none, it refuses a typed token; a probe it can't take exits as --to does", async (t) => {
   // Offered: the device flow runs (the person denies it here, before any wait).
   const offering = await deviceServer(t, { routes: () => ({ "POST /auth/device/code": () => json(400, { error: "access_denied" }) }) });
   const denied = await onTerminal(["login", "--base-url", offering.base]);
@@ -343,16 +346,21 @@ test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-
   assert.match(denied.err, /The sign-in was denied; nothing was written\./);
   assert.deepEqual(offering.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities", "GET /auth/device", "POST /auth/device/code"]);
   assert.equal(existsSync(denied.config), false);
-  // Not offered, or the probe refused (a redirect): the refusal of a token typed on a terminal, exit 2, as before.
+  // Not offered: the refusal of a token typed on a terminal, exit 2, as before.
   const plain = await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: {} }) }) });
+  const refused = await onTerminal(["login"], { AGENTRUN_BASE_URL: plain.base });
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /read from stdin, never typed on a terminal/);
+  assert.deepEqual(plain.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(refused.config), false);
+  // The probe redirected: refused as --to refuses it, exit 1, with no word about typing.
   const redirecting = await deviceServer(t, { routes: (at) => ({ "GET /v2/capabilities": () => [302, { location: `${at}/elsewhere` }, ""] }) });
-  for (const [server, args, extra] of [[plain, ["login"], { AGENTRUN_BASE_URL: plain.base }], [redirecting, ["login", "--base-url", redirecting.base]]]) {
-    const refused = await onTerminal(args, extra);
-    assert.equal(refused.code, 2, refused.err);
-    assert.match(refused.err, /read from stdin, never typed on a terminal/);
-    assert.deepEqual(server.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
-    assert.equal(existsSync(refused.config), false);
-  }
+  const redirected = await onTerminal(["login", "--base-url", redirecting.base]);
+  assert.equal(redirected.code, 1, redirected.err);
+  assert.match(redirected.err, /redirect.*nothing was written/);
+  assert.doesNotMatch(redirected.err, /read from stdin/);
+  assert.deepEqual(redirecting.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(redirected.config), false);
 });
 
 test("an address to open on another origin than the server's is said on a line of its own before the code, naming both origins; on the server's origin, no such line", async (t) => {
@@ -399,20 +407,20 @@ test("the origins the cross-origin line names: AgentRun cloud's API with its dev
   assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://a.example/device", "https://b.example/device?code=x", "https://a.example/other"]), ["https://a.example", "https://b.example"]);
 });
 
-// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: the reason, then the
-// refusal of a typed token, exit 2 as for a server that offers none.
-for (const [name, targetOf, why, skip = false] of [
+// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: refused as --to refuses it,
+// with the sign-in's own exit code and nothing about typing a token.
+for (const [name, targetOf, code, why, skip = false] of [
   // The capabilities request's connection dropped: Node 24's fetch gives the cause UND_ERR_SOCKET.
-  ["a server not reached (the sign-in's exit 3)", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => "drop" }) })).base, /^Cannot reach the server at http:\/\/127\.0\.0\.1:\d+\/v2 \(UND_ERR_SOCKET\); nothing was written\.$/m],
-  ["a server offering it over http off this machine (exit 2)", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, /^The server at http:\/\/127\.0\.0\.2:\d+\/v2 offers a device sign-in over http, which would carry the token in the clear: use its https address; nothing was written\.$/m, LINUX_ONLY],
-  ["a server whose offer is malformed (exit 1)", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, /^The server's device sign-in offer \(sign_in\.device\) is not one this CLI takes: .+; nothing was written\.$/m],
+  ["a server not reached", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => "drop" }) })).base, 3, /UND_ERR_SOCKET/],
+  ["a server offering it over http off this machine", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, 2, /over http/, LINUX_ONLY],
+  ["a server whose offer is malformed", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, 1, /sign_in\.device/],
 ]) {
-  test(`login --base-url on a terminal, to ${name}: the device sign-in's reason, then the refusal of a typed token, exit 2`, { skip }, async (t) => {
+  test(`login --base-url on a terminal, to ${name}: exit ${code}, as --to, and nothing written`, { skip }, async (t) => {
     const refused = await onTerminal(["login", "--base-url", await targetOf(t)]);
-    assert.equal(refused.code, 2, refused.err);
-    const reason = refused.err.search(why);
-    assert.ok(reason >= 0, refused.err);
-    assert.ok(reason < refused.err.search(/read from stdin, never typed on a terminal/), refused.err);
+    assert.equal(refused.code, code, refused.err);
+    assert.match(refused.err, why);
+    assert.match(refused.err, /nothing was written/);
+    assert.doesNotMatch(refused.err, /read from stdin/);
     assert.equal(existsSync(refused.config), false);
   });
 }
