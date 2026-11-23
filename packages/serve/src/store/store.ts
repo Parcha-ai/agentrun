@@ -1234,10 +1234,15 @@ export type McpServerWrite = { name: string; url: string; auth: string; protocol
 export type McpTokensMark = { readonly record: string };
 
 /** The owner's write over a saved server's row: in the transaction that writes the row, and only once the row is written,
- *  the setting at `record` (the server's source record) loses the API token's mark (`by`) when it still says the token
- *  saved that very row. A write refused (no row) leaves the record as it was, so a refused owner's save never takes the
- *  server from the token; one that lands makes it the owner's with no moment between its row and its record. */
+ *  the setting at `record` (the server's source record) loses the API token's marks (`by`, and `listed`) when it still
+ *  says the token saved that very row. A write refused (no row) leaves the record as it was, so a refused owner's save
+ *  never takes the server from the token; one that lands makes it the owner's with no moment between its row and its
+ *  record. */
 export type McpOwnersMark = { readonly record: string };
+
+/** A row as a rewrite read it (Mcp.rewrite): its sealed credential, its address and its auth type. The rewrite lands only
+ *  while the row still has all three, so it never writes back the address or auth type it read over a save made since. */
+export type McpRewriteSeen = { readonly sealed: Uint8Array | null; readonly url: string; readonly auth: string };
 
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
@@ -1251,14 +1256,16 @@ export interface Mcp {
    *  token's mark (McpTokensMark), in the same statement. `owns`: the owner's write, which drops the token's mark in the
    *  same transaction once the row is written (McpOwnersMark). */
   putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
-  /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
-   *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
-   *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
-   *  credential_changed_at) and any refresh lease are left as they are, so a runner's refresh in flight still keeps its
-   *  set. undefined, writing nothing, when the credential changed meanwhile (a refresh kept a rotated set) or the row went:
-   *  the caller reads it again and re-applies its change onto the fresh row, a bounded few times. `owns`: as
-   *  putIfCredential's, the token's mark dropped in the same transaction once the row is written. */
-  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: Uint8Array | null, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
+  /** A rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new credential): the
+   *  listing, prices, url and times written by a compare-and-set on the row as `seen` (McpRewriteSeen), iff the row is
+   *  still saved, its sealed value is still the one read, and it is still at the address and of the auth type read. The
+   *  credential's columns (sealed, token_until, credential_changed_at) and any refresh lease are left as they are, so a
+   *  runner's refresh in flight still keeps its set. undefined, writing nothing, when the credential changed meanwhile (a
+   *  refresh kept a rotated set), a save moved the row or changed its auth type (an owner's save with no credential, which
+   *  leaves the sealed column as it was), or the row went: the caller reads it again and re-applies its change onto the
+   *  fresh row while it still holds, a bounded few times. `owns`: as putIfCredential's, the token's mark dropped in the
+   *  same transaction once the row is written. */
+  rewrite(server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number }, seen: McpRewriteSeen, owns?: McpOwnersMark): Promise<McpServerRow | undefined>;
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and

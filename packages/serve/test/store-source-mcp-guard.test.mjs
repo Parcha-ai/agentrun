@@ -73,7 +73,7 @@ test("an MCP edit committed inside the prepared cutover window makes the whole c
   });
   t.after(() => resumed.resolve());
   // rewrite is one real UPDATE; its own credential CAS ensures this is an actual registry change.
-  const edit = other.mcp.rewrite({ ...initial, tools: [{ name: "remove" }] }, initial.sealed);
+  const edit = other.mcp.rewrite({ ...initial, tools: [{ name: "remove" }] }, initial);
   await entered.promise;
   const refusal = assert.rejects(store.agents.addRevision(moved([guard])), StoreConstraint);
   await attempted.promise; resumed.resolve(); await Promise.all([edit, refusal]);

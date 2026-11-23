@@ -1753,16 +1753,18 @@ class SqliteStore implements Store {
     this.mcp = {
       put: async (row) => (await putServer(row, undefined))!,
       putIfCredential: (row, expected, tokens, owns) => putServer(row, expected, tokens, owns),
-      // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
-      // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
+      // One statement compares the row as read (its credential, address and auth type) and writes, as keepRefreshed: no read
+      // between, so a refresh's keep never lands in a gap and is then written over, and a save that moved the row or changed
+      // its auth type with no credential (the sealed column the same after it) is never written back over. The
+      // credential's columns and the refresh lease are not in its SET.
       rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen, owns) => {
         const at = now();
         const stamp = clock();
         const row = await writeMcpRow(name, {
           sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ?, listed_at = ?
-            WHERE name = ? AND ${d.nullSafeEquals("sealed")}
+            WHERE name = ? AND ${d.nullSafeEquals("sealed")} AND url = ? AND auth = ?
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen, ...stamp.params],
+          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen.sealed, seen.url, seen.auth, ...stamp.params],
         }, undefined, owns);
         return row && mcpServerOf(row);
       },

@@ -299,7 +299,7 @@ async function literalPerRunServer(t, { triggered = false } = {}) {
   const row = await server.store.mcp.server("gh");
   const url = new URL(row.url);
   url.searchParams.set("user_id", LITERAL);
-  assert.ok(await server.store.mcp.rewrite({ name: row.name, url: url.href, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions }, row.sealed), "the row rewritten");
+  assert.ok(await server.store.mcp.rewrite({ name: row.name, url: url.href, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions }, row), "the row rewritten");
   const record = await server.store.settings.get(composioMadeKey("gh"));
   assert.equal(record.per_run, undefined, "the seed save wrote no per_run marker");
   await server.store.settings.put(composioMadeKey("gh"), { ...record, user: LITERAL });

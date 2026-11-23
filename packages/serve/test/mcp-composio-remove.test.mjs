@@ -114,7 +114,7 @@ test("a Composio server the token saved, its key read from COMPOSIO_API_KEY: the
   // The owner's save over it, as each one lands: the record's mark dropped first, then its row written (its key kept).
   const seam = beforeTheStatement(store, async () => {
     await store.settings.put(mcpSourceKey("hn"), ownersRecord(tokens));
-    assert.ok(await store.mcp.rewrite({ ...row, instructions: "The owner's." }, null));
+    assert.ok(await store.mcp.rewrite({ ...row, instructions: "The owner's." }, row));
   });
   let answered;
   await assert.rejects(async () => (answered = await registry.remove("hn", credentialMark(row), true)), (error) => error.code === "precondition_failed");

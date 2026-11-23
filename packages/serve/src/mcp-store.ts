@@ -5,7 +5,7 @@
 // (mcp-oauth.ts) keep the SDK tool-probe, validation and sign-in flow over these. The store never opens a credential;
 // only this process (and a runner) does, with the seal key.
 import {
-  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpOwnersMark, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, openMcpCredential, type OpenedMcpCredential,
+  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpOwnersMark, type McpRemoved, type McpRewriteSeen, type McpServerRow, type McpServerWrite, type McpTokensMark, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -78,13 +78,13 @@ function serverWrite(sealKey: Buffer, server: McpServerSave, githubMcpOrigin: st
   };
 }
 
-/** Rewrites a server's row the owner read, its sealed credential kept as it is (store.mcp.rewrite): written iff the
- *  credential is still `seen`; undefined, writing nothing, when it changed meanwhile or the row went. Bounded and
- *  github_app-guarded as saveMcpServer. `owns`: as saveMcpServerIfCredential's. */
+/** Rewrites a server's row as it was read, its sealed credential kept as it is (store.mcp.rewrite): written iff the row
+ *  still has the credential, address and auth type `seen`; undefined, writing nothing, when one changed meanwhile or the
+ *  row went. Bounded and github_app-guarded as saveMcpServer. `owns`: as saveMcpServerIfCredential's. */
 export async function rewriteMcpServer(
   store: { mcp: Pick<Mcp, "rewrite"> },
   server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number },
-  seen: Uint8Array | null,
+  seen: McpRewriteSeen,
   { githubMcpOrigin = GITHUB_MCP_ORIGIN, owns }: { githubMcpOrigin?: string; owns?: McpOwnersMark } = {},
 ): Promise<McpServerRow | undefined> {
   if (server.auth === "github_app" && !githubMcpUrl(server.url, githubMcpOrigin)) throw new Error(`The MCP server ${server.name} is not kept: ${GITHUB_MCP_ONLY}.`);

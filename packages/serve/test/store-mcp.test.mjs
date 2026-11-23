@@ -107,6 +107,22 @@ test("the API token's write and removal over a saved row land only while the row
   assert.equal(await store.mcp.server("github"), undefined);
 });
 
+test("a rewrite lands only on the row as its writer read it: the same credential, address and auth type, compared in its one statement", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const read = await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
+  const listing = { ...SERVER, auth: "none", tools: [{ name: "listed_again" }] };
+  // A save since that moved the row, or changed its auth type, sealing nothing either way: the sealed column is the same.
+  for (const since of [{ url: "https://owners.example.com/mcp" }, { auth: "per_run" }]) {
+    clock.now += 1_000;
+    const saved = await store.mcp.put({ ...SERVER, auth: "none", sealed: null, ...since });
+    assert.equal(await store.mcp.rewrite(listing, read), undefined, `${JSON.stringify(since)}: nothing written`);
+    assert.deepEqual(await store.mcp.server("github"), saved, `${JSON.stringify(since)}: the save stands`);
+  }
+  // As read: it lands.
+  const now = await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
+  assert.deepEqual((await store.mcp.rewrite(listing, now))?.tools, [{ name: "listed_again" }]);
+});
+
 test("a run's pin is its revision's, written with the revision at its save: every run of it reads that pin, a revision saved with none has no pin row", async (t) => {
   const { store, clock } = await storeOn(t);
   const pin = { github: { url: SERVER.url, tools: [{ name: "create_issue", inputSchema: { type: "object" } }], prices: { create_issue: 0.01 } } };

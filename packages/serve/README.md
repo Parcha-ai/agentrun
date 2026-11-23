@@ -2312,8 +2312,9 @@ under another key, or damaged: a `PUT` with the credential seals it again) or `e
 its authorization server refused: sign in again), null for `auth.type` none. No read, log line or error shows a
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
-names a tool whose title, description, schemas or annotations differ. `DELETE .../{name}` forgets the server and its
-credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
+names a tool whose title, description, schemas or annotations differ. A save that moves the server or changes its auth
+type while a refresh lists it stands: the refresh writes nothing and answers `503`. `DELETE .../{name}` forgets the
+server and its credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
 "sealed"`.
 
 ### A credential handed with each run
