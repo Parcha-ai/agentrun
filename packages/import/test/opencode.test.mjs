@@ -3,7 +3,8 @@
 // of its database.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import fs, { mkdir, readdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -453,4 +454,52 @@ test("a session OpenCode is still running is live whatever its rows' times: a 1.
   for (const entry of await readdir(storage, { recursive: true, withFileTypes: true })) if (entry.isFile()) await utimes(join(entry.parentPath, entry.name), new Date(T0), new Date(T0));
   live(await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_B.json") }, "opencode"), "storage");
   assert.equal((await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_A.json") }, "opencode")).mtimeMs, T0, "storage, completed: its files' last write");
+});
+
+test("a closed database OpenCode opens or writes while it is read (its -wal made, or its time moved, before the read's look after) fails that read, never a clean one: discover lists it as its own locator, its stat and read fail", async (t) => {
+  const home = await tempHome(t);
+  const data = join(home, ".local", "share", "opencode");
+  const db = join(data, "opencode.db");
+  await buildV2(db);
+  const own = new DatabaseSync(db);
+  own.exec("PRAGMA journal_mode = WAL");
+  own.close();
+  // The read looks at the database and its -wal as it opens it, and again after it closes it (the database's stat, then
+  // its -wal): OpenCode starts between the two. Its -wal made just before the look after; its time moved just after the
+  // first look took the database's stat.
+  const lstat = fs.lstat;
+  let looks = 0;
+  let change;
+  const mocked = t.mock.method(fs, "lstat", async (path, ...args) => {
+    if (path === `${db}-wal` && ++looks === change.at) await change.made();
+    return lstat(path, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const changes = {
+    "its -wal made": { at: 2, made: () => writeFile(`${db}-wal`, "") },
+    "its time moved": { at: 1, made: () => utimes(db, new Date(), new Date(Date.now() + 60_000)) },
+  };
+  for (const [how, made] of Object.entries(changes)) {
+    for (const [what, run] of [
+      ["read", () => reader.read({ file: db, id: "ses_C" })],
+      ["stat", () => locatorSize({ file: db, id: "ses_C" }, "opencode")],
+      ["discover", async () => assert.deepEqual(await reader.discover(home, {}), [{ file: db }], `${how}: discover lists the database as its own locator`)],
+    ]) {
+      looks = 0;
+      change = made;
+      await rm(`${db}-wal`, { force: true });
+      if (what === "discover") await run();
+      else await assert.rejects(run(), /changed while it was read/, `${how}: ${what}`);
+      assert.equal(looks >= 2, true, `${how}: ${what} looked after`);
+    }
+  }
+  // Nothing changed: a clean read.
+  looks = 0;
+  change = { at: 0, made: async () => {} };
+  await rm(`${db}-wal`, { force: true });
+  assert.equal((await reader.read({ file: db, id: "ses_C" })).sessions.length, 1);
 });
