@@ -791,13 +791,14 @@ export class Triggers {
       const unreadable = due.filter((t) => this.problem(t.source));
       await this.offUnreadable(unreadable, now);
       for (const trigger of due) if (!unreadable.includes(trigger)) await this.advance(trigger, now);
+      // One its host's start is writing is that start's until it ends, as in arm (startHold arms again if it wrote no run).
       for (const firing of await this.store.triggers.pending()) {
         if (firing.status === "failed") await this.notifyFailed(firing.triggerId, firing.key);
-        else if (firing.waitsOn === null && !this.driving.has(firing.key) && (firing.retryAt === null || firing.retryAt <= now)) void this.inTurn(firing.triggerId, firing.key);
+        else if (firing.waitsOn === null && !this.driving.has(firing.key) && !this.starting.has(firing.key) && (firing.retryAt === null || firing.retryAt <= now)) void this.inTurn(firing.triggerId, firing.key);
       }
       const waiting = await this.store.triggers.waiting(now);
       this.waiting = waiting.length > 0;
-      for (const firing of waiting) if (firing.free && !this.driving.has(firing.key)) void this.inTurn(firing.triggerId, firing.key);
+      for (const firing of waiting) if (firing.free && !this.driving.has(firing.key) && !this.starting.has(firing.key)) void this.inTurn(firing.triggerId, firing.key);
     } catch (error) {
       // The store did not answer: the timer tries again after the backoff table's first wait.
       this.deps.say({ condition: "triggers_unreadable", error: String((error as Error)?.message ?? error) });
