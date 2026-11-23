@@ -11,6 +11,7 @@ import { mkdtemp } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
+import * as claude from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -469,4 +470,54 @@ test("Open the CLI's sign-in here on the CLI's default folder signs in where the
   assert.equal(view.account?.email, "person@example.com", JSON.stringify(view));
   const signIn = fake.calls().find((call) => call.argv === "auth login --claudeai");
   assert.deepEqual([signIn?.configSet, signIn?.secureSet, signIn?.home], ["", "", home], JSON.stringify(signIn));
+});
+
+// The person's own claude with CLAUDE_SECURESTORAGE_CONFIG_DIR set keeps its tokens in that folder (on macOS the Keychain
+// item named with its hash); set and empty, in ~/.claude (on macOS the item with no suffix). The account stays where the
+// config dir says. "This machine" on a server started with it is asked and signed in so, and a run reaches the same tokens.
+test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment as the person's own claude does: the status check, the sign-in, the shown line and a run name its credentials there, and the view says so", { timeout: 120_000 }, async (t) => {
+  const profiles = "/u/p/.config/anthropic";
+  const at = (vars) => loginAt("machine", "/d", { HOME: "/u/p", ...vars });
+  // The CLI's default folder, its credentials elsewhere.
+  const own = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(claude.claudeSignInEnv(own, platform), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(own, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+  }
+  // Set and empty: on macOS empty still (the item with no suffix); elsewhere the folder it means, ~/.claude, absolute,
+  // since a status check or a run has a home of its own.
+  const empty = at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "darwin"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(empty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(empty, "linux"), { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(empty, "linux"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  // A CLAUDE_CONFIG_DIR folder: the account there, the credentials where the variable says.
+  const folder = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" });
+  for (const platform of ["darwin", "linux"]) {
+    assert.deepEqual(claude.claudeSignInEnv(folder, platform), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+    assert.deepEqual(claude.claudeLoginEnv(folder, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure", ANTHROPIC_CONFIG_DIR: profiles }, platform);
+  }
+  const folderEmpty = at({ CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "" });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "darwin"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeSignInEnv(folderEmpty, "linux"), { CLAUDE_CONFIG_DIR: "/u/p/elsewhere", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/.claude", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
+  // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
+  assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: "/u/p", ANTHROPIC_CONFIG_DIR: profiles });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_SECURESTORAGE_CONFIG_DIR: "/u/p/secure" }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic" });
+
+  // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
+  const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
+  const { api, fake, home } = await signInServer(t, "sign", {}, { CLAUDE_SECURESTORAGE_CONFIG_DIR: secure });
+  const before = (await api("GET", "/settings/claude-login")).body;
+  assert.deepEqual(before.machine, { folder: join(home, ".claude"), source: "default", credentials: secure }, JSON.stringify(before));
+  const on = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
+  assert.equal(on.state, "signed_out", JSON.stringify(on));
+  assert.equal(on.command, `(unset CLAUDE_CONFIG_DIR; CLAUDE_SECURESTORAGE_CONFIG_DIR=${secure} ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login)`);
+  assert.equal((await api("POST", "/settings/claude-login/login")).status, 200);
+  await until(() => existsSync(fake.ended), "the CLI's sign-in ended");
+  assert.ok(existsSync(join(secure, ".credentials.json")), "the sign-in kept the tokens where the person's own claude with that variable does");
+  assert.ok(existsSync(join(home, ".claude.json")), "and the account where it keeps it with no CLAUDE_CONFIG_DIR");
+  const view = await signInSettled(api);
+  assert.equal(view.state, "signed_in", JSON.stringify(view));
+  for (const call of fake.calls()) assert.deepEqual([call.configSet, call.secure, call.home], ["", secure, home], JSON.stringify(call));
 });

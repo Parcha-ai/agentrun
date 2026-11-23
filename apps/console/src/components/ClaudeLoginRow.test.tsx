@@ -210,6 +210,18 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(set.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
   });
 
+  it("names where this machine's login keeps its credentials when the server's environment sets CLAUDE_SECURESTORAGE_CONFIG_DIR, set and empty included, and says nothing of it otherwise", async () => {
+    const at = (credentials?: string): ClaudeLoginView => ({ ...SIGNED_OUT_HERE, place: "machine", folder: "/u/p/.claude", machine: { ...OFF.machine, ...(credentials === undefined ? {} : { credentials }) } as ClaudeLoginView["machine"] });
+    const set = await open(server(() => at("/u/p/secure"), () => at("/u/p/secure")).v2);
+    expect(set.row()!.textContent).toContain("Its credentials are read from /u/p/secure, as CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment says.");
+    act(() => root?.unmount());
+    const empty = await open(server(() => at(""), () => at("")).v2);
+    expect(empty.row()!.textContent).toMatch(/CLAUDE_SECURESTORAGE_CONFIG_DIR set empty in the server's environment.*~\/\.claude, and on macOS the Keychain item with no suffix/);
+    act(() => root?.unmount());
+    const none = await open(server(() => at(), () => at()).v2);
+    expect(none.row()!.textContent).not.toMatch(/Its credentials are read/);
+  });
+
   it("a sign-in the server started that still waits shows as waiting from the server's word, after a reload too, with no press on this page", async () => {
     let view: ClaudeLoginView = { ...SIGNED_OUT_HERE, sign_in: { state: "waiting", started_at: STARTED_AT, limit_ms: 600_000 } };
     const { v2, calls } = server(() => view, () => view);
