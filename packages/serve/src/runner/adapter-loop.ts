@@ -70,7 +70,7 @@ import type { ParkCause } from "../workspace/computer-kept.js";
 import type { ScriptComputer } from "../workspace/run-tools.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, limitedFree, localRequestsIn, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeLimitNearest, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, localRequestsIn, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -2195,13 +2195,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The free-model limit's wrap-up (free.ts): the same note and offer, one per run and limit, on a request of a free
           // model. The dollar cap's note, when it is due on this request, goes first: one note per request, and it is told
           // once, so the free one waits for the next request (or never comes, the run having answered).
-          // On a local model (CapModel.local) the limit is the agent's own alone, over its free and local requests together.
+          // It counts down to the nearer limit (freeLimitNearest): the agent's own over its free and local requests together,
+          // the run's free limit over its free ones alone (none on a local model, CapModel.local).
           const freeNote = (): ServerNote | undefined => {
-            const local = capModel.local === true;
-            const limit = local ? config.maxRequests : config.freeRequests;
-            if (limit === undefined || toldFreeLimits.has(limit) || !(local || limitedFree(capModel))) return undefined;
-            const due = freeWrapUpDue(limit, local ? freeMade + localMade : freeMade);
-            return due ? { words: freeWrapUpWords(due.left), freeLimit: limit } : undefined;
+            const near = freeLimitNearest(capModel, { ...(config.maxRequests !== undefined ? { own: config.maxRequests } : {}), ...(config.freeRequests !== undefined ? { server: config.freeRequests } : {}) }, { free: freeMade, local: localMade });
+            if (near === undefined || toldFreeLimits.has(near.limit)) return undefined;
+            const due = freeWrapUpDue(near.limit, near.made);
+            return due ? { words: freeWrapUpWords(due.left), freeLimit: near.limit } : undefined;
           };
           if (capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return freeNote();
           const spentUsd = sessionSpent + decided + paidSpent + rest;

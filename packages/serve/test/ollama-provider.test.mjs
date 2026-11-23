@@ -263,15 +263,17 @@ test("an agent's max_requests stops a run on an Ollama model at that many reques
   const ollama = await fakeOllama(t, { reply: (_body, n) => ({ calls: [{ name: "lookup", arguments: { n } }], usage: { input: 50, output: 5 } }) });
   withEnv(t, { OLLAMA_HOST: ollama.host });
   const { api, data } = await serve(t, { faux: undefined });
-  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 2 }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 4 }))).status, 201);
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Look it up until told to stop." }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(view.status, "failed", JSON.stringify(view));
-  assert.match(String(view.error?.message ?? view.error), /2-request limit/, JSON.stringify(view.error));
-  assert.equal(ollama.got.chat.length, 2, "the third request was never sent");
-  assert.match(JSON.stringify(ollama.got.chat[0].messages), /2 free-model requests left in this run/, "told to finish, as a run near the server's limit is");
+  assert.match(String(view.error?.message ?? view.error), /4-request limit/, JSON.stringify(view.error));
+  assert.equal(ollama.got.chat.length, 4, "the fifth request was never sent");
+  // Told to finish once 3 are left, as a run near the server's limit is: its local requests count down to it.
+  assert.doesNotMatch(JSON.stringify(ollama.got.chat[0].messages), /free-model requests? left/, "4 left: not yet");
+  assert.match(JSON.stringify(ollama.got.chat[1].messages), /3 free-model requests left in this run/, "after one local request, 3 left");
   const requests = journalOf(data, started.body.run_id).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
   assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the server's limit");
 });

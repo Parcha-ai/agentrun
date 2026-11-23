@@ -144,3 +144,21 @@ test("with no limit of the agent's own, a local model's requests are never refus
   const main = await bookingOf(store, run, MAIN);
   for (let i = 0; i < 5; i++) assert.equal(await ask(main, LOCAL.id), "sent", `local request ${i + 1}`);
 });
+
+test("the wrap-up counts down to the nearest limit: the agent's max_requests over free and local requests together, the server's over free ones alone", () => {
+  const nearest = (model, limits, made) => {
+    const at = cap.freeLimitNearest(model, limits, made);
+    return at && { ...at, due: cap.freeWrapUpDue(at.limit, at.made) };
+  };
+  // A run on a free model with one request of its own and eight on a local model: max_requests 10 has 1 left, the server's 60 has 59.
+  assert.deepEqual(nearest(FREE, { own: 10, server: 10 }, { free: 1, local: 8 }), { limit: 10, made: 9, due: { left: 1 } });
+  assert.deepEqual(nearest(FREE, { own: 10, server: 60 }, { free: 1, local: 8 }), { limit: 10, made: 9, due: { left: 1 } });
+  // The server's limit nearer: its free requests alone count toward it.
+  assert.deepEqual(nearest(FREE, { own: 50, server: 20 }, { free: 18, local: 20 }), { limit: 20, made: 18, due: { left: 2 } });
+  assert.deepEqual(nearest(FREE, { server: 60 }, { free: 1, local: 8 }), { limit: 60, made: 1, due: undefined });
+  // A local model: the agent's own limit alone, over both counts; none set, no limit.
+  assert.deepEqual(nearest(LOCAL, { own: 10, server: 60 }, { free: 1, local: 7 }), { limit: 10, made: 8, due: { left: 2 } });
+  assert.equal(cap.freeLimitNearest(LOCAL, { server: 60 }, { free: 1, local: 7 }), undefined);
+  // A paid model, a router or a plan's: no free limit to count down to.
+  for (const model of [PAID, ROUTER, PLAN]) assert.equal(cap.freeLimitNearest(model, { own: 10, server: 60 }, { free: 1, local: 8 }), undefined, model.id);
+});
