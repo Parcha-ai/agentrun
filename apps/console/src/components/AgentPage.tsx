@@ -172,10 +172,12 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !sdk && !cli && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
   // What the run's own check would refuse now (the agent read's run_blockers), each once: a harness this server doesn't
-  // run, or a model it has none of, is said by its own banner above, not twice.
+  // run, or a model it has none of, is said by its own banner above, not twice. A harness off for want of a model key
+  // (its `needs`: pi with no key) is that banner's too, so the model it lacks is not said again below it.
   const refused = agent.archived_at ? null : agent.run_blockers;
+  const offForKey = !!off?.needs?.length;
   const blockers = !refused ? [] : !refused.fields.length ? [refused.message]
-    : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model")).map((b) => b.message);
+    : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !((needsModel || offForKey) && b.field === "definition.model")).map((b) => b.message);
   const facts: [string, string, string?][] = [
     ...(cli ? [["Runtime", cliLearningLabel(cli.runtime)], ["Model", "Reported per run"], ["Execution", "Your CLI"], ["Project", cli.project]] as [string, string, string?][] : sdk ? [["Runtime", backendSdkLabel(sdk)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],

@@ -563,7 +563,8 @@ test("a server with no key says codex and pi run after a ChatGPT sign-in, and Cl
     assert.ok(offer.reason?.includes(SIGN_IN), `${id} names the sign-in: ${JSON.stringify(offer)}`);
     assert.deepEqual(offer.needs, ["key", "chatgpt"], `${id}: ${JSON.stringify(offer)}`);
   }
-  assert.equal(harness(none, "codex").available, false);
+  // Available means it runs: pi, whose adapter is built in, runs nothing with no model key and no sign-in, as codex.
+  for (const id of ["codex", "pi"]) assert.equal(harness(none, id).available, false, `${id}: ${JSON.stringify(harness(none, id))}`);
   for (const id of ["claude-agent", "opencode"]) {
     const offer = harness(none, id);
     assert.doesNotMatch(offer.reason ?? "", /ChatGPT/, `${id} needs a key whatever the plan: ${JSON.stringify(offer)}`);
