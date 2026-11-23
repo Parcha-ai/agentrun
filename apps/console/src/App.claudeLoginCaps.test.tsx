@@ -17,7 +17,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const CAPS = { models: { source: "providers", ready: true }, harnesses: [], tools: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, tool_keys: { routes: true, at_rest: "sealed" } } };
 // The plan rows sit beside the Anthropic key.
 const KEYS = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi", "claude-agent"], check: null })], reenter: null };
-const OFF = { state: "off", place: "agentrun", command: "claude auth login", can_start: false, folder: "/data/claude-login", machine: { folder: "/home/person/.claude", source: "default" } };
+const OFF = { state: "off", place: "agentrun", command: "claude auth login", can_start: false, folder: "/data/claude-login", machine: { folder: "/u/p/.claude", source: "default" } };
 
 async function open(capabilities: () => Response) {
   const asked: string[] = [];

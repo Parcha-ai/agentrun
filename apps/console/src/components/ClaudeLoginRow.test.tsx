@@ -17,7 +17,7 @@ import { servedKey } from "@/test/keys";
 
 const KEYS: ToolKeys = { keys: [servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi", "claude-agent"], check: null })], reenter: null };
 const COMMAND = "CLAUDE_CONFIG_DIR=/data/claude-login CLAUDE_SECURESTORAGE_CONFIG_DIR=/data/claude-login ANTHROPIC_CONFIG_DIR=/data/claude-login/anthropic claude auth login";
-const OFF: ClaudeLoginView = { state: "off", place: "agentrun", command: COMMAND, can_start: true, folder: "/data/claude-login", machine: { folder: "/home/person/.claude", source: "default" } };
+const OFF: ClaudeLoginView = { state: "off", place: "agentrun", command: COMMAND, can_start: true, folder: "/data/claude-login", machine: { folder: "/u/p/.claude", source: "default" } };
 const SIGNED_OUT_HERE: ClaudeLoginView = { ...OFF, state: "signed_out" };
 const STARTED_AT = "2026-11-23T12:00:00.000Z";
 
@@ -187,10 +187,10 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
 
   it("names the folder: this machine's login as the server finds it (never a fixed ~/.claude), the folder the CLI is asked about, and, where the server saw no CLAUDE_CONFIG_DIR, what a Claude Code with its own needs", async () => {
     let view: ClaudeLoginView = OFF;
-    const { v2 } = server(() => view, () => (view = { ...OFF, state: "signed_out", place: "machine", folder: "/home/person/.claude" }));
+    const { v2 } = server(() => view, () => (view = { ...OFF, state: "signed_out", place: "machine", folder: "/u/p/.claude" }));
     const page = await open(v2);
     const machine = () => page.row()!.querySelector<HTMLInputElement>('input[type="radio"][value="machine"]')!;
-    expect(machine().parentElement!.textContent).toBe("This machine's Claude Code login (/home/person/.claude)");
+    expect(machine().parentElement!.textContent).toBe("This machine's Claude Code login (/u/p/.claude)");
     expect(page.row()!.textContent).not.toContain("~/.claude");
     expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
     await act(async () => { machine().click(); });
