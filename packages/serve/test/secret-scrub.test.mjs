@@ -1499,6 +1499,25 @@ test("LI: a write to the environment under a credential's name is a label on the
   for (const text of [`os.environ["DB_PASSWORD"] = os.environ["OLD_DB_PASSWORD"]`, `os.environ["DB_PASSWORD"] = get_secret("db")`, `os.environ["DB_HOST"] = "${v}"`]) await kept(text);
 });
 
+test("LIII: a bare name written to the environment or an object's member is a variable; a literal there is cut", async () => {
+  // The round-5 repros, and the same evidence in each form (an environment root, `self.`/`this.`, an object, `;`).
+  for (const text of [`os.environ["PGPASSWORD"] = password`, "self.DB_PASSWORD = password", "process.env.DB_PASSWORD = password;", "settings.SECRET_KEY = secret_key", `ENV["API_TOKEN"] = api_token`, "import.meta.env.VITE_API_TOKEN = cfg.apiToken", "self.DB_PASSWORD=password", "app.config.SECRET_KEY = secretKey,", "process.env.API_TOKEN = token;"]) {
+    await kept(text);
+    await kept(JSON.stringify({ type: "tool_result", content: text }));
+  }
+  const v = "Zq8RtYw2Lp4";
+  // A quoted literal, a value with a digit, or no code on the left side: still a label cut, in JSON too.
+  for (const [text, secret] of [[`os.environ["PGPASSWORD"] = "hunter2"`, "hunter2"], [`self.DB_PASSWORD = "hunter2"`, "hunter2"], [`os.environ["PGPASSWORD"] = hunter2`, "hunter2"], [`self.DB_PASSWORD = ${v}`, v], [`settings.SECRET_KEY=${v}`, v], [`os.environ["PGPASSWORD"] = 12345678`, "12345678"], ["PGPASSWORD=sunshine; psql -h db", "sunshine"], ["spring.datasource.password=sunshine", "sunshine"], ["mail.smtp.password = sunshine", "sunshine"], ["notes/app.properties:12:db.password = sunshine", "sunshine"]]) {
+    for (const wrapped of [text, JSON.stringify({ type: "tool_result", content: text })]) {
+      const out = await gone(wrapped, [secret]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind]), [["secret-assign", "label"]], wrapped);
+    }
+  }
+  // Declined for beta 1: the spaced `=` alone is no code's evidence (INI and my.cnf space it too). A restorable cut.
+  const out = await gone("PGPASSWORD = password", ["password"]);
+  assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]]);
+});
+
 test("LII: npmrc's auth keys open after every line lead the line-anchored rules read", async () => {
   const v = "Zq8RtYw2Lp4Kx9Vb3Nm";
   const leads = {

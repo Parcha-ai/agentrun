@@ -950,13 +950,40 @@ const ASSIGN = new RegExp(String.raw`(?<![A-Za-z0-9_$?&])([A-Za-z_][A-Za-z0-9_]{
  *  unless code's evidence stands (ruling XXVII). */
 const ASSIGN_SPACED = new RegExp(String.raw`(?<![A-Za-z0-9_$?&])([A-Za-z_][A-Za-z0-9_]{0,63})(?:[ \t]{1,3}=(?!=)[ \t]{0,3}|=[ \t]{1,3})${VALUE}`, "gd");
 const ASSIGN_COLON = new RegExp(String.raw`(?<![A-Za-z0-9_$.])(["']?)([A-Za-z_][A-Za-z0-9_-]{0,63})\1[ \t]{0,3}:(?![:=/])[ \t]{0,3}${VALUE}`, "gd");
+/** A bare value in code's casing with no digit: a name (`password`, `secret_key`, `apiToken`) or a member chain
+ *  (`cfg.apiToken`), an entry's `,`, `)` or `}` after it dropped. Where the left side is code's beyond doubt (ruling
+ *  LIII: an environment write, a member write) it is a variable's, never a value; a quoted literal still is one. */
+const CODE_END = /[,)}]{1,4}$/;
+const codeName = (value: string): boolean => {
+  const name = value.replace(CODE_END, "");
+  return CODE_CASE.test(name) || MEMBER_CHAIN.test(name);
+};
+/** An object's member chain right before a name (`self.`, `this.`, `settings.`, `app.config.`): a member write's. */
+const MEMBER_OBJECT_BEFORE = /(?:^|[^\w$.])([A-Za-z_$][\w$]{0,127}(?:\.[A-Za-z_$][\w$]{0,127}){0,16}\.)$/;
+const SELF_BEFORE = /(?:^|[^\w$.])(?:self|this)\.$/;
+/** Whether the name at `at` is written as an object's member (ruling LIII): after `self.` or `this.` always; after any
+ *  other object when the name is upper-case (`settings.SECRET_KEY`) or its dotted key does not start its line (a
+ *  lower-case dotted key opening a line is a `.properties` key's, config's, ruling XXX). */
+const memberWrite = (text: string, at: number, name: string, lines: LineBounds): boolean => {
+  const before = text.slice(Math.max(0, at - 320), at);
+  if (SELF_BEFORE.test(before)) return true;
+  const object = MEMBER_OBJECT_BEFORE.exec(before);
+  if (!object) return false;
+  if (UPPER_NAME.test(name)) return true;
+  return !keyStartAt(text, at - object[1]!.length, at, lines);
+};
 /** A write to the environment under a credential's name (ruling LI, XLVII's write side): `os.environ["X"] = v`,
  *  `ENV["X"]=v`, `process.env.X = v`, `import.meta.env.X = v`. The value is a label's. */
 const ENV_ASSIGN = new RegExp(String.raw`(?<![A-Za-z0-9_$.])(?:os\.environ|ENV|process\.env|import\.meta\.env)(?:\[(["'])([A-Za-z_][A-Za-z0-9_]{0,63})\1\]|\.([A-Za-z_][A-Za-z0-9_]{0,63}))[ \t]{0,3}=(?!=)[ \t]{0,3}${VALUE}`, "gd");
 const envAssign = (m: RegExpExecArray): Hit | undefined => {
   const name = m[2] ?? m[3]!;
   if (!secretName(name, m[7] === undefined)) return undefined;
-  return valueHit(m, 4, 3, name);
+  // Ruling LIII: a bare name is a variable's (`os.environ["PGPASSWORD"] = password`). Any other value is the
+  // environment's, as NAME=value's is (code: false): the code-shape guesses are read here, never after the value (a
+  // JSON string's end and its object's `}` after it read as an entry's end).
+  if (m[7] !== undefined && codeName(m[7])) return undefined;
+  const hit = valueHit(m, 4, 3, name);
+  return hit && { ...hit, code: false };
 };
 /** Whether the `-` before a name at `at` makes it a flag's (`--db-password=`, `-Dkey=`, `cmd -PGPASSWORD=`): it does
  *  unless a line start or a digit stands before the `-` (ruling XL): a diff's `-` line and grep -C's `path-N-` lead
@@ -1000,6 +1027,7 @@ const assign = (text: string, lines: LineBounds, source?: string) => (m: RegExpE
   // A bare value ending with `,`, `)` or `}` ends an argument or an entry: code's evidence (ruling XLV), so the code
   // checks (XIX name==value, XXI identifier, a member chain) read it, the ending stripped.
   const entry = bare && ENDS_ENTRY.test(m[5]!);
+  if (bare && codeName(m[5]!) && memberWrite(text, m.index, name, lines)) return undefined; // ruling LIII
   // NAME=value with an upper-case name is the environment's slot, quoted or not (rulings XII, XIX).
   if (UPPER_NAME.test(name)) return entry ? hit : { ...hit, code: false };
   if (!bare) return hit;
@@ -1027,6 +1055,7 @@ const configAssign = (text: string, nameGroup: number, lines: LineBounds, source
   if (!hit || value === undefined) return hit;
   // A bare value is its line's whole value (a flow map, `{password: x}`, is beta 2's backlog: it reads as code's).
   if (!lineEndAt(text, hit.end, lines)) return undefined;
+  if (nameGroup === 1 && codeName(value) && memberWrite(text, m.indices![1]![0], name, lines)) return undefined; // ruling LIII
   // The slot is config's unless code's evidence stands (ruling XXVII: what can't be decided is config's, cut); a
   // section's lines are config's whatever their value's shape (ruling XXX). A YAML key's slot (the name unquoted)
   // is one a type annotation fills too (`typed`, ruling XVI).
@@ -1477,7 +1506,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
-  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
+  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, SELF_BEFORE, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
   REDIS_COMMAND, REDIS_A, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_USER, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
