@@ -256,6 +256,9 @@ const CEILINGS: Partial<Record<Pickable, readonly string[]>> = { web_fetch: [DIR
 const UNREAD_CEILINGS: Partial<Record<Pickable, string>> = { web_fetch: DIRECT_FETCH, web_search: "native" };
 /** A capability a claim held to UNREAD_CEILINGS: it runs nothing, and says why without the store's words. */
 export const SETTINGS_NOT_READ: Resolution = "unavailable: the server's tool settings could not be read";
+/** A capability a claim found past a ceiling where today's resolution (planeFor) gives none in its place, as where its
+ *  tool is not granted in today's tooling: it runs nothing, never the value it was kept with (claimPlane). */
+export const CEILING_LEAVES_NONE: Resolution = "unavailable: the server's tool setting keeps it from this run, with nothing it allows in its place";
 const KEYLESS: readonly string[] = ["firecrawl-keyless", "exa-keyless"];
 /** The ceiling `pick` (the server's setting for `capability`) sets over `resolves`, what the agent's pick `override`
  *  resolves to (none: the server's own, as a run kept from before the setting has it), where it goes past it; else
@@ -483,7 +486,8 @@ export const overCeilings = (kept: Plane, tooling: Tooling, settings: ToolSettin
  *  (claimCeiling) takes today's resolution (planeFor in `env` for `tooling`) on `model`, the run's pinned one (its
  *  launch's), so a resume, a follow-up or a reclaim sends nothing the setting keeps from it, and its native search asks
  *  the model the run sends. Where the settings could not be read (`unread`), one past the strictest ceiling runs nothing
- *  (SETTINGS_NOT_READ). Every other value stays as kept; the same Plane where nothing is past a ceiling. */
+ *  (SETTINGS_NOT_READ), and so does one today's resolution leaves without one (CEILING_LEAVES_NONE). Every other value
+ *  stays as kept; the same Plane where nothing is past a ceiling. */
 export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model, unread = false }: { capped?: boolean; model?: string; unread?: boolean } = {}): Plane {
   const past = PICKABLE.filter((name) => claimCeiling(name, kept, tooling, settings, unread) !== undefined);
   if (!past.length) return kept;
@@ -493,7 +497,7 @@ export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling
     return out;
   }
   const fresh = planeFor(env, model ? { ...tooling, model } : tooling, settings, { capped, run: true });
-  for (const name of past) if (fresh[name] !== undefined) out[name] = fresh[name];
+  for (const name of past) out[name] = fresh[name] ?? CEILING_LEAVES_NONE;
   if (out.web_search === "native" && kept.web_search !== "native" && fresh.model) out.model = fresh.model;
   return out;
 }

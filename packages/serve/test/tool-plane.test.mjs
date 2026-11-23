@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, claimPlane, DENIED, recheckPlane, SEARCH_OFF, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, CEILING_LEAVES_NONE, claimPlane, DENIED, recheckPlane, SEARCH_OFF, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -160,6 +160,13 @@ test("the server's off for web_search is a ceiling over an agent's pick of keyle
     assert.deepEqual(claimPlane({ web_search: kept }, env, { tools: ["web_search"], overrides: { web_search: { provider: "auto" } } }, off), { web_search: SEARCH_OFF }, `kept on ${kept} from auto: off at its next claim`);
   }
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", pick: "off", override: "firecrawl-keyless", permission: "deny" }).resolves, DENIED, "a deny: the gate refuses each call");
+});
+
+test("a capability a claim finds past the server's ceiling, with no fresh resolution to take its place (its tool not granted in today's tooling: not reachable through a stored revision today), runs nothing: never the kept value", () => {
+  const kept = { web_search: "exa-keyless", web_fetch: "firecrawl-keyless" };
+  const ceilings = { web_fetch: { provider: "kernel" }, web_search: { provider: "off" } };
+  assert.deepEqual(claimPlane(kept, { AGENT_MODEL: "anthropic/claude-sonnet-5-5" }, { tools: [] }, ceilings), { web_search: CEILING_LEAVES_NONE, web_fetch: CEILING_LEAVES_NONE });
+  assert.equal(CEILING_LEAVES_NONE, "unavailable: the server's tool setting keeps it from this run, with nothing it allows in its place");
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
