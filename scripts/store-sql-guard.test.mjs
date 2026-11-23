@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { driversIn, sqlIn } from "./store-guard.mjs";
+import { driversIn, sqlIn, sqlStringsIn } from "./store-guard.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const STORE = "packages/serve/src/store/";
@@ -15,6 +15,14 @@ const STORE = "packages/serve/src/store/";
 const TODAY = [
   "packages/serve/src/server-lock.ts",
 ];
+/** The files outside the store that read another program's SQLite database and write nothing: the import package's
+ *  OpenCode reader reads OpenCode's history (its opencode.db) as it is. That is no state of agentrun's, which the Store
+ *  interface would stand for. Each opens its database read-only, and each SQL string it holds is a SELECT. */
+const READ_ONLY = [
+  "packages/import/src/readers/opencode.ts",
+];
+/** A SQL string that changes a database or its connection. */
+const WRITES = /\b(?:INSERT|REPLACE|UPDATE|DELETE|CREATE|ALTER|DROP|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX|BEGIN|COMMIT|SAVEPOINT)\b/i;
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
@@ -112,7 +120,27 @@ test("the store holds the SQL: its SQLite adapter and its schema", () => {
 
 test("no SQL or PRAGMA outside the store, but for today's files on the list", () => {
   const outside = withSql.filter((file) => !file.startsWith(STORE));
-  assert.deepEqual(outside.filter((file) => !TODAY.includes(file)), [], "SQL outside packages/serve/src/store/: move it behind the Store interface");
+  assert.deepEqual(outside.filter((file) => !TODAY.includes(file) && !READ_ONLY.includes(file)), [], "SQL outside packages/serve/src/store/: move it behind the Store interface");
+});
+
+test("a read-only reader outside the store opens its database read-only and only SELECTs", () => {
+  for (const file of READ_ONLY) {
+    const source = readFileSync(join(ROOT, file), "utf8");
+    const sql = sqlStringsIn(source, file);
+    assert.ok(sql.length > 0, `${file} holds no SQL now: take it off READ_ONLY`);
+    for (const text of sql) {
+      assert.match(text, /^\s*SELECT\b/i, `${file}: ${text}`);
+      assert.doesNotMatch(text, WRITES, `${file}: ${text}`);
+    }
+    // Both openers it may take (node:sqlite's, bun:sqlite's), each read-only.
+    assert.doesNotMatch(source, /readOnly:\s*false|readonly:\s*false/, file);
+    assert.equal((source.match(/new DatabaseSync\(/g) ?? []).length, (source.match(/new DatabaseSync\([^)]*\{\s*readOnly:\s*true\s*\}\)/g) ?? []).length, `${file}: node:sqlite opened read-only`);
+    assert.equal((source.match(/new Database\(/g) ?? []).length, (source.match(/new Database\([^)]*\{\s*readonly:\s*true\s*\}\)/g) ?? []).length, `${file}: bun:sqlite opened read-only`);
+  }
+});
+
+test("the guard sees a write in a read-only reader's SQL", () => {
+  assert.deepEqual(sqlStringsIn(`db.all("UPDATE session SET title = ? WHERE id = ?");`).filter((text) => !/^\s*SELECT\b/i.test(text) || WRITES.test(text)).length, 1);
 });
 
 test("the list only shrinks: a listed file with no SQL left is taken off it", () => {

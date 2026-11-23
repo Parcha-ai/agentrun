@@ -49,6 +49,11 @@ function stringsOf(file) {
   return out;
 }
 
+/** The strings in `source` (a file's text) that hold SQL. */
+export function sqlStringsIn(source, fileName = "source.ts") {
+  return stringsOf(parse(source, fileName)).filter((text) => SQL.test(text));
+}
+
 /** Whether `source` (a file's text) writes SQL in a string. */
 export function sqlIn(source, fileName = "source.ts") {
   return stringsOf(parse(source, fileName)).some((text) => SQL.test(text));
