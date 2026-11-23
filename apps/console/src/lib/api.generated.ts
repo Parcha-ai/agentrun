@@ -4948,6 +4948,12 @@ export interface operations {
     body: never;
     answer: components["RunFileList"];
   };
+  listRunningComputers: {
+    body: never;
+    answer: {
+      runs: components["Run"][];
+    };
+  };
   listRuns: {
     body: never;
     answer: components["RunList"];
