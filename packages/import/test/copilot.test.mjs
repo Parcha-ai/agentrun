@@ -192,6 +192,38 @@ test("Copilot CLI: a journal's checkpoint records (a rotated head's copy of its 
   assert.deepEqual(lines.map((line) => [line.id, line.turns, line.calls, line.tokens.input]), [[fork, 2, 1, 0], [SID, 0, 1, 100]].sort((a, b) => (sha(`.copilot/session-state/${a[0]}/events.jsonl`) < sha(`.copilot/session-state/${b[0]}/events.jsonl`) ? -1 : 1)));
 });
 
+/** Two session ids, in the order parseHome reads their files (by the hash of the path under the home). */
+const inReadOrder = (...ids) => ids.sort((a, b) => (sha(`.copilot/session-state/${a}/events.jsonl`) < sha(`.copilot/session-state/${b}/events.jsonl`) ? -1 : 1));
+
+test("Copilot CLI: a copied cumulative shutdown, counted in the file read first, still moves the copy's baseline: the copy's next total adds only its own", async (t) => {
+  const home = await tempHome(t);
+  const [first, second] = inReadOrder("00000000-0000-4000-8000-0000000000a1", "00000000-0000-4000-8000-0000000000a2");
+  const head = [user(1, "Fixture question."), answer(2, "msg-1", "One."), ev(3, "session.usage_checkpoint", { totalNanoAiu: 10 }), shutdown(4, { "claude-sonnet-4.5": metric(100, 10) }, { usageAccountingWatermarks: { main: 3 } })];
+  await writeJsonl(copilotFile(home, first), [start(0, first), ...head]);
+  // The copy: the same events (the same ids), then a process of its own whose shutdown holds the whole total, 150.
+  await writeJsonl(copilotFile(home, second), [{ ...start(0, second), id: "c0" }, ...head, ev(5, "session.resume", { resumeTime: at(5), eventCount: 5 }), user(6, "Next."), answer(7, "msg-2", "Two."), shutdown(8, { "claude-sonnet-4.5": metric(150, 15) }, { usageAccountingWatermarks: { main: 7 } })]);
+  const lines = await parseHome(home, { sources: ["copilot"], catalog: false });
+  assert.deepEqual(lines.map((line) => [line.id, line.tokens.input, line.tokens.output]), [[first, 100, 10], [second, 50, 5]]);
+  assert.equal(lines.reduce((n, line) => n + line.tokens.input, 0), 150, "the last total, not 100 + 150");
+});
+
+test("Copilot CLI: each chunk's messageId counts once: a chunk repeated under a new event id adds no text or call, and copied files hold no extra request", async (t) => {
+  const home = await tempHome(t);
+  const chunks = [
+    answer(3, "msg-2", "First part.", { apiCallId: "api-1", chunkIndex: 0, chunkCount: 2 }),
+    answer(4, "msg-3", "Second part.", { apiCallId: "api-1", chunkIndex: 1, chunkCount: 2, toolRequests: [{ toolCallId: "call-2", name: "view", arguments: { path: "a" } }] }),
+  ];
+  const file = await writeJsonl(copilotFile(home), [start(0), user(1, "Fixture question."), ...chunks, { ...chunks[1], id: "e5" }, shutdown(6, { "claude-sonnet-4.5": metric(100, 10) })]);
+  const { requests } = (await READERS.copilot.read({ file, turns: true })).sessions[0];
+  assert.deepEqual(requests.map((r) => [r.key, r.text, r.calls.length]), [["msg-2", "First part.\nSecond part.", 1]]);
+  const [one] = await parseHome(home, { sources: ["copilot"], catalog: false });
+  // A copy of the session, read after it, whose events carry new ids: its chunks are the same messages, so no request.
+  const copy = ["b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8"].map((n) => `00000000-0000-4000-8000-0000000000${n}`).find((id) => inReadOrder(SID, id)[1] === id);
+  await writeJsonl(copilotFile(home, copy), [{ ...start(0, copy), id: "b0" }, ...chunks.map((c, i) => ({ ...c, id: `b${i + 3}` }))]);
+  const both = await parseHome(home, { sources: ["copilot"], catalog: false });
+  assert.equal(both.reduce((n, line) => n + line.calls, 0), one.calls, "the copy adds no request");
+});
+
 test("Copilot CLI: turns false keeps no answer text, tool output, arguments or later prompt in requests or the cursor", async (t) => {
   const home = await tempHome(t);
   const WORDS = "Fixture answer words, never kept.";

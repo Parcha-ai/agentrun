@@ -1,8 +1,8 @@
 ---
-packages: @parcha/agentrun-import
+packages: @parcha/agentrun-import, @parcha/agentrun-serve, @parcha/agentrun-client
 kind: feature
 ---
 `@parcha/agentrun-import` reads GitHub Copilot CLI, a new source (`copilot`): each session's `$COPILOT_HOME/session-state/<id>/events.jsonl` (`~/.copilot` without `COPILOT_HOME`), and an older CLI's `session-state/<id>.jsonl`. `normalizeUsage("copilot", …)` takes the cache read and write out of `inputTokens` and keeps `reasoningTokens` as `reasoning`.
 - Copilot writes no request's tokens to disk (`assistant.usage` is ephemeral). A session's tokens are the per-model totals of the `session.shutdown` each CLI process writes as it exits; a shutdown that holds the session's whole total (a CLI that keeps its accounting across processes) counts only what it adds. A session with no shutdown, still running or killed, has tokens 0. Copilot writes no dollar cost, so `cost` is `null` unless each request's tokens are known.
-- Each persisted `assistant.message` is one request, keyed by its `messageId` (a response split into chunks is one); each event counts once by its `id`, and a rotated journal's `checkpoint: true` records are copies. Subagent, autopilot, skill and agent-written user messages are not the person's turns.
-- serve's import still imports runs from Claude Code, Codex and pi alone (`IMPORT_SOURCES`), the sources its `imported_from` names; Copilot sessions count in the package's `parseHome` and its CLI.
+- Each model call is one request, keyed by its first `assistant.message`'s `messageId`; a response split into chunks (each its own `messageId`, one `apiCallId`) is one. Each event counts once by its `id` and each message by its `messageId`, so a copied session adds no request; a copied shutdown adds no tokens but moves the copy's baseline, so its next whole total adds only its own. A rotated journal's `checkpoint: true` records are copies. Subagent, autopilot, skill and agent-written user messages are not the person's turns.
+- `agentrun-serve import` (and `--from copilot`) imports Copilot CLI sessions as runs. `imported_from.source` and the stats analytics' `by_source` take `copilot`, in the OpenAPI document and the generated clients.

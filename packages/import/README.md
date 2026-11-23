@@ -63,9 +63,12 @@ line's usage.
 ### GitHub Copilot CLI
 
 Sessions are `$COPILOT_HOME/session-state/<id>/events.jsonl` (`~/.copilot` without `COPILOT_HOME`), and an older CLI's
-`session-state/<id>.jsonl`. Each persisted `assistant.message` is one request (a response split into chunks is one),
-keyed by its `messageId`; each event counts once by its `id`, and a rotated journal's `checkpoint: true` records are
-copies. A user message is the person's unless a subagent, autopilot, a skill or another agent wrote it.
+`session-state/<id>.jsonl`. Each model call is one request, keyed by its first `assistant.message`'s `messageId`; a
+response split into chunks (each chunk a message with its own `messageId`, the call's `apiCallId` the same) is one. Each
+event counts once by its `id` and each message once by its `messageId`, across files too: a copied session adds no
+request, and its copied shutdown no tokens. A rotated journal's `checkpoint: true` records are copies. A user message
+is the person's unless a subagent, autopilot, a skill or another agent wrote it. A session's id is its `session.start`
+`sessionId`, else `copilotSessionId(file)`: the folder's name, or the older flat file's.
 
 Copilot writes no request's tokens to disk: `assistant.usage` is ephemeral. Its tokens are the `modelMetrics` of the
 `session.shutdown` each CLI process writes as it exits, per model, subagents included. A CLI that keeps its accounting
@@ -80,8 +83,6 @@ of their own when there is none (a compaction's model). So:
 - `events.N.jsonl` archives (written only with `COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES`) and the pre-0.0.342
   `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
   the requests in its archives are not counted.
-- serve's import does not bring Copilot sessions in as runs (its `IMPORT_SOURCES` are Claude Code, Codex and pi);
-  they count in `parseHome` and the CLI.
 
 ## Readers
 

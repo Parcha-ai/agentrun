@@ -18,9 +18,11 @@
 // price in dollars (it bills premium requests and AI credits), so the cost is the catalog's, which needs each request's
 // tokens: unknown (null) unless each request's model ran no other request in its process.
 //
-// Each persisted event counts once ("u:" its id), each model call once ("m:" its messageId; a response split into
-// chunks, chunkIndex > 0, joins the call before it). A record marked checkpoint (a rotated journal's copy of its
-// archive) is a copy: read for the session's id, folder and model alone. events.N.jsonl archives, which a CLI writes only
+// Each persisted event counts once ("u:" its id), each message once ("m:" its messageId). A model call is one request:
+// a response split into chunks (each chunk a message of its own, chunkIndex > 0 after the first) joins the request of
+// its first chunk, its apiCallId the same. A shutdown read already in another file (a copied session) adds no tokens,
+// but moves what this file has counted, so its next whole total adds only its own. A record marked checkpoint (a
+// rotated journal's copy of its archive) is a copy: read for the session's id, folder and model alone. events.N.jsonl archives, which a CLI writes only
 // when COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES is set, are not read; history-session-state, the format before 0.0.342,
 // neither.
 import { basename, dirname, join } from "node:path";
@@ -31,9 +33,10 @@ import type { Answer, ToolCall, Usage } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 /** `segment`: the requests (indexes into the state's answers) since the process started or resumed the session; `open`,
- *  the request a later chunk of its response joins; `counted`, each model's tokens counted so far; `durable`, whether
- *  the session keeps its accounting across processes (a session.usage_checkpoint was read). */
-type Own = { segment: number[]; open?: number; counted: Map<string, Usage>; durable: boolean };
+ *  the request a later chunk of its response joins, and `call`, its model call's apiCallId; `counted`, each model's
+ *  tokens counted so far; `durable`, whether the session keeps its accounting across processes (a
+ *  session.usage_checkpoint was read). */
+type Own = { segment: number[]; open?: number; call?: string; counted: Map<string, Usage>; durable: boolean };
 
 /** A Copilot model id as "provider/model": github-copilot's, unless it names its provider. */
 const modelOf = (model: string): string => (model.includes("/") ? model : `github-copilot/${model}`);
@@ -53,9 +56,11 @@ const most = (a: Usage, b: Usage | undefined) => combine(a, b, Math.max);
 const persons = (value: Record<string, unknown>, data: Record<string, unknown>): boolean =>
   value.agentId === undefined && data.isAutopilotContinuation !== true && data.agentAuthored !== true && !/^(?:agent|skill)-/.test(str(data.source) ?? "");
 
-function shutdown(data: Record<string, unknown>, at: number, { state, add }: ReadContext<Own>): void {
+/** A shutdown's tokens, on its process's requests. A `copy` (its event read already, in another file) adds none: it only
+ *  moves what this file has counted, so that a later shutdown holding the whole total adds only its own. */
+function shutdown(data: Record<string, unknown>, at: number, { state, add }: ReadContext<Own>, copy = false): void {
   const { own } = state;
-  if (data.shutdownType === "error") state.session.state = "failed";
+  if (data.shutdownType === "error" && !copy) state.session.state = "failed";
   // The session's whole total, where the CLI kept its accounting across processes; else this process's alone.
   const whole = own.durable || "usageAccountingWatermarks" in data || "accountingSnapshot" in data || "providerModelMetrics" in data;
   const metrics = isObject(data.modelMetrics) ? data.modelMetrics : {};
@@ -65,7 +70,7 @@ function shutdown(data: Record<string, unknown>, at: number, { state, add }: Rea
     const before = own.counted.get(name);
     const usage = whole ? less(total, before) : total;
     own.counted.set(name, whole ? most(total, before) : plus(total, before));
-    if (BUCKETS.every((k) => usage[k] === 0)) continue;
+    if (copy || BUCKETS.every((k) => usage[k] === 0)) continue;
     const model = modelOf(name);
     let index = own.segment.findLast((i) => state.answers[i]!.model === model);
     if (index === undefined) {
@@ -99,12 +104,15 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
   if (value.checkpoint === true) return false;
   const id = str(value.id);
   if (id) {
-    if (seen.has(`u:${id}`)) return false;
+    if (seen.has(`u:${id}`)) {
+      if (type === "session.shutdown") shutdown(data, at, context, true);
+      return false;
+    }
     seen.add(`u:${id}`);
   }
   if (type === "session.start" || type === "session.resume") {
     own.segment = [];
-    own.open = undefined;
+    own.open = own.call = undefined;
   } else if (type === "user.message") {
     const text = typeof data.content === "string" ? data.content : "";
     if (persons(value, data)) add({ role: "user", text, at });
@@ -117,17 +125,20 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
       return { type: "toolCall", id: callId, name: String(call.name ?? ""), arguments: keep ? argsOf(call.arguments) : {} };
     });
     const text = keep && typeof data.content === "string" ? data.content : "";
-    // A later chunk of one model call's response: the same request.
-    const joined = typeof data.chunkIndex === "number" && data.chunkIndex > 0 && own.open !== undefined ? state.answers[own.open] : undefined;
-    if (joined) {
-      if (text) joined.text = [joined.text, text].filter(Boolean).join("\n");
-      joined.calls.push(...calls);
-      return;
-    }
+    // Each message once, a chunk of a split response too (each chunk is a message with its own messageId).
     const key = str(data.messageId);
     if (key) {
       if (seen.has(`m:${key}`)) return false;
       seen.add(`m:${key}`);
+    }
+    // A later chunk of one model call's response (the same apiCallId, where it names one): the same request.
+    const apiCall = str(data.apiCallId);
+    const chunk = typeof data.chunkIndex === "number" && data.chunkIndex > 0;
+    const joined = chunk && own.open !== undefined && (!apiCall || !own.call || apiCall === own.call) ? state.answers[own.open] : undefined;
+    if (joined) {
+      if (text) joined.text = [joined.text, text].filter(Boolean).join("\n");
+      joined.calls.push(...calls);
+      return;
     }
     const model = str(data.model) ? modelOf(data.model as string) : session.model;
     // The session's model is its main agent's: a subagent's runs under it.
@@ -136,6 +147,7 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
     const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(model ? { model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
     add(turn);
     own.open = state.answers.length - 1;
+    own.call = apiCall;
     own.segment.push(own.open);
   } else if (type === "tool.execution_start") {
     if (str(data.toolCallId) && str(data.toolName)) names.set(data.toolCallId as string, data.toolName as string);
@@ -148,6 +160,10 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
   else if (type === "session.error") session.state = "failed";
   else if (type === "session.shutdown") shutdown(data, at, context);
 }
+
+/** A Copilot session file's id from its path: its folder's name (session-state/<id>/events.jsonl), else the older
+ *  flat file's name (session-state/<id>.jsonl). A session.start's sessionId, where there is one, wins over it. */
+export const copilotSessionId = (file: string): string => (basename(file) === "events.jsonl" ? basename(dirname(file)) : basename(file, ".jsonl"));
 
 const spec: LineSource<"copilot", Own> = {
   source: "copilot",
@@ -164,7 +180,7 @@ const spec: LineSource<"copilot", Own> = {
   },
   start: () => ({ segment: [], counted: new Map(), durable: false }),
   record,
-  idOf: (file) => (basename(file) === "events.jsonl" ? basename(dirname(file)) : basename(file, ".jsonl")),
+  idOf: copilotSessionId,
 };
 
 export const copilot = lineReader(spec);

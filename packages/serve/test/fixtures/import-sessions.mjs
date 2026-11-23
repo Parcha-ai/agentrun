@@ -1,4 +1,4 @@
-// Synthetic Claude Code, Codex and pi sessions, written as each tool writes its JSONL, for the importer's tests. Every
+// Synthetic Claude Code, Codex, pi and Copilot CLI sessions, written as each tool writes its JSONL, for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
@@ -447,6 +447,26 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
   ];
   const dir = `--${cwd.replace(/^\//, "").replaceAll("/", "-")}--`;
   return writeSession(join(home, ".pi", "agent", "sessions", dir, `2026-10-20T09-00-00-000Z_${id}.jsonl`), records, { fresh });
+}
+
+/** A Copilot CLI session in `cwd`, as the CLI writes ~/.copilot/session-state/<id>/events.jsonl: a question, a bash call
+ *  and its output, an answer, and the shutdown the process writes as it exits. Copilot writes no request's tokens: the
+ *  shutdown holds each model's for the process (its input holding the cache read and write), unless `shutdown: false`. */
+export function copilotSession(home, cwd, n, { prompt = "Check the build.", output = "build ok", model = "claude-sonnet-5", shutdown = true } = {}) {
+  const id = sessionId(n);
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: i ? `${id}-e${i - 1}` : null, timestamp: at(i) });
+  const records = [
+    ev(0, "session.start", { sessionId: id, version: 1, producer: "copilot-agent", copilotVersion: "1.0.40", startTime: at(0), selectedModel: model, reasoningEffort: "medium", context: { cwd } }),
+    ev(1, "user.message", { content: prompt }),
+    ev(2, "assistant.message", { messageId: `${id}-m1`, model, content: "", toolRequests: [{ toolCallId: "call_1", name: "bash", arguments: { command: "npm run build" } }] }),
+    ev(3, "tool.execution_start", { toolCallId: "call_1", toolName: "bash", arguments: { command: "npm run build" } }),
+    ev(4, "tool.execution_complete", { toolCallId: "call_1", success: true, result: { content: output } }),
+    ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: `The build says: ${output}.` }),
+    ...(shutdown
+      ? [ev(6, "session.shutdown", { shutdownType: "routine", totalPremiumRequests: 1, totalApiDurationMs: 4000, sessionStartTime: Date.parse(at(0)), codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: { [model]: { requests: { count: 2, cost: 1 }, usage: { inputTokens: 1500, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 200, reasoningTokens: 10 } } } })]
+      : []),
+  ];
+  return writeSession(join(home, ".copilot", "session-state", id, "events.jsonl"), records);
 }
 
 /** A Claude Code subagent's session under parent session `n`, as the CLI writes it in <session id>/subagents/: its
