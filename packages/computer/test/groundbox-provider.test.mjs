@@ -3,10 +3,11 @@
 // create, get, list, delete, exec, upload and extend, and how it reads the answers back. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Groundbox's own is proven live.
 import assert from "node:assert/strict";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { fakeCommands, recorder } from "./fake-groundbox.mjs";
 
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
@@ -24,6 +25,21 @@ const LABELS = { "agentrun.computer": "1", "agentrun.computer.name": NAME };
 const HAS_PROC = existsSync("/proc/self/stat");
 /** The kill runs the shared pid kill as root: as root already, or through passwordless sudo, as in a sandbox. */
 const CAN_KILL = HAS_PROC && (process.getuid() === 0 || (() => { try { execFileSync("sudo", ["-n", "true"], { stdio: "ignore" }); return true; } catch { return false; } })());
+/**
+ * The pids of process group `pgid` still running, from /proc. A killed process is no longer running though kill(-pgid, 0)
+ * still finds it until it is reaped: a zombie (Z), or one its reaper has taken and not yet released (X).
+ */
+const runningIn = (pgid) =>
+	readdirSync("/proc").filter((pid) => {
+		if (!/^\d+$/.test(pid)) return false;
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			const [state, , group] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+			return Number(group) === pgid && state !== "Z" && state !== "X";
+		} catch {
+			return false; // it ended while the scan ran
+		}
+	});
 
 const sandbox = (fields = {}) => ({ id: ID, status: "running", metadata: LABELS, created_at: "2026-11-18T00:00:00.000Z", stop_reason: null, ...fields });
 const refusal = (code, message) => ({ error: { code, message } });
@@ -72,7 +88,7 @@ test("the descriptor: a sandbox under GROUNDBOX_API_KEY, every network form thro
 
 test("the options are checked in words that never hold the key: the key, the API URL, the disk, and a daemon user that is the sandbox's own", async () => {
 	assert.throws(() => new GroundboxProvider({}), /options\.apiKey, the Groundbox API key, is required/);
-	assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "api.groundbox.dev" }), (error) => /must be https, or http to a loopback host/.test(error.message) && !error.message.includes(KEY));
+	assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "api.groundbox.dev" }), (error) => /the Groundbox API URL is not a URL/.test(error.message) && !error.message.includes(KEY));
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, diskGb: 500 }), /diskGb is a whole number of GB, 1 to 100/);
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, daemonUser: "1001:1001" }), /the uid of the sandbox's own user/);
 	assert.throws(() => new GroundboxProvider({ apiKey: KEY, maxLifetimeMs: 30 * 24 * 3_600_000 }), /at most 2591640000 ms/, "the cap may only lower the fact");
@@ -248,17 +264,30 @@ test("a long write goes in calls of at most 256 KiB, one after another, and ever
 	assert.deepEqual(sizes, [262_144, 262_144, bytes.length - 524_288]);
 });
 
-test("a socket that goes while the command runs is no end: another attaches from the position read to, no output lost or read twice, and writes go on meanwhile", async (t) => {
+test("a socket that goes while the command runs is no end: another attaches from the position read to, no output lost or read twice, and writes go on meanwhile", { timeout: 30_000 }, async (t) => {
 	const { host, streams } = hostOf(() => undefined);
 	t.after(streams.stopAll);
 	const proc = await host.exec(ID, ["sh", "-c", 'while read -r l; do echo "echo $l"; [ "$l" = end ] && exit 0; done'], CTX);
 	let read = "";
+	let ended = false;
+	let more = () => {};
 	const reading = (async () => {
-		for await (const chunk of proc.stdout) read += Buffer.from(chunk).toString();
+		try {
+			for await (const chunk of proc.stdout) {
+				read += Buffer.from(chunk).toString();
+				more();
+			}
+		} finally {
+			ended = true;
+			more();
+		}
 	})();
+	/** Answers once what was read holds text: woken by each chunk and by the stream's end, never by a clock; fails if the stream ends without it. */
 	const until = async (text) => {
-		for (let i = 0; i < 200 && !read.includes(text); i++) await new Promise((done) => setTimeout(done, 10));
-		assert.ok(read.includes(text), `read ${JSON.stringify(read)}, waiting for ${JSON.stringify(text)}`);
+		while (!read.includes(text)) {
+			assert.ok(!ended, `stdout ended without ${JSON.stringify(text)}: it read ${JSON.stringify(read)}`);
+			await new Promise((done) => (more = done));
+		}
 	};
 	await proc.write(Buffer.from("a\n"));
 	await until("echo a\n");
@@ -272,11 +301,12 @@ test("a socket that goes while the command runs is no end: another attaches from
 	await reading;
 	assert.equal(read, "echo a\necho b\necho end\n");
 	const execId = [...streams.commands.keys()][0];
+	// Each position counts the start's mark (1 byte of stderr) and the output read before the drop: 1 + 7, then 8 + 7.
 	assert.deepEqual(
 		streams.opened.slice(1).map(({ sent }) => sent[0]),
 		[
-			{ type: "attach", exec_id: execId, seq: 7, encoding: "base64" },
-			{ type: "attach", exec_id: execId, seq: 14, encoding: "base64" },
+			{ type: "attach", exec_id: execId, seq: 8, encoding: "base64" },
+			{ type: "attach", exec_id: execId, seq: 15, encoding: "base64" },
 		],
 	);
 	// A socket dropped to open another is never closed with 1000, which would end the command.
@@ -299,8 +329,8 @@ test("a stream that cannot be read on because the sandbox is gone fails at once,
 	const listeners = {};
 	const socket = { readyState: 1, bufferedAmount: 0, addEventListener: (type, listener) => (listeners[type] = listener), send() {}, close() {} };
 	const lossy = hostOf(() => undefined, { opened: [], webSocket: () => socket });
+	// The listeners are on the socket before the start's first await.
 	const starting = lossy.host.exec(ID, ["true"], CTX);
-	await new Promise((done) => setTimeout(done, 5));
 	listeners.open({});
 	listeners.message({ data: JSON.stringify({ type: "started", exec_id: "ex_0123456789abcdef" }) });
 	const proc = await starting;
@@ -319,8 +349,11 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	const stub = (onOpen) => {
 		const listeners = {};
 		const socket = { readyState: 1, bufferedAmount: 0, addEventListener: (type, listener) => (listeners[type] = listener), send: () => onOpen?.(listeners), close() {} };
-		setTimeout(() => listeners.open?.({}), 1);
-		return { opened: [], webSocket: () => socket };
+		const webSocket = () => {
+			queueMicrotask(() => listeners.open?.({}));
+			return socket;
+		};
+		return { opened: [], webSocket };
 	};
 	const saying = stub((listeners) => listeners.message({ data: JSON.stringify({ type: "error", message: "Sandbox sbx_0123456789ab is paused", code: "conflict" }) }));
 	await assert.rejects(hostOf(() => undefined, saying).host.exec(ID, ["true"], CTX), (error) => error.code === "refused" && /Groundbox ended the command: Sandbox sbx_0123456789ab is paused/.test(error.message));
@@ -346,7 +379,11 @@ test("kill is the shared pid kill of the sh's recorded pid, as root: the command
 	const kill = calls.findLast((call) => call.path.endsWith("/exec")).body;
 	assert.deepEqual([kill.args.slice(0, 2), kill.args.slice(3, 5), kill.stdin_base64], [["sh", "-c"], ["sh", dir], undefined]);
 	assert.equal(existsSync(dir), false, "the kill removed the command's directory");
-	assert.throws(() => process.kill(-child.pid, 0), "nothing of the command's process group is left");
+	// wait answered once every process of the group had closed the command's output, which a killed process does as it
+	// exits. Its parent, or init when the parent died first, reaps it a moment later, and a process that has closed its
+	// files can still read as running until it is a zombie: the group gets 2 s, and one the kill missed runs on past it.
+	for (let at = 0; at < 100 && runningIn(child.pid).length > 0; at++) await new Promise((done) => setTimeout(done, 20));
+	assert.deepEqual(runningIn(child.pid), [], "nothing of the command's process group is left running");
 });
 
 test("the exec passes every check of the exec pre-check, over the command stream's own messages", async (t) => {
@@ -416,34 +453,52 @@ function scriptedSockets() {
 }
 
 const out = (text, seq) => ({ type: "stdout", data: Buffer.from(text).toString("base64"), seq });
-const settle = () => new Promise((done) => setTimeout(done, 20));
+/** START_SCRIPT's mark (the first byte on stderr, once the command's directory, fifo and pid record are made), with what follows it. */
+const marked = (text = "", seq = 1 + Buffer.byteLength(text)) => ({ type: "stderr", data: Buffer.from(`\n${text}`).toString("base64"), seq });
+/** One turn of the event loop: what a promise or a stream moves on to next has run. No clock. */
+const turn = () => new Promise(setImmediate);
 
-/** Waits up to 2 s for check() to hold. */
-const until = async (check, what) => {
-	for (let i = 0; i < 200 && !check(); i++) await new Promise((done) => setTimeout(done, 10));
-	assert.ok(check(), what);
+/** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
+const within = async (promise, what, ms = 10_000) => {
+	let timer;
+	try {
+		return await Promise.race([promise, new Promise((_, fail) => (timer = setTimeout(() => fail(new Error(`no ${what} within ${ms} ms`)), ms)))]);
+	} finally {
+		clearTimeout(timer);
+	}
+};
+/** SIGKILL to the process group `child` leads (spawned detached), so nothing it started outlives a test. */
+const stopGroup = (child) => {
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		// Gone already.
+	}
 };
 
-test("a socket gone silent with no close is let go at once: another attaches from the position read to, once, and the old one's later messages and close are ignored", async () => {
+test("a socket gone silent with no close is let go at once: another attaches from the position read to, once, and the old one's later messages and close are ignored", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const streams = scriptedSockets();
 	const { host } = hostOf(() => undefined, streams, { streamBounds: { silenceMs: 100 } });
 	const starting = host.exec(ID, ["sh", "-c", "echo a; sleep 1; echo b"], CTX);
-	await until(() => streams.opened.length === 1, "the first socket");
 	const [first] = streams.opened;
+	await turn();
 	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
 	const proc = await starting;
 	const reading = textOf(proc.stdout);
 	first.say(out("a\n", 2));
+	t.mock.timers.tick(99);
+	assert.equal(streams.opened.length, 1, "not let go before the silence bound");
 	// No heartbeat and no close: the watchdog lets the socket go and attaches on a new one without waiting for a close.
-	await until(() => streams.opened.length === 2, "a second socket, with no close from the first");
+	t.mock.timers.tick(1);
+	assert.equal(streams.opened.length, 2, "a second socket, with no close from the first");
 	assert.deepEqual(first.closed, [4000]);
 	const [, second] = streams.opened;
-	await until(() => second.sent.length === 1, "the attach");
+	await turn();
 	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 2, encoding: "base64" }]);
 	// The old socket wakes up late: what it says is not read, and its close opens no other socket.
 	first.say(out("stale\n", 8));
 	first.emit("close", { code: 1006 });
-	await settle();
 	assert.equal(streams.opened.length, 2, "the late close opened no third socket");
 	second.say(out("b\n", 4));
 	second.say({ type: "exit", exit_code: 0 });
@@ -451,19 +506,21 @@ test("a socket gone silent with no close is let go at once: another attaches fro
 	assert.equal(await reading, "a\nb\n");
 });
 
-test("a socket silent from its `started` on, with no output, heartbeat or close, is let go too: another attaches from the start of the output", async () => {
+test("a socket silent from its `started` on, with no output, heartbeat or close, is let go too: another attaches from the start of the output", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const streams = scriptedSockets();
 	const { host } = hostOf(() => undefined, streams, { streamBounds: { silenceMs: 100 } });
 	const starting = host.exec(ID, ["sh", "-c", "sleep 1; echo a"], CTX);
-	await until(() => streams.opened.length === 1, "the first socket");
 	const [first] = streams.opened;
+	await turn();
 	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
 	const proc = await starting;
 	const reading = textOf(proc.stdout);
-	await until(() => streams.opened.length === 2, "a second socket, after `started` alone and silence");
+	t.mock.timers.tick(100);
+	assert.equal(streams.opened.length, 2, "a second socket, after `started` alone and silence");
 	assert.deepEqual(first.closed, [4000]);
 	const [, second] = streams.opened;
-	await until(() => second.sent.length === 1, "the attach");
+	await turn();
 	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 0, encoding: "base64" }]);
 	second.say(out("a\n", 2));
 	second.say({ type: "exit", exit_code: 0 });
@@ -471,12 +528,12 @@ test("a socket silent from its `started` on, with no output, heartbeat or close,
 	assert.equal(await reading, "a\n");
 });
 
-test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", async () => {
+test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", { timeout: 30_000 }, async () => {
 	const streams = scriptedSockets();
 	const { host } = hostOf(() => undefined, streams, { streamBounds: { queueHighBytes: 200_000, queueLowBytes: 50_000 } });
 	const starting = host.exec(ID, ["yes"], CTX);
-	await until(() => streams.opened.length === 1, "the first socket");
 	const [first] = streams.opened;
+	await turn();
 	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
 	const proc = await starting;
 	// Nobody reads stdout. The first chunks fill the stdout stream's own buffer; then the output queued here passes the
@@ -484,20 +541,24 @@ test("output the reader has not taken is bounded: past the high mark the socket 
 	// chunk it then says is not queued.
 	const chunks = Array.from({ length: 8 }, (_, i) => String.fromCharCode(97 + i).repeat(50_000));
 	chunks.slice(0, 3).forEach((text, i) => first.say(out(text, (i + 1) * 50_000)));
-	await settle();
+	// One turn: the events move the chunks the stdout stream's buffer takes.
+	await turn();
 	assert.deepEqual(first.closed, []);
+	// The queue's mark is checked as each chunk comes, so the socket is let go at once.
 	chunks.slice(3).forEach((text, i) => first.say(out(text, (i + 4) * 50_000)));
-	await settle();
 	assert.deepEqual(first.closed, [4000]);
 	// Anything the dropped socket still says is not queued, and its close opens no other.
 	first.say(out("late", 400_004));
 	first.emit("close", { code: 1006 });
-	await settle();
 	assert.equal(streams.opened.length, 1, "no socket while the reader is behind");
 	// The reader catches up: a new socket attaches from the last position queued, and nothing is lost or read twice.
 	const reading = textOf(proc.stdout);
-	await until(() => streams.opened.length === 2 && streams.opened[1].sent.length === 1, "a socket once the reader caught up");
-	const [, second] = streams.opened;
+	let second;
+	// Bounded in turns, not time: a reconnect that never comes fails here in words instead of stalling the run.
+	for (let turns = 0; (second = streams.opened[1]) === undefined || second.sent.length === 0; turns++) {
+		assert.ok(turns < 1_000, "the reader caught up and no socket attached");
+		await turn();
+	}
 	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 350_000, encoding: "base64" }]);
 	// The new socket reads on from there: the chunk the old one said after it was let go comes again, once.
 	second.say(out(chunks[7], 400_000));
@@ -532,21 +593,72 @@ function victim() {
 	return { child, line: `${child.pid} ${stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19]}\n` };
 }
 
+/** Whether a process runs: its /proc stat is there and its state is no zombie, which a killed process is until it is reaped. */
+function running(pid) {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		return !/^[ZX]/.test(stat.slice(stat.lastIndexOf(") ") + 2));
+	} catch {
+		return false;
+	}
+}
+
 /**
- * A command the stream says has started but that never ran: nothing of its own is made at the path its start names, so
- * whatever is there is the tool user's. Its writes and its kill run for real here (the stand-in's POST .../exec).
+ * A command whose sh made its directory and has since ended, removing it: the stream said `started` and the mark, and
+ * whatever is at the path its start names now is the tool user's. Its writes and its kill run for real here (the
+ * stand-in's POST .../exec).
  */
-async function unranCommand() {
+async function endedCommand() {
 	const streams = { ...scriptedSockets(), exec: fakeCommands().exec };
 	const { host } = hostOf(() => undefined, streams);
 	const starting = host.exec(ID, ["cat"], CTX);
-	await until(() => streams.opened[0]?.sent.length === 1, "the start");
+	await turn();
 	const path = streams.opened[0].sent[0].args[4];
 	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	streams.opened[0].say(marked());
 	return { path, proc: await starting };
 }
 
-test("a write never reaches a fifo the tool user planted at the path a command's start names: stdin of a command that ended, or never began, goes nowhere", async (t) => {
+test("a write and the kill wait for the mark the start's sh puts first on stderr once its directory, fifo and pid record are made: none runs before it, the mark is no output, and a stream that ends with none lets them through", async () => {
+	const steps = [];
+	const streams = scriptedSockets();
+	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.stdin_base64 === undefined ? "kill" : "write"), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
+	const exec = async () => {
+		const starting = host.exec(ID, ["cat"], CTX);
+		const socket = streams.opened.at(-1);
+		await turn();
+		socket.say({ type: "started", exec_id: "ex_0123456789abcdef" });
+		return { socket, proc: await starting };
+	};
+	const { socket, proc } = await exec();
+	const stderr = textOf(proc.stderr);
+	const wrote = proc.write(Buffer.from("x"));
+	await turn();
+	assert.deepEqual(steps, [], "a write before the mark waits for it");
+	// The mark and the command's own stderr in one chunk: the mark is taken off, the rest is the command's.
+	socket.say(marked("its own\n"));
+	await wrote;
+	assert.deepEqual(steps, ["write"]);
+	socket.say({ type: "exit", exit_code: 0 });
+	assert.equal(await proc.wait(), 0);
+	assert.equal(await stderr, "its own\n");
+
+	// A start whose sh refused its path ends with no mark: its words are stderr whole, and the kill waiting then goes on
+	// to its script, which finds no record.
+	steps.length = 0;
+	const refused = await exec();
+	const words = textOf(refused.proc.stderr);
+	const killing = refused.proc.kill();
+	await turn();
+	assert.deepEqual(steps, [], "a kill before the mark waits for it");
+	refused.socket.say({ type: "stderr", data: Buffer.from("agentrun: it is already there\n").toString("base64"), seq: 30 });
+	refused.socket.say({ type: "exit", exit_code: 126 });
+	await killing;
+	assert.deepEqual(steps, ["kill"]);
+	assert.equal(await words, "agentrun: it is already there\n");
+});
+
+test("a write never reaches a fifo the tool user planted at the path a command's start names: stdin of a command that ended goes nowhere", async (t) => {
 	const plants = {
 		// The fifo's own path before this fix: free for anyone in /tmp once the command's sh removed its fifo.
 		"a fifo at the path": (path) => heldFifo(path),
@@ -563,7 +675,7 @@ test("a write never reaches a fifo the tool user planted at the path a command's
 		},
 	};
 	for (const [what, plant] of Object.entries(plants)) {
-		const { path, proc } = await unranCommand();
+		const { path, proc } = await endedCommand();
 		t.after(() => rmSync(path, { recursive: true, force: true }));
 		const planted = plant(path);
 		t.after(planted.close);
@@ -590,32 +702,38 @@ test("a kill never takes its target from a pid record the tool user planted at a
 		},
 	};
 	for (const [what, plant] of Object.entries(plants)) {
-		const { path, proc } = await unranCommand();
+		const { path, proc } = await endedCommand();
 		t.after(() => rmSync(path, { recursive: true, force: true }));
 		t.after(() => rmSync(`${path}.pid`, { force: true }));
 		const { child, line } = victim();
 		t.after(() => child.kill("SIGKILL"));
 		plant(path, line);
+		// The kill answers once its script has ended: a kill it sent has landed by then.
 		await proc.kill();
-		await settle();
-		assert.deepEqual([child.exitCode, child.signalCode], [null, null], `${what}: the planted record's process was killed`);
+		assert.ok(running(child.pid), `${what}: the planted record's process was killed`);
 	}
 });
 
-test("the scripts, run by sh against paths of the test's: the start refuses a path already there; the write and the kill take only a directory the command's user owns with mode 0700, not through a link, and a fifo or record there of that user's", async (t) => {
-	if (!HAS_PROC) return t.skip("needs /proc");
-	// The scripts as the host sends them: its writes and its kill answered here, never run.
+/** The start, write and kill scripts as the host sends them: its write and its kill answered here, never run. */
+async function sentScripts() {
 	const steps = [];
 	const streams = scriptedSockets();
 	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.args), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
 	const starting = host.exec(ID, ["true"], CTX);
-	await until(() => streams.opened[0]?.sent.length === 1, "the start");
+	await turn();
 	const startScript = streams.opened[0].sent[0].args[2];
 	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	streams.opened[0].say(marked());
 	const proc = await starting;
 	await proc.write(Buffer.from("x"));
 	await proc.kill();
 	const [[, , writeScript], [, , killScript, , , pidKill]] = steps;
+	return { startScript, writeScript, killScript, pidKill };
+}
+
+test("the scripts, run by sh against paths of the test's: the start refuses a path already there; the write and the kill take only a directory the command's user owns with mode 0700, not through a link, and a fifo or record there of that user's", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	const { startScript, writeScript, killScript, pidKill } = await sentScripts();
 	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	// `id` answering another uid stands in for a directory and files of another user's, which this test can't make.
@@ -626,15 +744,16 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	let n = 0;
 	const fresh = () => join(root, `c${++n}`);
 
-	// The start: a path already there is never its own; a path it makes is a 0700 directory, gone once the command ends.
+	// The start: a path already there is never its own, and no mark; a path it makes is a 0700 directory holding the fifo
+	// and the pid record before the mark, gone once the command ends.
 	const taken = fresh();
 	mkdirSync(taken, { mode: 0o700 });
 	const refused = sh(startScript, [taken, "sh", "-c", "echo ran"]);
 	assert.deepEqual([refused.status, refused.stdout], [126, ""]);
-	assert.match(refused.stderr, /is already there/);
+	assert.match(refused.stderr, /^agentrun: .* is already there/);
 	const own = fresh();
-	const ran = sh(startScript, [own, "stat", "-c", "%u %a", own]);
-	assert.deepEqual([ran.status, ran.stdout], [0, `${process.getuid()} 700\n`]);
+	const ran = sh(startScript, [own, "sh", "-c", 'stat -c "%u %a" "$1"; [ -p "$1/in" ] && [ -s "$1/pid" ] && echo made', "sh", own]);
+	assert.deepEqual([ran.status, ran.stdout, ran.stderr], [0, `${process.getuid()} 700\nmade\n`, "\n"]);
 	assert.equal(existsSync(own), false, "the start removed its directory");
 
 	/** A directory at a fresh path the way the tool user might leave it, with `file` made in it by make(path). */
@@ -666,7 +785,8 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 		assert.equal(fifos.at(-1).read(), "", `${shape}: the planted fifo was written to`);
 	}
 
-	// The kill: refused before it reads a record that is not its own, so the process the record names lives on.
+	// The kill: refused before it reads a record that is not its own (exit 4, which comes before its kill line), so the
+	// process the record names lives on.
 	const { child, line } = victim();
 	t.after(() => child.kill("SIGKILL"));
 	for (const [shape, options] of Object.entries(shapes)) {
@@ -674,8 +794,54 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 		assert.equal(killed.status, 4, `${shape}: ${killed.stderr}`);
 		assert.match(killed.stderr, /is not the command's own/, shape);
 	}
-	await settle();
-	assert.deepEqual([child.exitCode, child.signalCode], [null, null], "a planted record's process was killed");
+	assert.ok(running(child.pid), "a planted record's process was killed");
+	// With nothing at the path (the command ended): the write is exit 3 and the kill exit 0, at once, with no wait.
+	assert.equal(sh(writeScript, [fresh()], { input: "x" }).status, 3);
+	assert.equal(sh(killScript, [fresh(), pidKill]).status, 0);
+});
+
+test("a write is made once its bytes are in the command's fifo, though the command reads them and ends, and its directory goes, before the write answers; a fifo gone before the write opens it takes nothing, and the write leaves no file of its own", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	const { startScript, writeScript } = await sentScripts();
+	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+
+	// A command that ends on the line it reads, as a shell ends on `exit`; its sh then removes the directory. The command
+	// and the write each lead a process group, and every wait on them is bounded: a write that never reaches the command
+	// leaves it waiting in `read`, and the test then fails and stops both groups instead of waiting with them.
+	const dir = join(root, "c1");
+	const command = spawn("sh", ["-c", startScript, "sh", dir, "sh", "-c", 'read -r line; echo "read $line"'], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+	t.after(() => stopGroup(command));
+	let said = "";
+	command.stdout.on("data", (bytes) => (said += bytes));
+	const ended = new Promise((done) => command.on("close", done));
+	// START_SCRIPT's mark, its first byte on stderr: the directory and the fifo are made.
+	await within(once(command.stderr, "data"), "mark from the start script");
+	// The write's stdin stays open past the line, so the write answers only after the command has read it and gone.
+	const write = spawn("sh", ["-c", writeScript, "sh", dir], { stdio: ["pipe", "ignore", "pipe"], detached: true });
+	t.after(() => stopGroup(write));
+	let complaint = "";
+	write.stderr.on("data", (bytes) => (complaint += bytes));
+	const wrote = new Promise((done) => write.on("close", done));
+	write.stdin.write("end\n");
+	assert.equal(await within(ended, "end of the command after the write's line"), 0);
+	assert.equal(said, "read end\n");
+	assert.equal(existsSync(dir), false, "the command's sh removed its directory");
+	write.stdin.end();
+	assert.equal(await within(wrote, "answer from the write"), 0, `the command read the line, so the write was made: ${complaint}`);
+
+	// A fifo that goes between the write's checks and its open, as when the command ends then: `stat`, asked for the fifo's
+	// owner (the last check), answers and then removes it.
+	const bin = join(root, "bin");
+	mkdirSync(bin);
+	const realStat = execFileSync("sh", ["-c", "command -v stat"], { encoding: "utf8" }).trim();
+	writeFileSync(join(bin, "stat"), `#!/bin/sh\n"${realStat}" "$@"; s=$?\n[ "$3" = in ] && rm -f in\nexit $s\n`, { mode: 0o755 });
+	const gone = join(root, "c2");
+	mkdirSync(gone, { mode: 0o700 });
+	execFileSync("mkfifo", ["-m", "600", join(gone, "in")]);
+	const late = spawnSync("sh", ["-c", writeScript, "sh", gone], { input: "a disk token", encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+	assert.equal(late.status, 3, late.stderr);
+	assert.equal(existsSync(join(gone, "in")), false, "the write left no file of its own");
 });
 
 test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
@@ -693,37 +859,32 @@ test("a start that does not hear `started` within its bound ends the command: it
 	const [opened] = streams.opened;
 	assert.equal(opened.closed, 1000, "a close that is not 1000 leaves the command running");
 	const [command] = streams.commands.values();
-	await until(() => command.exit !== undefined, "the command ended in the sandbox");
+	if (command.exit === undefined) await once(command.child, "close");
+	assert.notEqual(command.exit, undefined, "the command ended in the sandbox");
 });
 
-test("the API URL is https, or http to a loopback host alone, so the key never crosses a network in cleartext", async (t) => {
-	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1.example.test/v1", "http://localhost.example.test/v1", "ws://api.groundbox.dev/v1", "api.groundbox.dev"]) {
-		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /must be https, or http to a loopback host/.test(error.message) && !error.message.includes(KEY), apiUrl);
+test("the API URL is https alone, loopback included, so the key never crosses in the clear", () => {
+	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1", "ws://api.groundbox.dev/v1"]) {
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /^the Groundbox API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), apiUrl);
 	}
-	for (const apiUrl of ["https://api.groundbox.dev/v1", "http://127.0.0.1:8080/v1", "http://127.9.8.7/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1"]) {
-		assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), apiUrl);
-	}
-	// A loopback http URL's stream is ws: on the same host.
-	const streams = fakeCommands();
-	t.after(streams.stopAll);
-	const { host } = hostOf(() => undefined, streams, { apiUrl: "http://127.0.0.1:8080/v1" });
-	const proc = await host.exec(ID, ["true"], CTX);
-	assert.equal(await proc.wait(), 0);
-	assert.equal(streams.opened[0].url, `ws://127.0.0.1:8080/v1/sandboxes/${ID}/exec/stream`);
+	assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "https://api.groundbox.dev/v1", daemonPath: "/nonexistent/computerd" }));
 });
 
-test("a peer that takes every attach and then says nothing fails wait() in words within the give-up bound, never hangs", async () => {
+test("a peer that takes every attach and then says nothing fails wait() in words within the give-up bound, never hangs", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const streams = scriptedSockets();
 	const { host } = hostOf((method) => (method === "GET" ? [200, sandbox()] : undefined), streams, { streamBounds: { silenceMs: 100, resumeGiveUpMs: 500 } });
 	const starting = host.exec(ID, ["sleep", "600"], CTX);
-	await until(() => streams.opened.length === 1, "the first socket");
+	await turn();
 	streams.opened[0].say({ type: "started", exec_id: "ex_0123456789abcdef" });
 	const proc = await starting;
-	// The first socket goes; each one after it opens, takes its attach, and never says a word.
+	// The first socket goes; the next opens, takes its attach, and never says a word.
 	streams.opened[0].emit("close", { code: 1006 });
-	const outcome = await Promise.race([proc.wait().then((code) => `answered ${code}`, (error) => error), new Promise((done) => setTimeout(() => done("still waiting after 5 s"), 5_000))]);
+	await turn();
+	assert.deepEqual(streams.opened[1].sent.map((one) => one.type), ["attach"]);
+	t.mock.timers.tick(100);
+	const outcome = await proc.wait().catch((error) => error);
 	assert.ok(outcome instanceof Error, `wait() is ${outcome}`);
 	assert.match(outcome.message, /could not be read on again within 0\.5 s: the command stream said nothing for 0\.1 s after its attach/);
-	assert.ok(streams.opened.length >= 2, "it attached again");
-	assert.ok(streams.opened.slice(1).every((socket) => socket.sent[0]?.type === "attach"));
+	assert.equal(streams.opened.length, 2, "no try that would start past the bound");
 });

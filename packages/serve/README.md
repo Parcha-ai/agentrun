@@ -1361,9 +1361,8 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store (the runner's
-redactor keeps the value in memory to cut it), and the run reports the turn
-ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
+**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
+reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
 tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
 turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
 answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
@@ -1399,9 +1398,9 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
-  each claim for its tools alone, and erased from the store by the write that ends its turn; the runner's redactor
-  keeps each value in memory to cut it. Since no read after that could cut them, the runner cuts them from everything
-  the run writes, as it writes it.
+  each claim for its tools alone, and erased from the store by the write that ends its turn. Since no read after that
+  could cut them, the runner cuts them from everything the run writes, as it writes it. To cut them, the runner's
+  redactor keeps each value in memory for as long as the runner runs, as it does a run's `model_key`.
 - A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
   going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
   none once its last turn ended.
@@ -1410,15 +1409,21 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 hold (409, as before). With `1`, a template's apply makes its agent though a tool key it declares is not set here, with
 a warning, and each run of that agent must bring the key in `keys`: without it, the run is 409 `agent_not_runnable` at
 `keys.<NAME>` before anything is made, and so is a message that would start a turn. Keys the server holds are still
-used by runs that bring none. A trigger's firing brings no keys, so no trigger is made whose firings would start or
-message such runs without them: the apply skips the template's triggers with a warning at `triggers.<N>`
-(`not_set_up_here`, the apply still 201), unless the [launch hook](#launch-hook) is set, which hands each firing to
-your backend to start the run with its keys; `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409
-`agent_not_runnable` naming the keys for a trigger that would start runs of the agent with no hook, or message one of
-its runs, hook or not. `MONID_API_KEY` stays the server's even with
-the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
-grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
-bring its own monid key to use in place of the server's.
+used by runs that bring none.
+
+A trigger's firing brings no keys, so no trigger is made whose firings would start or message such runs without them.
+The apply skips the template's triggers with a warning at `triggers.<N>` (`not_set_up_here`, the apply still 201),
+unless the [launch hook](#launch-hook) is set, which hands each firing to your backend to start the run with its keys.
+`POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409 `agent_not_runnable` naming the keys for a trigger that
+would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
+before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
+update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
+fires, and the skip's warning names it and says how to turn it off.
+
+`MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
+is saved, before any run, so a template that grants them is still refused at its apply (409 at
+`secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
+server's.
 
 ### Direct Particle-1
 
@@ -1733,30 +1738,34 @@ provider the user picked, optional: the agent's own (`definition.tool_settings`)
 (`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
 only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the kernel's
-keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
 Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
 counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Exa. `off` turns `web_search` off: nothing is searched,
-and an agent naming it is refused (`409`) until it is turned on again. A pick of `exa-keyless` is keyless Exa alone,
-the key held or not.
+admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
+Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
-it is Parallel on the server's key, else keyless Exa, or the provider picked, and a pick of `native` alone is
+it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
-| `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
-| `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
+| `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
+| `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
+| `web_fetch`, `auto` (the default) | the guarded direct fetch where the server holds a Parallel key, else keyless Firecrawl | the same | the same |
+| `web_fetch`, `firecrawl-keyless` | Firecrawl's public MCP scrape, the guarded direct fetch behind it: Firecrawl is sent each URL | the same | the same |
+| `web_fetch`, `kernel` | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
 default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
-for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
+for its capability (`auto`, `native`, `firecrawl-keyless`, `exa-keyless`, `parallel` or `off` for `web_search`; `auto`,
+`firecrawl-keyless`, `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
 tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
@@ -1766,8 +1775,8 @@ settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
 `GET /capabilities` is the one tool catalog: each of the three tools there gives the providers offered (`providers`), the
 server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
-resolves to on each harness under the server's settings and default model (`native`, `kernel`, `exa-keyless`,
-`parallel`, or `unavailable: <reason>`), with `why`, keyed the same, one plain sentence for each (`Codex's own search`,
+resolves to on each harness under the server's settings and default model (`native`, `kernel`, `firecrawl-keyless`,
+`exa-keyless`, `parallel`, or `unavailable: <reason>`), with `why`, keyed the same, one plain sentence for each (`Codex's own search`,
 `behind a gateway Codex has no own search; your Parallel key (saved)`, where `saved` is a key saved on Tool keys and
 `server` one in the server's environment), both recomputed at each `PUT` and each key saved or deleted. `GET /agents/{id}` projects it onto the agent:
 `tools`, each tool its current revision grants in the same order, and for one with a choice the provider in force,
@@ -1787,7 +1796,8 @@ run (`409` with `details.asks`); set that tool to allow for the agent (`definiti
 allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
-Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
+Now `web_fetch` on `auto` is the guarded direct fetch on such a server (keyless Firecrawl on one with no Parallel key)
+unless Parallel is picked; to keep the old behaviour, set
 `PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
 [Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
 
@@ -1800,11 +1810,37 @@ answer with its sources. A `pause_turn`
 answers what it has, and nothing is retried. It is booked as one of the run's requests: its tokens at the model's price
 plus $10 per 1,000 searches (Anthropic) or calls (OpenAI).
 
-With no native search and no Parallel key, web_search falls back to Exa's public keyless MCP endpoint, a third-party
-service with its own rate limits (unpublished) and its own terms (https://exa.ai/terms). To turn it off, set
-`web_search` to `native` (native only) for the server (`PUT /v2/settings/tools`) or for an agent (`tool_settings`). To
-search with a key instead, save a Parallel key on Tool keys (or set `PARALLEL_API_KEY`): `auto` then searches through
-Parallel and bills the key.
+With no native search and no Parallel key, web_search falls back to Firecrawl's public keyless MCP endpoint, with Exa's
+behind it. Both are third-party services with their own free limits and their own terms (https://www.firecrawl.dev/terms-of-service,
+https://exa.ai/terms). To turn them off, set `web_search` to `native` (native only) for the server
+(`PUT /v2/settings/tools`) or for an agent (`tool_settings`). To search with a key instead, save a Parallel key on Tool
+keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
+
+Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
+no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
+answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
+and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
+the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
+(`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
+only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
+`KEYLESS_TOOL_NOT_AVAILABLE` turn Firecrawl off for the rest of the run, and the same call goes to the backend behind it
+(keyless Exa for `web_search`, the guarded direct fetch for `web_fetch`); `KEYLESS_LIMIT_REACHED` or a `429` is a rate
+limit, and Firecrawl is held for the wait it names (60 s where it names none), with no cutoff. With Firecrawl and Exa both
+off for a run, `web_search` answers `search is unavailable for the rest of this run; answer from what you have`.
+
+`web_fetch` through keyless Firecrawl sends Firecrawl each URL it reads: Firecrawl, a third party, fetches the page and
+sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
+guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
+or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
+`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
+agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
+Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+
+A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
+Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
 
 Keyless Exa is one exchange with Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its `web_search_exa` tool, at most
 8 results, no key), dialled over IPv4 alone: the server looks Exa's name up for IPv4 and connects to that address, since
@@ -1818,7 +1854,7 @@ other failure Exa answers reads `Free web search failed. Exa said: "<the first s
 characters; Exa's own instructions (a key for its MCP URL) are never passed on.
 
 Every provider answers one shape, `{provider, query, results: [{url, title, snippet, published?}], text?}`, `provider`
-naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
+naming the one that served it (`native`, `firecrawl-keyless`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
 the model reads ends with one line asking it to cite the URL of each result it relies on.
 
 `web_fetch` answers a Page with `via`, a part of the page at a time (`offset`, `max_chars`, as above). With Parallel
@@ -1828,7 +1864,8 @@ text, about $0.001 an extract, one a page a run) and `via` is
 with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
 refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
-run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL the guard
+run. A fetch Parallel was not picked for says nothing of it. Through keyless Firecrawl the page is Firecrawl's markdown
+and `via` is `"firecrawl-keyless"`; a refusal or failure there is the guarded direct fetch, `via: "direct"`. A URL passes the guard's own check before anything is sent to Parallel or Firecrawl: a URL the guard
 refuses is refused and never leaves the machine. A call stopped before its page arrived answers `ok: false` with
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
@@ -1853,7 +1890,7 @@ request checked meanwhile, from any branch, tool round or harness, counts it bes
 never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
 call (its execution path).
 
-Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
+Keyless Exa, where `web_search` resolves to it or to keyless Firecrawl (behind it), searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
 `web_search_exa` tool), with no key. What leaves the server is
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
@@ -1863,8 +1900,8 @@ are held for the wait. Exa answers its daily count running out the same way, nam
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
 included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
-relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
-turns `web_search` off, keyless Exa included.
+relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
+holds no Parallel key; `off` turns `web_search` off, both included.
 
 The `browser` tool runs hosted sessions, at Browserbase or at Kernel, never a Chrome on this machine. Which one is
 picked like `web_search`'s provider: the agent's own (`definition.tool_settings.browser.provider`) over the server's
@@ -2198,8 +2235,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
-`url` is `https`, or `http` on loopback when the server was started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`
-([start-time switches](#start-time-switches)); without it a loopback URL is `422` on `url`, in words that name the switch.
+`url` is `https`, or `http` on loopback; a loopback URL (either scheme) is taken only on a server started with
+`AGENTRUN_MCP_ALLOW_LOOPBACK=1` ([start-time switches](#start-time-switches)).
 
 A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
 tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
@@ -2217,7 +2254,11 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the toolkit needs your account and `user_id`
+user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
+address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
 in. The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
 against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one
@@ -2252,9 +2293,8 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
-run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows (the runner's
-redactor keeps them in memory to cut them). A message's binding replaces the
-run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
+run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
+binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
 handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
@@ -2268,8 +2308,13 @@ refused, so a host must not bind a per-run server to a `user_id` that a single-u
 What can go wrong, told apart:
 
 - `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
-  owner's console saves. The link opens Settings → MCP servers with the form filled in (name, URL, kind of credential,
-  toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
+  owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
+  not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
+  (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
+  hold one is left out.
+- `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
+  nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
+  of a server it saved is under way makes the server the owner's, and the token's is this `412`.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
@@ -2327,9 +2372,8 @@ those headers, and only to the origin the server had when the run was started. T
 credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
 a resume, a restart or a lost lease uses it again, and erased from the store by the write that ends the run. It is never
 in the run's saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new
-credential answers the first request's run), and its values are cut from whatever the run shows (the runner's redactor
-keeps them in memory to cut them). `POST /v2/runs/{run_id}/messages`
-takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+credential answers the first request's run), and its values are cut from whatever the run shows.
+`POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
 for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
@@ -3308,16 +3352,44 @@ serves these routes alone:
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
   them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
   or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
+  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
+  backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
+  - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
+    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
+    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
+    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
+    runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
+    they do on the full server;
+  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+    pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
+    header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
+    address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
+    whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
+    and nothing is sent;
+  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
+    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
+    `412`.
+
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
+  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
+  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
+  way;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
@@ -5006,8 +5078,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the computer providers' account keys ([Sandbox](#sandbox)) and not the Archil account key
-  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential. A tool key reaches it only when its
+  It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
+  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
+  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.

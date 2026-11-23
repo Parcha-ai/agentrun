@@ -240,6 +240,12 @@ export function launchOnItsDisk(launch: RunLaunch, apart = false): RunLaunch {
   return { ...launch, learning: { seed: null, section: "", seedFailed: failed, ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
+/** Whether a person started the run: no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
+ *  is no learned workflow's audit shadow (runner/audit.ts) or replay (runner/promotion.ts), which the server starts
+ *  itself. Only such a run goes on its owner's own sign-in (runner/harness-loops.ts, cli-run-spec.ts). */
+export const personStarted = (launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): boolean =>
+  launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
+
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */
 export function readLaunchBody(stored: unknown): RunLaunch | undefined {
