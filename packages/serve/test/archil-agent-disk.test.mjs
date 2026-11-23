@@ -413,6 +413,17 @@ test("a disk Archil reads as deleted is gone, as one it has no record of is: the
   await assert.rejects(diskFor(env, { agentId: "agent-b", runId: "run-2", launch: { diskId: DELETED, kind: "launch" } }), (error) => error instanceof ArchilClaimRefused && error.message.includes(`no disk ${DELETED} in region ${REGION}`));
 });
 
+test("a claim's first read of its agent's disk is bounded by the wait's deadline: a read Archil never answers refuses the claim, never holds it", async (t) => {
+  const env = await setup(t);
+  await storeAgentDisk(env.store, "agent-a", { diskId: CUSTOMER });
+  // Every read of the disk stalls until its signal aborts; a read sent with no signal would never end.
+  const stalled = { ...env, control: { ...env.control, fetch: (input, init = {}) => new Promise((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true })) } };
+  const outwaited = new Promise((done) => { const timer = setTimeout(() => done("still waiting"), 5_000); t.after(() => clearTimeout(timer)); });
+  const settled = diskFor(stalled, { agentId: "agent-a", runId: "run-1", availableMs: 200 }).then(() => "claimed", (error) => error);
+  const outcome = await Promise.race([settled, outwaited]);
+  assert.ok(outcome instanceof ArchilClaimRefused && outcome.message.includes(CUSTOMER), `refused naming the disk once the deadline passed, not ${String(outcome)}`);
+});
+
 test("a stored agent disk in another region than the server's key refuses the claim naming both regions", async (t) => {
   const env = await setup(t);
   await storeAgentDisk(env.store, "agent-a", { diskId: ELSEWHERE });
