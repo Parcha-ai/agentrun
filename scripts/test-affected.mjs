@@ -334,21 +334,28 @@ function mentionOf(path, pkg) {
 
 /**
  * Whether the folders written right before a file's basename (`before` ends where the basename starts) could be the file's
- * own, `folders` from the root. Read from the basename backwards, each is the file's folder at that depth, a part the text
- * computes (`${dir}`, `*`), or a step that cannot be placed (`.`, `..`), which ends the reading. A folder of another name
- * means another file. No folder written, or more of them than the file has, could be it.
+ * own, `folders` from the root. Read from the basename backwards, each is the file's next folder up, a part the text
+ * computes (`${dir}`, `*`), or a step that cannot be placed (`.`, `..`), which ends the reading. A computed part stands for
+ * one folder or several (`dir` may be `nested/deep`), so the folders written above it may sit at any depth that leaves it
+ * at least one; they must still be the file's own. A folder of another name means another file. No folder written, or
+ * more of them than the file has, could be it.
  */
 export function ownFolders(before, folders) {
   const written = /(?:[\w.@$*{}-]+\/)+$/.exec(before)?.[0].split('/').filter(Boolean) ?? [];
-  for (let depth = 1; depth <= written.length; depth++) {
-    const part = written[written.length - depth];
+  // Whether the first `w` written parts can be the file's first `f` folders.
+  const fits = (w, f) => {
+    if (w === 0) return true;
+    const part = written[w - 1];
     if (part === '.' || part === '..') return true;
-    if (/[$*{}]/.test(part)) continue;
-    const folder = folders[folders.length - depth];
-    if (folder === undefined) return true;
-    if (part !== folder) return false;
-  }
-  return true;
+    if (f === 0) return true;
+    if (/[$*{}]/.test(part)) {
+      if (w === 1) return true;
+      for (let span = 1; span < f; span++) if (fits(w - 1, f - span)) return true;
+      return false;
+    }
+    return part === folders[f - 1] && fits(w - 1, f - 1);
+  };
+  return fits(written.length, folders.length);
 }
 
 /**

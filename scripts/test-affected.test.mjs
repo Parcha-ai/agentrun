@@ -137,6 +137,14 @@ test("the folders written before a file's name are its own, computed or impossib
     assert.equal(ownFolders(before, folders), false, JSON.stringify(before));
   }
   assert.equal(ownFolders('docs/', []), true, 'a file at the root: more folders written than it has cannot be placed');
+  // A computed part may stand for several folders: fixtures/${dir}/ names test/fixtures/nested/deep/ when dir is nested/deep.
+  const deep = [...folders, 'nested', 'deep'];
+  for (const before of ['fixtures/${dir}/', 'test/fixtures/${dir}/', 'a/${path}/', '${base}/nested/deep/']) {
+    assert.equal(ownFolders(before, deep), true, JSON.stringify(before));
+  }
+  for (const before of ['other/${dir}/', 'fixtures/${dir}/other/', 'b/test/${dir}/']) {
+    assert.equal(ownFolders(before, deep), false, JSON.stringify(before));
+  }
 });
 
 test('a type-only import picks nothing; a code file no test reaches picks the package\'s tests that import by a computed path', (t) => {
