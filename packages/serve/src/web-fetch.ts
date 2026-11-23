@@ -45,12 +45,13 @@ const PORTS = new Set(["", "80", "443"]);
 /** How many pages a run keeps what it read of (Pages): each at most PAGE_READ_MAX_CHARS characters of text. */
 export const PAGES_HELD = 8;
 
-/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
-export type WebPage = Page & { via: "parallel" | "firecrawl-keyless" | "direct" | "stopped"; parallel?: string };
-/** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
-export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
+/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. `fallback`, on a page
+ *  fetched directly where keyless Firecrawl was the run's: why Firecrawl gave none, in a few words (never the URL). */
+export type WebPage = Page & { via: "parallel" | "firecrawl-keyless" | "direct" | "stopped"; parallel?: string; fallback?: string };
+/** A page web_fetch read, and how (WebPage's `via`, `parallel` and `fallback`). */
+export type WebRead = Read & Pick<WebPage, "via" | "parallel" | "fallback">;
 /** A page web_fetch could not read, and how it tried. */
-type WebUnread = Unread & Pick<WebPage, "via" | "parallel">;
+type WebUnread = Unread & Pick<WebPage, "via" | "parallel" | "fallback">;
 /** The pages a run reads, by the URL asked for, each from its read's start (so calls at once share it), the last used
  *  last: at most PAGES_HELD of them. */
 export type Pages = Map<string, Promise<WebRead | WebUnread>>;
@@ -130,10 +131,14 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
  *  fails is never a silent fallback. Keyless Firecrawl is a free service with the direct fetch behind it, by design. */
 async function readOnce(url: unknown, parallel: Extract | null | undefined, firecrawl: KeylessFetch | null | undefined, checkMs: number, options: GuardOptions, log: (line: string) => void): Promise<WebRead | WebUnread> {
   let firecrawlSaid: string | undefined;
-  if (firecrawl?.live() && typeof url === "string" && (await passes(url, options, checkMs))) {
+  let fallback: string | undefined;
+  // Firecrawl held (off for the run, or its rate limit's wait) is not asked, and costs no guard check; why goes with the page.
+  if (firecrawl && typeof url === "string") fallback = firecrawl.held();
+  if (firecrawl && fallback === undefined && typeof url === "string" && (await passes(url, options, checkMs))) {
     const read = await firecrawl.read(url, options.signal);
-    if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
-    firecrawlSaid = read;
+    if ("ok" in read) return { ...read, via: "firecrawl-keyless" };
+    firecrawlSaid = read.error;
+    fallback = read.brief;
   }
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
@@ -146,7 +151,7 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, fire
   const direct = await readDirect(url, options);
   // Why Firecrawl gave no page goes to the server's log, never to the model (the page is the direct fetch's); never the URL.
   if (firecrawlSaid !== undefined) log(logLine("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" }));
-  return { ...direct, via: "direct", ...(why ? { parallel: why } : {}) };
+  return { ...direct, via: "direct", ...(why ? { parallel: why } : {}), ...(fallback ? { fallback } : {}) };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -203,8 +208,8 @@ export async function webFetch(url: unknown, { parallel, firecrawl, pages, check
   }
   const read = await untilStopped(url, reading, signal);
   if (!read.ok) return read;
-  const { via, parallel: why, ...page } = read;
-  return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
+  const { via, parallel: why, fallback, ...page } = read;
+  return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}), ...(fallback ? { fallback } : {}) };
 }
 
 /** Each run's Parallel extract, by the environment its calls are given: one object per run (main's run process hands
@@ -302,7 +307,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL, fake
   if (planeOf(env).web_fetch === "parallel" && !fake) parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (its link targets and the URLs written out in its text, a JSON body's strings and an XML feed's links among them, where an HTML page fetched directly gives its link targets alone; with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, firecrawl-keyless when Firecrawl's keyless service read it (it is sent the URL), direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never read and never sent to a third party (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (its link targets and the URLs written out in its text, a JSON body's strings and an XML feed's links among them, where an HTML page fetched directly gives its link targets alone; with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, firecrawl-keyless when Firecrawl's keyless service read it (it is sent the URL), direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page, and fallback saying why in a few words, where keyless Firecrawl gave none), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never read and never sent to a third party (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

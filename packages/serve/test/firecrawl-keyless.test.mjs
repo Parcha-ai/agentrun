@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { explainCapability, planeFor, PROVIDERS, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_FIRECRAWL_ENV, firecrawlFetch, firecrawlScrape, firecrawlSearch } from "../dist/firecrawl-keyless.js";
-import { fetchFor, firecrawlOf, webFetch, webFetchTool } from "../dist/web-fetch.js";
+import { fetchFor, firecrawlOf, webFetch, webFetchText, webFetchTool } from "../dist/web-fetch.js";
 import { SEARCH_UNAVAILABLE, searchBreaker, searchInTurn, webSearchTool } from "../dist/web-search.js";
 import { RATE_LIMITED } from "../dist/keyless-mcp.js";
 import { RATE_LIMITED as EXA_RATE_LIMITED } from "../dist/exa-keyless.js";
@@ -202,7 +202,7 @@ test("a page Firecrawl scraped with a status that is not 2xx is no read: the fet
     assert.doesNotMatch(page.text, /Read by Firecrawl/, "Firecrawl's page is never the answer");
     assert.deepEqual(net.dialled, [PUBLIC]);
     const read = await firecrawlScrape(PUBLIC, { endpoint: fc.url });
-    assert.deepEqual(read, { error: `Firecrawl's fetch: the page answered ${statusCode}` });
+    assert.deepEqual(read, { error: `Firecrawl's fetch: the page answered ${statusCode}`, brief: `firecrawl page ${statusCode}` });
     await fetchFor(env, "http://public.example/notes.txt", net);
     assert.equal(fc.calls("firecrawl_scrape"), 3, "no limit: Firecrawl is asked again");
   }
@@ -254,6 +254,36 @@ test("a fetch Firecrawl refuses and the direct fetch saves logs Firecrawl's reas
   assert.equal(lines.length, 1, "nothing logged for a page Firecrawl read");
 });
 
+test("a fetch Firecrawl gave no page tells the model why in a few words (fallback), never the URL or Firecrawl's own words; a page Firecrawl read, or a URL never sent to it, says none", { timeout: 15_000 }, async (t) => {
+  const fallbackOf = async (answer, options = {}, calls = 1) => {
+    const fc = await firecrawlServer(t, answer);
+    const firecrawl = firecrawlFetch({ endpoint: fc.url, ...options }, () => Date.parse("2026-11-23T12:00:00Z"));
+    const said = [];
+    for (let i = 0; i < calls; i += 1) {
+      const page = await webFetch(PUBLIC, { ...network(), firecrawl, log: () => {} });
+      assert.deepEqual([page.ok, page.via], [true, "direct"], JSON.stringify(page));
+      said.push(page.fallback);
+    }
+    return said;
+  };
+  assert.deepEqual(await fallbackOf(() => refusal("KEYLESS_QUOTA_EXHAUSTED"), {}, 2), ["firecrawl quota spent", "firecrawl quota spent"], "and on the next call, Firecrawl off for the run");
+  assert.deepEqual(await fallbackOf(() => refusal("KEYLESS_ACCESS_NOT_AVAILABLE")), ["firecrawl refused keyless use"]);
+  assert.deepEqual(await fallbackOf(() => refusal("KEYLESS_LIMIT_REACHED", { retryAfter: 10 }), {}, 2), ["firecrawl rate-limited", "firecrawl rate-limited"], "and within the wait it named");
+  assert.deepEqual(await fallbackOf((name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify({ ...PAGE, metadata: { ...PAGE.metadata, statusCode: 404 } }) }] } : answers(name))), ["firecrawl page 404"]);
+  assert.deepEqual(await fallbackOf(() => new Promise(() => {}), { timeoutMs: 50 }), ["firecrawl timed out"]);
+
+  const fc = await firecrawlServer(t, () => refusal("KEYLESS_QUOTA_EXHAUSTED"));
+  const { env } = await keyless(t, fc.url);
+  const text = webFetchText(await fetchFor(env, PUBLIC, network()));
+  assert.match(text, /"via":"direct","fallback":"firecrawl quota spent"/, "the model reads it");
+  assert.doesNotMatch(text, /signup|firecrawl\.dev/i, "never Firecrawl's words");
+
+  const read = await firecrawlServer(t, answers);
+  assert.equal("fallback" in (await webFetch(PUBLIC, { ...network(), firecrawl: firecrawlFetch({ endpoint: read.url }), log: () => {} })), false, "a page Firecrawl read");
+  const local = await webFetch("http://127.0.0.1/x", { ...network(), firecrawl: firecrawlFetch({ endpoint: read.url }), log: () => {} });
+  assert.equal("fallback" in local, false, "a URL the guard refused: Firecrawl was never asked");
+});
+
 test("a scrape reads up to the direct fetch's 5 MiB, past search's 1 MiB; one past that is refused in words, never parsed cut, and the fetch goes direct; search keeps 1 MiB", async (t) => {
   const big = (chars) => ({ content: [{ type: "text", text: JSON.stringify({ markdown: `# Big\n\n${"a".repeat(chars)}`, metadata: { title: "Big", sourceURL: PUBLIC, statusCode: 200 } }) }] });
   let chars = 2 * 1024 * 1024;
@@ -261,11 +291,11 @@ test("a scrape reads up to the direct fetch's 5 MiB, past search's 1 MiB; one pa
   const two = await firecrawlScrape(PUBLIC, { endpoint: fc.url });
   assert.deepEqual([two.ok, two.title, two.beyond], [true, "Big", true], "a 2 MiB page is read whole by Firecrawl, its text then cut as any page's");
   chars = 6 * 1024 * 1024;
-  assert.deepEqual(await firecrawlScrape(PUBLIC, { endpoint: fc.url }), { error: "Firecrawl's fetch answered more than 5 MiB: not read" });
+  assert.deepEqual(await firecrawlScrape(PUBLIC, { endpoint: fc.url }), { error: "Firecrawl's fetch answered more than 5 MiB: not read", brief: "firecrawl answer too large" });
   const { env } = await keyless(t, fc.url);
   const page = await fetchFor(env, PUBLIC, network());
   assert.deepEqual([page.ok, page.via, page.title], [true, "direct", "Public page"]);
-  assert.deepEqual(await firecrawlSearch("widgets", 2, { endpoint: fc.url }), { error: "Firecrawl's search answered more than 1 MiB: not read" });
+  assert.deepEqual(await firecrawlSearch("widgets", 2, { endpoint: fc.url }), { error: "Firecrawl's search answered more than 1 MiB: not read", brief: "firecrawl answer too large" });
 });
 
 /** A public URL holding a user name and password, a user name alone, a password alone: synthetic, built in code. */

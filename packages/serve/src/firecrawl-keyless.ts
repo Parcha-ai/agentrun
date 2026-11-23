@@ -32,9 +32,11 @@ export const FIRECRAWL_MS = 30_000;
 /** Firecrawl's keyless refusal codes, by what the run's breaker makes of each. */
 const QUOTA_CODES: ReadonlySet<string> = new Set(["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE", "KEYLESS_TOOL_NOT_AVAILABLE"]);
 const RATE_CODES: ReadonlySet<string> = new Set(["KEYLESS_LIMIT_REACHED"]);
+const RATE_BRIEF = "firecrawl rate-limited";
 
-/** A call Firecrawl refused or failed, in our words, and the limit it met, if any (for the run's breaker). */
-export type FirecrawlFailed = { error: string; limit?: Limit };
+/** A call Firecrawl refused or failed, in our words, and the limit it met, if any (for the run's breaker); `brief`, why
+ *  in a few words for the model where the direct fetch reads the page instead (never Firecrawl's words, never the URL). */
+export type FirecrawlFailed = { error: string; limit?: Limit; brief?: string };
 
 /** Where a call goes: `endpoint` (default Firecrawl's), through `send` (default fetch), ended at `timeoutMs` (default
  *  FIRECRAWL_MS) or by `signal`, whichever is first. */
@@ -73,17 +75,17 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
   if ("status" in called) {
     if (called.status === 429) {
       const limit: Limit = { kind: "rate", ...(called.retryAfterS === undefined ? {} : { retryAfter: called.retryAfterS }) };
-      return { error: limitWords(limit, what), limit };
+      return { error: limitWords(limit, what), limit, brief: RATE_BRIEF };
     }
     return { error: `Firecrawl's MCP endpoint answered ${called.status} to ${called.step === "initialize" ? "initialize" : `the ${what}`}` };
   }
-  if ("over" in called) return { error: `Firecrawl's ${what} answered more than ${called.over / MAX_BYTES} MiB: not read` };
+  if ("over" in called) return { error: `Firecrawl's ${what} answered more than ${called.over / MAX_BYTES} MiB: not read`, brief: "firecrawl answer too large" };
   if ("error" in called) return { error: called.rpc ? `Firecrawl's ${what} failed: its MCP endpoint answered an error` : "Firecrawl's MCP endpoint did not answer initialize" };
   const { result } = called;
   if (result?.isError === true) {
     const payload = payloadOf(result);
     const limit = firecrawlLimitOf(payload);
-    if (limit) return { error: limitWords(limit, what), limit };
+    if (limit) return { error: limitWords(limit, what), limit, brief: limit.kind === "rate" ? RATE_BRIEF : payload?.code === "KEYLESS_QUOTA_EXHAUSTED" ? "firecrawl quota spent" : "firecrawl refused keyless use" };
     return { error: typeof payload?.code === "string" ? `Firecrawl's ${what} failed (${clip(payload.code, 60)})` : `Firecrawl's ${what} failed` };
   }
   try {
@@ -101,7 +103,7 @@ async function firecrawlCall<T>(name: string, args: Record<string, unknown>, wha
     return readCalled(await callTool(endpoint, send, deadline, name, args, maxBytes), what, read);
   } catch (error) {
     // Firecrawl's own bound, or the caller's: its deadline (a search's, spent) or its stop.
-    if (own.aborted) return { error: `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s` };
+    if (own.aborted) return { error: `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s`, brief: "firecrawl timed out" };
     const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
     return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
   }
@@ -128,27 +130,29 @@ export async function firecrawlScrape(url: string, options: FirecrawlOptions = {
     const meta = (typeof json.metadata === "object" && json.metadata !== null ? json.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
     const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
     const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
-    if (status < 200 || status > 299) return { error: `Firecrawl's fetch: the page answered ${status}` };
+    if (status < 200 || status > 299) return { error: `Firecrawl's fetch: the page answered ${status}`, brief: `firecrawl page ${status}` };
     return markdownRead(final, typeof meta.title === "string" ? meta.title : "", json.markdown, true, status);
   }, options);
 }
 
-/** keyless Firecrawl's scrape for one run's web_fetch, with the run's breaker on it: `live` is false once a quota answer
- *  came (for the rest of the run) and while a rate limit's wait holds (waitOf: the wait Firecrawl named, else 60 s, at
- *  most 15 minutes); `read` is one scrape, the page or, for any failure, why there is none (the caller then fetches
- *  directly). `now` is the breaker's clock (a test's). */
-export type KeylessFetch = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Read | string> };
+/** keyless Firecrawl's scrape for one run's web_fetch, with the run's breaker on it: `held` says why Firecrawl is not
+ *  asked, in a few words, once a quota answer came (for the rest of the run) and while a rate limit's wait holds (waitOf:
+ *  the wait Firecrawl named, else 60 s, at most 15 minutes), else undefined; `read` is one scrape, the page or, for any
+ *  failure, why there is none (`error`, for the server's log) and in a few words (`brief`, for the model) (the caller
+ *  then fetches directly). `now` is the breaker's clock (a test's). */
+export type KeylessFetch = { held(): string | undefined; read(url: string, signal?: AbortSignal): Promise<Read | { error: string; brief: string }> };
 export function firecrawlFetch(options: Omit<FirecrawlOptions, "signal"> = {}, now: () => number = Date.now): KeylessFetch {
-  let off = false;
+  let off: string | undefined;
   let until = 0;
   return {
-    live: () => !off && now() >= until,
+    held: () => off ?? (now() < until ? RATE_BRIEF : undefined),
     async read(url, signal) {
       const read = await firecrawlScrape(url, { ...options, ...(signal ? { signal } : {}) });
       if ("ok" in read) return read;
-      if (read.limit?.kind === "quota") off = true;
+      const brief = read.brief ?? "firecrawl failed";
+      if (read.limit?.kind === "quota") off = brief;
       else if (read.limit) until = Math.max(until, now() + waitOf(read.limit.retryAfter, now()));
-      return read.error;
+      return { error: read.error, brief };
     },
   };
 }
