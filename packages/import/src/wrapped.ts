@@ -92,16 +92,19 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
   for (const [model, list] of usages) {
     const known = model === "unknown" ? undefined : model;
     let usd: number | undefined;
+    // A request of known zero tokens is free at any price: it is neither priced nor counted as unpriced.
+    const paid = list.filter((usage) => usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0);
+    if (paid.length === 0) continue;
     if (options.price) {
       // The caller's price answers per request: one it cannot price is left out alone.
-      for (const usage of list) {
+      for (const usage of paid) {
         const one = await options.price(known, usage);
         if (one === undefined) out.unpricedRequests += 1;
         else usd = (usd ?? 0) + one;
       }
       if (usd === undefined) continue;
-    } else if (prices) usd = await priceRequests(list.map((usage) => ({ ...(known ? { model: known } : {}), usage })), prices);
-    if (usd === undefined) out.unpricedRequests += list.length;
+    } else if (prices) usd = await priceRequests(paid.map((usage) => ({ ...(known ? { model: known } : {}), usage })), prices);
+    if (usd === undefined) out.unpricedRequests += paid.length;
     else {
       out.cost += usd;
       models.get(model)!.cost = usd;

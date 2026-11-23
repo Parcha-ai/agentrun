@@ -106,6 +106,15 @@ test("a request with no usage (pi leaves it off an aborted one) is unpriced, and
   assert.ok(wrapped.cost > 0);
 });
 
+test("a model the catalog does not list leaves its requests with tokens unpriced, and its zero-token requests are not counted as unpriced", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), answer(1, 10, anthropicUsage(0, 0, 0, 0), "claude-unlisted"), answer(2, 20, anthropicUsage(5, 5, 0, 0), "claude-unlisted")]);
+  const catalog = catalogOf([{ id: "something-else", provider: "anthropic", cost: { input: 1 } }]);
+  const wrapped = await wrappedHome(home, 2026, { catalog });
+  assert.equal(wrapped.requests, 2);
+  assert.equal(wrapped.unpricedRequests, 1);
+});
+
 test("harnesses are the ones of the readers it is given, not only the built-in ones", async (t) => {
   const home = await tempHome(t);
   await mkdir(join(home, ".own"), { recursive: true });
