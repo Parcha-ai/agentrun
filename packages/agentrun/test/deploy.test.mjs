@@ -258,8 +258,11 @@ test("agentrun deploy AGENT_ID: an agent of this install goes to another by its 
   assert.match(missing.err, /does not export agent_nope/);
 });
 
-/** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body]), else 404; the requests it
- *  saw, and each one's body by its key (`bodies`). */
+/** An answer that sends a 200's headers and the first byte of a longer body, then closes the connection. */
+const DROPPED = Symbol("dropped");
+
+/** A target that answers each "METHOD path" (under /v2) with `answers[key]` ([status, body], or DROPPED), else 404; the
+ *  requests it saw, and each one's body by its key (`bodies`). */
 async function fakeTarget(t, answers) {
   const seen = [];
   const bodies = {};
@@ -271,6 +274,8 @@ async function fakeTarget(t, answers) {
     req.on("data", (chunk) => (text += chunk));
     req.on("end", () => {
       if (text) bodies[key] = JSON.parse(text);
+      // The request read whole first, so the close is the body's end (a FIN after the byte), never a reset.
+      if (answers[key] === DROPPED) return void res.writeHead(200, { "content-type": "application/json", "content-length": "64" }).write("{", () => res.socket.destroy());
       const [status, body] = answers[key] ?? [404, { error: { code: "not_found", message: "Not found." } }];
       res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     });
@@ -773,5 +778,32 @@ test("agentrun deploy AGENT_ID from an install that refuses its trigger routes: 
   assert.equal(unpaused.json().status, "deployed");
   assert.ok(source.seen.includes("PATCH /triggers/trg_daily"), source.seen.join("\n"));
   assert.match(unpaused.err, new RegExp(`daily could not be paused on ${source.base} \\(404: Not found\\.\\): it still runs there`));
+  assert.doesNotMatch(unpaused.err, /Paused/);
+});
+
+test("agentrun deploy AGENT_ID from an install whose trigger answer stops after its headers: the deploy is done and exits 0 with its answer, the schedules there said unread (or unpaused) as for an install not reached, never paused", { timeout: 180_000 }, async (t) => {
+  const target = await apiOnly(t);
+  const AGENT_ID = "agt_source";
+  const answers = { [`GET /agents/${AGENT_ID}/package`]: [200, exportOf()], "GET /triggers": DROPPED };
+  const source = await fakeTarget(t, answers);
+  const { dir, env } = scratch();
+  signedIn(dir, source.base, "not-a-secret");
+  const deploy = (...args) => cli(env, ["deploy", AGENT_ID, "--base-url", source.base, "--to", target.baseUrl, "--yes", ...args], { AGENTRUN_API_KEY: target.token });
+  for (const pause of [[], ["--pause-source"]]) {
+    const result = await deploy(...pause);
+    assert.equal(result.code, 0, `${pause}: ${result.err}`);
+    assert.equal(result.json().status, "deployed");
+    assert.equal((await target.api("GET", `/agents/${result.json().agent_id}`)).status, 200);
+    assert.match(result.err, new RegExp(`the agent's schedules on ${source.base} could not be read ${pause.length ? "or paused " : ""}\\(not reached: [^)]+\\): any it has still run there`), `${pause}`);
+    assert.doesNotMatch(result.err, /Paused/, `${pause}`);
+  }
+  // It lists a live schedule of the agent's, and its answer to the change stops after its headers: said unpaused.
+  answers["GET /triggers"] = [200, { triggers: [{ id: "trg_daily", name: "daily", agent_id: AGENT_ID, enabled: true, source: { kind: "schedule", cron: "0 8 * * *" } }] }];
+  answers["PATCH /triggers/trg_daily"] = DROPPED;
+  const unpaused = await deploy("--pause-source");
+  assert.equal(unpaused.code, 0, unpaused.err);
+  assert.equal(unpaused.json().status, "deployed");
+  assert.ok(source.seen.includes("PATCH /triggers/trg_daily"), source.seen.join("\n"));
+  assert.match(unpaused.err, new RegExp(`daily could not be paused on ${source.base} \\(not reached: [^)]+\\): it still runs there`));
   assert.doesNotMatch(unpaused.err, /Paused/);
 });
