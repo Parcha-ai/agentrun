@@ -19,6 +19,8 @@ const TOOLS = SYNTH_MODELS.find((model) => model.capabilities.includes("tools"))
 const NO_TOOLS = SYNTH_MODELS.filter((model) => !model.capabilities.includes("tools"));
 /** The words pi reads with no model: Ollama first, then a key (model.ts). */
 const NAMES_OLLAMA = /^No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys/;
+/** The words where this server asks no Ollama: a key alone. */
+const NAMES_KEY = /^No model yet: add a model key in Settings → Model keys/;
 
 const caps = async (api) => (await api("GET", "/capabilities")).body;
 const piOf = (body) => body.harnesses.find((harness) => harness.id === "pi");
@@ -108,7 +110,8 @@ test("a model key saved after the start turns pi available with no restart", { t
   assert.equal(piOf(await caps(api)).available, false);
   const put = await api("PUT", "/settings/tool-keys/anthropic", { values: { ANTHROPIC_API_KEY: `not-a-secret-${"pi-available"}` } });
   assert.equal(put.status, 204, JSON.stringify(put.body));
-  assert.deepEqual(anthropic.asked, ["GET /v1/models"], "the save's check went to the fake alone");
+  // Includes, not equals: a stray probe of this box once hit the fake's ephemeral port with GET / (nothing in serve asks it).
+  assert.ok(anthropic.asked.includes("GET /v1/models"), `the save's check went to the fake: ${JSON.stringify(anthropic.asked)}`);
   const pi = piOf(await caps(api));
   assert.equal(pi.available, true, JSON.stringify(pi));
   assert.match(pi.default_model, /^anthropic\//);
@@ -130,10 +133,52 @@ test("the faux model, and the model gateway with its model: pi is available; a g
 
 test("the Ollama words go only where a model of the Ollama here would give the harness its model: pi, on a server that asks one", async () => {
   const { chooseModel, ollamaWouldRun } = await import("../dist/model.js");
-  assert.equal(ollamaWouldRun({}, "pi"), true);
-  assert.equal(ollamaWouldRun({}, "claude-agent"), false, "claude-agent runs Anthropic's models alone");
-  assert.equal(ollamaWouldRun({ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" }, "pi"), false, "the model gateway takes every model");
-  assert.equal(ollamaWouldRun({ AGENTRUN_SERVE_FAUX: "/x" }, "pi"), false, "the faux model");
-  assert.match((await chooseModel({}, undefined, "default", "pi")).why, NAMES_OLLAMA);
-  assert.doesNotMatch((await chooseModel({}, undefined, "default", "claude-agent")).why, /Ollama/);
+  // The env a server hands its own reads and its runner's: OLLAMA_HOST set where it asks one (server.ts, ollamaHostOf).
+  // A closed port: this file clears the suites' Ollama switch, and no test asks this box's Ollama.
+  const asks = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` };
+  assert.equal(ollamaWouldRun(asks, "pi"), true);
+  assert.equal(ollamaWouldRun({}, "pi"), false, "no OLLAMA_HOST: a shared server asks no Ollama");
+  assert.equal(ollamaWouldRun({ OLLAMA_HOST: "10.0.0.5:11434" }, "pi"), false, "a refused OLLAMA_HOST is never asked");
+  assert.equal(ollamaWouldRun(asks, "claude-agent"), false, "claude-agent runs Anthropic's models alone");
+  assert.equal(ollamaWouldRun({ ...asks, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" }, "pi"), false, "the model gateway takes every model");
+  assert.equal(ollamaWouldRun({ ...asks, AGENTRUN_SERVE_FAUX: "/x" }, "pi"), false, "the faux model");
+  assert.match((await chooseModel(asks, undefined, "default", "pi")).why, NAMES_OLLAMA);
+  assert.match((await chooseModel({}, undefined, "default", "pi")).why, NAMES_KEY);
+  assert.doesNotMatch((await chooseModel(asks, undefined, "default", "claude-agent")).why, /Ollama/);
+});
+
+// The Ollama step is offered only where this server asks an Ollama (Greptile P2 on #3492): OLLAMA_HOST, else the default
+// address on one owner's own machine (ollama-provider.ts ollamaHostOf). A shared server with no OLLAMA_HOST never asks
+// the default, so starting Ollama there leaves the run blocked: its words name a key alone.
+/** What makes a test's server one owner's own (server.ts whyNotOwnMachine) unset, and every model key with them. */
+const OWNER = [...KEYS, "AGENTRUN_RUN_USER", "AGENTRUN_STORE_URL"];
+
+test("a shared server with no OLLAMA_HOST never asks an Ollama: its words name a key, never 'start Ollama'", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  assert.equal(ollamaHost, undefined);
+  const pi = piOf(await caps(api));
+  assert.equal(pi.available, false, JSON.stringify(pi));
+  assert.match(pi.reason, NAMES_KEY);
+  assert.doesNotMatch(pi.reason, /Ollama/);
+});
+
+test("a shared server whose operator sets OLLAMA_HOST asks that Ollama: its words offer starting it", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  const { api } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  const pi = piOf(await caps(api));
+  assert.equal(pi.available, false, JSON.stringify(pi));
+  assert.match(pi.reason, NAMES_OLLAMA);
+});
+
+test("one owner's own server with no OLLAMA_HOST asks the default address: its words offer starting Ollama", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  // The address stays the default; the test switch keeps this box's own Ollama unasked (ollama-provider.ts OLLAMA_OFF_ENV).
+  withEnv(t, { AGENTRUN_SERVE_FAUX_NO_OLLAMA: "1" });
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false });
+  assert.equal(ollamaHost, "127.0.0.1:11434");
+  const pi = piOf(await caps(api));
+  assert.equal(pi.available, false, JSON.stringify(pi));
+  assert.match(pi.reason, NAMES_OLLAMA);
 });

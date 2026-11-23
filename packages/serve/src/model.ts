@@ -21,7 +21,7 @@ import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
 import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
-import { OLLAMA_PROVIDER, ollamaBase, ollamaModels, ollamaProvider, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
+import { OLLAMA_PROVIDER, ollamaBase, ollamaHostRefused, ollamaModels, ollamaProvider, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -138,9 +138,12 @@ export function withPlanWords(env: NodeJS.ProcessEnv, harness: string, reason: s
 
 /** What a person does for a model on the Ollama here, ahead of ADD_A_KEY where one would run `harness` (ollamaWouldRun). */
 export const START_OLLAMA = "start Ollama and pull a model with tools, or ";
-/** Whether a model of the Ollama here would give `harness` its model: this server asks one (asksOllama), and `harness`
- *  runs its models (pi; an adapter runs its wire's vendor's alone). */
-export const ollamaWouldRun = (env: NodeJS.ProcessEnv, harness: string): boolean => asksOllama(env) && harnessRuns(env, `${OLLAMA_PROVIDER}/any`, harness);
+/** Whether a model of the Ollama here would give `harness` its model: this server asks one (asksOllama, at an OLLAMA_HOST
+ *  it takes: its operator's, or the default address server.ts hands its own env and its runner's on one owner's own machine
+ *  alone, ollamaHostOf), and `harness` runs its models (pi; an adapter runs its wire's vendor's alone). A shared server with
+ *  no OLLAMA_HOST never asks the default, so an Ollama started there gives no run: its words name a key alone. */
+export const ollamaWouldRun = (env: NodeJS.ProcessEnv, harness: string): boolean =>
+  asksOllama(env) && Boolean(env.OLLAMA_HOST?.trim()) && !ollamaHostRefused(env) && harnessRuns(env, `${OLLAMA_PROVIDER}/any`, harness);
 
 /** Whether `harness` runs the model `id` (its entry in the harness table: harness-table.ts): pi any; one on an adapter, its
  *  wire's vendor's model (or that vendor's on OpenRouter), or behind serve's gateway, on the wire it serves, any id. */
