@@ -359,8 +359,9 @@ A refusal comes back as a tool error holding the server's `error`: `code`, `mess
 ## 4. Create an agent
 
 Look for one first with `agents_list` and inspect the server's templates through `GET /v2/templates` or the
-matching Node CLI's `template list`, then read the one you would apply whole (its instructions and every skill file)
-with `GET /v2/templates/{id}` or `template get`. Offer a suitable template or a custom agent; ask only for missing details
+matching Node CLI's `template list`. A template's entry there lists everything an apply needs: its parameters, secrets,
+MCP servers, tool grants, harness, model, triggers and budget. You don't need its instructions or skill files: they are
+for the agent it makes, and applying copies them to it. Offer a suitable template or a custom agent; ask only for missing details
 about the job, inputs, expected result and required tools. Before applying a template, explain its tool grants
 and triggers and confirm any permissions not already granted. Use the apply schema from this server's OpenAPI document.
 

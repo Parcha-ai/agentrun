@@ -212,7 +212,10 @@ describe("coding-agent handoffs", () => {
       expect(reads).toEqual(["https://console.example.test/v2/templates"]);
       expect(each).not.toMatch(/\/v2\/templates\/review%2Fkit(?!\/apply)/);
       expect(each).toContain("You don't need its instructions or skill files");
+      // Nor the created agent's definition, which holds the package's instructions as applied: no read of its revision.
+      expect(each).not.toMatch(/current revision|If-Match|\/definition\b/);
     }
+    expect(runTemplatePrompt("https://console.example.test", template)).toContain("don't read the agent's definition, which holds the package's instructions");
     expect(prompt).toContain("instructions, rules, skills, schemas, learning and triggers");
     expect(prompt).toContain("Do not rebuild it from the description");
     expect(prompt).toContain("missing parameter values");
@@ -222,12 +225,11 @@ describe("coding-agent handoffs", () => {
     expect(prompt).toContain("Never print credentials");
   });
 
-  it("clarifies additional requirements and reserves unsupported changes for an explicit revision", () => {
+  it("clarifies additional requirements and names unsupported changes for a separate request, making none of them", () => {
     const prompt = applyTemplatePrompt("https://console.example.test", template, "  Report security findings only.  ");
     expect(prompt).toContain("My additional requirements:\nReport security findings only.");
     expect(prompt).toContain("do not add a brief or instructions field to the apply body");
-    expect(prompt).toContain("separately approved revision after applying");
-    expect(prompt).toContain("If-Match");
+    expect(prompt).toContain("name them in your report as a separate change I can ask for; don't make them as part of this setup");
     expect(applyTemplatePrompt("https://console.example.test", template, "  ")).not.toContain("My additional requirements");
   });
 
