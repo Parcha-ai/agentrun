@@ -19,7 +19,7 @@ import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { pairedOf } from "../dist/workspace/attached-computers.js";
 import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
-import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
+import { computerLapsedWords, endKept, KEEP_MS, KEPT_DELETE_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
 import { computerStillOffWords } from "../dist/refusal-words.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -204,6 +204,44 @@ test("a claim of a run whose desktop is off, with nothing kept: none is made, no
   const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true });
   assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
   assert.deepEqual([creates(one.account), deletes(one.account), one.mounts.steps], [[], [], []]);
+});
+
+/** A mount revoke that never answers until let go (Archil not answering): its `called` settles when it is asked. */
+function hangingRevoke() {
+  let asked;
+  let letGo;
+  const called = new Promise((done) => { asked = done; });
+  const answered = new Promise((done) => { letGo = done; });
+  return { called, letGo: () => letGo(), revokeMount: () => { asked(); return answered; } };
+}
+
+test("Mode 2, a resume of a run whose desktop is off, its kept desktop's mount revoke not answering: the claim goes on after KEPT_DELETE_MS, the row left ending for the janitor", async (t) => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const revoke = hangingRevoke();
+  const claimed = one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, revokeMount: revoke.revokeMount });
+  await revoke.called;
+  t.mock.timers.tick(KEPT_DELETE_MS);
+  const resumed = await claimed;
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.deepEqual(deletes(one.account), ["c1"], "the desktop deleted all the same");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "its row left ending");
+  revoke.letGo();
+});
+
+test("Mode 2, a resume of a run whose desktop is off, stopped while its kept desktop's mount revoke does not answer: the claim goes on at the stop", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const revoke = hangingRevoke();
+  const stop = new AbortController();
+  const claimed = one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, revokeMount: revoke.revokeMount, signal: stop.signal });
+  await revoke.called;
+  stop.abort();
+  const resumed = await claimed;
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ending, true, "its row left ending");
+  revoke.letGo();
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {

@@ -1133,26 +1133,25 @@ export async function computerForClaim(
   /** The computer an earlier claim kept at the run's park, ended now by a claim that starts none (the run's computer is
    *  off): deleted, its interval ended, and its mount credential, the parking claim's, taken on and removed
    *  (archil-claim.ts revoke removes only one its claim minted or took on), so the run's folder is its own again before
-   *  its tools touch it. Its delete is bounded (KEPT_DELETE_MS); one that fails or hangs leaves the row ending, for the
-   *  janitor's next pass. Never throws. */
+   *  its tools touch it. The credential is this claim's from the start, so a revoke this claim does not finish here is
+   *  the run's end's. The delete and the revoke together are bounded (KEPT_DELETE_MS) and end at the run's stop: one
+   *  that fails or does not answer leaves the row ending, for the janitor's next pass. Never throws. */
   const endKeptNow = async (): Promise<void> => {
     const record = kept;
     kept = undefined;
     const settings = store.settings;
     const entry = record && kinds.PROVIDERS.find((one) => one.id === record.provider);
     if (!record || record.ended || !settings || !entry) return;
+    deps.inheritMount?.();
     try {
       const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
-      await endKept(settings, launch.runId, record, async () => {
+      await endKept(settings, launch.runId, record, () => bounded(KEPT_DELETE_MS, (async () => {
         try {
-          await bounded(KEPT_DELETE_MS, (async () => {
-            if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
-          })());
+          if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
         } finally {
-          deps.inheritMount?.();
           await deps.revokeMount?.().catch(() => undefined);
         }
-      });
+      })(), deps.signal));
     } catch {
       // Left ending for the janitor.
     }
