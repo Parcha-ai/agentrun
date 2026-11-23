@@ -2,7 +2,9 @@
 process.env.TZ = "UTC";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { wrappedHome } from "../dist/index.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { catalogOf, wrappedHome } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -65,6 +67,64 @@ test("cost is the list price of the requests it can price; the rest are counted,
   assert.equal(wrapped.unpricedRequests, 1);
   assert.deepEqual(wrapped.models.map((m) => [m.model, m.cost]), [["anthropic/claude-fixture-1", 1], ["anthropic/claude-unlisted", 0]]);
   assert.equal((await wrappedHome(home, 2026, nothing)).unpricedRequests, 2);
+});
+
+test("a price that rejects rejects wrappedHome, and the process lives on", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), answer(1, 10), answer(2, 20)]);
+  const lost = [];
+  const watch = (reason) => lost.push(reason);
+  process.on("unhandledRejection", watch);
+  t.after(() => process.off("unhandledRejection", watch));
+  await assert.rejects(wrappedHome(home, 2026, { catalog: false, price: async () => { throw new Error("no price today"); } }), /no price today/);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(lost, [], "no rejection left without a handler");
+});
+
+test("many requests of a fraction of a millionth each still add up: one rounding per model, not one per request", async (t) => {
+  const home = await tempHome(t);
+  const tiny = anthropicUsage(10, 0, 0, 0);
+  await writeJsonl(claudeFile(home), [claudeUser({ uuid: "u1", text: WORDS, i: 0 }), ...Array.from({ length: 20 }, (_, n) => answer(n + 1, 10 + n, tiny))]);
+  // $0.01 per million input tokens: 1e-7 a request, 2e-6 for the twenty.
+  const catalog = catalogOf([{ id: "claude-fixture-1", provider: "anthropic", cost: { input: 0.01 } }]);
+  const wrapped = await wrappedHome(home, 2026, { catalog });
+  assert.equal(wrapped.unpricedRequests, 0);
+  assert.equal(wrapped.cost, 0.000002);
+  assert.equal(wrapped.models[0].cost, 0.000002);
+});
+
+test("a request with no usage (pi leaves it off an aborted one) is unpriced, and one of known zero usage is free", async (t) => {
+  const home = await tempHome(t);
+  const aborted = { type: "message", timestamp: at(40), message: { role: "assistant", provider: "fx", model: "fx-model", content: [], stopReason: "aborted", timestamp: Date.parse(at(40)) } };
+  const free = piAnswer(50);
+  free.message.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  await writeJsonl(piFile(home), [piMeta(), piUser(WORDS, 1), piAnswer(30), aborted, free]);
+  const catalog = catalogOf([{ id: "fx-model", provider: "fx", cost: { input: 1, output: 1 } }]);
+  const wrapped = await wrappedHome(home, 2026, { catalog });
+  assert.equal(wrapped.requests, 3);
+  assert.equal(wrapped.unpricedRequests, 1, "the aborted one: its cost is unknown, the total says so");
+  assert.ok(wrapped.cost > 0);
+});
+
+test("harnesses are the ones of the readers it is given, not only the built-in ones", async (t) => {
+  const home = await tempHome(t);
+  await mkdir(join(home, ".own"), { recursive: true });
+  const store = join(home, ".own", "store.json");
+  await writeFile(store, "[]");
+  const own = {
+    source: "own",
+    name: "Own",
+    harness: "own-harness",
+    discover: async () => [{ file: store }],
+    read: async (locator) => ({
+      sessions: [{ locator, session: { source: "own", id: "s1", file: store, state: "completed", child: false, turns: [], users: 1, activeMs: 0, copies: 0 }, requests: [{ role: "assistant", text: "", calls: [], at: Date.parse(at(10)), usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0 } }] }],
+      cursor: 0,
+      read: 0,
+      resumed: false,
+    }),
+  };
+  const wrapped = await wrappedHome(home, 2026, { sources: ["own"], readers: { own }, catalog: false });
+  assert.deepEqual(wrapped.harnesses, [{ harness: "own-harness", sessions: 1, requests: 1, tokens: 10 }]);
 });
 
 test("the report holds no prompt, path or project, only numbers and names", async (t) => {
