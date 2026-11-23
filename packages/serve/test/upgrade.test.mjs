@@ -145,9 +145,10 @@ test("started by npx @parcha/agentrun on an earlier version's data, the refusal 
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);
   assert.match(err, /^agentrun-serve: .* holds an earlier version's data \(old\/agent\.sqlite\)/m);
-  assert.ok(err.split("\n").includes(`To start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`), err);
-  assert.ok(err.includes(`Or keep all of it where the earlier version still opens it: mv ${data} ${data}-earlier`), err);
-  assert.ok(err.includes(`then npx @parcha/agentrun@0.4.22 starts this version in ${data}`), err);
+  const lines = err.split("\n");
+  const aside = lines.findIndex((line) => line.startsWith(`To keep all of it where the earlier version still opens it and start this version in ${data}: mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22. `));
+  const fresh = lines.indexOf(`Or start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`);
+  assert.ok(aside > 0 && fresh > aside, `the old folder moved aside first, then a new folder:\n${err}`);
   assert.doesNotMatch(err, /\bdelete\b|\brm\b/i, "it never says to delete the old folder");
   assert.equal(err.match(/add your agents/gi).length, 1, err);
   assert.ok(!existsSync(`${data}-new`) && !existsSync(`${data}-earlier`), "the refusal only names the folders");
@@ -178,7 +179,7 @@ test("started by the launcher on a store an earlier release set up, the refusal 
   const { err, code } = await startByLauncher(t, data);
   assert.equal(code, 1, err);
   assert.match(err, /^agentrun-serve: the store at .*store\.sqlite is schema version/m);
-  assert.ok(err.split("\n").includes(`To start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`), err);
+  assert.ok(err.split("\n").includes(`Or start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`), err);
   assert.doesNotMatch(err, /docker run|On Render/);
 });
 
@@ -188,6 +189,6 @@ test("started on a --data of the person's own, the old folder moved aside starts
   await oldHome(data, "old");
   const { err, code } = await startByLauncher(t, data, join(root, "home"));
   assert.equal(code, 1, err);
-  assert.ok(err.includes(`mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22 --data ${data} starts this version in ${data}.`), err);
+  assert.ok(err.includes(`start this version in ${data}: mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22 --data ${data}. `), err);
   assert.ok(err.includes(`without it, they open ${join(root, "home", ".agentrun")})`), err);
 });
