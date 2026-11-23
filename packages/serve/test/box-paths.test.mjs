@@ -4,8 +4,9 @@
 // `docker` first on PATH (fixtures/fake-docker.mjs; no daemon is reached). Where it cannot, docker is unavailable, saying
 // why.
 import assert from "node:assert/strict";
-import { realpathSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { release } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -243,6 +244,93 @@ test("compose's layout, the read failing at the start, and a later check failing
   assert.equal(signals.length, 1, "the retry began");
   assert.equal(signals[0].aborted, true, "and stopped with the start");
   assert.equal(hostReads(fake).length, 1, "the start's read alone");
+});
+
+/** Whether the fake docker has a container named `name`. */
+const hasContainer = (fake, name) => readdirSync(join(fake.state, "containers")).some((one) => one.endsWith(".json") && JSON.parse(readFileSync(join(fake.state, "containers", one), "utf8")).Name === name);
+/** The read's container name in `args`, a `docker run`'s. */
+const nameIn = (args) => args[args.indexOf("--name") + 1];
+/** The fake docker's calls from the `from`th on, each its verb and its last argument. */
+const callsFrom = (fake, from) => jsonLines(join(fake.state, "argv.jsonl")).slice(from).map((args) => [args[0], args.at(-1)]);
+/** A retry wait (hostReadWait) the test ends when it says; each one begun is in `waits`. */
+const testWaits = () => {
+  const waits = [];
+  const hostReadWait = (ms, signal) => new Promise((go) => {
+    waits.push({ ms, go, signal });
+    signal.addEventListener("abort", () => go(), { once: true });
+  });
+  return { waits, hostReadWait };
+};
+
+// The retry's read in flight at the close: its docker client stalled, its container made and running, then the client
+// killed by a signal from outside (the OOM killer's), so it answers no exit code. The read still removes its container
+// by name, and the close answers only after that removal: stop() awaits the retry. Two fifos in the fake's state order
+// it, with no clock: `host-addresses-held` gives the stalled client's pid, and `rm-gate` holds the removal until the test
+// has begun the close.
+test("compose's layout, the read failing at the start: a close while the retry's read is in flight answers only after that read's removal ran, its client killed by an outside signal", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const { waits, hostReadWait } = testWaits();
+  const { close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false });
+  assert.equal(waits.length, 1, "the retry began");
+  await rm(join(fake.state, "host-addresses-fail"));
+  await writeFile(join(fake.state, "host-addresses-hold"), "");
+  const held = join(fake.state, "host-addresses-held");
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [held, gate]);
+  waits[0].go();
+  const pid = Number(await readFile(held, "utf8"));
+  const name = nameIn(hostReads(fake).at(-1));
+  assert.equal(hasContainer(fake, name), true, "the stalled read's container is made");
+  process.kill(pid, "SIGKILL");
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  let atClose;
+  const closed = close().then(() => (atClose = { there: hasContainer(fake, name), calls: callsFrom(fake, from) }));
+  assert.equal(waits[0].signal.aborted, true, "the close began");
+  // Opened once the read's removal reads it: the removal waited for the close to begin. A close that answers first
+  // didn't wait for it; the gate is then opened here, so its writer (and this file) doesn't hang, and the case fails.
+  const opened = writeFile(gate, "go");
+  const first = await Promise.race([opened.then(() => "removal"), closed.then(() => "close")]);
+  if (first === "close") {
+    closeSync(openSync(gate, constants.O_RDONLY | constants.O_NONBLOCK));
+    await opened.catch(() => undefined);
+  }
+  await closed;
+  assert.deepEqual([first, atClose], ["removal", { there: false, calls: [["rm", name], ["inspect", name]] }]);
+  assert.equal(hostReads(fake).length, 2, "the start's read and the retry's");
+  assert.equal(waits.length, 1, "no wait after the close");
+});
+
+// The start's read fails and keeps its container's name (Docker didn't answer the check), but the operator's
+// AGENTRUN_DOCKER_HOST_ADDRESSES is set, so Docker is offered on those: the retry still starts, to remove that container,
+// reading nothing and changing no box.
+test("compose's layout, the read failing at the start with AGENTRUN_DOCKER_HOST_ADDRESSES set: Docker is offered on the operator's addresses, and the retry removes the container the failed read kept, reading nothing and changing no box", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, { AGENTRUN_DOCKER_HOST_ADDRESSES: "198.51.100.9" });
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  await writeFile(join(fake.state, "inspect-fail-reads"), "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?");
+  const { waits, hostReadWait } = testWaits();
+  const lines = [];
+  const { api, close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false, log: (line) => lines.push(line) });
+  const offer = await docker(api);
+  assert.deepEqual([offer.available, offer.host_addresses], [true, ["198.51.100.9"]], JSON.stringify(offer));
+  assert.equal(waits.length, 1, "the retry began, the operator's addresses set");
+  assert.equal(waits[0].ms, 15_000);
+  const name = nameIn(hostReads(fake)[0]);
+  // The daemon answers checks again; the retry's removal is held at the gate until the test has seen it begin.
+  await rm(join(fake.state, "inspect-fail-reads"));
+  const gate = join(fake.state, "rm-gate");
+  execFileSync("mkfifo", [gate]);
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  waits[0].go();
+  await writeFile(gate, "go");
+  await close();
+  assert.deepEqual(callsFrom(fake, from), [["rm", name], ["inspect", name]], "the kept name removed, nothing read");
+  assert.equal(hostReads(fake).length, 1, "the start's read alone");
+  assert.equal(lines.filter((line) => / event=boxes( |$)/.test(line)).length, 1, "the start's boxes, not made again");
 });
 
 test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {

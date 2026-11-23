@@ -142,11 +142,57 @@ test("a read that fails with no timeout (exit non-zero) removes the container it
     assert.deepEqual(await readHostAddresses(env, docker, READ_MS, "agentrun-host-read-ffffffffffff"), { addresses: ["203.0.113.7"] });
     assert.deepEqual(calls.map((args) => args[0]), kept ? ["rm", "inspect", "run"] : ["run"], JSON.stringify(why));
   }
-  // A docker that never ran (not on PATH: the spawn's error, no exit code) made no container: nothing is removed.
+  // A docker that never ran (not on PATH, or not runnable: the spawn's error) made no container: nothing is removed.
+  for (const code of ["ENOENT", "EACCES"]) {
+    const calls = [];
+    const missing = async (args) => (calls.push(args), { code, stdout: "", stderr: "" });
+    assert.deepEqual(await readHostAddresses(ownEnv(), missing, READ_MS, NAME), { why: `the read through Docker's socket failed (exit ${code}: )` });
+    assert.deepEqual(calls.map((args) => args[0]), ["run"], code);
+  }
+});
+
+test("a read whose docker client a signal from outside ended (the OOM killer's: no exit code, the signal's name) removes the container it may have made, by name, and keeps the name when Docker can't say it is gone", async () => {
+  const DAEMON = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+  // "Error" is what a signal-killed client mapped to before the signal's name was kept: any end but a spawn error removes.
+  for (const code of ["SIGKILL", "SIGTERM", "Error"]) {
+    const env = ownEnv();
+    const calls = [];
+    let check = { code: 1, stdout: "", stderr: `${DAEMON}\n` };
+    const docker = async (args) => {
+      calls.push(args);
+      if (args[0] === "run") return args.includes(NAME) ? { code, stdout: "", stderr: "" } : ANSWER;
+      return args[0] === "rm" ? { code: 0, stdout: `${NAME}\n`, stderr: "" } : check;
+    };
+    assert.deepEqual(await readHostAddresses(env, docker, READ_MS, NAME), { why: `the read through Docker's socket failed (exit ${code}: )` });
+    assert.deepEqual(calls.map((args) => [args[0], args.at(-1) === NAME]), [["run", false], ["rm", true], ["inspect", true]], code);
+    // Not confirmed gone: the next read removes it first.
+    calls.length = 0;
+    check = GONE;
+    assert.deepEqual(await readHostAddresses(env, docker, READ_MS, helperName()), { addresses: ["203.0.113.7"] });
+    assert.deepEqual(calls.map((args) => args[0]), ["rm", "inspect", "run"], code);
+  }
+});
+
+test("with no read (the operator's addresses known), the retry only removes what the failed read left, on the same waits, and ends once Docker says none is left; with nothing left it ends at once", async () => {
+  const { retryHostAddresses } = hostRead;
+  const env = ownEnv();
   const calls = [];
-  const missing = async (args) => (calls.push(args), { code: "ENOENT", stdout: "", stderr: "" });
-  assert.deepEqual(await readHostAddresses(ownEnv(), missing, READ_MS, NAME), { why: "the read through Docker's socket failed (exit ENOENT: )" });
-  assert.deepEqual(calls.map((args) => args[0]), ["run"]);
+  let checks = 0;
+  const docker = async (args) => {
+    calls.push(`${args[0]} ${args.at(-1) === NAME ? "NAME" : "-"}`);
+    if (args[0] === "run") return { code: 125, stdout: "", stderr: "failed\n" };
+    if (args[0] === "rm") return { code: 0, stdout: "", stderr: "" };
+    // Still there at the read's own check and the retry's first; gone at its second.
+    return ++checks <= 2 ? { code: 0, stdout: "true\n", stderr: "" } : GONE;
+  };
+  await readHostAddresses(env, docker, READ_MS, NAME);
+  calls.length = 0;
+  const waited = [];
+  await retryHostAddresses({ env, docker, signal: new AbortController().signal, wait: async (ms) => void waited.push(ms) });
+  assert.deepEqual(waited, [15_000, 30_000]);
+  assert.deepEqual(calls, ["rm NAME", "inspect NAME", "rm NAME", "inspect NAME"], "no read: removals alone");
+  // Nothing left: no wait, no call.
+  await retryHostAddresses({ env, docker: async () => assert.fail("nothing to remove"), signal: new AbortController().signal, wait: async () => assert.fail("no wait") });
 });
 
 test("a read's container whose removal timed out is removed at the next read, by its name, and dropped once Docker says it has no such container; one Docker still has stays named", async () => {

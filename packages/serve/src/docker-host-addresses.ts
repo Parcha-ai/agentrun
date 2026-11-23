@@ -62,14 +62,18 @@ export function addressesOf(answer: string): string[] {
 /** What the read found: the host's addresses, or why there are none. */
 export type HostRead = { readonly addresses: readonly string[] } | { readonly why: string };
 
-/** `docker` with `args`, bound to `ms`: its exit code (or the spawn's error code) and output. */
+/** `docker` with `args`, bound to `ms`: its exit code ("timeout" at the bound, the signal's name when another signal
+ *  ended it, the spawn's error code when it never ran) and output. */
 export type DockerRun = (args: readonly string[], ms: number) => Promise<{ code: number | string; stdout: string; stderr: string }>;
+
+/** The spawn's error codes: a docker that never ran, so it made no container. */
+const NEVER_RAN = new Set(["ENOENT", "EACCES"]);
 
 const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms) =>
   new Promise((resolve) => {
     const child = execFile("docker", args, { env: withoutSecrets(env), timeout: ms, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
-      const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
-      resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
+      const failed = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }) | null;
+      resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.signal ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
     });
     child.stdin?.end();
   });
@@ -121,8 +125,9 @@ async function removeLeft(env: NodeJS.ProcessEnv, docker: DockerRun, signal?: Ab
 }
 
 /** The Docker host's addresses, read through `env`'s docker as above, after removing the containers earlier reads left
- *  (removeLeft). Never throws: a read that fails, or whose answer can't be read, says why; one that runs out of time or
- *  exits non-zero has its container removed by name. `docker`, `ms` and `name` are the tests'. */
+ *  (removeLeft). Never throws: a read that fails, or whose answer can't be read, says why; one that ends any way but
+ *  answering or never running (a spawn error) has its container removed by name. `docker`, `ms` and `name` are the
+ *  tests'. */
 export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env), ms = READ_MS, name = helperName()): Promise<HostRead> {
   const kept = keptOf(env);
   await removeLeft(env, docker);
@@ -133,8 +138,9 @@ export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRu
   }
   if (ran.code !== 0) {
     const failed = `the read through Docker's socket failed (exit ${ran.code}: ${ran.stderr.trim().slice(0, 200)})`;
-    // A docker that never ran (its spawn failed: no exit code) made no container.
-    if (typeof ran.code !== "number") return { why: failed };
+    // A docker that never ran (its spawn failed) made no container. One ended any other way, a signal from outside
+    // included (the OOM killer's), may have made it, running or never started.
+    if (typeof ran.code === "string" && NEVER_RAN.has(ran.code)) return { why: failed };
     const removal = await removeHelper(docker, name, kept);
     return { why: removal.left === "there" ? `${failed} (${removal.words})` : failed };
   }
@@ -178,23 +184,24 @@ const wait: Wait = (ms, signal) => delay(ms, undefined, { signal }).catch(() => 
 /** Reads again through `env`'s docker after a read failed (`read`: hostAddressesOnce, so the runner beside the server
  *  shares what it finds), waiting RETRY_MS before each, until one answers (`found` gets it). An answer is kept from then
  *  on, so no later read removes what the failed ones left: on the same waits, the retry goes on removing those
- *  containers (removeLeft) until none is left. All of it ends when `signal` aborts (the server's close, or a start that
- *  failed): a pending wait ends at once, nothing more is read or removed, and a read in flight is not taken. `wait` and
- *  `docker` are the tests'. */
-export async function retryHostAddresses({ env, read, found, signal, wait: waitFor = wait, docker = dockerRun(env) }: { env: NodeJS.ProcessEnv; read: () => Promise<HostRead>; found: (read: HostRead) => void; signal: AbortSignal; wait?: Wait; docker?: DockerRun }): Promise<void> {
-  let answered = false;
-  for (let tried = 0; !signal.aborted; tried++) {
+ *  containers (removeLeft) until none is left. With no `read` (the operator's addresses are known, so no answer would
+ *  change what is offered), it only removes them. All of it ends when `signal` aborts (the server's close, or a start
+ *  that failed): a pending wait ends at once and nothing more is read or removed; a read or removal in flight runs to
+ *  its end, its own container removed, and its answer is not taken, so a close that awaits this promise leaves no
+ *  container of it behind. `wait` and `docker` are the tests'. */
+export async function retryHostAddresses({ env, read, found, signal, wait: waitFor = wait, docker = dockerRun(env) }: { env: NodeJS.ProcessEnv; read?: () => Promise<HostRead>; found?: (read: HostRead) => void; signal: AbortSignal; wait?: Wait; docker?: DockerRun }): Promise<void> {
+  let answered = read === undefined;
+  for (let tried = 0; !signal.aborted && !(answered && keptOf(env).size === 0); tried++) {
     await waitFor(RETRY_MS[Math.min(tried, RETRY_MS.length - 1)]!, signal);
     if (signal.aborted) return;
-    if (answered) await removeLeft(env, docker, signal);
+    if (answered || !read) await removeLeft(env, docker, signal);
     else {
       const result = await read();
       if (signal.aborted) return;
       if ("why" in result) continue;
       answered = true;
-      found(result);
+      found?.(result);
     }
-    if (keptOf(env).size === 0) return;
   }
 }
 
