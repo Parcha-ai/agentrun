@@ -42,6 +42,11 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
 
+// No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
+// whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
+// and names its own fake (fixtures/fake-ollama.mjs).
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
  *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
  *  own. A path here is matched under /v2, its query left off. */

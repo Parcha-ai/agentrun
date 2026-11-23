@@ -94,9 +94,14 @@ test("opencode runs the models codex runs, OpenAI's, OpenRouter's or the gateway
 // A key-less first run (npx, no key yet) is told what a person does: add a key in the console or where AgentRun starts.
 // Operator detail (--faux, AGENT_MODEL, a tier's variable) is the README's. A model no catalog knows is still named.
 test("with no model here, the refusal says what a person does: a model key in Settings or where AgentRun starts, no operator flags", async () => {
+  // pi, on a server that asks an Ollama (OLLAMA_HOST set: model.ts ollamaWouldRun): that first, then a key (START_OLLAMA).
+  // With no OLLAMA_HOST (a shared server asks none) or under the model gateway: a key alone.
+  const asks = { OLLAMA_HOST: "127.0.0.1:11434" };
   const none = "No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts.";
+  const withOllama = none.replace("No model yet: ", "No model yet: start Ollama and pull a model with tools, or ");
   assert.equal((await chooseModel({}, undefined)).why, none);
-  assert.equal((await chooseModel({}, undefined, "fast")).why, none.replace("No model yet:", "No model yet for this workflow's fast tier:"));
+  assert.equal((await chooseModel(asks, undefined)).why, withOllama);
+  assert.equal((await chooseModel(asks, undefined, "fast")).why, withOllama.replace("No model yet:", "No model yet for this workflow's fast tier:"));
   assert.equal((await chooseModel({}, "openai/gpt-6.1-sol")).why, "No OpenAI key here for openai/gpt-6.1-sol: add one in Settings → Model keys, or set OPENAI_API_KEY where AgentRun starts.");
   assert.equal((await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why, "No model yet for claude-agent: add an OpenRouter or Anthropic key in Settings → Model keys, or set OPENROUTER_API_KEY or ANTHROPIC_API_KEY where AgentRun starts.");
   for (const why of [(await chooseModel({}, undefined)).why, (await chooseModel({}, "openai/gpt-6.1-sol")).why, (await modelOn("anthropic-messages", {}, undefined, "claude-agent")).why]) assert.doesNotMatch(why, /--faux|AGENT_MODEL|agentrun-serve/);
