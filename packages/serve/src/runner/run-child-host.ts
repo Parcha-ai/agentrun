@@ -34,7 +34,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, runnerSecrets } from "./redact.js";
+import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -597,10 +597,14 @@ interface ClaimReads {
 /** The email tools a revision may grant. */
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
+/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, and the carry of a
+ *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin). */
+export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry">>;
+
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
  *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: RunnerCut, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
@@ -725,14 +729,25 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     },
     // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
     // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end,
-    // or refused); never its folder or its refresh token.
+    // or refused); never its folder or its refresh token. Each token is carried into the runner's redactor for this run
+    // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal
+    // as the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
       const at = await loginForRun(store.settings, deps.data, deps.env ?? {}, harness, launch.place);
       if (!at || !agentRunLogin(at, deps.data)) return undefined;
+      const carry = cut.carry;
+      if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
       const tokens = loginTokensFor(at);
-      return { token: () => tokens.token(), refused: (sent: string) => tokens.refused(sent) };
+      return {
+        token: async () => {
+          const token = await tokens.token();
+          carry.call(cut, claim.runId, [token]);
+          return token;
+        },
+        refused: (sent: string) => tokens.refused(sent),
+      };
     },
     signInReadsBack: () => handedSignInReadsBack(store, sealKey, run),
     runSignIn: (resolution) => {
@@ -1138,7 +1153,7 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
 
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
   const { deps, isolation } = options;
-  const cut: (text: string) => string = loopDeps.redact ?? ((text) => text);
+  const cut: RunnerCut = loopDeps.redact ?? ((text: string) => text);
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;
