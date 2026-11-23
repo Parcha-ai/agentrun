@@ -722,12 +722,12 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       return data.owed === true && data.hold !== true ? [inherited[i]!] : [];
     }));
     const owed = left.filter((t) => !read.openHolds.has(t) && owedTurns.has(t) && (held.get(t) ?? 0) > 0);
-    // A request on a free model (its runner.request says `freeRequest`, as the run's cap admitted it) an earlier process
-    // left open costs nothing whatever reached the provider: booked cut at a known $0 and marked `free`, as this process
-    // books its own (bookRequest's free), never unknown. Any other keeps the rule below.
+    // A request on a free model (its runner.request says `freeRequest`, or `localRequest` for a local one, as the run's cap
+    // admitted it) an earlier process left open costs nothing whatever reached the provider: booked cut at a known $0 and
+    // marked `free`, as this process books its own (bookRequest's free), never unknown. Any other keeps the rule below.
     const freeTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => {
-      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown };
-      return data.freeRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
+      const data = (r.data ?? {}) as { turn?: unknown; freeRequest?: unknown; localRequest?: unknown };
+      return data.freeRequest === true || data.localRequest === true ? [typeof data.turn === "number" ? data.turn : i + 1] : [];
     }));
     const free = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && freeTurns.has(t));
     const numbers = left.filter((t) => !read.openHolds.has(t) && !owed.includes(t) && !free.includes(t));
