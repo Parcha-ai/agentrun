@@ -443,10 +443,13 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   let stopped = false;
   // Each listed session's place in the import's order (inOrder).
   const rank = new Map<Session, number>();
-  // The sessions a subagent left out here ran under (`source:id`), with why: no run of theirs without its usage (each
-  // subagent read with its run, readChildren), so they wait with it. And each subagent's parent, to reach the run.
-  const waiting = new Map<string, Pick<Skipped, "why" | "kind">>();
-  const parents = new Map<string, string>();
+  // Each subagent read here, by locatorKey, as its own subagents name it (`source:id`): what holdBack walks down.
+  const childIds = new Map<string, string>();
+  const tie = async (locator: Locator, source: Source, size: LocatorSize): Promise<void> => {
+    const listed = size.bytes > MAX_SESSION_BYTES ? undefined : await readSession(locator, source, { turns: false }).catch(() => undefined);
+    const parent = listed ? (listed.child ? listed.parent : undefined) : size.parent;
+    if (parent) child(`${source}:${await idOf(parent, scan)}`, locator);
+  };
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     // Each source's own folders where `env` puts them (CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_DATA_HOME, OPENCODE_DB).
@@ -464,14 +467,16 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       }
       // The session's own last write and size (a database's sessions each their own): one live session, or a large
       // database, leaves the rest of its file importable.
+      // Either one, when it is a subagent's, holds its run back (holdBack): the subagent is tied to its run as one read
+      // would tie it, by its listing while it is written, by the parent its source's stat names when it is over the cap.
       if (now - size.mtimeMs < LIVE_MS) {
         leave({ what: locatorKey(locator), why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
-        if (size.parent) waiting.set(`${source}:${await idOf(size.parent, scan)}`, { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" });
+        await tie(locator, source, size);
         continue;
       }
       if (size.bytes > MAX_SESSION_BYTES) {
         leave({ what: locatorKey(locator), why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
-        if (size.parent) waiting.set(`${source}:${await idOf(size.parent, scan)}`, { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" });
+        await tie(locator, source, size);
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
@@ -483,7 +488,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
         child(`${source}:${session.parent}`, locator);
-        parents.set(`${source}:${session.id}`, `${source}:${session.parent}`);
+        childIds.set(locatorKey(locator), `${source}:${session.id}`);
         continue;
       }
       if (!session.cwd) {
@@ -527,23 +532,18 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     }
     for (const { locator, of } of await childrenOf(home, source, { env })) child(locatorKey(of), locator);
   }
-  // A run a subagent left out ran under (its subagent's subagent's too) is left out with it, said, and comes in whole
-  // once each subagent can be read.
-  const runOf = (key: string, seen = new Set<string>()): string => {
-    const up = parents.get(key);
-    return up === undefined || seen.has(key) ? key : runOf(up, seen.add(key));
-  };
-  const wait = new Map([...waiting].map(([key, why]) => [runOf(key), why] as const));
+  // A run imports only when every subagent it has, whatever its source, can be read now: one still written or over the
+  // cap leaves the run out with it, said, and the run comes in whole, its subagents' usage with it, once each can be.
+  const holds = new Map<string, Pick<Skipped, "why" | "kind"> | undefined>();
   for (const project of projects.values()) {
-    const left = new Set<string>();
-    project.sessions = project.sessions.filter((session) => {
-      const key = `${session.source}:${session.id}`;
-      const why = wait.get(key);
-      if (!why) return true;
-      if (!left.has(key)) leave({ what: locatorKey(locatorOf(session)), ...why, session: key }, session.source, project.cwd);
-      left.add(key);
-      return false;
-    });
+    const runs = new Map<string, Session[]>();
+    for (const session of project.sessions) runs.set(`${session.source}:${session.id}`, [...(runs.get(`${session.source}:${session.id}`) ?? []), session]);
+    for (const [key, parts] of runs) {
+      if (!holds.has(key)) holds.set(key, await holdBack(children, parts, childIds, now));
+      const why = holds.get(key);
+      if (why) leave({ what: locatorKey(locatorOf(parts[0]!)), ...why, session: key }, parts[0]!.source, project.cwd);
+    }
+    project.sessions = project.sessions.filter((session) => !holds.get(`${session.source}:${session.id}`));
     if (!project.sessions.length) projects.delete(project.cwd);
   }
   ownRuns(projects, rank);
@@ -753,6 +753,35 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
     }
   }
   return seen;
+}
+
+const LIVE_CHILD: Pick<Skipped, "why" | "kind"> = { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" };
+const LARGE_CHILD: Pick<Skipped, "why" | "kind"> = { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" };
+
+/** Why a run waits, if it does: the first of its subagents, theirs, and so on down (the import's children relation,
+ *  as readChildren walks it), that cannot be read now by its size now: still written, or over the cap. */
+async function holdBack(children: Plan["children"], parts: readonly Session[], childIds: ReadonlyMap<string, string>, now: number): Promise<Pick<Skipped, "why" | "kind"> | undefined> {
+  const source = parts[0]!.source;
+  const visited = new Set<string>();
+  const under = async (owner: string): Promise<Pick<Skipped, "why" | "kind"> | undefined> => {
+    for (const locator of children.get(owner) ?? []) {
+      const key = locatorKey(locator);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const size = await locatorSize(locator, source);
+      if (size && size.bytes > MAX_SESSION_BYTES) return LARGE_CHILD;
+      if (size && now - size.mtimeMs < LIVE_MS) return LIVE_CHILD;
+      const id = childIds.get(key);
+      const deeper = id === undefined ? undefined : await under(id);
+      if (deeper) return deeper;
+    }
+    return undefined;
+  };
+  for (const part of parts) {
+    const why = await under(locatorKey(locatorOf(part)));
+    if (why) return why;
+  }
+  return await under(`${source}:${parts[0]!.id}`);
 }
 
 /** A run's subagents, theirs, and so on down, each file once, read with the import's `seen`: those beside each of its

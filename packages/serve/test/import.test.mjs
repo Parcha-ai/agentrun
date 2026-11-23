@@ -2299,7 +2299,8 @@ test("a session with one subagent file over the cap is left out whole and said, 
   t.after(async () => await store.close());
   const report = await runImport(store, await planImport(options(h)), options(h));
   assert.deepEqual(report.skipped.map((s) => [s.kind, s.session]), [["large", `claude-code:${sessionId(1)}`]], "counted among those left out");
-  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 0], ["small", 1]]);
+  // Held back by the plan, as a run with a live subagent is: no project of it to write until it can come in whole.
+  assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["small", 1]]);
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(2)], "no run of it without its subagent's usage");
 });
 
@@ -2496,4 +2497,55 @@ test("an OpenCode session whose subagent is still being written is left out as l
   await runImport(store, await planImport(options(h), store), options(h));
   const run = (await rowsOf(store)).find((r) => r.importedFrom.session === "ses_p");
   assert.equal((await store.runs.get(run.id)).costUsd, 0.5625);
+});
+
+test("an OpenCode session whose subagent is over the cap is left out as large, said, never imported without the subagent's usage", { timeout: 120_000 }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const db = openCodeDb(h.at, [
+    { id: "ses_p", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    // Its own rows over the cap, though the database it is in holds the others too.
+    { id: "ses_p_child", parent: "ses_p", cwd: project, prompt: "Find the notes.", pad: MAX_SESSION_BYTES + 1 },
+    { id: "ses_q", cwd: project, prompt: "Sort the notes." },
+  ]);
+  t.after(() => rmSync(db, { force: true }));
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", `${db}#ses_p_child`, null], ["large", `${db}#ses_p`, "opencode:ses_p"]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), ["ses_q"]);
+});
+
+test("a run waits while any subagent of it is still being written, whatever its source: a Claude Code session's subagent file, a Codex thread's child thread", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const subagent = claudeSubagent(h.at, project, 1, 1);
+  claudeSession(h.at, project, 2, { prompt: "Fix the header." });
+  codexSession(h.at, project, 3);
+  const thread = codexSession(h.at, project, 4, { subagent: true, parent: sessionId(3) });
+  codexSession(h.at, project, 5, { prompt: "Run the linter." });
+  // A thread whose child thread is done, and whose child's own child is not.
+  codexSession(h.at, project, 6, { prompt: "Bump the version." });
+  codexSession(h.at, project, 7, { subagent: true, parent: sessionId(6) });
+  const grandchild = codexSession(h.at, project, 8, { subagent: true, parent: sessionId(7) });
+  // Written just now: still running.
+  for (const file of [subagent, thread, grandchild]) utimesSync(file, new Date(), new Date());
+  const plan = await planImport(options(h));
+  assert.deepEqual(
+    plan.skipped.filter((s) => s.session).map((s) => [s.kind, s.session]).sort(),
+    [["live", `claude-code:${sessionId(1)}`], ["live", `codex:${sessionId(3)}`], ["live", `codex:${sessionId(6)}`]],
+    "each run with a live subagent, at any depth, said",
+  );
+  for (const s of plan.skipped.filter((s) => s.session)) assert.match(s.why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(5)], "the runs with no live subagent");
 });
