@@ -1064,6 +1064,62 @@ test("a webhook with accept and no max_active_runs: a firing whose retry came du
   assert.notEqual((await store.triggers.firing(made.id, a)).waitsOn, a);
 });
 
+test("a tick while a firing's host start is writing its run leaves the firing to that start: its retry comes due, the start writes the run, the agent is archived after, and the firing stays started with that run, never skipped over it", async (t) => {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const host = await heldHost(t);
+  // While the start writes, the store's calls: a drive of a calls for a's firing, then reads its agent's archive, which
+  // waits at `gate` until the test lets it read.
+  const trap = { a: null, watching: false, aCalls: 0, waiting: 0, pending: 0 };
+  const gate = { entered: false, read: held() };
+  const triggersOf = new Proxy(on.store.triggers, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        if (trap.watching && name === "firing" && args[1] === trap.a) trap.aCalls += 1;
+        const out = value.apply(target, args);
+        if (!trap.watching || (name !== "waiting" && name !== "pending")) return out;
+        return out.then((rows) => ((trap[name] += 1), rows));
+      };
+    },
+  });
+  const agentsOf = new Proxy(on.store.agents, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        if (name !== "get" || !trap.watching || gate.entered) return value.apply(target, args);
+        gate.entered = true;
+        return gate.read.promise.then(() => value.apply(target, args));
+      };
+    },
+  });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, agents: agentsOf, runs: on.store.runs } }, { on });
+  const made = await triggers.create(hookBody);
+  const a = await timedOut(triggers, store, host, made.id, "evt-a");
+  trap.a = a;
+  const { retryAt } = await store.triggers.firing(made.id, a);
+  await armed(clock, new Date(retryAt).toISOString());
+  const start = heldStart(triggers, store, made.id, a, "run-a");
+  await until(() => start.entered, "a's host start is writing its run");
+  trap.watching = true;
+  clock.to(new Date(retryAt).toISOString());
+  // A drive of a the tick began has called for a's firing before the tick's read of waiting firings answers.
+  await until(() => trap.waiting >= 1 && trap.pending >= 2 && (trap.aCalls === 0 || gate.entered), "the tick done, and any drive of a at its archive read");
+  const drove = gate.entered;
+  start.writing.resolve();
+  assert.deepEqual(await start.done, { run_id: "run-a", replayed: false });
+  await store.agents.archive("a", true, { at: "2026-06-01T00:00:00.000Z", reason: "agent_archived", detail: "The agent a is archived." });
+  // A drive of a now reads the archive; its turn's end arms the timer again (a read of the pending firings).
+  const pending = trap.pending;
+  gate.read.resolve();
+  if (drove) await until(() => trap.pending > pending, "a's drive done");
+  trap.watching = false;
+  const row = await store.triggers.firing(made.id, a);
+  assert.deepEqual([row.status, row.runId, row.reason], ["started", "run-a", null], JSON.stringify(row));
+  assert.equal(drove, false, "no drive of a while its host's start wrote its run");
+});
+
 test("max_active_runs cleared leaves no firing held behind the old cap: a webhook with accept, a firing waiting on its cap of 1, is driven by the wait's poll once the cap is null, and starts while the trigger's other run still works", async (t) => {
   const { clock, triggers, runs } = await hookEngine(t, { statusOf: async () => "working" }, new Set(["run-1"]));
   const made = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 1 });
