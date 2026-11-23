@@ -108,6 +108,14 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
+/** A session's cost with its subagents': Claude Code's written cost holds its subagents' already (its cost-state), so it
+ *  stays as it is; every other source writes a subagent's cost on the subagent's own session, so each is added. Unknown
+ *  when the session's is, or when one it adds is: never a subagent counted at 0. parseHome's totals and serve's import. */
+export function withSubagentCosts(source: string, cost: number | undefined, subagents: readonly (number | undefined)[]): number | undefined {
+  if (source === "claude-code" || cost === undefined) return cost;
+  return subagents.reduce<number | undefined>((sum, usd) => (sum === undefined || usd === undefined ? undefined : sum + usd), cost);
+}
+
 /** A session file's own requests (none another session of the call holds), and the cost it wrote of them: its own when it
  *  holds none of another's, else its own requests' when each that used tokens is priced. */
 const ownOf = ({ read }: Part, mirrored: (request: Answer) => boolean) => ownRequests(read.requests, read.session.costUsd, mirrored);
@@ -168,12 +176,9 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total, its
     // subagents' with it (a moved session's copy goes on from the original's), so the highest; another source prices each
     // request, so the sum of its files' and its subagents' (OpenCode's subagent is a session of its own).
-    const priced = source === "claude-code" ? parts : [...parts, ...subagents];
-    const written = priced.flatMap((part) => {
-      const { cost } = own.get(part)!;
-      return cost !== undefined ? [cost] : [];
-    });
-    let cost: number | undefined = written.length === priced.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
+    const written = parts.map((part) => own.get(part)!.cost);
+    const files = written.some((usd) => usd === undefined) ? undefined : source === "claude-code" ? Math.max(...(written as number[])) : (written as number[]).reduce((n, usd) => n + usd, 0);
+    let cost = withSubagentCosts(source, files, subagents.map((part) => own.get(part)!.cost));
     if (cost === undefined) {
       const catalog = await priceWith();
       cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;

@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -201,7 +201,8 @@ export type ImportOptions = {
   /** Keep projects whose directory is gone (a deleted worktree's, a moved checkout's): each still its own agent, with no
    *  instructions or skills to read. */
   deleted?: boolean;
-  /** The environment whose key-shaped values are cut out of everything written. */
+  /** The environment whose key-shaped values are cut out of everything written, and where each source keeps its own
+   *  folders (CLAUDE_CONFIG_DIR, CODEX_HOME, OpenCode's XDG_DATA_HOME and OPENCODE_DB). */
   env: NodeJS.ProcessEnv;
   /** The tool keys saved through the settings API, opened (tool-keys.ts' `values`): cut out by the same rule. */
   stored?: Record<string, string>;
@@ -442,9 +443,14 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   let stopped = false;
   // Each listed session's place in the import's order (inOrder).
   const rank = new Map<Session, number>();
+  // The sessions a subagent left out here ran under (`source:id`), with why: no run of theirs without its usage (each
+  // subagent read with its run, readChildren), so they wait with it. And each subagent's parent, to reach the run.
+  const waiting = new Map<string, Pick<Skipped, "why" | "kind">>();
+  const parents = new Map<string, string>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
-    for (const { locator, size } of await inOrder(await sessionLocators(home, source), source)) {
+    // Each source's own folders where `env` puts them (CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_DATA_HOME, OPENCODE_DB).
+    for (const { locator, size } of await inOrder(await sessionLocators(home, source, { env }), source)) {
       const { file } = locator;
       if (signal?.aborted) {
         stopped = true;
@@ -460,10 +466,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       // database, leaves the rest of its file importable.
       if (now - size.mtimeMs < LIVE_MS) {
         leave({ what: locatorKey(locator), why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
+        if (size.parent) waiting.set(`${source}:${await idOf(size.parent, scan)}`, { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" });
         continue;
       }
       if (size.bytes > MAX_SESSION_BYTES) {
         leave({ what: locatorKey(locator), why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
+        if (size.parent) waiting.set(`${source}:${await idOf(size.parent, scan)}`, { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" });
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
@@ -475,6 +483,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
         child(`${source}:${session.parent}`, locator);
+        parents.set(`${source}:${session.id}`, `${source}:${session.parent}`);
         continue;
       }
       if (!session.cwd) {
@@ -516,7 +525,26 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       rank.set(session, rank.size);
       project.sessions.push(session);
     }
-    for (const { locator, of } of await childrenOf(home, source)) child(locatorKey(of), locator);
+    for (const { locator, of } of await childrenOf(home, source, { env })) child(locatorKey(of), locator);
+  }
+  // A run a subagent left out ran under (its subagent's subagent's too) is left out with it, said, and comes in whole
+  // once each subagent can be read.
+  const runOf = (key: string, seen = new Set<string>()): string => {
+    const up = parents.get(key);
+    return up === undefined || seen.has(key) ? key : runOf(up, seen.add(key));
+  };
+  const wait = new Map([...waiting].map(([key, why]) => [runOf(key), why] as const));
+  for (const project of projects.values()) {
+    const left = new Set<string>();
+    project.sessions = project.sessions.filter((session) => {
+      const key = `${session.source}:${session.id}`;
+      const why = wait.get(key);
+      if (!why) return true;
+      if (!left.has(key)) leave({ what: locatorKey(locatorOf(session)), ...why, session: key }, session.source, project.cwd);
+      left.add(key);
+      return false;
+    });
+    if (!project.sessions.length) projects.delete(project.cwd);
   }
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.
@@ -1279,8 +1307,10 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // so its timeline's usage row counts what its metrics do, one number for the run.
       const { batches, entries } = transcriptOf(session, json, subagents);
       const metrics: RunMetrics & { activeMs: number; effort?: string; costUsdEst?: number; costBasis?: string } = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+      // Its cost with its subagents' where the source writes theirs apart (withSubagentCosts): unknown when one is.
+      const costUsd = withSubagentCosts(session.source, session.costUsd, subagents.map((child) => child.costUsd));
       // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
-      const estimate = session.costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
+      const estimate = costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
       if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
       const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
       // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
@@ -1294,7 +1324,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         launch: { body: launchBody({ input: { content: text(session.firstPrompt ?? "") }, title, place: { mode: "runner" } }) },
         // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
         state: session.state === "completed" ? "ended" : session.state,
-        ...(session.costUsd !== undefined ? { costUsd: session.costUsd } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
         ...((answer ?? session.titleText) ? { summary: text(answer ?? session.titleText!) } : {}),
         metrics,
         startedAt: Date.parse(session.startedAt ?? epoch0),

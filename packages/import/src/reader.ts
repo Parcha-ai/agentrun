@@ -18,7 +18,13 @@ export const locatorKey = ({ file, id }: Locator): string => (id === undefined ?
 
 /** What a locator's session takes: its bytes, and when it was last written (ms). A file's size and mtime for a file of
  *  one session; for one session of many in a file (a database), that session's own. */
-export type LocatorSize = { bytes: number; mtimeMs: number };
+export type LocatorSize = {
+  bytes: number;
+  mtimeMs: number;
+  /** The session it ran under, when the reader knows it without reading the session (a database row's parent): a caller
+   *  that leaves a subagent out (still written, too large) leaves the session it ran under out with it. */
+  parent?: string;
+};
 
 /** One session a read found: where it is, what it is, and every request read (each counted once), whether turns are kept
  *  or not: what a total counts. */

@@ -61,6 +61,9 @@ const ENV = { OPENAI_API_KEY: CANARY, PATH: "/usr/bin" };
 // data directory. A scratch config home for this suite all the same, never the real ~/.config.
 process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "import-config-"));
 after(() => rmSync(process.env.XDG_CONFIG_HOME, { recursive: true, force: true }));
+// The import finds each source's folders where the environment puts them: none of this machine's, for a test that hands
+// the CLI this process's environment, so its scratch home is all it reads.
+for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_DATA_HOME", "OPENCODE_DB"]) delete process.env[name];
 
 /** A scratch home with three projects (one used by Claude Code and Codex, one by pi, one by Codex alone), a project
  *  that is gone, one under the temp directory, a session still being written, and two children. */
@@ -2428,4 +2431,69 @@ test("an OpenCode project's own skills, in .opencode/skills and .opencode/skill 
   const { revisions } = await agentOf(store, agentIdOf(project));
   const opencode = revisions.find((r) => r.note === "imported from opencode");
   assert.deepEqual(Object.keys(opencode.body.skills).sort(), ["sort/SKILL.md", "tidy/SKILL.md"]);
+});
+
+test("serve finds OpenCode's history where the environment puts it: XDG_DATA_HOME's data folder and the database OPENCODE_DB names", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const data = join(root, "xdg-data");
+  openCodeDb(h.at, [{ id: "ses_xdg", cwd: project }], { file: join(data, "opencode", "opencode.db") });
+  const named = openCodeDb(h.at, [{ id: "ses_named", cwd: project }], { file: join(root, "elsewhere", "history.db") });
+  const env = { ...ENV, XDG_DATA_HOME: data, OPENCODE_DB: named };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h, { env })), options(h, { env }));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), ["ses_named", "ses_xdg"]);
+});
+
+test("an OpenCode run's cost holds its subagents' own, which OpenCode writes on the subagent's session; one unknown makes the run's unknown", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  openCodeDb(h.at, [
+    { id: "ses_a", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }, { input: 4, output: 1, cost: 0.25 }, { input: 5, output: 1, cost: 0.125 }] },
+    { id: "ses_a_child", parent: "ses_a", cwd: project, prompt: "Find the notes.", answers: [{ input: 6, output: 1, cost: 0.0625 }] },
+    { id: "ses_b", cwd: project, prompt: "Sort the notes.", answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    // OpenCode wrote no cost for this subagent's request.
+    { id: "ses_b_child", parent: "ses_b", cwd: project, prompt: "Count the notes.", answers: [{ input: 6, output: 1 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const saved = {};
+  for (const run of await rowsOf(store)) saved[run.importedFrom.session] = (await store.runs.get(run.id)).costUsd ?? null;
+  assert.deepEqual(saved, { ses_a: 0.9375, ses_b: null }, "the parent's 0.875 and its subagent's 0.0625; an unknown subagent cost is no 0");
+});
+
+test("an OpenCode session whose subagent is still being written is left out as live, said, until the subagent can be read with it", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const sessions = [
+    { id: "ses_p", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_p_child", parent: "ses_p", cwd: project, prompt: "Find the notes.", answers: [{ input: 6, output: 1, cost: 0.0625 }], updated: Date.now() },
+    { id: "ses_q", cwd: project, prompt: "Sort the notes.", answers: [{ input: 3, output: 2, cost: 0.25 }] },
+  ];
+  const db = openCodeDb(h.at, sessions);
+  const plan = await planImport(options(h));
+  assert.deepEqual(
+    plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]),
+    [["live", `${db}#ses_p_child`, null], ["live", `${db}#ses_p`, "opencode:ses_p"]],
+    "the subagent, and the session it ran under",
+  );
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), ["ses_q"], "no run of it without its subagent's usage");
+  // Once the subagent is done, the next import takes the session whole, the subagent's cost with it.
+  rmSync(db);
+  openCodeDb(h.at, sessions.map(({ updated: _, ...session }) => session));
+  await runImport(store, await planImport(options(h), store), options(h));
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.session === "ses_p");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.5625);
 });

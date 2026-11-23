@@ -226,5 +226,10 @@ test("a database session's size and last write are its own rows', not its databa
     for (const part of await readdir(join(storage, "part", message.replace(/\.json$/, ""))).catch(() => [])) files.push(join(storage, "part", message.replace(/\.json$/, ""), part));
   }
   const stats = await Promise.all(files.map((file) => stat(file)));
+  // A subagent's names the session it ran under, its database's row's or its session file's.
+  assert.equal((await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_B.json") }, "opencode")).parent, "ses_A");
+  const v1 = join(dir, "v1.db");
+  await buildV1(v1);
+  assert.deepEqual([(await locatorSize({ file: v1, id: "ses_B" }, "opencode")).parent, (await locatorSize({ file: v1, id: "ses_A" }, "opencode")).parent], ["ses_A", undefined]);
   assert.deepEqual(await locatorSize({ file: files[0] }, "opencode"), { bytes: stats.reduce((n, s) => n + s.size, 0), mtimeMs: Math.max(...stats.map((s) => s.mtimeMs)) });
 });

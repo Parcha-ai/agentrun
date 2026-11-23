@@ -513,23 +513,26 @@ export async function openCodeFiles(home: string, env: Env = {}): Promise<{ dbs:
   return (await lstat(join(storage, "session")).catch(() => null))?.isDirectory() && (await lstat(storage)).isDirectory() ? { dbs, storage } : { dbs };
 }
 
-/** A database session's own size and last write: the bytes of its messages' and parts' data (the 2.x tables' when the
+/** A database session's own size, last write and parent: the bytes of its messages' and parts' data (the 2.x tables' when the
  *  session is there, else 1.x's: the rows a read of it takes) and the latest time_updated of its rows. */
 function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string): LocatorSize | null {
-  const v2 = tables.v2 && db.all("SELECT 1 AS n FROM session_v2 WHERE id = ?", id).length > 0;
-  if (!v2 && !(tables.v1 && db.all("SELECT 1 AS n FROM session WHERE id = ?", id).length > 0)) return null;
+  const [v2] = tables.v2 ? db.all("SELECT parent_id FROM session_v2 WHERE id = ?", id) : [];
+  const [row] = v2 ? [v2] : tables.v1 ? db.all("SELECT parent_id FROM session WHERE id = ?", id) : [];
+  if (!row) return null;
   const data = (v2 ? ["session_message", "session_part"] : ["message", "part"]).filter((table) => tables.all.has(table));
   const bytes = data.reduce((n, table) => n + Number(db.all(`SELECT coalesce(sum(length(CAST(data AS BLOB))), 0) AS n FROM ${table} WHERE session_id = ?`, id)[0]?.n ?? 0), 0);
   const times = SESSION_TABLES.filter(([table]) => tables.all.has(table)).map(([table, column]) => num(db.all(`SELECT max(time_updated) AS t FROM ${table} WHERE ${column} = ?`, id)[0]?.t) ?? 0);
-  return { bytes, mtimeMs: Math.max(0, ...times) };
+  return { bytes, mtimeMs: Math.max(0, ...times), ...(str(row.parent_id) ? { parent: row.parent_id as string } : {}) };
 }
 
-/** A storage session's size and last write: its session file's, its messages' and their parts' together. */
+/** A storage session's size and last write: its session file's, its messages' and their parts' together; its parent, its
+ *  session file's. */
 async function storageSize(file: string): Promise<LocatorSize | null> {
   const own = await stat(file).catch(() => null);
   if (!own) return null;
   const dir = storageOf(file);
-  const size = { bytes: own.size, mtimeMs: own.mtimeMs };
+  const info = await readJson(file);
+  const size: LocatorSize = { bytes: own.size, mtimeMs: own.mtimeMs, ...(info && str(info.parentID) ? { parent: info.parentID as string } : {}) };
   const add = async (path: string) => {
     const stats = await stat(path).catch(() => null);
     if (!stats) return;
