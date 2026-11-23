@@ -9,9 +9,14 @@ const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
  *  later start reaches the same "." the first does with fewer characters, so it finds nothing the first doesn't, and
  *  the lookbehind reads back only to the "eyJ" before it. */
 const JWT = /eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
-/** A private key block's header, its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each side: two
- *  unbounded runs read a long header of repeated words in quadratic time (24 s over 256 KiB of "PRIVATE KEY "). */
-const PRIVATE_KEY = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/;
+/** A private key block, whole: its BEGIN line through its body to its END line, the key itself, not its header alone (a
+ *  cut read serves a run's whole file). The header's key type (RSA, EC, OPENSSH, ENCRYPTED) is at most 64 characters
+ *  each side: two unbounded runs read a long header of repeated words in quadratic time (24 s over 256 KiB of "PRIVATE
+ *  KEY "). The body, at most 16 KiB to the END line, is base64, whitespace and a legacy PEM's headers (Proc-Type,
+ *  DEK-Info), a "-" in it never followed by "----": so a reading from one BEGIN stops at the next "-----", and a text of
+ *  repeated headers reads in linear time. A block with no END line within that (a key cut short, or past the bound) is
+ *  cut through the base64 lines right after its header, at most 1024 of them, each to its line's end. */
+const PRIVATE_KEY = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----(?:(?:[A-Za-z0-9+/=:, \t\r\n]|-(?!----)){0,16384}?-----END[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----|(?:\r?\n[A-Za-z0-9+/=]{1,128}(?=\r?\n|$)){0,1024})/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
 /** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
