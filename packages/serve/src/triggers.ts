@@ -1470,10 +1470,12 @@ export class Triggers {
    *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
    *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
    *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
-   *  still due (not handed yet) or any other, with `details` { reason: RUN_STARTED, run_id } when its run started; 404 for a trigger or
-   *  firing this server does not have. A host start of the firing being written on this server is waited for first: a run
-   *  it writes makes the firing started, and refused. One on another server is decided by the store: its run's write and
-   *  this release's are each conditional on the firing being sent with no run, so one of them finds it moved. */
+   *  still due (not handed yet) or any other, with `details` { reason: RUN_STARTED, run_id } when its run started; 404
+   *  for a trigger or firing this server does not have. A host start of the firing already writing its run on this server
+   *  is waited for first: a run it writes makes the firing started, and refused. Any other start, on this server (its
+   *  room check landing after that wait) or another, is decided by the store: its run's write and this release's are each
+   *  conditional on the firing being sent with no run, so the one that lands second finds it moved (a start, FiringMoved;
+   *  this release, the firing read again and refused). */
   async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
     if (!this.deps.launchHook) throw invalid([{ field: "firing_id", reason: "not_allowed", message: "This server has no launch hook: only a firing the hook handed to its host is released by that host." }]);
     await this.need(triggerId);
@@ -1489,33 +1491,36 @@ export class Triggers {
         if (run) throw this.ranRefusal(key, run.run_id);
         continue;
       }
-      const firing = await this.checked(triggerId, () => this.releaseOnce(triggerId, key, message));
-      // Moved under the release (a host start pushed its start_by, or wrote its run): read again from the top.
-      if (firing) return firingView(firing);
+      const found = await this.checked(triggerId, () => this.releasable(triggerId, key));
+      if ("firing" in found) return firingView(found.firing);
+      if ("ran" in found) {
+        await this.handedRan(triggerId, key, found.ran);
+        throw this.ranRefusal(key, found.ran);
+      }
+      // Written out of the room checks, as drive writes what its check found (a check never waits on a hook, and a failed
+      // firing's trigger.failed and auto-pause call out): only while the firing is still sent with no run and its start_by
+      // is the one read, so a start that moved it meanwhile (on any server) leaves it as it is, and it is read again.
+      const failed = await this.failed(triggerId, key, { code: HOST_RELEASED, message }, undefined, HOST_RELEASED_REASON, { from: "sent", startByWas: found.startBy });
+      if (!failed) continue;
+      this.deps.say({ condition: "trigger_firing_released", trigger: triggerId, firing: key });
+      // Its room is free now: a firing waiting on it is driven on the next tick, not at start_by.
+      void this.arm();
+      return firingView(failed);
     }
   }
 
-  /** One read and write of a release (release), within its trigger's room checks: the firing failed host_released, only
-   *  while it is still sent with no run and its start_by is the one read here, so a start that moved it meanwhile (on any
-   *  server) leaves it as it is, and undefined is answered. */
-  private async releaseOnce(triggerId: string, key: string, message: string): Promise<FiringRow | undefined> {
+  /** What a release of firing `key` finds, read within its trigger's room checks (release): the firing, released already;
+   *  the run already under its key (`ran`, linked or not: a stop between its write and handedRan); or the start_by of a
+   *  firing its host took with no run, which the release then fails. Any other is refused in words. */
+  private async releasable(triggerId: string, key: string): Promise<{ firing: FiringRow } | { ran: string } | { startBy: number }> {
     const firing = await this.store.triggers.firing(triggerId, key);
     if (!firing) throw new ApiError("not_found", `Trigger ${triggerId} has no firing ${key}.`);
-    if (released(firing)) return firing;
-    // A run already under its key is its run, linked or not (a stop between its write and handedRan).
+    if (released(firing)) return { firing };
     const ran = firing.status === "started" ? firing.runId : firing.status === "due" || tookWithNoRun(firing) ? (await this.deps.runOf(key))?.run_id : undefined;
-    if (ran) {
-      await this.handedRan(triggerId, key, ran);
-      throw this.ranRefusal(key, ran);
-    }
+    if (ran) return { ran };
     if (firing.status === "due") throw this.notDue(key, "it has not been handed to the launch hook's host yet");
     if (!tookWithNoRun(firing)) throw this.notDue(key, `it is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}, not a firing the launch hook's host took with no run`);
-    const failed = await this.failed(triggerId, key, { code: HOST_RELEASED, message }, undefined, HOST_RELEASED_REASON, { from: "sent", startByWas: firing.startBy! });
-    if (!failed) return undefined;
-    this.deps.say({ condition: "trigger_firing_released", trigger: triggerId, firing: key });
-    // Its room is free now: a firing waiting on it is driven on the next tick, not at start_by.
-    void this.arm();
-    return failed;
+    return { startBy: firing.startBy! };
   }
 
   /** A release refused for firing `key`, `why` saying what it is. */

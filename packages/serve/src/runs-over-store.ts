@@ -37,7 +37,7 @@ import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
-import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, FiringMoved, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { toolingOf } from "./tools.js";
@@ -649,8 +649,10 @@ export async function withHeldFiles(store: Pick<Store, "runs">, deps: Pick<Start
         if (row.agentId === agentId && row.revisionId === revision.id && kept && canonical(kept.body) === canonical(launchBody(prepared))) { if (ownership) await ownership.settled(); else await admitted?.(); return row; }
       } else knownAbsent = true;
     } catch { /* preserve preparation until the admission can be resolved */ }
+    // A refusal the store gave in the run's own transaction (a host start whose firing was released meanwhile: FiringMoved)
+    // wrote nothing, so the run never exists and its preparation goes.
     if (knownAbsent && (error instanceof StoreConstraint || error instanceof RevisionMoved || error instanceof AgentDeleting
-      || error instanceof AgentPurged || error instanceof AgentArchived || error instanceof ExternalBodyConflict || error instanceof ApiError)) await undo(true);
+      || error instanceof AgentPurged || error instanceof AgentArchived || error instanceof ExternalBodyConflict || error instanceof FiringMoved || error instanceof ApiError)) await undo(true);
     throw error;
   }
 }
