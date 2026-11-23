@@ -19,14 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ALL, FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
-import { SECRETS } from '../packages/agentrun/lib/login.mjs';
-import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
-import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
-import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
-import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
-import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from '../packages/agentrun/lib/harness.mjs';
-import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from '../packages/agentrun/lib/deploy.mjs';
-import { EXPORT } from '../packages/agentrun/lib/export.mjs';
+import { LOCAL } from '../packages/agentrun/lib/local.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -40,11 +33,11 @@ const SKILL = 'packages/agentrun/skills/agentrun-cli';
 const CLIENT = 'packages/client/src/operations.generated.ts';
 const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
-// Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
-// may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check', 'export', 'deploy'];
+// Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word, which take
+// any word after them as their argument: no command may begin with one.
+const RESERVED = ['api', 'help', 'import', 'reset-password', ...LOCAL.filter(({ command }) => command.length === 1).map(({ command }) => command[0])];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: LOCAL };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.

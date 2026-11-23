@@ -211,9 +211,10 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 ## Anonymous usage counts
 
-The server sends three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
-a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
-range; never a prompt, a file, a key or a name.
+The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
+suggested agents, `suggestions_scanned`, `suggestion_discarded` and `suggested_agent_created`. Each holds a random id
+kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a range; never a
+prompt, a file, a key, a name or a repository.
 `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI`, a test runner (`node --test`) and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
 event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
 [docs/telemetry.md](../../docs/telemetry.md) lists every field.
@@ -277,7 +278,7 @@ which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) work
 server's public address, `AGENTRUN_PUBLIC_URL` (the image gives both processes the same environment). The machine dials
 the server, and the server relays its socket to the runner that made it: the runner keeps its own attach hub on a
 private listener (loopback; across hosts, its `AGENTRUN_RUNNER_LIVE_HOST`, which the server's `AGENTRUN_RUNNER_HOSTS`
-must list), and the server reaches it only with a proof under the seal key for that machine's token, that runner and a
+must list; runners that are replicas with no host name of their own give both an IPv4 block instead, below), and the server reaches it only with a proof under the seal key for that machine's token, that runner and a
 time within 10 seconds, taken once. A dial it cannot relay (its runner gone, not answering, or restarted since) is
 answered 503 in words that name the run, `a dial for run <run> (machine <machine>)`, and never the machine's token. The
 runner's create, waiting for that machine, ends at once in the same words and deletes it; the run makes a new machine at
@@ -1394,7 +1395,7 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 
 - A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
   decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed. So is a
-  value that is not text of 8 or more characters with no space or control character (`invalid`): the runner could
+  value that is not 8 or more characters of visible ASCII (`invalid`), as a header carries it: the runner could
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
@@ -2197,7 +2198,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
-`url` is `https`, or `http` on loopback.
+`url` is `https`, or `http` on loopback when the server was started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`
+([start-time switches](#start-time-switches)); without it a loopback URL is `422` on `url`, in words that name the switch.
 
 A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
 tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
@@ -2259,8 +2261,8 @@ handed none, so a per-run server never calls as a default account. A malformed u
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
-With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
-each run binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
+binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
 refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
 
 What can go wrong, told apart:
@@ -2673,7 +2675,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agen
 auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
 the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
 target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
-trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
+trigger off (`disabled: {reason: "auto_paused"}`); a firing tried again (a busy server) counts once, when it fails,
+however many tries it took. A firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
 upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
@@ -2773,7 +2776,8 @@ tried again, a later one can start first.
 
 Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
 start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
-is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
+is tried again, and is never skipped. It counts the runs this trigger started while they work (with the launch hook,
+also a firing its host took, until that firing's run starts or its `start_by` passes), kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -2883,8 +2887,9 @@ has each instance on, and the subscription's place.
 ### GitHub triggers (Connect GitHub)
 
 A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
-GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
-the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?, contents?}`:
+`org` makes the App under an organization; `contents: "write"` asks for Contents write too, which suggested agents' pull
+requests need, below) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
 `manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
 callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
 (`pull_request`, `issue_comment`, `release`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
@@ -3027,6 +3032,71 @@ is outside this email's thread"). The pending approval carries the reason as `as
 says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
+An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
+start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
+payload's). The same command, token and rules as a pull request's checkout fetch the remote's `HEAD` (its default branch)
+one commit deep and check it out detached in `repo/` (ref `repo/head`), and list its files one a line in
+`repo/.git/agentrun-files`, so an agent with `read` and no shell can still find what to open. The run's system prompt
+names the repository, the branch, the commit and the list, or why there is no checkout.
+
+### Suggested agents
+
+The console's Suggested agents page (`#/suggestions`) connects a GitHub repository, finds where its app needs an agent,
+and lets a person create or discard each suggestion. Every write to GitHub is the server's, made when a person presses
+Create; no run ever holds a token that can write.
+
+1. **Connect.** Connect GitHub as above. The page asks for `contents: "write"` unless the person unticks it; a scan needs
+   only what every App holds (metadata and contents read). `GET /v2/integrations/github/repositories` lists what the
+   App's installations cover (a metadata-read token per installation, revoked after; at most 500; an installation GitHub
+   did not list is in `unread`).
+2. **Scan.** `POST /v2/suggestions/scans` with `{repo}` (`owner/name` or its github.com URL) runs the bundled `agent-scout`
+   template's agent, applied here the first time and reused: a read-only checkout of the default branch (`checkout:
+   repository`), read-only bash where there is a shell, and an answer of at most five suggestions against its schema.
+   Its first message lists the suggestions already decided on that repository, so none comes back. 202 with the run;
+   200 while one runs; what the apply or the start refuses is the answer (`409 agent_not_runnable` with no model key).
+   A scan whose run stopped without ending (at its cost cap or asking for input, or paused) is listed as `waiting`: it is
+   resumed or cancelled on its run's page, and a new scan starts a new run.
+3. **List.** `GET /v2/suggestions` (`?repo=`, `?status=open|created|discarded|all`; open and created by default) answers
+   GitHub's state, each repository's newest scan, and its suggestions. A scan that ended is read once: each suggestion is
+   checked again field by field (paths inside the repository, a client path in its language's extension and outside
+   `.github/`, `.git` and `.agentrun/agents/`, typed inputs and answer, answer labels that can't end a string or a
+   comment), and one that fails is dropped and listed with why in `scan.dropped`. A suggestion's id comes from its
+   repository and key, so a newer scan replaces the open ones of the scan before, and a decision outlives every rescan.
+   Decisions are kept in the store's settings (`suggestions.item.<id>`, `suggestions.scan.<repo>`).
+4. **Discard.** `POST /v2/suggestions/{id}/discard` hides it and keeps later scans from suggesting it again;
+   `POST .../restore` brings it back (the page's Undo). A created one is `409 suggestion_decided`.
+5. **Create.** `GET /v2/suggestions/{id}` shows the suggestion whole: the files a create adds, rendered now, whether its
+   package checks, and whether the App can open its pull request now (read from GitHub: the installation that covers the
+   repository and its permissions), with the App's permissions page and the installation's page when it can't.
+   `POST /v2/suggestions/{id}/create` (`{name?}`) then:
+   - claims the suggestion on its row in the store, which every server on that store shares: another create of it, a
+     discard or a scan's answer meanwhile is `409 home_busy` or leaves the row alone, so one agent and one pull request
+     are made. A claim older than 15 minutes (a server that stopped mid-create) is taken over. A scan is reserved the
+     same way before its run starts;
+   - refuses before anything is written: `409 github_not_connected`, `409 github_not_installed` (`details.install_url`),
+     `409 github_permission_missing` when the installation lacks Contents or Pull requests write (`details.missing`,
+     `permissions_url`, `installation_url`), or `409 github_file_exists` when the repository has a file it would add;
+   - mints one installation token for that repository with `{contents: write, pull_requests: write, metadata: read}`,
+     revoked at the end whatever happens;
+   - commits, over the default branch's head on a new branch `agentrun/<key>` (GitHub's Git Data API, no clone), the
+     agent's package (`.agentrun/agents/<key>/agent.md` and `output.schema.json`, rendered here from the checked fields)
+     and a client at the suggestion's path (TypeScript or JavaScript over `fetch`, Python over `urllib` taking the input
+     as one dict, or a Markdown page of the HTTP calls for any other language; no dependency). It only adds files;
+   - keeps that package as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at the pushed commit,
+     then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
+     recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
+     that commit and reuses it, never making a second one;
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
+     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+     `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
+
+`--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds
+contents write, its one repository answers the Git Data API and pull requests, `GET /_faux/state` on its API shows what a
+create wrote, and `POST /_faux/permissions` changes what the installation holds. Its repository is also a bare git
+repository beside the data, which a test's own runner checks out from. The CLI's runner is never pointed at it (a
+runner's GitHub API and site have one way in, a test runner's option), so a scan on a faux CLI server finds no repository
+to check out and is told so.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
@@ -3037,7 +3107,8 @@ package's `version` is SemVer and never `definition.version`, the agent's revisi
 need's toolkit as its `server` (`server: github` for a required `{source: composio, toolkit: github}` need), and apply makes it
 on the saved Composio server that need maps to, its `config` filled from the parameters it names
 (`repo: "${parameters.repo}"`); one this server can't set up yet (no public URL, say) is skipped with a
-warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
+warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository;
+`agent-scout` finds where a repository's app needs an agent ([Suggested agents](#suggested-agents)). The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
@@ -3232,11 +3303,12 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
-  budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
-  package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
-  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set
-  the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
+  is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
+  package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
+  the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
+  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
+  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
+  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
@@ -3270,26 +3342,59 @@ host, and this server starts no run for it:
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
-body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
+body.
+
+The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
 `max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, and answers 2xx within
-10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` with
+10 s. That run is the firing's, as one this server started would be: it names the trigger and the firing, carries the
+trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
+`max_active_runs` count it.
+
+The run starts on the trigger's target, as the run this server would start for the firing:
+
+- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
+  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
+  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
+  5 and its 1 at 1.
+- Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
+- It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
+  body is refused with 422 `not_allowed`, naming the field.
+- The rest of the host's body is taken as on any start: its `model_key`, `keys` and `mcp_auth` are sealed for the run.
+- Its input is the host's, followed by the trigger's last completed result when its source hands one on (a schedule
+  does), as a run this server starts for it is.
+
+The host can start the run before it answers or after. A firing it answered 2xx with no run yet reads `sent` with
 `start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
 The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
-waited on `max_active_runs`, one handed again after a restart) gets the same time; the server never hands a `sent`
-firing over again. That run is
-the firing's, as one this server started would be: it names the trigger and the firing, carries the trigger's title and
-input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check and `max_active_runs`
-count it. The firing is the run's key, so a second start for the same firing answers the same run and the request
-takes no `Idempotency-Key` (422 with one); a firing that is not being handed over (skipped, or one of another agent's
-triggers) is refused with 422. Until its run starts, a `sent` firing is one the overlap check cannot see. Any other
-answer, a redirect included (it is not followed), no answer in 10 s, or no connection, and the firing reads `skipped`
-with why, unless the host started its run by then; a skip is no failure and never turns the trigger off, and the
-server does not try that firing again. A firing the server's stop cuts short stays due and is handed again at the next
-start, under the same `webhook-id`. A `message_run` target starts no run and is unchanged. The start prints the hook's
-origin, never its path or the secret. The hook is `https`: a firing's input can carry a person's data, and the
-signature proves who sent it, not that no one else read it, so plain `http` is taken only for 127.0.0.0/8, `::1` or
-`localhost`. One of the two set without the other, a URL that is not https (or http to this machine) or holds a user
-or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in words.
+waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
+firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
+would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+
+The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+`Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
+another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
+by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+
+A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
+then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
+`timeout` (no answer in 10 s) or `unreachable` (no connection). No answer, no connection, a 5xx or a 429 leaves the
+firing due with `retry_at`, tried again on the trigger's backoff under the same `webhook-id`; any other answer, a
+redirect included (it is not followed), fails it at once. A firing counts once toward the trigger's failure streak,
+when it fails, however many tries it took: 5 failed firings in a row turn the trigger off, and a firing that fails
+sends `trigger.failed`. A host whose start lands while its firing waits on a retry (it answered too late) has that run
+made the firing's, `started`, while its trigger has room for it. A start that lands just as the server records the
+hook's answer keeps the firing `started` with its run: the answer doesn't set it back to `sent`, fail it or count it.
+
+A firing the server's stop cuts short stays due and is handed again at the next start, under the same `webhook-id`. A
+`message_run` target starts no run and is unchanged.
+
+The start prints the hook's origin, never its path or the secret. The hook is `https`: a firing's input can carry a
+person's data, and the signature proves who sent it, not that no one else read it, so plain `http` is taken only for
+127.0.0.0/8, `::1` or `localhost`. One of the two set without the other, a URL that is not https (or http to this
+machine) or holds a user or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in
+words.
 
 ## Uploads
 

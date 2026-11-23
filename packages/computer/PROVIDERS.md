@@ -309,7 +309,10 @@ Some vendors have states beyond these four:
 in the same shape as `get`. The listing finds; `get` answers: AgentRun takes only the ids from your listing and reads
 each one by `get` for its state, labels and end, and drops one `get` reads as not found. So your listing may be stale,
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
-don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does.
+don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. Your listing
+may also trail a create: create waits up to `timeouts.listedMs` (15 s) for it to show the new machine, then reads the
+machine by `get`, and keeps one that reads running with its labels (with a note), as Daytona's eventually consistent
+listing needs. Any other answer fails create `timeout`.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {

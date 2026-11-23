@@ -368,7 +368,7 @@ test("the helper runs no firewall program but nft, for egress alone, and names n
   assert.deepEqual(source.split("\n").filter((line) => line.includes('"$NFT"')).length, 1, "nft runs in one place, route()");
 });
 
-const EGRESS = "egress=10.60.0.40:18100:42050";
+const EGRESS = "egress=192.0.2.40:18100:42050";
 /** The ruleset the helper hands nft for egress, written out here rather than read from the helper. */
 const RULESET = [
   "table inet agentrun_archil",
@@ -391,7 +391,7 @@ test("mount and revoke with egress start the relay, then set the redirect, then 
     const ran = b.run([verb, DISK, REGION, FOLDER, EGRESS]);
     assert.equal(ran.status, 0, ran.stderr);
     assert.deepEqual(ran.calls, [
-      "computerd archil-relay --gateway 10.60.0.40 --mount-lane 18100 --data-lane 42050",
+      "computerd archil-relay --gateway 192.0.2.40 --mount-lane 18100 --data-lane 42050",
       "stdin 0",
       "nft -f -",
       ...RULESET,
@@ -432,19 +432,19 @@ test("egress starts the relay only while computerd is root's alone: else exit 4,
 
 for (const egress of [
   "egress=",
-  "egress=10.60.0.40",
-  "egress=10.60.0.40:18100",
-  "egress=10.60.0.40:18100:18100",
-  "egress=10.60.0.40:8100:42050",
-  "egress=10.60.0.40:18100:32050",
-  "egress=10.60.0.40:0:42050",
-  "egress=10.60.0.40:65536:42050",
-  "egress=10.60.0.400:18100:42050",
+  "egress=192.0.2.40",
+  "egress=192.0.2.40:18100",
+  "egress=192.0.2.40:18100:18100",
+  "egress=192.0.2.40:8100:42050",
+  "egress=192.0.2.40:18100:32050",
+  "egress=192.0.2.40:0:42050",
+  "egress=192.0.2.40:65536:42050",
+  "egress=192.0.2.400:18100:42050",
   "egress=proxy.internal:18100:42050",
-  "egress=10.60.0.40:18100:42050:1",
-  "egress=10.60.0.40:018100:42050",
-  "gateway=10.60.0.40:18100:42050",
-  "10.60.0.40:18100:42050",
+  "egress=192.0.2.40:18100:42050:1",
+  "egress=192.0.2.40:018100:42050",
+  "gateway=192.0.2.40:18100:42050",
+  "192.0.2.40:18100:42050",
 ]) {
   test(`refuses ${JSON.stringify(egress)}, and runs nothing`, async (t) => {
     const b = await box(t);

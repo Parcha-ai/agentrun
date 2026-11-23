@@ -1,37 +1,14 @@
-// Git-style external commands: `agentrun NAME [args]` runs agentrun-NAME from PATH when NAME is no command of the CLI's
-// own, with the rest of the arguments, no shell, stdio inherited and its exit code passed on. A built-in is never
-// shadowed, and a name that is no plain word, or one found only on a relative PATH entry, is today's unknown command.
+// Any other word: externalOf and external in cli.mjs.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { removeAtEnd } from "./support.mjs";
+import { cli, scratch as scratchOf } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const CLI = new URL("../lib/cli.mjs", import.meta.url).pathname;
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
-
-function scratch() {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-subcommands-"));
-  removeAtEnd(dir);
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
-  return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config"), AGENTRUN_BOXES: "none" } };
-}
-
-/** The CLI in a child process, killed after `timeout` ms, its code then null. */
-const cli = (env, args, { input = "", timeout = 30_000, cwd } = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, [BIN, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
-  const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  child.once("close", (code, signal) => (clearTimeout(timer), resolve({ code, signal, out, err })));
-  child.stdin.end(input);
-});
+const scratch = () => scratchOf("subcommands");
 
 /** A folder of executables, each `name` with the shell `script`. */
 function bin(dir, scripts, mode = 0o755) {
@@ -43,11 +20,12 @@ function bin(dir, scripts, mode = 0o755) {
   return dir;
 }
 
-test("agentrun NAME runs agentrun-NAME from PATH with the rest of the arguments, no shell, stdio inherited, its exit code passed on", async () => {
+test("agentrun NAME runs agentrun-NAME from PATH with the rest of the arguments, this environment, no shell, stdio inherited, its exit code passed on", async () => {
   const { dir, env } = scratch();
   const first = bin(join(dir, "first"), {
     "agentrun-hello": 'printf "%s\\n" "$@"; exit 7',
     "agentrun-cat": "cat",
+    "agentrun-env": 'printf "%s\\n" "$MARK"',
     "agentrun-killed": "kill -TERM $$",
   });
   const path = { ...env, PATH: `${first}${delimiter}${env.PATH}` };
@@ -57,6 +35,9 @@ test("agentrun NAME runs agentrun-NAME from PATH with the rest of the arguments,
   assert.equal(existsSync(join(dir, "pwned")), false, "no shell read the arguments");
   const cat = await cli(path, ["cat"], { input: "piped in\n" });
   assert.deepEqual([cat.code, cat.out], [0, "piped in\n"]);
+  // The CLI's environment is the command's: it reaches the same server, with the same token, as the CLI would.
+  const marked = await cli({ ...path, MARK: "seen" }, ["env"]);
+  assert.deepEqual([marked.code, marked.out], [0, "seen\n"], marked.err);
   const killed = await cli(path, ["killed"]);
   assert.equal(killed.code, 128 + 15, "a command a signal ended exits 128 + the signal's number");
 
@@ -146,6 +127,7 @@ test("external on Windows: a batch file is refused before anything runs, exit 12
     assert.equal(await external(file, ["a & calc", "%PATH%"], {}, io, "win32"), 126);
     assert.match(err, /is a batch file/);
     assert.match(err, /cmd\.exe/);
+    assert.match(err, /install agentrun-hello\.exe\.$/m, "the refusal names the command's own .exe");
   }
   err = "";
   assert.equal(await external("/nowhere/agentrun-\0hello", [], {}, io, "linux"), 126);
@@ -156,10 +138,12 @@ test("agentrun NAME: a built-in is never shadowed, and a name that is no plain w
   const { dir, env } = scratch();
   const shadows = bin(join(dir, "shadows"), Object.fromEntries(["login", "logout", "agents", "help", "api", "runs", "doctor"].map((name) => [`agentrun-${name}`, "echo shadowed; exit 9"])));
   const path = { ...env, PATH: `${shadows}${delimiter}${env.PATH}` };
-  for (const args of [["help"], ["agents", "--help"], ["login", "--help"], ["api", "--help"], ["runs"], ["logout"]]) {
+  for (const args of [["help"], ["agents", "--help"], ["login", "--help"], ["api", "--help"], ["runs"], ["logout"], ["doctor", "--help"]]) {
     const result = await cli(path, args);
     assert.notEqual(result.code, 9, `${args.join(" ")}: ${result.out}`);
     assert.doesNotMatch(result.out + result.err, /shadowed/, args.join(" "));
+    // Help names external commands.
+    if (args[0] === "help") assert.match(result.out, /agentrun-NAME/);
   }
 
   // agentrun a/b would be PATH's agentrun-a/b: a name is one plain word.
@@ -176,31 +160,4 @@ test("agentrun NAME: a built-in is never shadowed, and a name that is no plain w
   const none = await cli(env, ["no-such-command-here"]);
   assert.equal(none.code, 2);
   assert.match(none.err, /^agentrun has no command no-such-command-here\./);
-});
-
-test("demo: an external command gets this environment, so it reaches the same server through the API", async (t) => {
-  const { dir, env } = scratch();
-  const faux = join(dir, "faux.mjs");
-  writeFileSync(faux, 'export default (context, faux) => faux.message("The answer is 42.");\n');
-  const data = join(dir, "data");
-  const server = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  t.after(() => server.exitCode === null && server.kill("SIGKILL"));
-  let err = "";
-  server.stdout.resume();
-  server.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && server.exitCode === null, `the server started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const tools = bin(join(dir, "tools"), { "agentrun-count": '"$NODE" "$AGENTRUN_CLI" agents list --data "$AGENTRUN_DATA" | "$NODE" -e \'let s="";process.stdin.on("data",(c)=>s+=c).on("end",()=>console.log("agents:",JSON.parse(s).agents.length))\'' });
-  const count = await cli({ ...env, PATH: `${tools}${delimiter}${env.PATH}`, NODE: process.execPath, AGENTRUN_CLI: BIN, AGENTRUN_DATA: data }, ["count"]);
-  assert.equal(count.code, 0, count.err);
-  assert.match(count.out, /^agents: \d+\n$/);
-});
-
-test("help names external commands", async () => {
-  const { env } = scratch();
-  const help = await cli(env, ["help"]);
-  assert.equal(help.code, 0, help.err);
-  assert.match(help.out, /agentrun-NAME/);
 });

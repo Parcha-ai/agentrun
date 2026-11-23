@@ -490,7 +490,10 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
   // `evalFakes`: a template eval's fakes by agent id (runner/beside.ts evalFakes), for the runner alone.
   // `mcpOwn`: the server's own addresses (Serve.own), as the CLI's runner beside it is told them (runner/beside.ts).
-  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
+  // A --faux-github server's fake GitHub (Serve.fauxGitHub), its API and its repository's site, given to this test's runner
+  // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
+  // githubWeb wins.
+  const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];

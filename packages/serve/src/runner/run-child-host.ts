@@ -51,7 +51,7 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
-import { githubPullOf } from "../github.js";
+import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { liveForRun, runnerLiveOf } from "../live-reach.js";
 import { type LearnedWorkflow, secretsShown } from "../learning.js";
@@ -734,12 +734,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // A run's process mints for one thing alone: its revision's pull-request checkout (pr-checkout.ts), of the pull
       // request its launch's payload names, contents read. Its MCP mints on the runner (mcp above). So the mint handed
       // here makes that token and no other, whatever repository or permissions the process names.
-      if (revision.body.checkout !== "pull_request") return undefined;
-      const pull = githubPullOf(isObject(launch.input) ? launch.input.content : launch.input, { payload: fromGitHub });
+      // A repository checkout's is the repository the run names (its start's repo, else the first https://github.com
+      // URL its owner's words name): the same one repository, contents read.
+      if (revision.body.checkout !== "pull_request" && revision.body.checkout !== "repository") return undefined;
+      const content = isObject(launch.input) ? launch.input.content : launch.input;
+      const pull = revision.body.checkout === "pull_request" ? githubPullOf(content, { payload: fromGitHub }) : launch.repo !== undefined ? { repo: launch.repo } : githubTargetOf(content, { payload: fromGitHub });
       if (!pull) return undefined;
       const access = await github();
       if (!access) return undefined;
-      const bound = { repo: pull.repo, ...(pull.installation !== undefined ? { installation: pull.installation } : {}) };
+      const bound = { repo: pull.repo, ...("installation" in pull && pull.installation !== undefined ? { installation: pull.installation } : {}) };
       const mint: GithubAppAccessAt["mint"] = async (to) => {
         if (to?.repo !== bound.repo || to.installation !== bound.installation) {
           log(`run ${claim.runId}: its process asked for a GitHub token of another repository than its pull request's, which a run's process may not`);
