@@ -101,8 +101,8 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
   await until(() => fake.calls().some((call) => call.argv === "auth login --claudeai"), "the CLI's sign-in started");
 
   // Every call the server made was the CLI's status or its sign-in, at the login's place, with no key, token or endpoint
-  // of ours. A status check runs under a home of its own; the sign-in gets the person's home and desktop, so the CLI can
-  // open their browser.
+  // of ours. Both run in the person's home (on macOS the login keychain, where the CLI keeps its tokens, is under it);
+  // the sign-in also gets their desktop, so the CLI can open their browser.
   const calls = fake.calls();
   assert.ok(calls.length >= 4, JSON.stringify(calls));
   for (const call of calls.filter((call) => call.argv.startsWith("auth "))) {
@@ -110,7 +110,7 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
     assert.equal(call.secure, login);
     assert.equal(call.profiles, join(login, "anthropic"));
     const signIn = call.argv === "auth login --claudeai";
-    assert.equal(call.home === process.env.HOME, signIn, JSON.stringify(call));
+    assert.equal(call.home, process.env.HOME, JSON.stringify(call));
     assert.equal(call.display, signIn ? ":42" : "", JSON.stringify(call));
     assert.deepEqual([call.key, call.token, call.base, call.oauth], ["", "", "", ""], JSON.stringify(call));
   }
@@ -400,7 +400,7 @@ test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when th
   assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
-  const { api, data, fake } = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
+  const { api, data, fake, home } = await signInServer(t, "sign", {}, { CLAUDE_CONFIG_DIR: folder });
   const before = (await api("GET", "/settings/claude-login")).body;
   assert.deepEqual(before.machine, { folder, source: "CLAUDE_CONFIG_DIR" }, JSON.stringify(before));
   assert.equal(before.folder, loginAt("agentrun", data).dir);
@@ -416,6 +416,8 @@ test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when th
     assert.notEqual(call.config, folder, JSON.stringify(call));
     assert.ok(call.config && relative(folder, call.config).startsWith(".."), JSON.stringify(call));
     assert.equal(call.secure, folder, JSON.stringify(call));
+    // In the person's home (the server's), where macOS keeps the login keychain.
+    assert.equal(call.home, home, JSON.stringify(call));
   }
 });
 

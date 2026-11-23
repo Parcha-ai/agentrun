@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as claude from '@parcha/agentrun-harness-claude';
@@ -177,8 +177,9 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     const bytes = Buffer.from(`${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`);
     writeFileSync(join(folder, '.claude.json'), bytes, { mode: 0o600 });
     const login = { dir: folder, profiles: join(folder, 'anthropic'), shared: true };
+    const person = scratch();
     const fake = fakeCli();
-    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform }), OUT);
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform, home: person }), OUT);
     const [seen] = fake.seen();
     const config = seen.env.CLAUDE_CONFIG_DIR;
     assert.notEqual(config, folder, `${platform}: the status check never runs the CLI on the folder's own account file`);
@@ -186,8 +187,54 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     assert.deepEqual(JSON.parse(copyText(seen)), JSON.parse(bytes.toString('utf8')), `${platform}: the config dir holds a copy of the folder's account file`);
     // The person's CLI with CLAUDE_CONFIG_DIR=<folder> keeps its tokens there (Linux) or in the item hashed from it (macOS).
     assert.equal(seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR, folder, platform);
-    assert.ok(seen.env.HOME && seen.env.HOME !== folder, platform);
+    // In the person's home, where macOS keeps the login keychain the CLI reads its tokens from.
+    assert.equal(seen.env.HOME, person, `${platform}: the status check on a CLAUDE_CONFIG_DIR folder runs in the person's home`);
   }
+});
+
+/** The variables the status check gave the CLI, less PATH and the four it always sets to quiet the CLI. */
+const QUIET = ['PATH', 'DISABLE_AUTOUPDATER', 'DISABLE_TELEMETRY', 'DISABLE_ERROR_REPORTING', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'];
+const placeVars = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => !QUIET.includes(name)));
+
+test("every place's status check runs in the person's real home, never one under the check's own temporary folder, and keeps that place's credentials dir: on macOS the login keychain is under the home, and the Keychain item is named from the credentials dir", async () => {
+  for (const platform of ['darwin', 'linux']) {
+    const person = scratch();
+    const folder = scratch();
+    writeFileSync(join(folder, '.claude.json'), `${JSON.stringify({ migrationVersion: 15 })}\n`, { mode: 0o600 });
+    const base = scratch();
+    const { login: atHome } = defaultLogin();
+    const places = [
+      // AgentRun's own folder: the sign-in's variables, the folder its config dir and its credentials dir.
+      ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }, person],
+      // The CLI's default folder: the login's home is the person's; the Keychain item with no suffix.
+      ['home', atHome, atHome.home],
+      // A CLAUDE_CONFIG_DIR folder: the item hashed from the folder, never from the copy.
+      ['shared', { dir: folder, profiles: join(folder, 'anthropic'), shared: true }, person],
+    ];
+    for (const [where, login, home] of places) {
+      const fake = fakeCli();
+      const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { platform, home: person }));
+      assert.deepEqual(outcome.value, OUT, `${platform} ${where}: ${outcome.error}`);
+      const [seen] = fake.seen();
+      assert.equal(seen.env.HOME, home, `${platform} ${where}: the status check runs in the person's home`);
+      assert.ok(outside(tmp, seen.env.HOME), `${platform} ${where}: its home ${seen.env.HOME} is not under the check's temporary folder ${tmp}`);
+      assert.equal(seen.env.XDG_CONFIG_HOME, undefined, `${platform} ${where}: no config home of the check's own`);
+      const secure = seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+      assert.equal(secure, where === 'home' && platform === 'darwin' ? '' : login.dir, `${platform} ${where}: the place's own credentials dir`);
+      assert.ok(secure === '' || outside(tmp, secure), `${platform} ${where}: the credentials dir ${secure} is never the copy's`);
+      if (where === 'own') {
+        // As the sign-in at that folder runs (signInEnv), in that home.
+        assert.deepEqual(placeVars(seen.env), { ...claude.claudeSignInEnv(login), HOME: person }, `${platform}: AgentRun's own folder is asked as it is signed in`);
+      } else {
+        assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
+      }
+    }
+  }
+  // No home given: the server's own (os.homedir()).
+  const base = scratch();
+  const fake = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }), OUT);
+  assert.equal(fake.seen()[0].env.HOME, homedir(), "with no home given, the server's home");
 });
 
 test("the status check's folder is gone on every way the check ends: the CLI answered, gave no answer that reads as one, could not start, or ran past the check's time", async () => {
