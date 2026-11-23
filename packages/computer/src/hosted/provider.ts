@@ -346,6 +346,13 @@ export class HostedProvider implements ComputerProvider {
 	/** What the vendor said a machine this create made was given (Machine.resources), by machine id, from its read once it
 	 *  ran (#prepare) until the create answers with it (#createOnce). */
 	readonly #given = new Map<string, ComputerResources>();
+	/**
+	 * Each computer create kept while the vendor's listing still left it out (#unlisted), by name to machine id: a retry
+	 * of its request finds it here, read by its id, where the name's listing would not show it yet. An entry goes once
+	 * the listing shows the name, a read finds the machine gone or not this one, or release deletes it. This instance's
+	 * alone: another instance's retry still waits on the listing.
+	 */
+	readonly #keptUnlisted = new Map<string, string>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
 	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
@@ -694,6 +701,10 @@ export class HostedProvider implements ComputerProvider {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
+		if (found.length === 0) {
+			const kept = await this.#keptOf(name, signal);
+			if (kept !== undefined) return this.#again(spec, name, kept, signal);
+		} else this.#keptUnlisted.delete(name);
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
 		if (taken) return taken;
@@ -723,6 +734,20 @@ export class HostedProvider implements ComputerProvider {
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
 		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
+	}
+
+	/**
+	 * The computer create kept for this name while the listing left it out (#keptUnlisted), read by its id now: undefined
+	 * when there is none, or the read finds it gone, not this name's, or fails (the entry is dropped but on a failed read).
+	 */
+	async #keptOf(name: string, signal?: AbortSignal): Promise<Machine | undefined> {
+		const id = this.#keptUnlisted.get(name);
+		if (id === undefined) return undefined;
+		const read = await this.#get(id, signal);
+		if (!read.ok) return undefined;
+		if (read.value !== undefined && ours(read.value.labels, name) && alive(read.value.state)) return read.value;
+		this.#keptUnlisted.delete(name);
+		return undefined;
 	}
 
 	/**
@@ -1355,7 +1380,10 @@ export class HostedProvider implements ComputerProvider {
 		const what = `the listing by the labels ${asked} did not show ${ref.name} (machine ${ref.id}) on ${LISTED_ROUNDS} polls in a row within ${seconds(this.#timeouts.listedMs)} (${seen.polls} polls in ${seconds(seen.ms)}, ${seen.shown} of them showed it)`;
 		const read = await this.#own(ref, signal);
 		if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
-		if (read.ok && read.value.state === "running") return ok([`${what}; a read by its id finds it running with its labels, so it is kept: the vendor's listing trails its create, and list() leaves the computer out until it shows it`]);
+		if (read.ok && read.value.state === "running") {
+			this.#keptUnlisted.set(ref.name, ref.id);
+			return ok([`${what}; a read by its id finds it running with its labels, so it is kept: the vendor's listing trails its create, and list() leaves the computer out until it shows it`]);
+		}
 		return this.#fail("timeout", `${what}; ${read.ok ? `a read by its id finds it ${read.value.state}` : `a read by its id: ${read.error.message}`}`);
 	}
 
@@ -1636,6 +1664,7 @@ export class HostedProvider implements ComputerProvider {
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
 		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
+		if (this.#keptUnlisted.get(ref.name) === ref.id) this.#keptUnlisted.delete(ref.name);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
 		if (found.value === undefined) {

@@ -474,6 +474,22 @@ test("a computer the listing never shows within listedMs, which a read by its id
 	assert.ok(lists >= 3, `the wait polled the listing (${lists})`);
 });
 
+test("a retry of the request whose computer create kept unlisted finds that computer by its id while the listing still leaves it out, and never asks the vendor for a second; once released, a retry answers that it ended", async () => {
+	const fake = fakeHost();
+	const host = { ...fake.host, list: async () => [] };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	const again = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	assert.deepEqual({ id: again.id, name: again.name }, { id: first.id, name: first.name }, "the retry answers the kept computer");
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "one vendor create");
+	assert.equal(fake.machines.size, 1, "one machine");
+	made(await provider.release({ id: first.id, name: first.name }, "delete"));
+	const after = await provider.create(SPEC, { requestId: "kept-unlisted" });
+	assert.equal(after.ok, false, "a retry after the release never answers the deleted computer");
+	assert.equal(after.error.code, "exists");
+	assert.match(after.error.message, /was made for this request and has ended/);
+});
+
 test("a computer the listing never shows within listedMs, which a read by its id finds not running, fails create as a timeout naming the labels, the machine, the polls and the wait, and is deleted", async () => {
 	const fake = fakeHost();
 	let lists = 0;

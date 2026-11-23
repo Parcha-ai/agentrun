@@ -1605,8 +1605,8 @@ the TTL.
   an OpenSearch index the API never writes itself), and on 11-23 it left two new production sandboxes unlisted past
   15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
   its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
-  and `list()` leaves it out until the listing shows it. Any other answer fails create `timeout` in those words. A
-  sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  and `list()` leaves it out until the listing shows it; a retry of its request on the same provider finds it by its
+  id. Any other answer fails create `timeout` in those words. A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
   `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
   has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
