@@ -60,6 +60,10 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
   idOf: (file: string) => string;
   /** `own` without the session's text (prompts, titles, tool output), for the cursor of a turns: false read. */
   forget?: (own: O) => O;
+  /** true when a totals read (ReadOptions.totals) may keep each request's model and usage alone, as it is added: the
+   *  source sets no turn's model or usage after adding it, or keeps its requests in `counts` itself. Without it a totals
+   *  read is a turns: false read, its requests whole. */
+  totals?: true;
 };
 
 /** What a listing reads from the session's text: a turns: false cursor keeps none of it, and a read resumed from one
@@ -105,7 +109,7 @@ const overlay = (base: Set<string>): Set<string> => {
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
 async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
-  const totals = asked && !keep;
+  const totals = asked && !keep && spec.totals === true;
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();

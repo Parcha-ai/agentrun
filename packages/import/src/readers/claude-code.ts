@@ -237,6 +237,7 @@ const spec: LineSource<"claude-code", Own> = {
   children: childFiles,
   start: () => ({ keyed: new Map(), copied: new Set(), titles: { summaries: [], uuids: new Set() } }),
   record,
+  totals: true,
   finish(out, turns, { state: { own } }) {
     const { titles } = own;
     const sourceTitle = titles.custom ?? titles.ai ?? titles.summaries.findLast(({ leaf }) => leaf === undefined || titles.uuids.has(leaf))?.title;

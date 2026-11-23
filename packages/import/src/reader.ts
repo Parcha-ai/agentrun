@@ -37,7 +37,8 @@ export type ReadOptions = {
   /** false keeps only what a listing shows: no turns, nor a request's text or call arguments. */
   turns?: boolean;
   /** With turns false, true keeps only what parseHome totals: each request's model and usage, as `counts` (no calls,
-   *  ids or keys), and no title. A reader that has no such read gives its requests as ever. */
+   *  ids or keys), and no title. A reader that has no such read gives its requests as ever: a lineReader's has one when
+   *  its LineSource says `totals: true` (Claude Code's, Codex's and pi's do). */
   totals?: boolean;
   /** The records and requests an import has read already, across its files: a record in it (a copy a resumed session's
    *  file carries) adds nothing, and this read's are added to it. A cursor read with one is resumed with the same one. */

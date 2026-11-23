@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { READERS } from "../dist/index.js";
+import { lineReader, parseHome, READERS } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexFile, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const USAGE = ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning"];
@@ -159,4 +159,26 @@ test("a totals read goes on from its cursor as it read, and no read of another k
   const pi = join(home, "pi.jsonl");
   await writeFile(pi, "");
   assert.equal((await READERS.pi.read({ file: pi }, undefined, { turns: false, totals: true })).sessions[0].counts.n, 0);
+});
+
+test("a source of the caller's own that asks for no totals read is totalled from its answers, a turn's usage set after it was added kept", async (t) => {
+  const home = await tempHome(t);
+  await writeFile(join(home, "mine.jsonl"), [{ t: "req" }, { t: "usage" }].map((record) => `${JSON.stringify({ ...record, timestamp: at(0) })}\n`).join(""));
+  // Its request's usage comes on a later line, set on the turn it added then.
+  const mine = lineReader({
+    source: "mine",
+    name: "Mine",
+    harness: "fixture",
+    files: async (dir) => [join(dir, "mine.jsonl")],
+    start: () => ({}),
+    record(value, when, { state, add }) {
+      if (value.t === "req") add((state.own.open = { role: "assistant", text: "", calls: [], at: when, model: "fixture-model" }));
+      else if (value.t === "usage") state.own.open.usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 };
+    },
+    idOf: () => "mine-1",
+  });
+  for (const state of [undefined, {}]) {
+    const [session] = await parseHome(home, { sources: ["mine"], readers: { ...READERS, mine }, catalog: false, ...(state ? { state } : {}) });
+    assert.deepEqual([session.calls, session.tokens.input, session.tokens.output], [1, 100, 50], state ? "with a state" : "without");
+  }
 });

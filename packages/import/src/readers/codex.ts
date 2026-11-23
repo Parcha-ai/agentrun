@@ -228,6 +228,7 @@ const spec: LineSource<"codex", Own> = {
   },
   start: () => ({ events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() }),
   record,
+  totals: true,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
   finish(out, turns, { state: { own }, keep }) {
