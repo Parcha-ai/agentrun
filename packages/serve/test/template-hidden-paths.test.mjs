@@ -46,11 +46,11 @@ test("agent.md naming a hidden file as the answer's schema is refused, at the to
   assert.deepEqual(await problemsOf(t, "daily", { "agent.md": agentMd("daily", ["output: { schema: answer.json }"]), "answer.json": SCHEMA }), []);
 });
 
-test("an upload leaves out every hidden path before it is stored: a .env at the top or in a skill folder is neither kept nor read back, and the upload's sha is its package's", { timeout: 120_000 }, async (t) => {
+test("an upload leaves out every hidden path before it is stored: a .env at the top, directly under skills/ or in a skill folder is neither kept nor read back, and the upload's sha is its package's", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { runner: false });
   const { api } = server;
   const plain = [["agent.md", agentMd("daily")], ["skills/check/SKILL.md", SKILL]];
-  const hidden = [[".env", "PARALLEL_API_KEY=not-a-secret\n"], ["skills/check/.env", "PARALLEL_API_KEY=not-a-secret\n"], [".cache/token", "not-a-secret\n"]];
+  const hidden = [[".env", "PARALLEL_API_KEY=not-a-secret\n"], ["skills/.env", "PARALLEL_API_KEY=not-a-secret\n"], ["skills/check/.env", "PARALLEL_API_KEY=not-a-secret\n"], [".cache/token", "not-a-secret\n"]];
   const files = [...plain, ...hidden].map(([path, content]) => ({ path, encoding: "utf8", content }));
   const stored = await api("POST", "/templates/import", { files });
   assert.equal(stored.status, 201, JSON.stringify(stored.body));

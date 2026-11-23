@@ -714,7 +714,7 @@ test("agentrun deploy with no lock for a target that has an agent made from the 
   assert.equal(onto.json().agent_id, made.agent_id);
   assert.deepEqual([await agents(), await dailies(), lockAgent()], [[made.agent_id], 1, made.agent_id]);
 
-  // With the lock, --agent naming another agent (or new) is refused with nothing sent; naming the locked one is the
+  // With the lock's agent there, --agent naming another agent (or new) is refused with nothing written; naming the locked one is the
   // deploy it would be without it.
   from = proxy.seen.length;
   for (const other of ["agt_another", "new"]) {
@@ -722,7 +722,7 @@ test("agentrun deploy with no lock for a target that has an agent made from the 
     assert.equal(wrong.code, 2, wrong.err);
     assert.match(wrong.err, new RegExp(`names the agent ${made.agent_id} on .*: --agent ${other} names another`));
   }
-  assert.deepEqual(proxy.seen.slice(from), [], "nothing sent");
+  assert.deepEqual(proxy.seen.slice(from).filter((one) => WRITES.test(one)), [], "nothing written: the lock's agent read, to know it is there");
   const same = await cli(env, ["deploy", pkg, "--yes", "--agent", made.agent_id], key);
   assert.equal(same.code, 0, same.err);
   assert.equal(same.json().status, "up_to_date");
@@ -733,6 +733,58 @@ test("agentrun deploy with no lock for a target that has an agent made from the 
   assert.equal(another.code, 0, another.err);
   assert.notEqual(another.json().agent_id, made.agent_id);
   assert.deepEqual([await agents(), lockAgent()], [[made.agent_id, another.json().agent_id].sort(), another.json().agent_id]);
+});
+
+test("agentrun deploy whose lock names an agent gone from the target: --agent ID deploys onto the agent the hint names, --agent new makes another, and a missing one is refused; while the locked agent is there, --agent naming another is refused with nothing written", { timeout: 300_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const target = await serve(t, { runner: false });
+  const proxy = await recorder(t, target.baseUrl);
+  const pkg = folder(dir);
+  const lockFile = join(pkg, ".agentrun", "deploy.json");
+  const key = { AGENTRUN_API_KEY: target.token };
+  const agents = async () => (await target.api("GET", "/agents")).body.agents.map((one) => one.agent_id).sort();
+  const lockAgent = () => JSON.parse(readFileSync(lockFile, "utf8")).agent_id;
+  const gone = async (id) => {
+    assert.equal((await target.api("POST", `/agents/${id}/archive`)).status, 200);
+    assert.equal((await target.api("DELETE", `/agents/${id}`)).status, 204);
+  };
+
+  // A: this folder's agent, the lock naming it. B: the same package's other agent, made from a copy on purpose.
+  const first = await cli(env, ["deploy", pkg, "--to", proxy.base, "--yes"], key);
+  assert.equal(first.code, 0, first.err);
+  const a = first.json().agent_id;
+  const copy = await cli(env, ["deploy", folder(join(dir, "copy")), "--to", proxy.base, "--yes", "--agent", "new"], key);
+  assert.equal(copy.code, 0, copy.err);
+  const b = copy.json().agent_id;
+
+  // While A is there, --agent naming B or new is refused: the lock's agent is only read, nothing written.
+  let from = proxy.seen.length;
+  for (const other of [b, "new"]) {
+    const wrong = await cli(env, ["deploy", pkg, "--yes", "--agent", other], key);
+    assert.equal(wrong.code, 2, wrong.err);
+    assert.match(wrong.err, new RegExp(`names the agent ${a} on .*: --agent ${other} names another`));
+  }
+  assert.deepEqual(proxy.seen.slice(from).filter((one) => WRITES.test(one)), [], "nothing written");
+
+  // A gone: the deploy stops on B, the plan's twin, and its hint names --agent B, which now deploys onto B.
+  await gone(a);
+  const stopped = await cli(env, ["deploy", pkg, "--yes"], key);
+  assert.equal(stopped.code, 2, stopped.err);
+  assert.match(stopped.err, new RegExp(`--agent ${b} deploys onto it, --agent new makes another`));
+  const missing = await cli(env, ["deploy", pkg, "--yes", "--agent", "agt_missing"], key);
+  assert.equal(missing.code, 2, missing.err);
+  assert.match(missing.err, /--agent agt_missing: .* has no such agent/);
+  const onto = await cli(env, ["deploy", pkg, "--yes", "--agent", b], key);
+  assert.equal(onto.code, 0, onto.err);
+  assert.deepEqual([onto.json().agent_id, await agents(), lockAgent()], [b, [b], b]);
+
+  // B gone too: --agent new makes another, and the lock names it.
+  await gone(b);
+  const another = await cli(env, ["deploy", pkg, "--yes", "--agent", "new"], key);
+  assert.equal(another.code, 0, another.err);
+  const c = another.json().agent_id;
+  assert.ok(![a, b].includes(c), c);
+  assert.deepEqual([await agents(), lockAgent()], [[c], c]);
 });
 
 /** The CLI signed in to `base` with `token` (its config file, 0600): how it reaches an install it does not run. */
