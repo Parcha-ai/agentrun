@@ -52,6 +52,40 @@ test("a private key body is bounded: an END line past 16 KiB is not reached, and
   assert.equal(redactSecrets(within, [], Buffer.byteLength(within)), "[redacted]\nafter\n");
 });
 
+// A key kept in a quoted string writes its line breaks as escapes: JSON.stringify writes "\n" (and "\r\n" for CRLF), a
+// JSON string within a JSON string "\\n", and some encoders write "/" as "\/". The block is cut whole all the same, with
+// no held value to cut it by.
+test("a private key block kept in a JSON string, its line breaks escaped, is cut whole", () => {
+  // Every case has slashes in its body: a fixed line of them, not left to the random bytes.
+  const slashes = "A/+B".repeat(16);
+  const pems = [["PKCS#8", block("", `${slashes}\n${body(26)}`)], ["RSA", block("RSA ", `${slashes}\n${body(25)}`)], ["OPENSSH", block("OPENSSH ", `${slashes}\n${body(6)}`)], ["CRLF line ends", block("", `${slashes}\n${body(10)}`).replaceAll("\n", "\r\n")]];
+  for (const [name, pem] of pems) {
+    const text = JSON.stringify({ type: "service_account", private_key: pem, client_email: "bot@example.test" });
+    assert.equal(redactSecrets(text, [], Buffer.byteLength(text)), JSON.stringify({ type: "service_account", private_key: "[redacted]", client_email: "bot@example.test" }), name);
+    // A JSON string within a JSON string: each escape doubled.
+    const nested = JSON.stringify({ config: JSON.stringify({ private_key: pem }) });
+    assert.equal(redactSecrets(nested, [], Buffer.byteLength(nested)), JSON.stringify({ config: JSON.stringify({ private_key: "[redacted]" }) }), `${name}, nested`);
+    // Its slashes escaped too.
+    const slashed = text.replaceAll("/", "\\/");
+    assert.equal(redactSecrets(slashed, [], Buffer.byteLength(slashed)), JSON.stringify({ type: "service_account", private_key: "[redacted]", client_email: "bot@example.test" }), `${name}, slashes escaped`);
+  }
+});
+
+test("a private key block in a JSON string with no END line is cut through its escaped base64 lines, and the text after them stays", () => {
+  const text = JSON.stringify({ private_key: `${line("BEGIN", "RSA ")}\n${body(8)}`, after: "kept" });
+  assert.equal(redactSecrets(text, [], Buffer.byteLength(text)), JSON.stringify({ private_key: "[redacted]", after: "kept" }));
+  // CRLF line ends ("\r\n" escaped), and slashes escaped ("\/"), a fixed line of them.
+  const crlf = JSON.stringify({ private_key: `${line("BEGIN", "")}\n${body(8)}`.replaceAll("\n", "\r\n"), after: "kept" });
+  assert.equal(redactSecrets(crlf, [], Buffer.byteLength(crlf)), JSON.stringify({ private_key: "[redacted]", after: "kept" }), "CRLF");
+  const slashed = JSON.stringify({ private_key: `${line("BEGIN", "")}\n${"A/+B".repeat(16)}\n${body(8)}`, after: "kept" }).replaceAll("/", "\\/");
+  assert.equal(redactSecrets(slashed, [], Buffer.byteLength(slashed)), JSON.stringify({ private_key: "[redacted]", after: "kept" }), "slashes escaped");
+  const prose = JSON.stringify({ private_key: `${line("BEGIN", "")}\n${body(8)}\nthe file was cut short here.` });
+  assert.equal(redactSecrets(prose, [], Buffer.byteLength(prose)), JSON.stringify({ private_key: "[redacted]\nthe file was cut short here." }));
+  // A key cut short right before a whole one, both escaped: each is its own block.
+  const two = JSON.stringify({ a: `${line("BEGIN", "RSA ")}\n${body(2)}\n${block("EC ", body(2))}` });
+  assert.equal(redactSecrets(two, [], Buffer.byteLength(two)), JSON.stringify({ a: "[redacted]\n[redacted]" }));
+});
+
 test("a private key block with no END line is cut through at most 1,024 base64 lines after its header", () => {
   const lines = body(1100).split("\n");
   const text = `${line("BEGIN", "")}\n${lines.join("\n")}\n`;
@@ -71,6 +105,11 @@ const ADVERSARIAL = [
   ["headers glued by their dashes", fill(line("BEGIN", ""))],
   ["a body of dashes short of an END", headed(`${line("BEGIN", "")}\n`, "----A")],
   ["a body of END lines of another kind", headed(`${line("BEGIN", "")}\n`, `${dashes}END CERTIFICATE${dashes}\n`)],
+  ["headers, each with an escaped body line and no END", fill(`${line("BEGIN", "")}\\n${"A".repeat(64)}\\n`)],
+  ["a header, then escaped base64 lines with no END", headed(`${line("BEGIN", "")}\\n`, `${"A".repeat(64)}\\n`)],
+  ["a header, then one run of backslashes", headed(`${line("BEGIN", "")}\\n`, "\\")],
+  ["a body of backslash runs, each one too long for an escape", headed(`${line("BEGIN", "")}\\n`, `${"\\".repeat(9)}n`)],
+  ["base64 lines of escaped slashes, each one backslash too many", headed(`${line("BEGIN", "")}\\n`, `${`${"\\".repeat(9)}/`.repeat(12)}\\n`)],
 ];
 for (const [name, text] of ADVERSARIAL) {
   test(`private key block: ${name}, 256 KiB, is redacted in under 1 s`, () => {
