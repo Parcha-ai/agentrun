@@ -240,6 +240,25 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.button(/^Waiting for the browser…$/)!.disabled).toBe(true);
   });
 
+  it("an older server's answer, with no folder, machine or sign-in, renders as it did: this machine's login at ~/.claude, no folder line, no sign-in state", async () => {
+    // A server from before the view named its folders (the development proxy may reach one) answers without them.
+    const older = { state: "off", place: "agentrun", command: COMMAND, can_start: true };
+    const { v2 } = server(() => json(200, older), () => json(200, { ...older, state: "signed_out", place: "machine" }));
+    const page = await open(v2);
+    expect(page.row()).not.toBeNull();
+    const machine = page.row()!.querySelector<HTMLInputElement>('input[type="radio"][value="machine"]')!;
+    expect(machine.parentElement!.textContent).toBe("This machine's Claude Code login (~/.claude)");
+    await act(async () => { machine.click(); });
+    expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(/^Turn on$/);
+    expect(page.row()!.textContent).toContain(COMMAND);
+    expect(page.row()!.textContent).not.toMatch(/AgentRun asks the CLI about the login in/);
+    expect(page.row()!.textContent).not.toMatch(/start AgentRun with CLAUDE_CONFIG_DIR/);
+    expect(page.row()!.querySelector('[role="status"]')).toBeNull();
+    expect(page.button(/^Open the CLI's sign-in here$/)!.disabled).toBe(false);
+  });
+
   it("a sign-in the CLI ended without signing in says so with its exit code", async () => {
     const { v2 } = server(() => ({ ...SIGNED_OUT_HERE, sign_in: { state: "failed", started_at: STARTED_AT, ended_at: STARTED_AT, limit_ms: 600_000, exit_code: 1 } }), () => OFF);
     const page = await open(v2);
