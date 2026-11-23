@@ -1554,7 +1554,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   person's own Claude Code with that variable keeps its tokens: in that folder, or, empty, in `~/.claude` and on macOS
   the Keychain item with no suffix. A server where more than one person can start runs (more
   than one API token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before
-  is dropped when such a server starts.
+  is dropped when such a server starts. The setting names the machine it was turned on for by an id the server makes
+  once in its data folder (`machine-id`, 0600) and reads back on every later start, never by the hostname, which on a
+  laptop changes with the network. Two data folders are two machines. A setting saved before the id reads as
+  `other_machine` until it is turned on again.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
   organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
   `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own

@@ -10,8 +10,9 @@
 // harness selection reads no setting, so claude-agent runs on the model keys as it does without the mode. The mode is
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
-import { accessSync, constants, existsSync, mkdirSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { randomBytes } from "node:crypto";
+import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
@@ -52,7 +53,52 @@ export const LOGIN_DEFAULT_MODEL = "anthropic/claude-sonnet-5-5";
  *  login (`machine`, which the owner opts into by name). */
 export const LOGIN_PLACES = ["agentrun", "machine"] as const;
 export type LoginPlace = (typeof LOGIN_PLACES)[number];
-type Setting = { v: 1; place: LoginPlace; host: string; only_me: true };
+/** `machine`: the id of the machine it was turned on for (machineId). A row saved before the id has none, and reads as
+ *  turned on for another machine until turned on again. */
+type Setting = { v: 1; place: LoginPlace; machine?: string; only_me: true };
+
+/** The file in the data folder that holds this machine's id (machineId). */
+export const MACHINE_ID_FILE = "machine-id";
+const MACHINE_ID = /^[0-9a-f]{32}$/;
+
+/** This machine's id, which names the machine the login was turned on for: a random one, made once in
+ *  `<data>/machine-id` (0600) and read back by every later start. Never the hostname, which moves with the network (a
+ *  laptop's at home is not its name at the office), while the data folder stays. A missing file, or one that holds no
+ *  id or can't be read, gets a fresh id, so a setting saved under the old one reads as another machine's until turned on
+ *  again. The file appears whole: written aside, then linked in place, so a start beside this one that made an id first
+ *  keeps its own, and both read that one. */
+export function machineId(data: string): string {
+  const file = join(data, MACHINE_ID_FILE);
+  const read = (): string | undefined => {
+    try {
+      const id = readFileSync(file, "utf8").trim();
+      return MACHINE_ID.test(id) ? id : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const known = read();
+  if (known) return known;
+  const id = randomBytes(16).toString("hex");
+  const aside = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+  writeFileSync(aside, `${id}\n`, { mode: 0o600, flag: "wx" });
+  try {
+    // The umask may take more than 0600 leaves; never less.
+    chmodSync(aside, 0o600);
+    try {
+      linkSync(aside, file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Another start made one first: that one. Else what is there holds no id, and this one takes its place.
+      const theirs = read();
+      if (theirs) return theirs;
+      renameSync(aside, file);
+    }
+  } finally {
+    rmSync(aside, { force: true });
+  }
+  return id;
+}
 
 /** This machine's own Claude Code login folder as the CLI finds it for the server's user, by the CLI's own rule: its
  *  config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and its credentials are kept there too unless
@@ -90,13 +136,16 @@ export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<st
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
 export async function claudeLoginSetting(settings: Pick<Settings, "get">): Promise<Setting | undefined> {
   const row = (await settings.get(CLAUDE_LOGIN_SETTING)) as Partial<Setting> | null | undefined;
-  if (!row || row.v !== 1 || !LOGIN_PLACES.includes(row.place as LoginPlace) || typeof row.host !== "string" || row.only_me !== true) return undefined;
+  if (!row || row.v !== 1 || !LOGIN_PLACES.includes(row.place as LoginPlace) || (row.machine !== undefined && typeof row.machine !== "string") || row.only_me !== true) return undefined;
   return row as Setting;
 }
 
+/** Whether `setting` was turned on for this machine: the one whose data folder (`data`) holds its id (machineId). */
+const thisMachine = (setting: Setting, data: string): boolean => setting.machine === machineId(data);
+
 /** The login a run here goes on: the setting's, when the switch is not off and this is the machine it was turned on for. */
 export function loginOf(setting: Setting | undefined, data: string, env: Readonly<Record<string, string | undefined>>): ClaudeAgentLogin | undefined {
-  if (!setting || claudeLoginOff(env) || setting.host !== hostname()) return undefined;
+  if (!setting || claudeLoginOff(env) || !thisMachine(setting, data)) return undefined;
   return loginAt(setting.place, data, env);
 }
 
@@ -188,11 +237,11 @@ export function turnOnBody(body: unknown): { place: LoginPlace } | { problem: st
   return { place: (given.place as LoginPlace | undefined) ?? "agentrun" };
 }
 
-/** The setting a turn-on saves, for this machine. AgentRun's own login directory is made (0700) so the CLI can keep its
- *  login there; nothing in it is read. */
+/** The setting a turn-on saves, for this machine (machineId). AgentRun's own login directory is made (0700) so the CLI
+ *  can keep its login there; nothing in it is read. */
 export function settingFor(place: LoginPlace, data: string): Setting {
   if (place === "agentrun") mkdirSync(join(data, "claude-login"), { recursive: true, mode: 0o700 });
-  return { v: 1, place, host: hostname(), only_me: true };
+  return { v: 1, place, machine: machineId(data), only_me: true };
 }
 
 /** The login a run of `harness` on this runner goes on: the saved setting's, read now, when the switch is not off, the
@@ -243,7 +292,7 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const signIn = deps.signIns.view();
   const base = { place, command: (await deps.claude()).claudeLoginCommand(login, cli ?? "claude"), can_start: deps.sameMachine && cli !== undefined && deps.refused === undefined, ...(deps.refused ? { refused: deps.refused } : {}), folder: login.dir, machine: machineFolder(deps.env), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
-  if (setting.host !== hostname()) return { state: "other_machine", ...base, can_start: false };
+  if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
   if (!cli) return { state: "no_cli", ...base };
   try {
     const said = await (await deps.claude()).claudeLoginStatus(cli, login, pathOf(deps.env));
@@ -283,7 +332,7 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
   if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
   const setting = await claudeLoginSetting(deps.settings);
   if (!setting) throw new ClaudeLoginRefused("agent_not_runnable", "Turn on Claude Code's login on this machine first.");
-  if (setting.host !== hostname()) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
+  if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
   if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
   const cli = loginCli(await deps.pinned(), deps.env);
   if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
