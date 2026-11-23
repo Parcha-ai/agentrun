@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "./timeline/index.js";
+import { until } from "./until.js";
 import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
@@ -193,15 +194,6 @@ function unreachable(error: unknown): string {
 }
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
-
-/** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
-const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
-  new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason);
-    const stop = () => reject(signal.reason);
-    signal.addEventListener("abort", stop, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
-  });
 
 export interface McpGatewayOptions {
   pin: McpPin;
