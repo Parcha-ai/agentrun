@@ -215,11 +215,11 @@ export type DefinitionInput = {
       permission?: "allow" | "deny";
     };
     web_fetch?: {
-      provider?: "kernel" | "parallel";
+      provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
     };
     web_search?: {
-      provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+      provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
     web_save?: {
@@ -5710,11 +5710,11 @@ export type SaveToolKeyBody = {
 /** The server's tool settings (GET /settings/tools). */
 export type GetToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {
@@ -5742,11 +5742,11 @@ export type PutToolSettingsBody = {
     permission?: "allow" | "deny";
   };
   web_fetch?: {
-    provider?: "kernel" | "parallel";
+    provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   web_search?: {
-    provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_save?: {
@@ -5802,11 +5802,11 @@ export type PutToolSettingsBody = {
 };
 export type PutToolSettingsResponse = {
   web_search: {
-    provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
     permission?: "allow" | "ask" | "deny";
   };
   web_fetch: {
-    provider: "kernel" | "parallel";
+    provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
     permission?: "allow" | "ask" | "deny";
   };
   browser: {

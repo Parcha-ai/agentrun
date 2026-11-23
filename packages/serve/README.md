@@ -1738,30 +1738,34 @@ provider the user picked, optional: the agent's own (`definition.tool_settings`)
 (`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
 only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the kernel's
-keyless fallback. A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
 Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
 counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Exa. `off` turns `web_search` off: nothing is searched,
-and an agent naming it is refused (`409`) until it is turned on again. A pick of `exa-keyless` is keyless Exa alone,
-the key held or not.
+admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
+Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
-it is Parallel on the server's key, else keyless Exa, or the provider picked, and a pick of `native` alone is
+it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Exa: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Exa, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Exa |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never keyless Exa |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
-| `web_search`, `exa-keyless` | Exa's public MCP search, a host tool | the same | the same |
-| `web_fetch`, `kernel` (the default) | the guarded direct fetch | the same | the same |
+| `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
+| `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
+| `web_fetch`, `auto` (the default) | the guarded direct fetch where the server holds a Parallel key, else keyless Firecrawl | the same | the same |
+| `web_fetch`, `firecrawl-keyless` | Firecrawl's public MCP scrape, the guarded direct fetch behind it: Firecrawl is sent each URL | the same | the same |
+| `web_fetch`, `kernel` | the guarded direct fetch | the same | the same |
 | either, `parallel` | Parallel's search and extract, host tools | the same | the same |
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
 default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
-for its capability (`auto`, `native`, `exa-keyless` or `parallel` for `web_search`; `kernel` or `parallel` for `web_fetch`;
+for its capability (`auto`, `native`, `firecrawl-keyless`, `exa-keyless`, `parallel` or `off` for `web_search`; `auto`,
+`firecrawl-keyless`, `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
 unknown capability or provider is `422`. Any tool's settings also take a `permission`, `allow`, `ask` or `deny`, which the
 tool gate holds every call to (an ask parks the run for the owner's approval), and an MCP tool's a `pin`, the arguments
@@ -1771,8 +1775,8 @@ settings are kept in the data directory
 (`tool-settings.json`, 0600, written whole and durably), not a secret, and read by every run launched from then on.
 `GET /capabilities` is the one tool catalog: each of the three tools there gives the providers offered (`providers`), the
 server's (`provider`, its default where it sets none), the built-in default (`default_provider`) and `resolves`, what it
-resolves to on each harness under the server's settings and default model (`native`, `kernel`, `exa-keyless`,
-`parallel`, or `unavailable: <reason>`), with `why`, keyed the same, one plain sentence for each (`Codex's own search`,
+resolves to on each harness under the server's settings and default model (`native`, `kernel`, `firecrawl-keyless`,
+`exa-keyless`, `parallel`, or `unavailable: <reason>`), with `why`, keyed the same, one plain sentence for each (`Codex's own search`,
 `behind a gateway Codex has no own search; your Parallel key (saved)`, where `saved` is a key saved on Tool keys and
 `server` one in the server's environment), both recomputed at each `PUT` and each key saved or deleted. `GET /agents/{id}` projects it onto the agent:
 `tools`, each tool its current revision grants in the same order, and for one with a choice the provider in force,
@@ -1792,7 +1796,8 @@ run (`409` with `details.asks`); set that tool to allow for the agent (`definiti
 allowed by default; catalog (`monid:<provider>/<endpoint>`) and MCP tools, which ask by default, are no call node's tools here.
 
 Upgrading: a server holding `PARALLEL_API_KEY` used to read every `web_fetch` page through Parallel's extract on its own.
-Now `web_fetch` is the guarded direct fetch unless Parallel is picked; to keep the old behaviour, set
+Now `web_fetch` on `auto` is the guarded direct fetch on such a server (keyless Firecrawl on one with no Parallel key)
+unless Parallel is picked; to keep the old behaviour, set
 `PUT /v2/settings/tools {"web_fetch": {"provider": "parallel"}}` once (or `tool_settings` in an agent). Parallel's key reaches an agentic run only when one of its capabilities resolves to Parallel (see
 [Decision workflows](#decision-workflows)), and a web tool reaches Parallel only where its own capability does.
 
@@ -1805,11 +1810,37 @@ answer with its sources. A `pause_turn`
 answers what it has, and nothing is retried. It is booked as one of the run's requests: its tokens at the model's price
 plus $10 per 1,000 searches (Anthropic) or calls (OpenAI).
 
-With no native search and no Parallel key, web_search falls back to Exa's public keyless MCP endpoint, a third-party
-service with its own rate limits (unpublished) and its own terms (https://exa.ai/terms). To turn it off, set
-`web_search` to `native` (native only) for the server (`PUT /v2/settings/tools`) or for an agent (`tool_settings`). To
-search with a key instead, save a Parallel key on Tool keys (or set `PARALLEL_API_KEY`): `auto` then searches through
-Parallel and bills the key.
+With no native search and no Parallel key, web_search falls back to Firecrawl's public keyless MCP endpoint, with Exa's
+behind it. Both are third-party services with their own free limits and their own terms (https://www.firecrawl.dev/terms-of-service,
+https://exa.ai/terms). To turn them off, set `web_search` to `native` (native only) for the server
+(`PUT /v2/settings/tools`) or for an agent (`tool_settings`). To search with a key instead, save a Parallel key on Tool
+keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bills the key.
+
+Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
+no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
+or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
+answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
+and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
+the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
+(`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
+only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
+`KEYLESS_TOOL_NOT_AVAILABLE` turn Firecrawl off for the rest of the run, and the same call goes to the backend behind it
+(keyless Exa for `web_search`, the guarded direct fetch for `web_fetch`); `KEYLESS_LIMIT_REACHED` or a `429` is a rate
+limit, and Firecrawl is held for the wait it names (60 s where it names none), with no cutoff. With Firecrawl and Exa both
+off for a run, `web_search` answers `search is unavailable for the rest of this run; answer from what you have`.
+
+`web_fetch` through keyless Firecrawl sends Firecrawl each URL it reads: Firecrawl, a third party, fetches the page and
+sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
+guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
+or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
+`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
+agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
+Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+
+A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
+Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
 
 Keyless Exa is one exchange with Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its `web_search_exa` tool, at most
 8 results, no key), dialled over IPv4 alone: the server looks Exa's name up for IPv4 and connects to that address, since
@@ -1823,7 +1854,7 @@ other failure Exa answers reads `Free web search failed. Exa said: "<the first s
 characters; Exa's own instructions (a key for its MCP URL) are never passed on.
 
 Every provider answers one shape, `{provider, query, results: [{url, title, snippet, published?}], text?}`, `provider`
-naming the one that served it (`native`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
+naming the one that served it (`native`, `firecrawl-keyless`, `exa-keyless`, `parallel`), each snippet cut at 3,000 characters; the answer
 the model reads ends with one line asking it to cite the URL of each result it relies on.
 
 `web_fetch` answers a Page with `via`, a part of the page at a time (`offset`, `max_chars`, as above). With Parallel
@@ -1833,7 +1864,8 @@ text, about $0.001 an extract, one a page a run) and `via` is
 with no content, a 5xx or not within 60 s, it is the guarded direct fetch, `via: "direct"`, with `parallel` saying why
 Parallel gave no page (`refused the key (401)`, `answered 503`, `timed out`, `listed the URL in errors`, `not tried:
 refused earlier in this run`), and the model reads a line saying so; a 401 or 403 stops Parallel for the rest of the
-run. A fetch Parallel was not picked for says nothing of it. A URL passes the guard's own check before anything is sent to Parallel: a URL the guard
+run. A fetch Parallel was not picked for says nothing of it. Through keyless Firecrawl the page is Firecrawl's markdown
+and `via` is `"firecrawl-keyless"`; a refusal or failure there is the guarded direct fetch, `via: "direct"`. A URL passes the guard's own check before anything is sent to Parallel or Firecrawl: a URL the guard
 refuses is refused and never leaves the machine. A call stopped before its page arrived answers `ok: false` with
 `via: "stopped"`: no page came for it (the run's read of the URL goes on for its other calls).
 
@@ -1858,7 +1890,7 @@ request checked meanwhile, from any branch, tool round or harness, counts it bes
 never pass the cap together. A workflow's `call` node naming either tool is booked the same way, under the node's own
 call (its execution path).
 
-Keyless Exa, where `web_search` resolves to it, searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
+Keyless Exa, where `web_search` resolves to it or to keyless Firecrawl (behind it), searches through Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its
 `web_search_exa` tool), with no key. What leaves the server is
 the search query (cut at 200 characters) and the number of results asked for (1 to 8, 5 by default), nothing else
 from the run, and no key. It goes to Exa over IPv4, straight from the run's process. Exa is a third party: its free,
@@ -1868,8 +1900,8 @@ are held for the wait. Exa answers its daily count running out the same way, nam
 wait after a wait has passed (a 429 with Retry-After is a timed limit, and only waits), in the same run and with no search succeeding since, turns search off for the rest of that run. A search ends at 60 s, its retry
 included, so a call never hangs. The answer is the query and its results, each a URL, a title, a
 snippet of at most 3,000 characters and its date when Exa knows it, then a line asking the model to cite the URLs it
-relies on. Keyless Exa is the default for a harness with no native search when the server holds no Parallel key; `off`
-turns `web_search` off, keyless Exa included.
+relies on. Keyless Exa answers behind keyless Firecrawl, the default for a harness with no native search when the server
+holds no Parallel key; `off` turns `web_search` off, both included.
 
 The `browser` tool runs hosted sessions, at Browserbase or at Kernel, never a Chrome on this machine. Which one is
 picked like `web_search`'s provider: the agent's own (`definition.tool_settings.browser.provider`) over the server's

@@ -412,11 +412,11 @@ export interface components {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -485,10 +485,10 @@ export interface components {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -3862,11 +3862,11 @@ export interface operations {
     body: never;
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -3881,10 +3881,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5586,11 +5586,11 @@ export interface operations {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -5654,10 +5654,10 @@ export interface operations {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5666,11 +5666,11 @@ export interface operations {
     };
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -5685,10 +5685,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
