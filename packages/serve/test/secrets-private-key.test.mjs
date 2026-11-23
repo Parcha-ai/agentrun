@@ -37,6 +37,10 @@ test("a private key block is cut from its BEGIN line through its body to its END
 test("a private key block with no END line (cut short) is cut through the base64 lines after its header, and the prose after them stays", () => {
   const text = `key:\n${line("BEGIN", "RSA ")}\n${body(8)}\nthe file was cut short here.\n`;
   assert.equal(redactSecrets(text, [], Buffer.byteLength(text)), "key:\n[redacted]\nthe file was cut short here.\n");
+  // A key cut short right before a whole one: the reading from the first BEGIN stops at the next "-----", so each is
+  // its own block, and the first never runs on to the second's END line.
+  const two = `${line("BEGIN", "RSA ")}\n${body(2)}\n${block("EC ", body(2))}\nz`;
+  assert.equal(redactSecrets(two, [], Buffer.byteLength(two)), "[redacted]\n[redacted]\nz");
 });
 
 test("a private key body is bounded: an END line past 16 KiB is not reached, and the base64 lines after the header are cut all the same", () => {
