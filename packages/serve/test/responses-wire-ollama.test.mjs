@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { codexPolicy } from "@parcha/agentrun-harness-codex";
+import { readFile } from "node:fs/promises";
 import { closedPort, fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { harnessData, scratch, withEnv } from "./support.mjs";
 
@@ -312,4 +313,22 @@ test("codex and opencode on an Ollama model: each adapter is handed the route's 
   assert.equal(opened.model, TOOLS);
   assert.equal(opened.provider.origin, ROUTE_ORIGIN);
   assert.equal(typeof opened.fetch, "function", "opencode's proxies forward with the route's fetch");
+});
+
+// What codex 0.164.0 sends for a model id that is not OpenAI's, through serve's proxy (recorded at a stand-in endpoint:
+// its keys, its tools' and input items' shapes, never their text): every key is one the edge takes, its include
+// (reasoning.encrypted_content) is read for nothing, and its developer messages are the system prompt.
+test("codex 0.164.0's own request, as recorded through serve's proxy on a model not OpenAI's, is taken whole: its keys, its include, its developer messages as the system prompt", async (t) => {
+  const recorded = JSON.parse(await readFile(new URL("./fixtures/codex-0.164.0-responses-request-routed.json", import.meta.url), "utf8"));
+  const values = { include: recorded.include, input: undefined, max_output_tokens: 256, model: TOOLS, parallel_tool_calls: false, prompt_cache_key: "thread-1", reasoning: { effort: "medium", summary: "auto" }, store: recorded.store, stream: recorded.stream, tool_choice: recorded.tool_choice, tools: recorded.tools.map((tool) => ({ ...tool, description: "a tool" })) };
+  assert.deepEqual(Object.keys(values).sort(), recorded.keys, "the fixture's keys, each given a value");
+  values.input = recorded.input.map(([type, role], at) => ({ type, role, content: [{ type: "input_text", text: `part ${at}` }] }));
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "done." }) });
+  const { status, events } = await answerOf(await responsesOn(ollama, TOOLS), values);
+  assert.equal(status, 200);
+  assert.equal(events.at(-1).type, "response.completed", JSON.stringify(events.at(-1)));
+  const sent = ollama.got.chat.at(-1);
+  assert.deepEqual(sent.messages.map((message) => message.role), ["system", "user"], "two developer messages one system prompt, two user messages one turn");
+  assert.match(sent.messages[0].content, /part 0[\s\S]*part 1/);
+  assert.doesNotMatch(JSON.stringify(events), /encrypted_content/);
 });
