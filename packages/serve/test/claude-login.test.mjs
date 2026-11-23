@@ -6,7 +6,7 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -241,7 +241,8 @@ test("one owner: refused in one line where more than one person can start runs, 
 });
 
 /** A stand-in CLI for test `t` that keeps a login as the pinned CLI does on Linux: its credentials in
- *  `CLAUDE_SECURESTORAGE_CONFIG_DIR` (else its config dir), and the account it signed in to in its config dir's
+ *  `CLAUDE_SECURESTORAGE_CONFIG_DIR` (set and empty: `$HOME/.claude`), else in its config dir (`CLAUDE_CONFIG_DIR`, else
+ *  `$HOME/.claude`), and the account it signed in to in its config dir's
  *  `.claude.json` (`CLAUDE_CONFIG_DIR`, else the home). `auth login` writes both and leaves `ended` beside itself; `auth
  *  status` says signed in where the credentials are, with the account's email where the account is. `mode`: `sign`
  *  (signs in at once), `wait` (waits for a browser that never answers, its pid in `pids()`), `refuse` (exits 1). Each
@@ -252,9 +253,9 @@ async function signInCli(t, mode) {
   writeFileSync(
     cli,
     `#!/bin/sh
-if [ -n "$CLAUDE_SECURESTORAGE_CONFIG_DIR" ]; then secure="$CLAUDE_SECURESTORAGE_CONFIG_DIR"; else secure="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
+if [ "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" = set ]; then secure="\${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$HOME/.claude}"; else secure="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; fi
 account="\${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
-printf '{"argv":"%s","home":"%s","config":"%s","secure":"%s"}\\n' "$*" "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" >> '${record}'
+printf '{"argv":"%s","home":"%s","config":"%s","secure":"%s","configSet":"%s","secureSet":"%s"}\\n' "$*" "$HOME" "$CLAUDE_CONFIG_DIR" "$CLAUDE_SECURESTORAGE_CONFIG_DIR" "\${CLAUDE_CONFIG_DIR+set}" "\${CLAUDE_SECURESTORAGE_CONFIG_DIR+set}" >> '${record}'
 if [ "$1 $2" = "auth login" ]; then
   if [ '${mode}' = wait ]; then echo $$ >> '${pidFile}'; exec sleep 300; fi
   if [ '${mode}' = refuse ]; then exit 1; fi
@@ -398,4 +399,43 @@ test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when th
   const asked = fake.calls().filter((call) => call.argv === "auth status --json");
   assert.ok(asked.length >= 1);
   for (const call of asked) assert.deepEqual([call.config, call.secure], [folder, folder]);
+});
+
+// The person's own claude on its default folder runs with no folder variable: its tokens in ~/.claude (on macOS the
+// Keychain item with no suffix), the account it signed in to in ~/.claude.json. "This machine" there is read and signed
+// in exactly so, never with ~/.claude as a config dir (which reads and writes ~/.claude/.claude.json, and on macOS names
+// a Keychain item of its own).
+test("this machine's login on the CLI's default folder is asked as the person's own claude: no folder variable, in their home, so a login their own claude made reads signed in as its account", { timeout: 120_000 }, async (t) => {
+  const { api, fake, home } = await signInServer(t, "sign");
+  // What the person's own `claude auth login` left: the tokens in ~/.claude, the account in ~/.claude.json.
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "fake", scopes: ["user:inference"] } }));
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "person@example.com" } }));
+  const on = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
+  assert.equal(on.state, "signed_in", JSON.stringify(on));
+  assert.equal(on.account?.email, "person@example.com", JSON.stringify(on));
+  assert.equal(on.folder, join(home, ".claude"));
+  // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads.
+  assert.equal(on.command, `ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
+  const asked = fake.calls().filter((call) => call.argv === "auth status --json");
+  assert.ok(asked.length >= 1);
+  for (const call of asked) assert.deepEqual([call.configSet, call.secureSet, call.home], ["", "", home], JSON.stringify(call));
+  // The login carries the person's home only on the default folder: that is what tells its variables apart.
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p" });
+  assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
+});
+
+test("Open the CLI's sign-in here on the CLI's default folder signs in where the person's own claude keeps its login: the account in ~/.claude.json, none in ~/.claude", { timeout: 120_000 }, async (t) => {
+  const { api, fake, home } = await signInServer(t, "sign");
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body.state, "signed_out");
+  assert.equal((await api("POST", "/settings/claude-login/login")).status, 200);
+  await until(() => existsSync(fake.ended), "the CLI's sign-in ended");
+  assert.ok(existsSync(join(home, ".claude.json")), "the sign-in left the account where the person's own claude keeps it (~/.claude.json)");
+  assert.equal(existsSync(join(home, ".claude", ".claude.json")), false, "no account file of AgentRun's making in ~/.claude");
+  assert.ok(existsSync(join(home, ".claude", ".credentials.json")));
+  const view = await signInSettled(api);
+  assert.equal(view.state, "signed_in", JSON.stringify(view));
+  assert.equal(view.account?.email, "person@example.com", JSON.stringify(view));
+  const signIn = fake.calls().find((call) => call.argv === "auth login --claudeai");
+  assert.deepEqual([signIn?.configSet, signIn?.secureSet, signIn?.home], ["", "", home], JSON.stringify(signIn));
 });

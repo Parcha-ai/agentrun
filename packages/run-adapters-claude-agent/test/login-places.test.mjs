@@ -1,0 +1,114 @@
+// The variables each login place gives the pinned CLI (login.ts), for its status check, its sign-in, the line a person
+// runs and a run, and per platform where the CLI's store differs. The CLI's rules (the pinned 2.1.286):
+// - credentials dir: `CLAUDE_SECURESTORAGE_CONFIG_DIR` when set (empty: `<home>/.claude`), else the config dir
+//   (`CLAUDE_CONFIG_DIR`, else `<home>/.claude`); Linux keeps `.credentials.json` there.
+// - macOS Keychain item: "Claude Code-credentials", with `-<sha256(dir)[0:8]>` after it unless the secure-storage variable
+//   is set and empty, or both it and `CLAUDE_CONFIG_DIR` are unset; the hashed dir is the secure-storage one when set,
+//   else the config dir.
+// - the account file: `$CLAUDE_CONFIG_DIR/.claude.json`, else `<home>/.claude.json`.
+// So the person's own CLI on its default folder (no variables) keeps its account in `<home>/.claude.json` and, on macOS,
+// its tokens in the item with no suffix. A run has a config dir of its own, which would hash that item's name.
+// Stand-in CLIs note what they were started with beside themselves.
+import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, test } from 'node:test';
+import * as claude from '@parcha/agentrun-harness-claude';
+
+const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-places-'));
+after(() => rmSync(ROOT, { recursive: true, force: true }));
+let n = 0;
+const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
+const FOLDER_VARS = ['CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR'];
+
+/** A stand-in CLI that writes its arguments and environment to seen.json beside itself and answers a signed-out status. */
+function fakeCli() {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  const seen = join(dir, 'seen.json');
+  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
+  return { cli, seen: () => (existsSync(seen) ? JSON.parse(readFileSync(seen, 'utf8')) : undefined) };
+}
+
+/** Waits until `done()` holds, 10 s at most. */
+async function until(done, what) {
+  const end = Date.now() + 10_000;
+  while (!done()) {
+    if (Date.now() > end) throw new Error(`not within 10 s: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/** The `NAME=value` words that lead the shown line, as variables (the test's paths need no quoting). */
+const commandVars = (line) => Object.fromEntries(line.split(' ').filter((word) => /^[A-Z_]+=/.test(word)).map((word) => [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)]));
+/** The folder variables of `env`, unset ones left out. */
+const folderVars = (env) => Object.fromEntries(FOLDER_VARS.filter((name) => env[name] !== undefined).map((name) => [name, env[name]]));
+
+/** What the CLI got for its status check and its sign-in at `login`, and the line shown for it. */
+async function cliEnvs(login, home) {
+  const status = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(status.cli, login), { signedIn: false, method: 'none' });
+  const signIn = fakeCli();
+  claude.startClaudeLogin(signIn.cli, login, { home, display: {} });
+  await until(() => signIn.seen() !== undefined, "the CLI's sign-in started");
+  return { status: status.seen().env, signIn: signIn.seen().env, shown: commandVars(claude.claudeLoginCommand(login, signIn.cli)), line: claude.claudeLoginCommand(login) };
+}
+
+test("AgentRun's own login folder: the status check, the sign-in and the shown line use it as the CLI's config dir and credentials dir, and a run its credentials dir on every platform", async () => {
+  const base = scratch();
+  const login = { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') };
+  mkdirSync(login.dir, { recursive: true });
+  const home = scratch();
+  const { status, signIn, shown, line } = await cliEnvs(login, home);
+  const own = { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
+  assert.deepEqual(folderVars(status), own);
+  assert.notEqual(status.HOME, home, 'the status check runs in a home of its own');
+  assert.deepEqual(folderVars(signIn), own);
+  assert.equal(signIn.HOME, home);
+  assert.deepEqual(shown, own);
+  assert.equal(line, `CLAUDE_CONFIG_DIR=${login.dir} CLAUDE_SECURESTORAGE_CONFIG_DIR=${login.dir} ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+  for (const platform of ['darwin', 'linux', 'win32']) {
+    assert.deepEqual(claude.claudeLoginEnv(login, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles }, platform);
+  }
+});
+
+test("this machine's login on the CLI's default folder: the status check, the sign-in and the shown line set no folder of the CLI's, in the person's home, as the person's own claude runs", async () => {
+  const home = scratch();
+  const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
+  const { status, signIn, shown, line } = await cliEnvs(login, home);
+  // No CLAUDE_CONFIG_DIR and no CLAUDE_SECURESTORAGE_CONFIG_DIR: the account in <home>/.claude.json, the tokens in
+  // <home>/.claude (Linux) or the Keychain item with no suffix (macOS), as the person's own CLI keeps them.
+  assert.deepEqual(folderVars(status), { ANTHROPIC_CONFIG_DIR: login.profiles });
+  assert.equal(status.HOME, home, "the status check reads the person's home, where their CLI keeps the account");
+  assert.deepEqual(folderVars(signIn), { ANTHROPIC_CONFIG_DIR: login.profiles });
+  assert.equal(signIn.HOME, home);
+  assert.deepEqual(shown, { ANTHROPIC_CONFIG_DIR: login.profiles });
+  assert.equal(line, `ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+});
+
+test("a run on this machine's login on the CLI's default folder reaches the person's own store: on macOS an empty credentials dir (the Keychain item with no suffix), elsewhere the folder's credentials file", () => {
+  const home = '/u/p';
+  const login = { dir: '/u/p/.claude', profiles: '/u/p/.config/anthropic', home };
+  // A run's config dir is its own, so leaving the variable unset would hash that dir into the Keychain item's name.
+  assert.deepEqual(claude.claudeLoginEnv(login, 'darwin'), { CLAUDE_SECURESTORAGE_CONFIG_DIR: '', ANTHROPIC_CONFIG_DIR: login.profiles });
+  assert.deepEqual(claude.claudeLoginEnv(login, 'linux'), { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles });
+  assert.deepEqual(claude.claudeLoginEnv(login, 'win32'), { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles });
+});
+
+test("this machine's login in a CLAUDE_CONFIG_DIR folder: every use names that folder as config dir and credentials dir, which is where the person's own claude with that variable keeps both, on every platform", async () => {
+  const folder = scratch();
+  const login = { dir: folder, profiles: '/u/p/.config/anthropic' };
+  const home = scratch();
+  const { status, signIn, shown, line } = await cliEnvs(login, home);
+  // The person's CLI with CLAUDE_CONFIG_DIR=<folder>: credentials dir <folder> (Linux), Keychain item hashed from
+  // <folder> (macOS), account <folder>/.claude.json. The credentials dir set to <folder> gives the same item and file.
+  const own = { CLAUDE_CONFIG_DIR: folder, CLAUDE_SECURESTORAGE_CONFIG_DIR: folder, ANTHROPIC_CONFIG_DIR: login.profiles };
+  assert.deepEqual(folderVars(status), own);
+  assert.deepEqual(folderVars(signIn), own);
+  assert.deepEqual(shown, own);
+  assert.equal(line, `CLAUDE_CONFIG_DIR=${folder} CLAUDE_SECURESTORAGE_CONFIG_DIR=${folder} ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+  for (const platform of ['darwin', 'linux']) {
+    assert.deepEqual(claude.claudeLoginEnv(login, platform), { CLAUDE_SECURESTORAGE_CONFIG_DIR: folder, ANTHROPIC_CONFIG_DIR: login.profiles }, platform);
+  }
+});
