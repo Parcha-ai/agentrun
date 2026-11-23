@@ -415,7 +415,7 @@ test("every endpoint fal's catalog lists in a family billed by its settings is d
   // 2026-11-23 between 12:25Z and 12:32Z. A variant fal adds later has to be decided here before it can run under a cap.
   // Ideogram v4, the Gemini image previews and Nano Banana 2 from the same catalog search and their pages, read
   // 2026-11-23 13:13Z.
-  const families = ["fal-ai/ideogram/character", "fal-ai/ideogram/v3", "fal-ai/kling-video/v3", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "fal-ai/sync-lipsync/v2", "fal-ai/veo3", "fal-ai/veo3.1", "veed/fabric-1.0"];
+  const families = ["fal-ai/ideogram/character", "fal-ai/ideogram/v3", "fal-ai/kling-video/v3", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "ideogram/v4.5", "ideogram/v4.6", "google/nano-banana-2.1", "fal-ai/sync-lipsync/v2", "fal-ai/veo3", "fal-ai/veo3.1", "veed/fabric-1.0"];
   const bySettings = [
     "fal-ai/ideogram/v3", "fal-ai/ideogram/v3/edit", "fal-ai/ideogram/v3/remix", "fal-ai/ideogram/v3/reframe", "fal-ai/ideogram/v3/replace-background", "fal-ai/ideogram/v3/generate-transparent",
     "fal-ai/ideogram/character", "fal-ai/ideogram/character/edit", "fal-ai/ideogram/character/remix",
@@ -460,8 +460,17 @@ test("every endpoint fal's catalog lists in a family billed by its settings is d
       assert.deepEqual(rateOf(endpoint, "seconds", input), { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` }, endpoint);
     }
   }
+  // Ideogram v4.5 and v4.6 (billed by quality, and v4.6 by size) and Nano Banana 2.1 (by resolution), with their edits:
+  // refused whatever unit get_pricing states them in (13:20:43Z: "units"), so a relabel to images can't hold one flat rate.
+  for (const family of ["ideogram/v4.5", "ideogram/v4.6", "google/nano-banana-2.1"]) {
+    for (const endpoint of [family, `${family}/edit`]) {
+      for (const unit of ["images", "units"]) {
+        assert.deepEqual(rateOf(endpoint, unit, { prompt: "x", quality: "high", resolution: "4K" }), { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` }, `${endpoint} per ${unit}`);
+      }
+    }
+  }
   // Outside every family: get_pricing's one rate.
-  for (const endpoint of ["fal-ai/veo3.10", "fal-ai/veo2", "fal-ai/kling-video/v3.5/pro/image-to-video", "fal-ai/sync-lipsync/v3", "fal-ai/sync-lipsync", "fal-ai/ideogram/v2", "fal-ai/nano-banana", "veed/fabric-1.5", "fal-ai/nano-banana-2.1", "ideogram/v4.5", "ideogram/v40"]) {
+  for (const endpoint of ["fal-ai/veo3.10", "fal-ai/veo2", "fal-ai/kling-video/v3.5/pro/image-to-video", "fal-ai/sync-lipsync/v3", "fal-ai/sync-lipsync", "fal-ai/ideogram/v2", "fal-ai/nano-banana", "veed/fabric-1.5", "ideogram/v40", "google/nano-banana-2.10", "google/nano-banana-lite"]) {
     assert.deepEqual(rateOf(endpoint, "seconds", { prompt: "x", resolution: "4k" }), { ratio: 1, perUnitUsd: 0, words: [] }, endpoint);
   }
 });

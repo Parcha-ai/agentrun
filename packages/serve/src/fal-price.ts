@@ -294,8 +294,10 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
 /** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. Ideogram v4's
  *  pages (read 2026-11-23 13:13Z) bill by rendering_speed and megapixels, and get_pricing (13:20:43Z) states most of
  *  them in "units", which no input counts, and its tiling and tiling LoRA $0.04 and $0.045 an image: none of its rates
- *  is decided here, so each of its endpoints is refused under a cap. */
-const TIERED_FAMILIES: readonly string[] = ["fal-ai/ideogram/v3", "fal-ai/ideogram/character", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "fal-ai/veo3", "fal-ai/veo3.1", "fal-ai/kling-video/v3", "fal-ai/sync-lipsync/v2", "veed/fabric-1.0"];
+ *  is decided here, so each of its endpoints is refused under a cap. Ideogram v4.5 and v4.6 (billed by quality, and
+ *  v4.6 by size) and Nano Banana 2.1 (by resolution), with their edits, likewise: get_pricing states them in "units"
+ *  (13:20:43Z), and as families they stay refused whatever unit it states, never held at one flat rate. */
+const TIERED_FAMILIES: readonly string[] = ["fal-ai/ideogram/v3", "fal-ai/ideogram/character", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "ideogram/v4.5", "ideogram/v4.6", "google/nano-banana-2.1", "fal-ai/veo3", "fal-ai/veo3.1", "fal-ai/kling-video/v3", "fal-ai/sync-lipsync/v2", "veed/fabric-1.0"];
 /** The endpoints in those families with one rate, whatever their settings (their model pages, read 2026-11-23): Kling v3
  *  4k text-to-video ($0.42 with audio on or off), turbo pro ($0.14) and turbo standard ($0.112), motion-control pro
  *  ($0.168) and standard ($0.126); Ideogram v3 layerize-text ($0.09 an image, the rate get_pricing states too, read
