@@ -126,7 +126,7 @@
     "test:phoned": "node scripts/build-phoned.mjs --test && node scripts/build-phoned.mjs --fake && node --test test/phoned/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs",
-    "test:docker": "node --test --test-timeout=900000 test/docker/*.test.mjs",
+    "test:docker": "node --test --test-timeout=900000 --test-global-setup=test/docker/egress-network.mjs test/docker/*.test.mjs",
     "test:daytona": "node --test --test-timeout=1800000 test/daytona/*.test.mjs",
     "test:modal": "node --test --test-timeout=1800000 test/modal/*.test.mjs",
     "test:e2b": "node --test --test-timeout=1800000 test/e2b/*.test.mjs",

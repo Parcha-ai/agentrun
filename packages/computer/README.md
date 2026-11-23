@@ -837,14 +837,21 @@ key.
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
 - **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
-  package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
-  port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
+  package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
+  publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
   (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
+- **The egress bridge** `agentrun-egress`: one user-defined bridge every proxy on the Docker host shares, with
+  inter-container traffic off (`com.docker.network.bridge.enable_icc=false`) and the label
+  `agentrun.computer.egress-network=1`. The first allow or open `create` makes it, and nothing removes it. No other
+  workload's container is on it, so none can reach a proxy or ARP-spoof the gateway the proxies go out through, as one
+  with `NET_RAW` could on Docker's default bridge. A `create` that finds a network of that name made otherwise (inter-container
+  traffic on, internal, not a local bridge, or without the label) refuses in words and makes nothing; remove that
+  network (`docker network rm agentrun-egress`) and create again. A proxy on any other network reads back as other.
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
   lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches

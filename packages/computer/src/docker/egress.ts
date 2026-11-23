@@ -8,10 +8,14 @@
 //  - The volume `<computer>-egress`: a tmpfs of 1 MiB, mode 0700, owned by the computer's uid:gid. The proxy's Unix
 //    socket is made in it; the computer mounts it read-only at EGRESS_MOUNT.
 //  - The proxy container `<computer>-egress`: this package's own proxy (egress-main.ts, egress-proxy.ts, egress-table.ts,
-//    bound read-only from dist/docker with the package's package.json), in a pinned Node image, on Docker's default
-//    bridge alone, publishing no port, as the computer's uid:gid, with a read-only root, no capability, no privilege to
-//    gain, and bounded memory, pids and log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), the
+//    bound read-only from dist/docker with the package's package.json), in a pinned Node image, on the provider's own
+//    bridge alone (EGRESS_NETWORK), publishing no port, as the computer's uid:gid, with a read-only root, no capability,
+//    no privilege to gain, and bounded memory, pids and log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), the
 //    Docker host's own public addresses (refused as this host's) and the hint. It holds no key.
+//  - The network EGRESS_NETWORK: one user-defined bridge every proxy of every provider on this Docker host shares, made
+//    by the first create that needs it and never removed. Inter-container traffic on it is off (enable_icc=false), and
+//    no other workload's container is on it: on Docker's default bridge, one with NET_RAW could ARP-spoof the gateway
+//    every proxy goes out through. Each proxy holds no capability, NET_RAW included.
 //  - The computer: init gets `--egress <socket>` and relays its loopback port 3128 to the socket, and tells every program
 //    it starts that port is its HTTP and HTTPS proxy. A program that ignores that reaches nothing: there is no route.
 //  - Both carry the label EGRESS_LABEL=<computer>; release finds the proxy and the volume by it, never by name alone.
@@ -54,6 +58,37 @@ const EXAMPLE = '["pypi.org", "*.pythonhosted.org", "93.184.215.0/24"]';
 
 /** The proxy container's name, and the volume's, for computer `name`. */
 export const egressNameOf = (name: string): string => `${name}-egress`;
+
+/** The bridge every egress proxy is on, and the label and option it is made with (egressNetworkArgs). */
+export const EGRESS_NETWORK = "agentrun-egress";
+export const EGRESS_NETWORK_LABEL = "agentrun.computer.egress-network";
+const NO_ICC = "com.docker.network.bridge.enable_icc";
+
+/** `docker network create` of EGRESS_NETWORK: a local bridge with inter-container traffic off, carrying its label. */
+export function egressNetworkArgs(): string[] {
+	return ["network", "create", "--driver", "bridge", "--opt", `${NO_ICC}=false`, "--label", `${EGRESS_NETWORK_LABEL}=1`, EGRESS_NETWORK];
+}
+
+/** What `docker network inspect` reports of a network that egressNetworkProblem reads. */
+export interface DockerNetworkInspect {
+	Name?: string;
+	Driver?: string;
+	Scope?: string;
+	Internal?: boolean;
+	Options?: Record<string, string> | null;
+	Labels?: Record<string, string> | null;
+}
+
+/** Why the network named EGRESS_NETWORK is not one egressNetworkArgs makes, in words, or undefined when it is. */
+export function egressNetworkProblem(network: DockerNetworkInspect): string | undefined {
+	const found: string[] = [];
+	if (network.Name !== EGRESS_NETWORK) found.push(`is named ${show(network.Name)}`);
+	if (network.Driver !== "bridge" || network.Scope !== "local") found.push(`has driver ${show(network.Driver)} and scope ${show(network.Scope)}, not a local bridge`);
+	if (network.Internal === true) found.push("is internal, so no proxy on it reaches the internet");
+	if (network.Options?.[NO_ICC] !== "false") found.push(`has ${NO_ICC} ${show(network.Options?.[NO_ICC])}, not "false"`);
+	if (network.Labels?.[EGRESS_NETWORK_LABEL] !== "1") found.push(`does not carry the label ${EGRESS_NETWORK_LABEL}=1`);
+	return found.length === 0 ? undefined : `the Docker network ${EGRESS_NETWORK} ${found.join(", ")}: it is not the one this provider makes for its egress proxies; remove it (docker network rm ${EGRESS_NETWORK}) and create again`;
+}
 
 /** Where the proxy's code is on this machine: this package's dist/docker, and its package.json, which makes Node read
  *  the files as modules. */
@@ -203,7 +238,7 @@ export function egressRunArgs({ name, user, image, allow, local, deadline, code,
 	args.push("--cpu-period", String(PROXY_CPU_PERIOD_US), "--cpu-quota", String(PROXY_CPU_QUOTA_US), "--ulimit", `nofile=${PROXY_NOFILE}:${PROXY_NOFILE}`);
 	args.push("--log-driver", PROXY_LOG.driver);
 	for (const [key, value] of Object.entries(PROXY_LOG.options)) args.push("--log-opt", `${key}=${value}`);
-	args.push("--network", "bridge");
+	args.push("--network", EGRESS_NETWORK);
 	args.push("--mount", `type=volume,src=${proxy},dst=${PROXY_VOLUME}`);
 	if (code.volume === undefined) {
 		args.push("--mount", `type=bind,src=${code.dir},dst=${PROXY_CODE},readonly`, "--mount", `type=bind,src=${code.packageJson},dst=${PROXY_PACKAGE},readonly`);
@@ -237,8 +272,8 @@ export interface EgressOwner {
 /**
  * A computer's network through its proxy, read back from the proxy container's inspect: "open" where its argv holds
  * `--open public`, else the list its argv holds, when the container is
- * the computer's own (its label and deadline), running while the computer runs, and as create makes one (Docker's
- * default bridge alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
+ * the computer's own (its label and deadline), running while the computer runs, and as create makes one (the
+ * provider's bridge EGRESS_NETWORK alone, no port, the computer's user, a read-only root, no capability or privilege, exactly its volume
  * and its code, `code`'s when given), refusing every one of `local`, the Docker host's own addresses the provider
  * requires now (more is fine). Anything less is `{ other }` in words, never an allowlist. A host whose addresses
  * changed since the proxy was made reads as other: fail closed.
@@ -258,7 +293,11 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	if (labels[DEADLINE_LABEL] !== owner.deadline) return other(`has the deadline label ${show(labels[DEADLINE_LABEL])}, not the computer's ${show(owner.deadline)}`);
 	if (owner.running && proxy.State?.Running !== true) return other(`is not running (exit code ${show(proxy.State?.ExitCode)}): the computer reaches nothing`);
 	const networks = Object.keys(proxy.NetworkSettings?.Networks ?? {});
-	if (host.NetworkMode !== "bridge" || networks.length !== 1 || networks[0] !== "bridge") return other(`is on network mode ${String(host.NetworkMode)} and networks ${networks.join(", ") || "none"}, not Docker's default bridge alone`);
+	// The network by name: create checked it is the provider's bridge (egressNetworkProblem) before the proxy joined it,
+	// and Docker removes no network a running container is on, nor changes a network's options.
+	if (host.NetworkMode !== EGRESS_NETWORK || networks.length !== 1 || networks[0] !== EGRESS_NETWORK) {
+		return other(`is on network mode ${String(host.NetworkMode)} and networks ${networks.join(", ") || "none"}, not the provider's bridge ${EGRESS_NETWORK} alone`);
+	}
 	if (host.Privileged !== false) return other("is privileged");
 	const capDrop = host.CapDrop;
 	if (!Array.isArray(capDrop) || capDrop.length !== 1 || capDrop[0] !== "ALL" || !blank(host.CapAdd)) return other(`keeps capabilities (CapDrop ${show(capDrop)}, CapAdd ${show(host.CapAdd)})`);
