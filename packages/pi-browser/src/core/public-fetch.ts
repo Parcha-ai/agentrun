@@ -187,8 +187,8 @@ function statedLength(headers: Headers): number | undefined {
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
  * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s) (other
  * than https, with `httpsOnly`); a host that is local by name or resolves to any private address; a port other than 80
- * or 443; too many redirects; a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
- * with the signal's reason), and an aborted hop is never dialled.
+ * or 443; too many redirects; a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a
+ * hop's name lookup included (it rejects with the signal's reason), and an aborted hop is never dialled.
  */
 export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {
   const maxBytes = capOf(options);
