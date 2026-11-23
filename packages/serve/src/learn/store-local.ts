@@ -121,7 +121,9 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
       // and the call fails, never handing back what it read so far.
       const pass = (seen: number): void => {
         if (settled || (child.stdout.readableEnded && child.stderr.readableEnded)) return;
-        if (!cut && size + errSize !== seen) return void setImmediate(() => pass(size + errSize));
+        const received = size + errSize;
+        // The count now, not when the next pass runs: that pass compares its own count against this one.
+        if (!cut && received !== seen) return void setImmediate(() => pass(received));
         held = true;
         child.stdout.destroy();
         child.stderr.destroy();
