@@ -203,6 +203,40 @@ Dokploy makes the domain (`${domain}`, an `sslip.io` address), the token (`${has
 code at the first visit. Dokploy's generated domain is http. If you give the service your own domain with HTTPS, set
 `AGENTRUN_PUBLIC_URL` to it in the Environment and redeploy.
 
+## On Northflank
+
+One deployment service in a project of its own, from [`northflank/template.json`](northflank/template.json), a
+Northflank template (spec v1.2). It runs the release's image as one instance, the server with its runner beside it, on
+the 1 vCPU / 2 GB plan (`nf-compute-100-2`) with a 10 GB volume at `/data`. Its health check is `GET /v2/health` on
+port 7340, which Northflank serves at the service's own `code.run` domain over HTTPS. Northflank gives the service no
+Docker, so its agents get file tools and `web_fetch` but no shell, as on Render. No model key is needed.
+
+It costs about $25.17 a month: $24.00 for the plan and $1.17 for the volume ($0.11657 per GiB-month), at Northflank's
+prices on 2026-11-23 ([pricing](https://northflank.com/pricing)). That is more than the $20 a month of resources the
+free Sandbox tier covers, so the team needs Pay as you go, with a card.
+
+1. In your team's dashboard, open **Templates** and create a new template.
+2. Switch the editor to code, replace its contents with `template.json`, and save. To run it somewhere other than
+   `europe-west`, change the Project node's `region` first.
+3. Run the template.
+
+Or keep the template in a repository: create a template with GitOps on, pointing at your fork and the path
+`/deploy/northflank/template.json`. GitOps syncs both ways, so Northflank can commit its edits back to that branch.
+
+The run makes the project, then a secret group `agentrun-keys` with `AGENTRUN_TOKEN` (64 hex characters) and
+`AGENTRUN_SEAL_KEY` (32 random bytes in base64), both made by Northflank's `randomSecret` and kept on later runs, then
+the service and its volume. Once the service has its domain, a second group, `agentrun-address`, sets
+`AGENTRUN_PUBLIC_URL` to it, and the run restarts the service. When the run is done, open the domain on the service's
+page and paste `AGENTRUN_TOKEN` from the project's **Secrets** (the `agentrun-keys` group) as the setup code. Keep the
+seal key: without it the saved keys can't be opened.
+
+A volume that one container reads and writes keeps the service at one instance, and Northflank stops the running
+container before it starts the new one, as the store needs. Northflank gives the volume to the image's group, the
+server's, so the server starts as its own user. The service sets `AGENTRUN_RUN_USER=same`, as `render.yaml` and the
+Railway template do: Northflank hasn't been shown to keep the image helper's file capabilities, so each run runs as the
+server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the runner refuses to claim
+and every run answers `runner_refused` (packages/serve/README.md).
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -212,6 +246,7 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
+| Northflank | The project's **Secrets**, the `agentrun-keys` group: paste the value of `AGENTRUN_TOKEN` as the code. Or the service's logs: the line below. |
 | A server you rent (`--vps`) | The installer prints it. Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
