@@ -47,7 +47,8 @@ function fakeOpenAI(t) {
     const tokens = { access: jwtOf({ "https://api.openai.com/profile": { email: "person@example.com" }, "https://api.openai.com/auth": { chatgpt_plan_type: "plus" }, jti: randomUUID() }), refresh: `fake-${randomBytes(16).toString("hex")}`, id: jwtOf({ email: "person@example.com" }) };
     o.issued.push(tokens);
     o.live.add(tokens.refresh);
-    return Response.json({ access_token: tokens.access, refresh_token: tokens.refresh, id_token: tokens.id, expires_in: o.expiresIn, scope: SCOPE, token_type: "Bearer" });
+    // `scope`: the grant's scope when OpenAI grants less than was asked (SCOPE by default).
+    return Response.json({ access_token: tokens.access, refresh_token: tokens.refresh, id_token: tokens.id, expires_in: o.expiresIn, scope: o.scope ?? SCOPE, token_type: "Bearer" });
   };
   const refused = (error) => Response.json({ error, error_description: "refused by the fake" }, { status: 400 });
   const liveAccess = (request) => o.issued.some((tokens) => request.headers.get("authorization") === `Bearer ${tokens.access}`) || [...o.keys].some((key) => request.headers.get("authorization") === `Bearer ${key}`);
@@ -65,6 +66,8 @@ function fakeOpenAI(t) {
       if (form.get("resource") !== "https://api.openai.com/v1" || form.get("client_id") !== CLIENT) return refused("invalid_request");
       if (form.get("grant_type") === "authorization_code") {
         o.codes += 1;
+        // `codeRefusal`: the code's exchange refused with this error code and status 403, as a workspace's policy does.
+        if (o.codeRefusal) return Response.json({ error: o.codeRefusal, error_description: "refused by the fake" }, { status: 403 });
         if (form.get("code") !== "fake-code" || form.get("redirect_uri") !== CALLBACK || !form.get("code_verifier")) return refused("invalid_grant");
         return issue();
       }
@@ -787,6 +790,72 @@ test("a browser's return whose code OpenAI refuses says why, in the view and the
   // A new sign-in clears it.
   await plan.startSignIn();
   assert.equal(plan.view().problem, undefined);
+});
+
+/** A plan over a fresh store whose log lines land in `logged`, closed after the test. */
+async function loggedPlan(t) {
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields) });
+  t.after(() => plan.close());
+  return { plan, logged };
+}
+
+/** The browser's return with OpenAI's `error` in place of a code, for the sign-in whose link is `authorizeUrl`. */
+async function browserReturnsRefused(authorizeUrl, error) {
+  const url = new URL(`${CALLBACK}?${new URLSearchParams({ error, state: new URL(authorizeUrl).searchParams.get("state") })}`);
+  url.hostname = CALLBACK_HOST;
+  const page = await fetch(url);
+  await page.text();
+  return page.status;
+}
+
+const ADMIN_OFF = /^Your ChatGPT workspace's admin has turned off open-source apps \(External access → OSS → Use ChatGPT plan\)/;
+const FREE = /a Free ChatGPT plan can't be used here/;
+
+test("a workspace whose admin turned off open-source apps says so, whether OpenAI refuses at the sign-in page or at the code", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  // OpenAI sends the browser back with its refusal.
+  const first = await plan.startSignIn();
+  await browserReturnsRefused(first.authorize_url, "3p_delegated_access_policy_denied");
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", ADMIN_OFF);
+  assert.equal(openai.codes, 0, "no code to exchange");
+  // OpenAI refuses the code's exchange with it.
+  openai.codeRefusal = "3p_delegated_access_policy_denied";
+  const second = await plan.startSignIn();
+  await browserReturns(second.authorize_url);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", ADMIN_OFF);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "authorize_3p_delegated_access_policy_denied" }, { chatgpt: "sign_in_failed", reason: "token_403_3p_delegated_access_policy_denied" }]);
+  // A pasted address that carries the refusal is refused in the same words.
+  const third = await plan.startSignIn();
+  const pasted = `${CALLBACK}?${new URLSearchParams({ error: "3p_delegated_access_policy_denied", state: new URL(third.authorize_url).searchParams.get("state") })}`;
+  await assert.rejects(plan.finishSignIn(pasted), (error) => ADMIN_OFF.test(error.message));
+});
+
+test("a ChatGPT plan that can't be used here says so: a grant without the plan's use, and every refusal that could be a Free plan's", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { plan, logged } = await loggedPlan(t);
+  // OpenAI signs the account in but grants no use of its plan by apps.
+  openai.scope = "openid profile email offline_access resource.invoke";
+  const first = await plan.startSignIn();
+  await browserReturns(first.authorize_url);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", /^This ChatGPT plan can't be used here/);
+  // A refusal at the sign-in page, or of the code, whose reason OpenAI does not name: it says what it knows.
+  const second = await plan.startSignIn();
+  await browserReturnsRefused(second.authorize_url, "access_denied");
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", /^ChatGPT did not sign you in \(access_denied\)/);
+  assert.match(plan.view().problem ?? "", FREE);
+  openai.scope = undefined;
+  const third = await plan.startSignIn();
+  await browserReturns(third.authorize_url, { code: "spent-code" });
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.match(plan.view().problem ?? "", FREE);
+  assert.deepEqual(logged.map((fields) => fields.reason), ["no_direct_scope", "authorize_access_denied", "token_400_invalid_grant"]);
 });
 
 test("a sign-in saved whose change callback then fails reads signed in, with no problem and no sign_in_failed", { timeout: 30_000 }, async (t) => {

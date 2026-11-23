@@ -129,6 +129,18 @@ const refusedForGood = (error: unknown): boolean => /\((400|401)\)|invalid_grant
 /** A sign-in OpenAI finished whose credential this server could not keep (keep threw). */
 class NotKept extends Error {}
 
+/** `value` as a log field or a code in words: letters, digits and `_` alone, 40 at most. */
+const tag = (value: unknown): string => String(value ?? "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
+/** OpenAI's error code for a workspace whose admin has turned off open-source apps' use of its ChatGPT plans. */
+const WORKSPACE_DENIED = "3p_delegated_access_policy_denied";
+const ADMIN_OFF = "Your ChatGPT workspace's admin has turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+/** A grant without DIRECT_SCOPE: OpenAI signed the account in but gave no use of its plan by apps. */
+const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in gave AgentRun no use of it. A Free plan can't be used; sign in with a paid one.";
+/** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in ends in one, and nothing tells it apart. */
+const FREE_OR_AGAIN = "a Free ChatGPT plan can't be used here; with a paid plan, start it again.";
+/** The words for OpenAI's refusal `code` at its sign-in page. */
+const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in (${tag(code) || "no reason given"}): ${FREE_OR_AGAIN}`);
+
 /** Why a sign-in past its browser step ended without signing in, from what pi-ai's flow or keep threw: `reason` for the
  *  log (OpenAI's status and error code, a missing field's name, a network error's code; never a token or a code) and
  *  `words` a person reads. pi-ai's page says the sign-in completed before it exchanges the code, so these are the only
@@ -137,13 +149,15 @@ export function signInFailure(error: unknown): { reason: string; words: string }
   const notKept = error instanceof NotKept;
   const cause = notKept ? error.cause : error;
   const message = String((cause as Error)?.message ?? "");
-  if (message.includes(DIRECT_SCOPE)) return { reason: "no_direct_scope", words: "This ChatGPT account did not allow its plan to be used by apps: sign in with an account whose plan allows it." };
-  const tag = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
+  if (message.includes(DIRECT_SCOPE)) return { reason: "no_direct_scope", words: PLAN_NOT_USABLE };
   if (notKept) return { reason: `not_saved${tag((cause as { code?: unknown })?.code) ? `_${tag((cause as { code?: unknown }).code)}` : ""}`, words: "OpenAI signed you in, but this server could not save the sign-in: start it again. The server's log says why." };
+  // OpenAI's refusal at its sign-in page, sent back to the loopback in place of a code (pi-ai's words for it).
+  const denied = /ChatGPT authorization failed: (\S+)/.exec(message);
+  if (denied) return { reason: `authorize_${tag(denied[1]) || "error"}`, words: deniedWords(denied[1]) };
   const refused = /token request failed \((\d{3})\)/.exec(message);
   if (refused) {
     const code = tag(/"error"\s*:\s*"([^"]*)"/.exec(message)?.[1]);
-    return { reason: `token_${refused[1]}${code ? `_${code}` : ""}`, words: `OpenAI refused the sign-in (${code || refused[1]}): start it again.` };
+    return { reason: `token_${refused[1]}${code ? `_${code}` : ""}`, words: code === WORKSPACE_DENIED ? ADMIN_OFF : `OpenAI refused the sign-in (${code || refused[1]}): ${FREE_OR_AGAIN}` };
   }
   const unread = /token response (?:has invalid (\w+)|did not contain an (ID token)|must be an object)/.exec(message);
   if (unread) return { reason: `token_answer_${tag((unread[1] ?? unread[2] ?? "shape").replace(" ", "_"))}`, words: "OpenAI's answer to the sign-in was not one AgentRun can read: start it again. The server's log says what was missing." };
@@ -371,7 +385,7 @@ export class ChatGPTPlan implements PlanReader {
     }
     if (url.origin !== REDIRECT.origin || url.pathname !== REDIRECT.pathname) throw new PlanSignInRefused(shape);
     const error = url.searchParams.get("error");
-    if (error) throw new PlanSignInRefused(`ChatGPT did not sign you in (${error.replace(/[^a-z_]/gi, "").slice(0, 40)}): start the sign-in again.`);
+    if (error) throw new PlanSignInRefused(deniedWords(error));
     if (url.searchParams.get("state") !== pending.state) throw new PlanSignInRefused("That address is from another sign-in: paste the one from the sign-in you started last, or start again.");
     if (!url.searchParams.get("code") || !url.searchParams.get("client_id")) throw new PlanSignInRefused(`That address has no sign-in code in it. ${shape}`);
     pending.paste(url.href);
