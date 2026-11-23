@@ -107,6 +107,8 @@ export const ERROR_STATUS = {
   // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
   // is started again as the words say.
   runner_refused: 503,
+  // POST /settings/local-model/pull while a pull is under way here (local-model.ts): one at a time.
+  local_model_pulling: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
