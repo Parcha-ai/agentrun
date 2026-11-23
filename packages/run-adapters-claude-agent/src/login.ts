@@ -66,17 +66,27 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
 
+/** A status check the CLI didn't answer in time: it was ended at its timeout. On a busy host the CLI, starting in an empty
+ *  home, can take longer than that, so a caller may read this as "unknown" and ask again, where a garbled answer is not. */
+export class LoginStatusTimeout extends Error {
+  constructor(readonly ms: number) {
+    super(`the claude CLI gave no login status within ${Math.round(ms / 1000)} s`);
+    this.name = "LoginStatusTimeout";
+  }
+}
+
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, in an empty home and config dir of its
  *  own (removed after), with only PATH and the login's two variables beside them. Throws when the CLI gives no answer
- *  that reads as one. */
+ *  that reads as one: a LoginStatusTimeout when it was ended at `timeoutMs`. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-status-"));
+  const timeoutMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   try {
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
         env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: scratch, CLAUDE_CONFIG_DIR: scratch, XDG_CONFIG_HOME: join(scratch, ".config"), ...loginEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
-        timeout: options.timeoutMs ?? LOGIN_STATUS_MS,
+        timeout: timeoutMs,
       });
       let out = "";
       child.stdout.setEncoding("utf8");
@@ -84,8 +94,8 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
         if (out.length < 64 * 1024) out += chunk;
       });
       child.once("error", reject);
-      // The CLI exits 1 when signed out, its answer said all the same.
-      child.once("close", () => resolve(out));
+      // The CLI exits 1 when signed out, its answer said all the same. Ended at the timeout (spawn's kill), it said nothing.
+      child.once("close", (_code, signal) => (signal !== null && child.killed && !parseLoginStatus(out.trim()) ? reject(new LoginStatusTimeout(timeoutMs)) : resolve(out)));
     });
     const status = parseLoginStatus(stdout.trim());
     if (!status) throw new Error("the claude CLI gave no login status");

@@ -262,16 +262,42 @@ export async function dropRefusedLogin(settings: Pick<Settings, "get" | "remove"
 export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
+/** How long a signed-in answer stands for the next run on the same login and CLI, so a burst of runs asks the CLI once. */
+export const LOGIN_SIGNED_IN_MS = 60_000;
+
+/** The status checks asked, by CLI and login: one still out is shared by every run that asks meanwhile, and a signed-in
+ *  answer is kept for LOGIN_SIGNED_IN_MS after it came. A signed-out answer or a failed check is never kept. */
+const asked = new Map<string, { at: number; said: Promise<ClaudeLoginStatus>; signedIn?: true }>();
+function statusOnce(cli: string, login: ClaudeAgentLogin, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, now: () => number): Promise<ClaudeLoginStatus> {
+  const key = JSON.stringify([cli, login.dir, login.profiles]);
+  const last = asked.get(key);
+  if (last && (!last.signedIn || now() - last.at < LOGIN_SIGNED_IN_MS)) return last.said;
+  const entry: { at: number; said: Promise<ClaudeLoginStatus>; signedIn?: true } = { at: now(), said: status(cli, login) };
+  asked.set(key, entry);
+  const forget = () => { if (asked.get(key) === entry) asked.delete(key); };
+  entry.said.then((said) => (said.signedIn ? Object.assign(entry, { at: now(), signedIn: true as const }) : forget()), forget);
+  return entry.said;
+}
+
+/** The harness's LoginStatusTimeout, read by its name: the harness is loaded only when a run asks. */
+const timedOut = (error: unknown): boolean => error instanceof Error && error.name === "LoginStatusTimeout";
+
 /** Before a run on the login: its CLI says it is signed in, or the run is refused in words (never a silent switch to a
  *  key). `cli`: the CLI that answers (loginCli); none, nothing to ask yet. `status`: the CLI's status check (the harness's
- *  claudeLoginStatus). */
-export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>): Promise<void> {
+ *  claudeLoginStatus). A check the CLI didn't answer in time is asked once more; a second one doesn't refuse the run, as
+ *  a slow host isn't a signed-out login: the run goes on with the login alone, and a CLI that isn't signed in says so in
+ *  the run. A signed-out answer, or one that reads as none, still refuses it. */
+export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, options: { now?: () => number } = {}): Promise<void> {
   if (!login || !cli) return;
-  let said: ClaudeLoginStatus;
-  try {
-    said = await status(cli, login);
-  } catch (error) {
-    throw new Error(`${LOGIN_UNKNOWN}: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+  const now = options.now ?? Date.now;
+  let said: ClaudeLoginStatus | undefined;
+  for (let attempt = 1; !said; attempt++) {
+    try {
+      said = await statusOnce(cli, login, status, now);
+    } catch (error) {
+      if (!timedOut(error)) throw new Error(`${LOGIN_UNKNOWN}: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+      if (attempt === 2) return;
+    }
   }
   if (!said.signedIn) throw new Error(LOGIN_SIGNED_OUT);
 }

@@ -11,7 +11,7 @@ import { mkdtemp } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
-import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_IN_MS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginBeforeRun, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -239,3 +239,76 @@ test("one owner: refused in one line where more than one person can start runs, 
   assert.equal(refused.body.error.message, view.body.refused);
   assert.equal((await api("POST", "/settings/claude-login/login")).status, 403);
 });
+
+// A run's check (loginBeforeRun) on a busy host: the CLI, started in an empty home, can take longer than the check's
+// timeout. That is no answer, not a signed-out login, so it never refuses the run. Each test has a login of its own,
+// since checks are shared by CLI and login.
+let logins = 0;
+const nextLogin = () => ({ dir: `/fake/login-${++logins}`, profiles: `/fake/login-${logins}/anthropic` });
+const late = () => Object.assign(new Error("the claude CLI gave no login status within 15 s"), { name: "LoginStatusTimeout" });
+
+test("a run's login check that times out is asked once more, and a second timeout lets the run go on", async () => {
+  const login = nextLogin();
+  let calls = 0;
+  await loginBeforeRun(login, "/fake/claude", async () => { calls++; throw late(); });
+  assert.equal(calls, 2);
+  // A timeout, then an answer: the answer decides.
+  calls = 0;
+  await loginBeforeRun(nextLogin(), "/fake/claude", async () => (++calls === 1 ? Promise.reject(late()) : { signedIn: true }));
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(loginBeforeRun(nextLogin(), "/fake/claude", async () => (++calls === 1 ? Promise.reject(late()) : { signedIn: false })), { message: LOGIN_SIGNED_OUT });
+});
+
+test("a run's login check still refuses a signed-out login and an answer that reads as none, at once", async () => {
+  let calls = 0;
+  await assert.rejects(loginBeforeRun(nextLogin(), "/fake/claude", async () => { calls++; return { signedIn: false }; }), { message: LOGIN_SIGNED_OUT });
+  await assert.rejects(loginBeforeRun(nextLogin(), "/fake/claude", async () => { calls++; throw new Error("the claude CLI gave no login status"); }), (error) => error.message.startsWith(`${LOGIN_UNKNOWN}: `));
+  assert.equal(calls, 2);
+});
+
+test("runs that start together on one login share one check, and a signed-in answer stands for LOGIN_SIGNED_IN_MS", async () => {
+  const login = nextLogin();
+  let calls = 0;
+  let answer;
+  const status = () => { calls++; return new Promise((resolve) => { answer = resolve; }); };
+  let clock = 1_000;
+  const now = () => clock;
+  const runs = [1, 2, 3].map(() => loginBeforeRun(login, "/fake/claude", status, { now }));
+  answer({ signedIn: true });
+  await Promise.all(runs);
+  assert.equal(calls, 1);
+  clock += LOGIN_SIGNED_IN_MS - 1;
+  await loginBeforeRun(login, "/fake/claude", async () => { calls++; return { signedIn: true }; }, { now });
+  assert.equal(calls, 1, "within the window, no new check");
+  clock += 2;
+  await loginBeforeRun(login, "/fake/claude", async () => { calls++; return { signedIn: true }; }, { now });
+  assert.equal(calls, 2, "after it, the CLI is asked again");
+  // Another CLI on the same login is its own check.
+  await loginBeforeRun(login, "/fake/other-claude", async () => { calls++; return { signedIn: true }; }, { now });
+  assert.equal(calls, 3);
+});
+
+test("a signed-out answer is never kept: the next run asks again, so signing in counts at once", async () => {
+  const login = nextLogin();
+  let signedIn = false;
+  let calls = 0;
+  const status = async () => { calls++; return { signedIn }; };
+  await assert.rejects(loginBeforeRun(login, "/fake/claude", status), { message: LOGIN_SIGNED_OUT });
+  signedIn = true;
+  await loginBeforeRun(login, "/fake/claude", status);
+  assert.equal(calls, 2);
+});
+
+test("on a CLI slower than the check's timeout, a run's check asks twice and the run is not refused", async () => {
+  const { claudeLoginStatus } = await import("@parcha/agentrun-harness-claude");
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-slow-"));
+  const cli = join(dir, "claude");
+  const seen = join(dir, "calls");
+  writeFileSync(cli, `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(seen)}, "x");\nsetTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(SIGNED_IN))}), 5000);\n`, { mode: 0o755 });
+  const started = Date.now();
+  await loginBeforeRun(nextLogin(), cli, (at, login) => claudeLoginStatus(at, login, { timeoutMs: 300 }));
+  assert.equal(readFileSync(seen, "utf8"), "xx");
+  assert.ok(Date.now() - started < 4_000, "two timeouts, not two answers");
+});
+

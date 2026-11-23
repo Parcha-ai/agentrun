@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { claudeAgentAdapter, claudeLoginCommand, claudeLoginStatus, parseClaudeLoginStatus } from '@parcha/agentrun-harness-claude';
+import { claudeAgentAdapter, claudeLoginCommand, claudeLoginStatus, ClaudeLoginStatusTimeout, parseClaudeLoginStatus } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
 import { createHarnessRunner } from '@parcha/agentrun-kernel';
 import { runWorkflow } from '@parcha/agentrun-dsl';
@@ -80,6 +80,20 @@ test('the status check asks the CLI with the login directories alone, never open
   assert.notEqual(env.HOME, login.dir);
   const signedOut = fakeCli({ loggedIn: false, authMethod: 'none' });
   assert.deepEqual(await claudeLoginStatus(signedOut.cli, login), { signedIn: false, method: 'none' });
+});
+
+test('a CLI that does not answer in time is ended there, and says so as a timeout, not as no answer', async () => {
+  // A CLI starting in an empty home on a busy host: it answers, but after the check's timeout.
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, `#!${process.execPath}\nsetTimeout(() => { process.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai' }))}); }, 5000);\n`, { mode: 0o755 });
+  const started = Date.now();
+  await assert.rejects(claudeLoginStatus(cli, sealedLogin(), { timeoutMs: 300 }), (error) => error instanceof ClaudeLoginStatusTimeout && error.name === 'LoginStatusTimeout' && error.ms === 300);
+  assert.ok(Date.now() - started < 4000, 'ended at its timeout, not at its answer');
+  // A CLI that answers nothing that reads as a status is still "no answer".
+  const garbled = join(dir, 'garbled');
+  writeFileSync(garbled, `#!${process.execPath}\nprocess.stdout.write('not json');\n`, { mode: 0o755 });
+  await assert.rejects(claudeLoginStatus(garbled, sealedLogin()), (error) => !(error instanceof ClaudeLoginStatusTimeout) && /gave no login status$/.test(error.message));
 });
 
 test('each response the CLI streams is booked from its events, billed to the plan, and a refused admission halts the drive', async () => {
