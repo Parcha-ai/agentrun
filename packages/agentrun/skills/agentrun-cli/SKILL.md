@@ -115,6 +115,8 @@ agentrun runs wait "$run" > out.json
 
 A tool call waiting for approval (`pending.kind` `approval`) is answered by the person in the console (the run's `console_url`): the server takes that answer only from their own session there, never from a token, so the CLI has no command for it. Tell them, then `agentrun runs wait "$run"` once they have.
 
+A year of the person's own coding-agent work (tokens, cost, models, harnesses, when they work) is `agentrun wrapped --year 2025`: numbers and names only, read from the session files on the machine the server runs on, and answered only by a server on loopback with no public URL (any other is 403). The console shows it at `#/wrapped`.
+
 ## Exit codes
 
 - 0: done; for `runs wait` and `runs start --wait`, the run completed.

@@ -170,6 +170,9 @@ export function skillText(commands) {
     '',
     ...RECIPES(commands),
     '',
+    ...(commands.some((entry) => entry.command.join(' ') === 'wrapped')
+      ? ['A year of the person\'s own coding-agent work (tokens, cost, models, harnesses, when they work) is `agentrun wrapped --year 2025`: numbers and names only, read from the session files on the machine the server runs on, and answered only by a server on loopback with no public URL (any other is 403). The console shows it at `#/wrapped`.', '']
+      : []),
     '## Exit codes',
     '',
     '- 0: done; for `runs wait` and `runs start --wait`, the run completed.',
