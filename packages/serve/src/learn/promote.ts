@@ -254,15 +254,25 @@ export function skippedToolsOf(rows: readonly { readonly outcome: ReplayOutcome;
 export const gradesKey = (agentId: string): string => `learning.grades.${agentId}`;
 export const promotionsKey = (agentId: string): string => `learning.promotions.${agentId}`;
 
-type Kept<T> = { readonly v: 1; readonly items: readonly T[] };
+/** A kept list's fields other than `v` and `items` (the promotion feed's `dropped_at`, recordPromotion). */
+type Rest = { readonly [field: string]: unknown };
+type Kept<T> = Rest & { readonly v: 1; readonly items: readonly T[] };
 const itemsOf = <T>(value: unknown): T[] => (value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items) ? [...((value as Kept<T>).items)] : []);
+const restOf = (value: unknown): Rest => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const { v: _v, items: _items, ...rest } = value as Record<string, unknown>;
+  return rest;
+};
 
-/** `update` over the list kept under `key`, compare-and-set so two writers never lose one's change; the list after. */
-async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, key: string, update: (items: T[]) => T[]): Promise<T[]> {
+/** `update` over the list kept under `key`, compare-and-set so two writers never lose one's change; the list after. The
+ *  stored value's other fields (`rest`) are carried forward as they are, unless `update` gives new ones with its list:
+ *  a write that only rewrites the list never loses them. */
+async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, key: string, update: (items: T[], rest: Rest) => T[] | { readonly items: T[]; readonly rest: Rest }): Promise<T[]> {
   for (let tries = 0; tries < 20; tries++) {
     const was = await settings.get(key);
-    const items = update(itemsOf<T>(was));
-    const value: Kept<T> = { v: 1, items };
+    const next = update(itemsOf<T>(was), restOf(was));
+    const [items, rest] = Array.isArray(next) ? [next, restOf(was)] : [next.items, next.rest];
+    const value: Kept<T> = { v: 1, items, ...rest };
     if (was === undefined) {
       const saved = await settings.putIfAbsent(key, value);
       if (JSON.stringify(saved) === JSON.stringify(value)) return items;
@@ -396,6 +406,24 @@ const writtenOf = (items: readonly PromotionRecord[]): PromotionRecord[] => item
 export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
   writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))));
 
+/** The newest of `was` (the feed's `dropped_at` so far, an ISO time; anything else is none) and the `at` of each record in
+ *  `gone` (those a trim just dropped): undefined while none is. It only grows: a trim may drop a record older than one an
+ *  earlier trim dropped (a champion or a replaying record it kept until then). */
+function droppedAtAfter(was: unknown, gone: readonly PromotionRecord[]): string | undefined {
+  let newest = typeof was === "string" && !Number.isNaN(Date.parse(was)) ? was : undefined;
+  for (const { at } of gone) if (typeof at === "string" && !Number.isNaN(Date.parse(at)) && (newest === undefined || Date.parse(at) > Date.parse(newest))) newest = at;
+  return newest;
+}
+
+/** The agent's promotion records (promotionsOf) and when the newest record a trim ever dropped was written (`droppedAt`,
+ *  epoch ms; undefined when no trim has dropped one): a revision no record names whose compile is not after it may be one
+ *  whose records were dropped. */
+export async function promotionFeedOf(settings: Pick<Settings, "get">, agentId: string): Promise<{ records: PromotionRecord[]; droppedAt: number | undefined }> {
+  const value = await settings.get(promotionsKey(agentId));
+  const at = droppedAtAfter(restOf(value).dropped_at, []);
+  return { records: writtenOf(itemsOf<PromotionRecord>(value)), droppedAt: at === undefined ? undefined : Date.parse(at) };
+}
+
 /** The newest record of `workflow` at `digest`, or undefined. */
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
   records.findLast((one) => one.workflow === workflow && one.digest === digest);
@@ -522,14 +550,16 @@ const blankedRuns = (record: PromotionRecord | undefined): string[] =>
  *  guarded write when it would trim, over the records that write reads and `record` after them, so a promotion it lands
  *  for a revision the gate refuses is skipped as its readers skip it; a write that would trim records other than those
  *  it asked over, another writer's landing in between, reads and asks again). Fails closed: a gate that could not read
- *  a commit (Refused.unread) or could not be asked leaves every record, the write trims nothing. */
+ *  a commit (Refused.unread) or could not be asked leaves every record, the write trims nothing. A trim that drops
+ *  records keeps the newest `at` of any it ever dropped beside them (`dropped_at`, droppedAtAfter): a revision whose only
+ *  record it dropped is never read as one no record has named yet (store-reads/learning.ts revisionLedgerOf). */
 export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean, refused?: (records: readonly PromotionRecord[]) => Promise<Refused>): Promise<Recorded> {
   for (let tries = 0; tries < 20; tries++) {
     let out: Recorded | undefined;
     const before = refused ? writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)))) : [];
     const skip = refused && before.length >= PROMOTIONS_KEPT ? await refused([...before, record]).catch(() => UNREAD) : undefined;
     const asked = JSON.stringify(before);
-    await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
+    await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved, rest) => {
       const items = writtenOf(saved);
       const now = promotionOf(items, record.workflow, record.digest);
       if (!still(now, items)) {
@@ -542,7 +572,11 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
         return items;
       }
       out = { record: kept, won: true };
-      return skip?.unread ? [...items, kept] : trimPromotions([...items, kept], skip);
+      if (skip?.unread) return [...items, kept];
+      const all = [...items, kept];
+      const trimmed = trimPromotions(all, skip);
+      const droppedAt = droppedAtAfter(rest.dropped_at, all.filter((one) => !trimmed.includes(one)));
+      return { items: trimmed, rest: droppedAt === undefined ? rest : { ...rest, dropped_at: droppedAt } };
     });
     if (out) return out;
   }

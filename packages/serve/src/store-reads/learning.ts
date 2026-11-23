@@ -26,7 +26,7 @@ import { KINDS } from "../runner/journal-kinds.js";
 import type { LoopRow } from "../learned-nodes.js";
 import { promotedOf, sinceReset } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
-import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf, type Refused, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
+import { championOf, checkShares, gradesOf, gradeView, promotionFeedOf, type PromotionRecord, promotionsOf, type Refused, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -263,14 +263,14 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
-  const promotions = await promotionsOf(store.settings, agentId);
+  const { records: promotions, droppedAt } = await promotionFeedOf(store.settings, agentId);
   const skip = refused ? await refused(agentId, promotions) : undefined;
   const replay = servingReplayOf(promotions, runs, skip);
   // The owner's bill: booked $, every run of the series (billOf), from the series' first run on a served path (the
   // summary's takeover: read from the run rows by their place, as the promotion feed is trimmed and its oldest record need
   // not be the first promotion), and each revision's compile and check over the served runs that carry it: runs on no
   // named disk alone, as a run on one learns nothing and serves nothing (learn/learning-of.ts).
-  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId), skip);
+  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId), skip, droppedAt);
   const summary = costSummary(runs, replay);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
@@ -308,21 +308,22 @@ const revisionOfRow = (row: Pick<LedgerRow, "metrics">): { workflow: string; dig
  *  drafted (`digest`, null when every draft failed its checks, or the turn was stopped or capped before a draft was kept,
  *  so it drafted none; `workflow` null for the latter, which kept no draft's name) and what its turn spent (`usd`, the
  *  round's `look_back_usd`: the step's only model turn is its compile turn, so that one figure is the compile's; null when
- *  unknown). */
-export type CompileSpend = { readonly workflow: string | null; readonly digest: string | null; readonly usd: number | null };
+ *  unknown), and when (`at`, its run's start, epoch ms: the turn ran at its run's end, never before it). */
+export type CompileSpend = { readonly workflow: string | null; readonly digest: string | null; readonly usd: number | null; readonly at: number };
 
-/** The compile turns run `runId`'s rounds asked, oldest first: none for a run that compiled nothing (a round whose step
- *  asked no model turn keeps `look_back_usd` 0, or none at all). */
-async function compilesOf(store: Pick<RunRecords, "learning">, runId: string): Promise<CompileSpend[]> {
-  return (await roundsOf(store, runId)).flatMap((kept): CompileSpend[] => {
+/** The compile turns `run`'s rounds asked, oldest first: none for a run that compiled nothing (a round whose step asked no
+ *  model turn keeps `look_back_usd` 0, or none at all). */
+async function compilesOf(store: Pick<RunRecords, "learning">, run: Pick<RunRecord, "id" | "startedAt">): Promise<CompileSpend[]> {
+  const at = run.startedAt;
+  return (await roundsOf(store, run.id)).flatMap((kept): CompileSpend[] => {
     const row = (kept.proposal ?? {}) as KeptRow;
     const { compiled, draft_errors } = compiledOf(row);
     const usd = "look_back_usd" in row ? usdOrNull(row.look_back_usd) : 0;
     // A compile turn that kept no draft (the cap stopped it, or a stop, a fault or an unreadable refuse list ended the step
     // after an earlier claim asked it: runner/reflect-hook.ts `unasked`) spent with no revision to serve: its spend is
     // unattributed, never its run's.
-    if (!compiled) return usd === 0 ? [] : [{ workflow: null, digest: null, usd }];
-    return [{ workflow: compiled.workflow, digest: compiled.digest && !draft_errors?.length ? compiled.digest : null, usd }];
+    if (!compiled) return usd === 0 ? [] : [{ workflow: null, digest: null, usd, at }];
+    return [{ workflow: compiled.workflow, digest: compiled.digest && !draft_errors?.length ? compiled.digest : null, usd, at }];
   });
 }
 
@@ -345,15 +346,15 @@ function allInV2Of(run: Pick<CostRun, "run_id" | "cost_usd" | "learning_usd">, c
 
 /** The agent's revision ledger (revisionLedgerOf) over `listed` (its runs, as runs.list read them): its ended runs that do
  *  a job or check one (no shadow, no imported or archived run), and the compile turns their rounds asked, by run. */
-async function agentLedgerOf(records: RunRecords, promotions: readonly PromotionRecord[], listed: readonly RunRecord[], reset: readonly ResetRevision[], refused?: Refused): Promise<ReturnType<typeof revisionLedgerOf> & { compiles: Map<string, CompileSpend[]> }> {
+async function agentLedgerOf(records: RunRecords, promotions: readonly PromotionRecord[], listed: readonly RunRecord[], reset: readonly ResetRevision[], refused?: Refused, droppedAt?: number): Promise<ReturnType<typeof revisionLedgerOf> & { compiles: Map<string, CompileSpend[]> }> {
   const rows = listed.filter((one) => FINAL_STATES.includes(one.state) && !one.importedFrom && one.archivedAt === null && !isShadowRun(one.id));
   const compiles = new Map<string, CompileSpend[]>();
   // Oldest first: a drafted revision's row is placed by its compile (revisionLedgerOf).
   for (const row of [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1))) {
-    const asked = await compilesOf(records, row.id);
+    const asked = await compilesOf(records, row);
     if (asked.length) compiles.set(row.id, asked);
   }
-  return { ...revisionLedgerOf(promotions, rows, [...compiles.values()].flat(), reset, refused), compiles };
+  return { ...revisionLedgerOf(promotions, rows, [...compiles.values()].flat(), reset, refused, droppedAt), compiles };
 }
 
 /** Each revision of the agent's learned workflows (one per workflow and digest its promotion records name, in the order
@@ -370,8 +371,9 @@ async function agentLedgerOf(records: RunRecords, promotions: readonly Promotion
  *  gate's), so a purged run's revision is never said to serve. A revision a compile drafted that no record names yet, and
  *  that no run ran (its check has not started), is one too, last, `drafted`, in compile order, at K its workflow's newest
  *  checked record's compile_after (else the default): its compile is its own from the turn that drafted it, and once its
- *  check starts its record names it instead (one row, the same compile). */
-export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = [], reset: readonly ResetRevision[] = [], refused?: Refused): ReturnType<typeof amortize> {
+ *  check starts its record names it instead (one row, the same compile). Once a trim has dropped records (`droppedAt`,
+ *  the newest dropped one's `at`: learn/promote.ts promotionFeedOf), only a compile whose run started after it is. */
+export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = [], reset: readonly ResetRevision[] = [], refused?: Refused, droppedAt?: number): ReturnType<typeof amortize> {
   const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const newest = new Map<string, PromotionRecord>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, record);
@@ -387,10 +389,12 @@ export function revisionLedgerOf(records: readonly PromotionRecord[], rows: read
   // A revision a compile drafted that no record names and no run ran: its check has not started (a later claim of a run
   // it fits starts it, or none ever does: the spend is off, a newer revision replaced it, a rival's check holds the
   // workflow). Its compile is its own still, never the unnamed rest. A revision a run ran with no record left (a replay
-  // or a served run of it) had its records age out of the kept feed: its spend stays the bill's unattributed.
+  // or a served run of it) had its records age out of the kept feed: its spend stays the bill's unattributed. So may one
+  // no run ran (a stop with nothing to check it on runs no replay): a compile at or before the newest record a trim
+  // dropped (`droppedAt`) may have drafted a revision whose records it dropped, so only one after it is drafted.
   const drafted = new Map<string, { workflow: string; digest: string }>();
   for (const one of compiles) {
-    if (one.workflow === null || one.digest === null) continue;
+    if (one.workflow === null || one.digest === null || (droppedAt !== undefined && !(one.at > droppedAt))) continue;
     const { workflow, digest } = one as { workflow: string; digest: string };
     const key = `${workflow}\0${digest}`;
     if (!named.has(key) && !drafted.has(key) && !ordered.some((row) => ran(row, workflow, digest))) drafted.set(key, { workflow, digest });
@@ -434,12 +438,12 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
   if (path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run)) {
     // Over the agent's runs on no named disk, as the cost page's ledger reads (learn/learning-of.ts).
     const listed = (await store.runs.list({ agentId: run.agentId, disk: null })).filter((one) => one.agentId === run.agentId);
-    const promotions = await promotionsOf(store.settings, run.agentId);
+    const { records: promotions, droppedAt } = await promotionFeedOf(store.settings, run.agentId);
     const skip = refused ? await refused(run.agentId, promotions) : undefined;
-    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), promotions, listed, await resetLedgerOf(store.settings, run.agentId), skip)).shares;
+    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), promotions, listed, await resetLedgerOf(store.settings, run.agentId), skip, droppedAt)).shares;
   }
   const figures = { run_id: run.id, ...cost };
-  const compiles = await compilesOf(store, run.id);
+  const compiles = await compilesOf(store, run);
   return { path, usd: cost.cost_usd, learning_usd: learningV2Of(figures, compiles, shares), all_in_usd: allInV2Of(figures, compiles, shares) };
 }
 
