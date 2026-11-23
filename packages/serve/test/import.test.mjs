@@ -1270,6 +1270,47 @@ test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens
   assert.equal((await storedMetrics(store, runs[1].id)).costUsdEst, undefined);
 });
 
+/** Session `n` copied from the Copilot session at `file` (a fork, or a session resumed into a file of its own): a start of
+ *  its own, every other event of the first under its own id, its last message again under a new event id, then a process
+ *  of its own: a prompt, an answer and the shutdown of that process alone (50 in, 6 out). */
+function copilotCopied(file, n) {
+  const [start, ...rest] = readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  const id = sessionId(n);
+  const model = start.data.selectedModel;
+  const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: `${id}-e${i - 1}`, timestamp: minute(i) });
+  const last = rest.findLast((r) => r.type === "assistant.message");
+  return writeSession(join(dirname(dirname(file)), id, "events.jsonl"), [
+    { ...start, id: `${id}-e0`, data: { ...start.data, sessionId: id } },
+    ...rest,
+    { ...last, id: `${id}-again` },
+    ev(20, "session.resume", { resumeTime: minute(20), eventCount: rest.length + 2 }),
+    ev(21, "user.message", { content: "And the tests?" }),
+    ev(22, "assistant.message", { messageId: `${id}-m1`, model, content: "They pass." }),
+    ev(23, "session.shutdown", { shutdownType: "routine", totalApiDurationMs: 1000, modelMetrics: { [model]: { requests: { count: 1, cost: 1 }, usage: { inputTokens: 50, outputTokens: 6, cacheReadTokens: 0, cacheWriteTokens: 0 } } } }),
+  ]);
+}
+
+test("a Copilot session a later file copies (a fork's, a resumed session's) counts once when a later import finds the copy: the run held already keeps its events', its chunks' and its shutdown's ids", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  const original = copilotSession(home, project, 47, { chunked: true });
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  const first = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(47));
+  assert.deepEqual((({ requests, input, output }) => [requests, input, output])(await storedMetrics(store, first.id)), [2, 300, 60], "the first run's own");
+  copilotCopied(original, 48);
+  await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
+  const later = (await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(48));
+  const counted = await storedMetrics(store, later.id);
+  assert.deepEqual([counted.requests, counted.input, counted.cacheRead, counted.cacheWrite, counted.output, counted.tools], [1, 50, 0, 0, 6, {}], "its own request and its own process's tokens: none of the copy's");
+  assert.deepEqual((await entriesOf(store, later.id)).map((e) => e.kind), ["pi.user", "pi.assistant"], "no copied prompt, chunk or result in its transcript");
+});
+
 test("a session whose source gives no counts imports its requests as unmetered, never as 0 tokens; a Codex request still ends at its call's result", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => {
     claudeSession(home, project, 35, { usage: false });

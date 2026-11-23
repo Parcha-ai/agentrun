@@ -23,14 +23,16 @@
 // a response split into chunks (each chunk a message of its own, chunkIndex > 0 after the first) joins the request of
 // its first chunk, its apiCallId the same. A shutdown read already in another file (a copied session) adds no tokens,
 // but moves what this file has counted, so its next whole total adds only its own. A record marked checkpoint (a
-// rotated journal's copy of its archive) is a copy: read for the session's id, folder and model alone. events.N.jsonl archives, which a CLI writes only
-// when COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES is set, are not read; history-session-state, the format before 0.0.342,
-// neither.
+// rotated journal's copy of its archive) is a copy: read for the session's id, folder and model alone. Each turn keeps
+// the ids it was read by (`uuids` its events', a request's `keys` its later chunks' messageIds, a shutdown's on the
+// requests it fed), so that a later import of a copy, handed them as seen, counts the copy as one import of both would.
+// events.N.jsonl archives, which a CLI writes only when COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES is set, are not read;
+// history-session-state, the format before 0.0.342, neither.
 import { basename, dirname, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries } from "../reader.js";
 import { argsOf, effortOf, isObject, str } from "../text.js";
-import type { Answer, ToolCall, Usage } from "../types.js";
+import type { Answer, ToolCall, Turn, Usage } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 /** `segment`: the requests (indexes into the state's answers) since the process started or resumed the session; `open`,
@@ -52,15 +54,21 @@ const plus = (a: Usage, b: Usage | undefined) => combine(a, b, (x, y) => x + y);
 const none = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const less = (a: Usage, b: Usage | undefined) => combine(a, b, (x, y) => Math.max(0, x - y));
 const most = (a: Usage, b: Usage | undefined) => combine(a, b, Math.max);
+/** `turn` read by the event `id` too (Turn.uuids). */
+const mark = (turn: Turn, id: string | undefined): void => {
+  if (id && !turn.uuids?.includes(id)) turn.uuids = [...(turn.uuids ?? []), id];
+};
 
 /** Whether a user message is the person's: not a subagent's prompt, nor one the CLI or an agent wrote in the user role
  *  (autopilot's continuation, a skill's injection, an inter-agent prompt). */
 const persons = (value: Record<string, unknown>, data: Record<string, unknown>): boolean =>
   value.agentId === undefined && data.isAutopilotContinuation !== true && data.agentAuthored !== true && !/^(?:agent|skill)-/.test(str(data.source) ?? "");
 
-/** A shutdown's tokens, on its process's requests. A `copy` (its event read already, in another file) adds none: it only
- *  moves what this file has counted, so that a later shutdown holding the whole total adds only its own. */
-function shutdown(data: Record<string, unknown>, at: number, { state, add }: ReadContext<Own>, copy = false): void {
+/** A shutdown's tokens, on its process's requests, each request it fed read by its event `id` too. A `copy` (its event
+ *  read already, in another file) adds none: it only moves what this file has counted, so that a later shutdown holding
+ *  the whole total adds only its own. One that fed none adds nothing when read again (its zeros, or no more than this
+ *  file has counted): its id is kept nowhere. */
+function shutdown(data: Record<string, unknown>, at: number, id: string | undefined, { state, add }: ReadContext<Own>, copy = false): void {
   const { own } = state;
   if (data.shutdownType === "error" && !copy) state.session.state = "failed";
   // The session's whole total, where the CLI kept its accounting across processes; else this process's alone.
@@ -82,6 +90,7 @@ function shutdown(data: Record<string, unknown>, at: number, { state, add }: Rea
     const turn = state.answers[index]!;
     turn.usage = turn.usage ? plus(turn.usage, usage) : usage;
     delete turn.folded;
+    mark(turn, id);
     // The model's other requests in this process: their tokens are in the carrier's, so theirs are known zeros.
     for (const i of own.segment) {
       const other = state.answers[i]!;
@@ -113,7 +122,7 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
   const id = str(value.id);
   if (id) {
     if (seen.has(`u:${id}`)) {
-      if (type === "session.shutdown") shutdown(data, at, context, true);
+      if (type === "session.shutdown") shutdown(data, at, id, context, true);
       return false;
     }
     seen.add(`u:${id}`);
@@ -123,8 +132,9 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
     own.open = own.call = undefined;
   } else if (type === "user.message") {
     const text = typeof data.content === "string" ? data.content : "";
-    if (persons(value, data)) add({ role: "user", text, at });
-    else if (keep) add({ role: "note", author: "copilot", text, at });
+    const ids = id ? { uuids: [id] } : {};
+    if (persons(value, data)) add({ role: "user", text, at, ...ids });
+    else if (keep) add({ role: "note", author: "copilot", text, at, ...ids });
   } else if (type === "assistant.message") {
     const requests = Array.isArray(data.toolRequests) ? data.toolRequests.filter(isObject) : [];
     const calls: ToolCall[] = requests.map((call) => {
@@ -146,13 +156,15 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
     if (joined) {
       if (text) joined.text = [joined.text, text].filter(Boolean).join("\n");
       joined.calls.push(...calls);
+      mark(joined, id);
+      if (key) joined.keys = [...(joined.keys ?? []), key];
       return;
     }
     const model = str(data.model) ? modelOf(data.model as string) : session.model;
     // The session's model is its main agent's: a subagent's runs under it.
     if (model && value.agentId === undefined) session.model = model;
     session.state = "completed";
-    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(model ? { model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
+    const turn: Answer = { role: "assistant", text, calls, at, ...(id ? { uuids: [id] } : {}), ...(key ? { key } : {}), ...(model ? { model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
     add(turn);
     own.open = state.answers.length - 1;
     own.call = apiCall;
@@ -163,10 +175,10 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
     const callId = String(data.toolCallId ?? "");
     const output = isObject(data.result) && typeof data.result.content === "string" ? data.result.content : isObject(data.error) ? (str(data.error.message) ?? "") : "";
     // Without turns, no output text: the result is kept for whether it failed, in the result and the cursor alike.
-    add({ role: "toolResult", callId, name: names.get(callId) ?? "", text: keep ? output : "", isError: data.success === false, at });
+    add({ role: "toolResult", callId, name: names.get(callId) ?? "", text: keep ? output : "", isError: data.success === false, at, ...(id ? { uuids: [id] } : {}) });
   } else if (type === "abort") session.state = "stopped";
   else if (type === "session.error") session.state = "failed";
-  else if (type === "session.shutdown") shutdown(data, at, context);
+  else if (type === "session.shutdown") shutdown(data, at, id, context);
 }
 
 /** A Copilot session file's id from its path: its folder's name (session-state/<id>/events.jsonl), else the older

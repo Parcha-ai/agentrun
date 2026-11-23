@@ -28,6 +28,9 @@ export type Turn = (
       at: number;
       costUsd?: number;
       key?: string;
+      /** The source's own ids of the request's later parts, each a key of its own (Copilot's later chunks of a split
+       *  response, each a message with its own messageId): a later import counts them once too. */
+      keys?: string[];
       model?: string;
       effort?: string;
       usage?: Usage;

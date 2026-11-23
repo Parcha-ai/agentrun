@@ -704,22 +704,25 @@ function merged(parts: readonly Session[]): Session {
 const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
 
 /** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
- *  already (each answer's response id and each entry's record ids, as its transcript keeps them), then each file's as it
- *  is read. */
+ *  already (each answer's response id and its later parts', and each entry's record ids, as its transcript keeps them:
+ *  Claude Code's and Copilot's), then each file's as it is read. */
 async function seenIn(store: ImportStore | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
   const bySource = new Map<Source, Set<string>>();
   const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
   if (!store || !(await store.agents.get(agentId))) return seen;
   for (const run of await store.runs.list({ agentId })) {
-    if (run.importedFrom?.source !== "claude-code") continue;
+    const source = run.importedFrom?.source;
+    if (source !== "claude-code" && source !== "copilot") continue;
+    const into = seen(source);
     for (const entry of (await journalEntries(store.readJournal(run.id), ctx)) as unknown as EntryLike[]) {
       const id = (entry.model?.[0] as { responseId?: unknown } | undefined)?.responseId;
-      if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+      if (typeof id === "string" && id) into.add(`m:${id}`);
       // A run imported before a request's key held its request id (message id:request id) keeps the bare message id:
       // the reader matches it against a request's message id alone.
-      if (typeof id === "string" && id && !id.includes(":")) seen("claude-code").add(`l:${id}`);
-      const uuids = (entry.data as { record_uuids?: unknown } | undefined)?.record_uuids;
-      if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
+      if (source === "claude-code" && typeof id === "string" && id && !id.includes(":")) into.add(`l:${id}`);
+      const { record_uuids: uuids, record_keys: keys } = (entry.data ?? {}) as { record_uuids?: unknown; record_keys?: unknown };
+      if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") into.add(`u:${uuid}`);
+      if (Array.isArray(keys)) for (const key of keys) if (typeof key === "string" && key) into.add(`m:${key}`);
     }
   }
   return seen;
@@ -918,11 +921,12 @@ export async function projectFiles(
   return { instructions, skills };
 }
 
-/** A turn's transcript entry, with the source's ids of the records it was read from (`record_uuids`): a later import counts
- *  a copy of them once. */
+/** A turn's transcript entry, with the source's ids of the records it was read from (`record_uuids`) and of a request's
+ *  later parts (`record_keys`, Turn.keys): a later import counts a copy of them once. */
 const message = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {
   const written = entryOf(turn, model);
-  return turn.uuids?.length ? { ...written, data: { ...(written.data as object | undefined), record_uuids: turn.uuids } } : written;
+  const ids = { ...(turn.uuids?.length ? { record_uuids: turn.uuids } : {}), ...(turn.role === "assistant" && turn.keys?.length ? { record_keys: turn.keys } : {}) };
+  return Object.keys(ids).length ? { ...written, data: { ...(written.data as object | undefined), ...ids } } : written;
 };
 
 const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEntry; model: unknown; data?: unknown } => {

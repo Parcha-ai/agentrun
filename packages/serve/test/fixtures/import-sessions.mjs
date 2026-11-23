@@ -452,7 +452,7 @@ export function piSession(home, cwd, n, { prompt = "Read the notes.", output = "
 /** A Copilot CLI session in `cwd`, as the CLI writes ~/.copilot/session-state/<id>/events.jsonl: a question, a bash call
  *  and its output, an answer, and the shutdown the process writes as it exits. Copilot writes no request's tokens: the
  *  shutdown holds each model's for the process (its input holding the cache read and write), unless `shutdown: false`. */
-export function copilotSession(home, cwd, n, { prompt = "Check the build.", output = "build ok", model = "claude-sonnet-5", shutdown = true } = {}) {
+export function copilotSession(home, cwd, n, { prompt = "Check the build.", output = "build ok", model = "claude-sonnet-5", shutdown = true, chunked = false } = {}) {
   const id = sessionId(n);
   const ev = (i, type, data) => ({ type, data, id: `${id}-e${i}`, parentId: i ? `${id}-e${i - 1}` : null, timestamp: at(i) });
   const records = [
@@ -461,9 +461,15 @@ export function copilotSession(home, cwd, n, { prompt = "Check the build.", outp
     ev(2, "assistant.message", { messageId: `${id}-m1`, model, content: "", toolRequests: [{ toolCallId: "call_1", name: "bash", arguments: { command: "npm run build" } }] }),
     ev(3, "tool.execution_start", { toolCallId: "call_1", toolName: "bash", arguments: { command: "npm run build" } }),
     ev(4, "tool.execution_complete", { toolCallId: "call_1", success: true, result: { content: output } }),
-    ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: `The build says: ${output}.` }),
+    // `chunked`: the answer split in two messages of one model call (its chunks), each with a messageId of its own.
+    ...(chunked
+      ? [
+          ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: "The build says:", apiCallId: `${id}-call2`, chunkIndex: 0, chunkCount: 2 }),
+          ev(6, "assistant.message", { messageId: `${id}-m3`, model, content: `${output}.`, apiCallId: `${id}-call2`, chunkIndex: 1, chunkCount: 2 }),
+        ]
+      : [ev(5, "assistant.message", { messageId: `${id}-m2`, model, content: `The build says: ${output}.` })]),
     ...(shutdown
-      ? [ev(6, "session.shutdown", { shutdownType: "routine", totalPremiumRequests: 1, totalApiDurationMs: 4000, sessionStartTime: Date.parse(at(0)), codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: { [model]: { requests: { count: 2, cost: 1 }, usage: { inputTokens: 1500, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 200, reasoningTokens: 10 } } } })]
+      ? [ev(chunked ? 7 : 6, "session.shutdown", { shutdownType: "routine", totalPremiumRequests: 1, totalApiDurationMs: 4000, sessionStartTime: Date.parse(at(0)), codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] }, modelMetrics: { [model]: { requests: { count: 2, cost: 1 }, usage: { inputTokens: 1500, outputTokens: 60, cacheReadTokens: 1000, cacheWriteTokens: 200, reasoningTokens: 10 } } } })]
       : []),
   ];
   return writeSession(join(home, ".copilot", "session-state", id, "events.jsonl"), records);

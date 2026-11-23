@@ -228,6 +228,33 @@ test("Copilot CLI: each chunk's messageId counts once: a chunk repeated under a 
   assert.equal(both.reduce((n, line) => n + line.calls, 0), one.calls, "the copy adds no request");
 });
 
+test("Copilot CLI: a session's turns keep the ids it was read by (each event's, a split response's later chunks' messageIds, the shutdown's on the request it fed): a later read handed them as seen counts a copy of the session once, as one import of both does", async (t) => {
+  const home = await tempHome(t);
+  const chunks = [
+    answer(2, "msg-2", "First part.", { apiCallId: "api-1", chunkIndex: 0, chunkCount: 2 }),
+    answer(3, "msg-3", "Second part.", { apiCallId: "api-1", chunkIndex: 1, chunkCount: 2 }),
+  ];
+  const head = [user(1, "Fixture question."), ...chunks, ev(4, "session.usage_checkpoint", { totalNanoAiu: 10 }), shutdown(5, { "claude-sonnet-4.5": metric(100, 10) }, { usageAccountingWatermarks: { main: 4 } })];
+  const original = await writeJsonl(copilotFile(home), [start(0), ...head]);
+  // The copy: the same events (the same ids), a chunk again under a new event id, then a process of its own whose
+  // shutdown holds the whole total, 150.
+  const copyId = "00000000-0000-4000-8000-0000000000c1";
+  const copy = await writeJsonl(copilotFile(home, copyId), [{ ...start(0, copyId), id: "c0" }, ...head, { ...chunks[1], id: "c3" }, ev(6, "session.resume", { resumeTime: at(6), eventCount: 6 }), user(7, "Next."), answer(8, "msg-9", "Two."), shutdown(9, { "claude-sonnet-4.5": metric(150, 15) }, { usageAccountingWatermarks: { main: 8 } })]);
+  const counts = (session) => {
+    const requests = session.turns.filter((turn) => turn.role === "assistant");
+    return { users: session.users, requests: requests.map((r) => r.key), input: requests.reduce((n, r) => n + (r.usage?.input ?? 0), 0), output: requests.reduce((n, r) => n + (r.usage?.output ?? 0), 0) };
+  };
+  // One import of both: the copy keeps its own alone.
+  const shared = new Set();
+  const first = await readSession(original, "copilot", { seen: shared });
+  assert.deepEqual(counts(await readSession(copy, "copilot", { seen: shared })), { users: 1, requests: ["msg-9"], input: 50, output: 5 });
+  // A later import, handed what a store keeps of the first (each turn's ids, each request's key and later chunks'), counts the copy the same.
+  const restored = new Set(first.turns.flatMap((turn) => [...(turn.uuids ?? []).map((id) => `u:${id}`), ...(turn.role === "assistant" ? [turn.key, ...(turn.keys ?? [])].filter(Boolean).map((key) => `m:${key}`) : [])]));
+  assert.deepEqual(counts(await readSession(copy, "copilot", { seen: restored })), { users: 1, requests: ["msg-9"], input: 50, output: 5 });
+  // What the first read's turns keep: each its events' ids, the request its later chunk's messageId and the shutdown's id.
+  assert.deepEqual(first.turns.map((turn) => [turn.role, turn.uuids ?? null, turn.keys ?? null]), [["user", ["e1"], null], ["assistant", ["e2", "e3", "e5"], ["msg-3"]]]);
+});
+
 test("Copilot CLI: turns false keeps no answer text, tool output, arguments or later prompt in requests or the cursor", async (t) => {
   const home = await tempHome(t);
   const WORDS = "Fixture answer words, never kept.";
