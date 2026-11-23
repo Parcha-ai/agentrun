@@ -55,6 +55,22 @@ describe("the run header's model", () => {
     const gateway = await header({ run: run(2), readUsage: async () => usage(tokens("gpt-6-luna", null, 2)) });
     expect(gateway.querySelector("[data-run-model]")?.textContent).toBe("gpt-6-luna");
   });
+  it("reads again when the run ends: a read while it works can find no lines yet, and the end brings no new request", async () => {
+    const working = { status: "working", state: "working", ended_at: null } as Partial<Run>;
+    const readUsage = vi.fn(async () => ({ ...usage(), lines: null }) as unknown as RunUsage);
+    const host = await header({ run: run(3, working), readUsage });
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("[data-run-model]")).toBeNull();
+    readUsage.mockImplementation(async () => usage(tokens("qwen3:8b", "ollama", 3)));
+    act(() => root!.render(createElement(RunHeader, { agentName: "Release notes", run: run(3), readUsage })));
+    await settle();
+    expect(readUsage).toHaveBeenCalledTimes(2);
+    expect(host.querySelector("[data-run-model]")?.textContent).toBe("qwen3:8b · local (Ollama)");
+  });
+  it("sums a model's requests across its lines (one per attempt) before it takes the most", async () => {
+    const host = await header({ run: run(9), readUsage: async () => usage(tokens("qwen3:8b", "ollama", 2), tokens("qwen3:8b", "ollama", 2), tokens("qwen3:0.6b", "ollama", 3), tokens("qwen3:8b", "ollama", 2)) });
+    expect(host.querySelector("[data-run-model]")?.textContent).toBe("qwen3:8b · local (Ollama)");
+  });
   it("asks nothing before the run's first request, and nothing of a workflow run", async () => {
     const readUsage = vi.fn(async () => usage(tokens("qwen3:8b", "ollama", 1)));
     const host = await header({ run: run(0, { status: "working", state: "working", ended_at: null } as Partial<Run>), readUsage });

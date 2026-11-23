@@ -20,12 +20,19 @@ const LOCAL_PROVIDER = "ollama";
 const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
 
 /** The model a run ran on, as the server booked it (GET /v2/runs/{id}/usage, its `tokens` lines): the one most of its
- *  requests went to (a side call's or a subagent's model aside), as `provider/model` where the server routed it itself
- *  (`ollama/qwen3:8b`), else the id as booked (behind a gateway, which names no provider). Undefined before any request. */
+ *  requests went to (a side call's or a subagent's model aside), its lines summed first (the server books one per
+ *  attempt), as `provider/model` where the server routed it itself (`ollama/qwen3:8b`), else the id as booked (behind a
+ *  gateway, which names no provider). Undefined before any request. */
 export function runModel(usage: Pick<RunUsage, "lines"> | undefined): string | undefined {
-  let top: NonNullable<RunUsage["lines"]>[number] | undefined;
-  for (const line of usage?.lines ?? []) if (line.meter === "tokens" && line.model && (line.requests ?? 0) > (top?.requests ?? 0)) top = line;
-  return top ? (top.provider ? `${top.provider}/${top.model}` : top.model!) : undefined;
+  const requests = new Map<string, number>();
+  for (const line of usage?.lines ?? []) {
+    if (line.meter !== "tokens" || !line.model) continue;
+    const id = line.provider ? `${line.provider}/${line.model}` : line.model;
+    requests.set(id, (requests.get(id) ?? 0) + (line.requests ?? 0));
+  }
+  let top: string | undefined;
+  for (const [id, count] of requests) if (count > (top === undefined ? 0 : requests.get(top)!)) top = id;
+  return top;
 }
 
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with

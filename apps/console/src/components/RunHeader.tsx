@@ -60,7 +60,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, 
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
-  const model = useRunModel(run, readUsage, !sdk && !cli && run.kind !== "workflow");
+  const model = useRunModel(run, readUsage, !sdk && !cli && run.kind !== "workflow", view.final);
   const raisable = !sdk && !cli && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
@@ -153,13 +153,14 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, 
   );
 }
 
-/** The model `run` ran on (runModel), read with `read` once it has made a request and again each time its count grows;
- *  undefined before that, where `on` is false (a workflow's, a CLI's or an SDK's run, which say theirs elsewhere), and
- *  where the read fails. */
-function useRunModel(run: Run, read: (() => Promise<RunUsage>) | undefined, on: boolean): string | undefined {
+/** The model `run` ran on (runModel), read with `read` once it has made a request, again each time its count grows and once
+ *  more when it ends (`final`); undefined before that, where `on` is false (a workflow's, a CLI's or an SDK's run, which
+ *  say theirs elsewhere), and where the read fails. */
+function useRunModel(run: Run, read: (() => Promise<RunUsage>) | undefined, on: boolean, final: boolean): string | undefined {
   const [model, setModel] = useState<string>();
   const requests = run.cost?.tokens?.requests ?? 0;
-  // The page makes a new `read` at each render: the latest is kept, and only a new run or request count reads again.
+  // The page makes a new `read` at each render: the latest is kept, and only a new run or request count reads again, or
+  // the run's end (`final`): a read while it works can find no lines yet, and the end brings no new request.
   const reader = useRef(read);
   reader.current = read;
   useEffect(() => {
@@ -167,6 +168,6 @@ function useRunModel(run: Run, read: (() => Promise<RunUsage>) | undefined, on: 
     let live = true;
     reader.current().then((usage) => { if (live) setModel(runModel(usage)); }, () => {});
     return () => { live = false; };
-  }, [run.run_id, requests, on]);
+  }, [run.run_id, requests, on, final]);
   return on ? model : undefined;
 }
