@@ -11,7 +11,7 @@
 // Stand-in CLIs note what they were started with beside themselves.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -23,9 +23,11 @@ let n = 0;
 const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const FOLDER_VARS = ['CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR'];
 
-/** A stand-in CLI that writes its arguments and environment to seen.json beside itself and answers a signed-out status. */
-function fakeCli() {
-  const dir = scratch();
+/** A stand-in CLI that writes its arguments and environment to seen.json beside itself and answers a signed-out status.
+ *  `sub`: a folder of that name it is kept in. */
+function fakeCli(sub) {
+  const dir = sub ? join(scratch(), sub) : scratch();
+  mkdirSync(dir, { recursive: true });
   const cli = join(dir, 'claude');
   const seen = join(dir, 'seen.json');
   writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
@@ -85,8 +87,8 @@ test("this machine's login on the CLI's default folder: the status check, the si
   assert.deepEqual(folderVars(signIn), { ANTHROPIC_CONFIG_DIR: login.profiles });
   assert.equal(signIn.HOME, home);
   assert.deepEqual(shown, { ANTHROPIC_CONFIG_DIR: login.profiles });
-  // The line clears both folder variables, which a person's terminal may export.
-  assert.equal(line, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
+  // The line clears both folder variables, which a person's terminal may export, in a subshell of that terminal's shell.
+  assert.equal(line, `(unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR; ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login)`);
 });
 
 test("the shown line on the CLI's default folder, run in a terminal that exports CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR, starts the CLI with neither, its profiles quoted whole", () => {
@@ -100,6 +102,47 @@ test("the shown line on the CLI's default folder, run in a terminal that exports
     const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' } });
     const seen = cli.seen();
     assert.ok(seen, `${shell} started the CLI: ${ran.stderr}`);
+    assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
+    assert.deepEqual(seen.argv, ['auth', 'login'], shell);
+  }
+});
+
+/** The shells the shown line is run in here: sh, bash and zsh, where this machine has them. */
+const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh'].filter((shell) => existsSync(shell));
+/** A terminal that exports both folder variables, with `path` as its PATH. */
+const terminal = (home, path) => ({ PATH: path, HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' });
+
+test("the shown line on the CLI's default folder starts a CLI kept in a folder whose name holds '=' (a data folder such as /srv/a=b), with neither folder variable", () => {
+  const home = scratch();
+  const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
+  assert.ok(SHELLS.length >= 1);
+  for (const shell of SHELLS) {
+    // env reads any word holding '=' as a variable, so a CLI there never starts under it; a shell reads it as the path.
+    const cli = fakeCli('a=b');
+    const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: terminal(home, process.env.PATH ?? '/usr/bin:/bin') });
+    const seen = cli.seen();
+    assert.ok(seen, `${shell} started the CLI in a folder named a=b: ${ran.stderr}`);
+    assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
+    assert.deepEqual(seen.argv, ['auth', 'login'], shell);
+  }
+});
+
+test("the shown line on the CLI's default folder runs in the person's own shell, never under env, so a `claude` alias there is the CLI it starts (the CLI's local install is one), with neither folder variable", () => {
+  const home = scratch();
+  const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
+  const line = claude.claudeLoginCommand(login);
+  assert.doesNotMatch(line, /(^|[\s;(])env\s/, 'no word of the line runs the CLI under env, which skips the shell\'s aliases and functions');
+  // A PATH with env on it and no claude: only the alias can start the CLI.
+  const bin = scratch();
+  symlinkSync(['/usr/bin/env', '/bin/env'].find((file) => existsSync(file)), join(bin, 'env'));
+  for (const shell of SHELLS) {
+    const cli = fakeCli();
+    // A terminal reads the line itself, so its aliases expand there, inside ( ) too; a shell run with -c expands them
+    // where told to (bash's expand_aliases; sh and zsh do by default).
+    const script = `alias claude='${cli.cli.replace(/'/g, `'\\''`)}'\n${line}`;
+    const ran = spawnSync(shell, [...(shell.endsWith('bash') ? ['-O', 'expand_aliases'] : []), '-c', script], { env: terminal(home, bin) });
+    const seen = cli.seen();
+    assert.ok(seen, `${shell} started the CLI its alias named claude: ${ran.stderr}`);
     assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
     assert.deepEqual(seen.argv, ['auth', 'login'], shell);
   }
