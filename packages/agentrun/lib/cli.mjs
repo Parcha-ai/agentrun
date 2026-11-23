@@ -6,8 +6,9 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
-// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
-// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// package folder) is export.mjs's, share (what sharing a run would send, shown with --dry-run) is share.mjs's, and
+// deploy (an agent's package sent to another AgentRun, with its lock, rollback and delete) is deploy.mjs's. Any other
+// word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -22,11 +23,12 @@ import { SKILL_INSTALL } from "./skill.mjs";
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
 import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_SIGN_IN } from "./harness.mjs";
 import { EXPORT } from "./export.mjs";
+import { SHARE } from "./share.mjs";
 import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from "./deploy.mjs";
 
 /** The hand-written commands that run as they are given (`run`), beside the table's. A command of one word that has
  *  verbs too (deploy) comes after them: `run` takes the first whose words match. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, SHARE, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -631,6 +633,18 @@ async function run(argv, env, io) {
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
   throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
+}
+
+/** `entry`, a hand-written command, run as main runs one of LOCAL: for a test whose entry is bound to what it injects
+ *  (share.mjs shareOf's opener). Its exit code, a refusal's message on stderr. */
+export async function runLocal(entry, argv, env, io) {
+  try {
+    return await local(entry, argv, env, io);
+  } catch (error) {
+    if (!(error instanceof Exit)) throw error;
+    io.stderr.write(`${error.message}\n`);
+    return error.code;
+  }
 }
 
 export async function main(argv, env = process.env, io = process) {
