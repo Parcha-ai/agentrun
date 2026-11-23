@@ -459,6 +459,32 @@ describe("demo mode's writes", () => {
     expect((await v2.updateTrigger(made.id, { enabled: false })).next_at).toBeNull();
   });
 
+  it("puts two picked files of one name at free names, and never over the run's message", async () => {
+    const { v2 } = demo();
+    const pick = (text: string, name: string) => demoUpload(new File([text], name, { type: "text/markdown" }), () => {}, new AbortController().signal);
+    const ids = [(await pick("first", "notes.md")).file_id, (await pick("second", "notes.md")).file_id, (await pick("mine", "message.md")).file_id];
+    const { run } = await v2.startRun("support-triage", { input: { content: "Ticket: my parcel is late" }, file_ids: ids }, "k13");
+    expect(await v2.readFile(run.run_id, "inputs/notes.md")).toBe("first");
+    expect(await v2.readFile(run.run_id, "inputs/notes-2.md")).toBe("second");
+    expect(await v2.readFile(run.run_id, "inputs/message-2.md")).toBe("mine");
+    expect(await v2.readFile(run.run_id, "inputs/message.md")).toBe("Ticket: my parcel is late");
+  });
+
+  it("says a scan whose run was cancelled was cancelled, not completed", async () => {
+    const { v2, now } = demo();
+    const scan = await v2.scanRepository("larkspur/marketplace");
+    await v2.cancel(scan.run_id);
+    now.ms += 10_000;
+    expect((await v2.listSuggestions()).repositories[0].scan).toMatchObject({ run_id: scan.run_id, status: "cancelled", found: 0 });
+  });
+
+  it("starts each demo from the story as told: a change in one world is not the next one's", async () => {
+    const { v2 } = demo();
+    await v2.disconnectNative(AGENTS.find((a) => a.native)!.id);
+    const fresh = demo().v2;
+    expect((await fresh.getAgent(AGENTS.find((a) => a.native)!.id)).agent.native_status).toMatchObject({ connected: true });
+  });
+
   it("applies a template with the install form's choices: a model choice and its harness, and approvals", async () => {
     const { v2 } = demo();
     const chose = await v2.applyTemplate("kyb", { overrides: { choice: "codex", approvals: "never" } }, "k11");

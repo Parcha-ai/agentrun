@@ -58,7 +58,7 @@ export function demoCapabilities(real: Record<string, unknown>): Record<string, 
 /** The demo's `fetch`. `real`: the server's, for the three reads the demo leaves to it; `world`: the story's state. */
 export function createDemoFetch({ real, world = createWorld() }: { real: typeof fetch; world?: World }): typeof fetch {
   let templates: TemplateView[] | null = null;
-  const suggestions = createSuggestions({ opened: world.opened, clock: world.clock, makeAgent: (definition) => world.createAgent(definition), holdScan: world.holdScan });
+  const suggestions = createSuggestions({ opened: world.opened, clock: world.clock, makeAgent: (definition) => world.createAgent(definition), holdScan: world.holdScan, readRun: (id) => world.run(id) });
   const handle = async (method: string, path: string, q: URLSearchParams, body: Record<string, unknown>, init: RequestInit | undefined, input: RequestInfo | URL): Promise<Response> => {
     if (path.startsWith("/auth/")) return real(input, init);
     if (method === "GET" && path === "/capabilities") {

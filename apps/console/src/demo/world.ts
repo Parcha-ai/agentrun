@@ -96,7 +96,8 @@ export type World = ReturnType<typeof createWorld>;
 /** The demo's world, opened at `opened` (the story's "now"); `clock` says the present, which moves on from there. */
 export function createWorld({ opened = Date.now(), clock = () => Date.now() }: { opened?: number; clock?: () => number } = {}) {
   // The story's agents, and after them the ones made in the demo.
-  const list: DemoAgent[] = AGENTS.map((a) => ({ ...a }));
+  // A copy of each, nested parts too: what a person changes (a connection, a note) is this world's, never the story's.
+  const list: DemoAgent[] = structuredClone(AGENTS);
   const agents = new Map(list.map((a) => [a.id, a]));
   const held = new Map<string, Held>();
   const hold = (story: RunStory, start = opened - story.startAgo) => {
@@ -583,6 +584,18 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
 
   // ---- What a person does ----
 
+  /** Each picked file at a free name in the run's inputs/, as the server copies them in: a name taken already (the same
+   *  name twice, or message.md, which is the run's message) gets the next free suffix, `notes-2.md`. */
+  const placed = (files: RunInputFile[]): RunInputFile[] => {
+    const taken = new Set([INPUT_FILE.slice("inputs/".length)]);
+    const suffixed = (name: string, n: number) => { if (n === 1) return name; const dot = name.lastIndexOf("."); return dot > 0 ? `${name.slice(0, dot)}-${n}${name.slice(dot)}` : `${name}-${n}`; };
+    return files.map((f) => {
+      let n = 1;
+      while (taken.has(suffixed(f.path, n))) n++;
+      taken.add(suffixed(f.path, n));
+      return { ...f, path: suffixed(f.path, n) };
+    });
+  };
   let made = 0;
   /** Starts a run of `agentId` now, as a start from the playground or a trigger's Run now would: the agent's sample
    *  story, played live from this moment, opening with what was asked. */
@@ -596,7 +609,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const beats = sample.beats?.map((b, i) => (i === 0 && b.k === "user" ? { ...b, wait: 0, text: said ?? b.text } : b));
     const story: RunStory = { ...sample, id: `demo-run-now-${++made}`, title: said ? said.split("\n")[0].slice(0, 80) : sample.title, startAgo: 0, input: Object.keys(input).length ? input : sample.input, ...(beats ? { beats } : {}), answered: [], hero: undefined, trigger: by === "trigger" ? trigger : undefined };
     const h = hold(story, clock());
-    if (files.length) h.files = files;
+    if (files.length) h.files = placed(files);
     return viewOf(h);
   };
   /** Makes an agent from a definition, as the builder or the playground's create would: kept in this page's memory. */
@@ -637,7 +650,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   agents.set(SCANNER.id, SCANNER);
   let scanRuns = 0;
   /** A scan's run, from `start` for about `ms`: what the suggestions page links to as the scan's run. */
-  const holdScan = ({ repo, commit, start: at, ms, found }: { repo: string; commit: string; start: number; ms: number; found: { path: string; line: number; quote: string; title: string }[] }): { run_id: string; endsAt: number } => {
+  const holdScan = ({ repo, commit, start: at, ms, found }: { repo: string; commit: string; start: number; ms: number; found: { path: string; line: number; quote: string; title: string }[] }): { run_id: string } => {
     const step = Math.round(ms / 5);
     const said = `Scan ${repo} at ${commit.slice(0, 7)} for work an agent could take.`;
     const beats: Beat[] = [
@@ -649,7 +662,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     ];
     const id = `demo-run-scan-${++scanRuns}`;
     hold({ id, agent: SCANNER.id, title: `Scan ${repo}`, startAgo: 0, input: { content: said }, beats, usd: 0.0412 }, at);
-    return { run_id: id, endsAt: play(beats, { start: at, now: Number.MAX_SAFE_INTEGER }).lastAt };
+    return { run_id: id };
   };
 
   // ---- A person's other writes: each changes only this page's memory, as the server would have changed its store ----

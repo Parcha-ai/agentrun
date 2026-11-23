@@ -28,13 +28,15 @@ function field(text: string, min: number, max: number): Set<number> | null {
   return out;
 }
 
-/** The wall clock in `zone` at `ms`, as minutes, hours, day of the month, month and day of the week. */
-function wallIn(zone: string): (ms: number) => { minute: number; hour: number; day: number; month: number; weekday: number } {
+/** The wall clock in `zone` at an instant, as milliseconds since 1970 read as UTC (`new Date(wall).getUTCHours()` is the
+ *  zone's hour). */
+function wallIn(zone: string): (ms: number) => number {
+  const parts = { hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" } as const;
   let format: Intl.DateTimeFormat;
-  try { format = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }); } catch { format = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" }); }
+  try { format = new Intl.DateTimeFormat("en-US", { timeZone: zone, ...parts }); } catch { format = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", ...parts }); }
   // The zone's offset, read once an hour: the wall clock is the instant moved by it.
   const offsets = new Map<number, number>();
-  const offsetAt = (ms: number) => {
+  return (ms) => {
     const hour = Math.floor(ms / (60 * MINUTE));
     let o = offsets.get(hour);
     if (o === undefined) {
@@ -42,15 +44,13 @@ function wallIn(zone: string): (ms: number) => { minute: number; hour: number; d
       o = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute)) - Math.floor(ms / MINUTE) * MINUTE;
       offsets.set(hour, o);
     }
-    return o;
-  };
-  return (ms) => {
-    const t = new Date(ms + offsetAt(ms));
-    return { minute: t.getUTCMinutes(), hour: t.getUTCHours(), day: t.getUTCDate(), month: t.getUTCMonth() + 1, weekday: t.getUTCDay() };
+    return ms + o;
   };
 }
 
-/** The first minute after `after` a cron line names in `zone`, looked for over a year; null when it names none. */
+/** The first minute after `after` a cron line names in `zone`, looked for over a year; null when it names none. As the
+ *  server's scheduler reads a clock change: a time it repeats fires once, at its first pass; a time it skips fires at the
+ *  first time after the gap. */
 export function nextCron(cron: string, zone: string, after: number): number | null {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return null;
@@ -59,15 +59,28 @@ export function nextCron(cron: string, zone: string, after: number): number | nu
   if (weekdays.has(7)) weekdays.add(0);
   // As cron reads them: when both the day of the month and the day of the week are named, either one will do.
   const anyDay = parts[2] === "*", anyWeekday = parts[4] === "*";
-  const dayOk = (w: ReturnType<ReturnType<typeof wallIn>>) => (anyDay || anyWeekday ? days.has(w.day) && weekdays.has(w.weekday) : days.has(w.day) || weekdays.has(w.weekday));
-  const wall = wallIn(zone);
+  const dayOk = (w: Date) => (anyDay || anyWeekday ? days.has(w.getUTCDate()) && weekdays.has(w.getUTCDay()) : days.has(w.getUTCDate()) || weekdays.has(w.getUTCDay()));
+  const named = (wall: number) => { const w = new Date(wall); return months.has(w.getUTCMonth() + 1) && dayOk(w) && hours.has(w.getUTCHours()) && minutes.has(w.getUTCMinutes()); };
+  const wallOf = wallIn(zone);
   let t = (Math.floor(after / MINUTE) + 1) * MINUTE;
+  let prev: number | null = null;
   const until = after + 366 * 24 * 60 * MINUTE;
   while (t <= until) {
-    const w = wall(t);
-    if (!months.has(w.month) || !dayOk(w)) { t += ((23 - w.hour) * 60 + (60 - w.minute)) * MINUTE; continue; }
-    if (!hours.has(w.hour)) { t += (60 - w.minute) * MINUTE; continue; }
-    if (!minutes.has(w.minute)) { t += MINUTE; continue; }
+    const wall = wallOf(t);
+    // The clock jumped forward since the last instant looked at: a named time in the gap fires now, the first time after it.
+    if (prev !== null) {
+      const expected = wallOf(prev) + (t - prev);
+      for (let gap = expected; gap < wall; gap += MINUTE) if (named(gap)) return t;
+    }
+    prev = t;
+    const w = new Date(wall);
+    if (!months.has(w.getUTCMonth() + 1) || !dayOk(w)) { t += ((23 - w.getUTCHours()) * 60 + (60 - w.getUTCMinutes())) * MINUTE; continue; }
+    if (!hours.has(w.getUTCHours())) { t += (60 - w.getUTCMinutes()) * MINUTE; continue; }
+    if (!minutes.has(w.getUTCMinutes())) { t += MINUTE; continue; }
+    // The clock went back over this time: it fired at its first pass, so this second pass is not a firing.
+    const earlier = t - 2 * 60 * MINUTE;
+    const back = wallOf(earlier) - earlier - (wall - t);
+    if (back > 0 && wallOf(t - back) === wall) { t += MINUTE; continue; }
     return t;
   }
   return null;
