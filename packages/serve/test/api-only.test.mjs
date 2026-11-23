@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
@@ -282,6 +283,35 @@ test("an API-only server serves an inline-run agent's learning reads with the to
     const answer = await send(server, method, raw, method === "GET" ? {} : { body: method === "PUT" ? undefined : {}, headers: method === "PUT" ? { "content-type": "text/markdown" } : {} });
     assert.equal(answer.status, 404, `${method} ${raw}: ${JSON.stringify(answer.body)}`);
     assert.equal(answer.body.error?.message, `this server serves the run API only (AGENTRUN_API_ONLY=1): ${raw} is not served here`, `${method} ${raw} is the profile's refusal`);
+  }
+});
+
+test("an API-only server serves the saved MCP servers' names with the token, and nothing else of them; no token, or a wrong one, is 401", async (t) => {
+  const secret = "names-route-sealed-header-value-0001";
+  const upstream = await startFakeMcp({ token: secret });
+  t.after(() => upstream.close());
+  const whole = await serve(t, { runner: false });
+  const empty = await send(whole, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([empty.status, empty.body], [200, { names: [] }], "none saved: an empty list");
+  for (const name of ["mail-reader", "crm"]) {
+    const saved = await whole.api("PUT", `/settings/mcp-servers/${name}`, { url: upstream.url, auth: { type: "headers", headers: { authorization: `Bearer ${secret}` } } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  }
+  const listed = await send(whole, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([listed.status, listed.body], [200, { names: ["crm", "mail-reader"] }], "each saved server once, by name, sorted");
+  await whole.stop();
+
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+  const names = await send(server, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([names.status, names.body], [200, { names: ["crm", "mail-reader"] }], "the API-only server serves it");
+  const text = JSON.stringify(names.body);
+  for (const value of [secret, upstream.url, new URL(upstream.url).host, "headers", "authorization"]) assert.equal(text.includes(value), false, `the answer holds no ${value}`);
+  // Beside it, the full list (URLs, auth types, tools) stays refused on the API-only server.
+  assert.equal((await send(server, "GET", "/v2/settings/mcp-servers")).status, 404, "the full list is not served API-only");
+  for (const [options, why] of [[{ token: false }, "no token"], [{ token: false, headers: { authorization: `Bearer ${notSecret("token")}` } }, "a wrong token"]]) {
+    const refused = await send(server, "GET", "/v2/settings/mcp-server-names", options);
+    assert.equal(refused.status, 401, `${why}: ${JSON.stringify(refused.body)}`);
+    assert.equal(/mail-reader|crm/.test(JSON.stringify(refused.body)), false, `${why}: no name in the refusal`);
   }
 });
 
