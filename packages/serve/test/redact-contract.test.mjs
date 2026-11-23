@@ -440,6 +440,41 @@ const CASES = [
       },
     ];
   })(),
+  // A held JSON value's string whose key names a credential (the URL rule's names, the whole key) is held as itself,
+  // nested or not: an OAuth client's secret, printed alone, is cut. Its other one-line strings (an id, its URLs) are no
+  // secret and stay.
+  ...(() => {
+    const secret = ["made", "up", "client", "secret", "q8VxR2mT7kPz"].join("-");
+    const clientId = "123456789012-madeupclientid.apps.googleusercontent.com";
+    const client = JSON.stringify({
+      installed: {
+        client_id: clientId,
+        project_id: "made-up-project",
+        auth_uri: "https://accounts.google.com/o/oauth2/auth",
+        token_uri: "https://oauth2.googleapis.com/token",
+        client_secret: secret,
+        redirect_uris: ["http://localhost"],
+      },
+    });
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const shown = `auth_uri: https://accounts.google.com/o/oauth2/auth\ntoken_uri: https://oauth2.googleapis.com/token\nclient_id: ${clientId}\n`;
+    return [
+      {
+        name: "a held OAuth client JSON's client_secret, printed alone, is cut",
+        text: `$ jq -r .installed.client_secret client.json\n${secret}\n`,
+        values: [client],
+        hides: [secret.slice(-12)],
+        exact: all("$ jq -r .installed.client_secret client.json\n[redacted]\n"),
+      },
+      {
+        name: "a held OAuth client JSON's auth_uri, token_uri and client_id, printed alone, show (control)",
+        text: shown,
+        values: [client],
+        hides: [],
+        exact: all(shown),
+      },
+    ];
+  })(),
   // A held value with line breaks written in JSON: escaped once ("\n"), it is cut in place where it stands; escaped
   // twice (JSON in a JSON string, "\\n"), or with its line breaks written "\r\n", it is found in the text decoded and
   // withholds the text.
@@ -480,6 +515,13 @@ const CASES = [
     hides: [[...CUT_KEY.slice(14, 22)].join(mark)],
     exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
   })),
+  // A held value that itself holds such a character is held without it too: the needles drop it, as the views do.
+  {
+    name: "a held value holding a zero-width space, printed without it, does not show",
+    text: `the value: made-up-held-value-q8VxR2mT7kPz ok`,
+    values: [`made-up-held-${ZWSP}value-q8VxR2mT7kPz`],
+    hides: ["value-q8VxR2mT7kPz"],
+  },
   (() => {
     const text = `co${SHY}op${SHY}er${SHY}a${SHY}tion, a${ZWSP}zero${ZWSP}width${ZWSP}join, and ${BOM}a byte order mark stay as they came`;
     return {
