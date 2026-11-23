@@ -6,6 +6,7 @@
 // differ, so a change that moves one of them shows up there. Every key-shaped text here is put together at run time.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { addressForms } from "../dist/calendar/address.js";
 import * as refusal from "../dist/key-refusal.js";
 import { redactLearned, redactSecrets } from "../dist/learn/secrets.js";
 import { CALL_RESULT_CHARS, scrubUrls } from "../dist/timeline/index.js";
@@ -189,6 +190,42 @@ const CASES = [
     const page = JSON.stringify({ ok: true, url: "https://blog.example/parallel", status: 200, title: "Faster builds", text, chars: text.length });
     return { name: "a web_fetch page of 20,000 characters is shown whole", text: page, values: [CUT_KEY], hides: [], exact: { redactedCall: page, redactedAnswer: page, runFile: page } };
   })(),
+  // A held value found in a view of the text (here percent-decoded) withholds the text only where no cut holds it: a
+  // calendar's address is held as written and decoded (calendar/address.ts addressForms), and its decoded form, read in
+  // the text's decoded view, comes from the written form the cut takes, so it is cut in place, not withheld.
+  (() => {
+    const url = "https://calendar.google.com/calendar/ical/me%40example.com/private-0123456789abcdef0123456789abcdef/basic.ics";
+    const text = `Subscribe at ${url} for the team's week.`;
+    const shown = "Subscribe at [redacted] for the team's week.";
+    return {
+      name: "a calendar address held as written and decoded is cut in place where it is written",
+      text,
+      values: addressForms(url),
+      hides: ["private-0123456789abcdef", "me%40example.com"],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown])),
+    };
+  })(),
+  // A PEM-like held value with line breaks in it, placed so the first piece of an answer or a call's result ends at
+  // its first line break: no piece holds it whole, and no line of it shows.
+  (() => {
+    const lines = Array.from({ length: 12 }, (_, i) => `${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".slice(i % 8)}${String(i).padStart(4, "0")}${"0123456789abcdefABCDEFGHijklmnop".slice(0, 28 + (i % 4))}`);
+    const pem = ["-----BEGIN PRIVATE KEY-----", ...lines, "-----END PRIVATE KEY-----"].join("\n");
+    return {
+      name: "a PEM-like held value across the edge of an answer's pieces shows no line of it",
+      text: `${"y ".repeat(4050)}${pem}${" the words after it. ".repeat(500)}`,
+      values: [pem],
+      hides: lines.map((line) => line.slice(0, 12)),
+    };
+  })(),
+  // An answer read in pieces (key-refusal.ts) withholds a piece holding a value split by whitespace, and shows the other
+  // pieces: the callers' piecing is unchanged here.
+  {
+    name: "a long answer with a held value split by a space in its second piece shows its other pieces",
+    text: `${"alpha words ".repeat(700)}${CUT_KEY.slice(0, 12)} ${CUT_KEY.slice(12)} ${"omega words ".repeat(2000)}`,
+    values: [CUT_KEY],
+    hides: [CUT_KEY.slice(0, 12), CUT_KEY.slice(12, 24)],
+    check: Object.fromEntries(["redactedAnswer", "redactedCall"].map((name) => [name, (out) => out.startsWith("alpha words ".repeat(600)) && out.endsWith("omega words ".repeat(600)) && out.includes("[redacted]")])),
+  },
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
