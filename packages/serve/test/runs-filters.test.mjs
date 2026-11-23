@@ -38,13 +38,19 @@ test("GET /runs' from and to keep the runs started in [from, to), and model the 
   const inside = await run("imp-inside", T + HOUR - 1, { "anthropic/claude-haiku-5": 1 });
   const atTo = await run("imp-at-to", T + HOUR, { "anthropic/claude-sonnet-5": 1 });
   const [from, to] = [new Date(T).toISOString(), new Date(T + HOUR).toISOString()];
+  // The live run started at the real clock: windows around it are read from its own start (created_at, its started_at), so
+  // the test holds on any day.
+  const { body: made } = await api("GET", `/runs/${live.body.run_id}`);
+  const liveStart = Date.parse(made.created_at);
+  assert.ok(liveStart > T + HOUR, made.created_at);
 
   assert.deepEqual(await listed(api, `from=${from}&to=${to}`), [atFrom, inside].sort(), "a run at from is in, one at to is out");
   assert.deepEqual(await listed(api, `from=${from}`), [atFrom, inside, atTo, live.body.run_id].sort(), "from alone: every run since");
   assert.deepEqual(await listed(api, `to=${from}`), [before], "to alone: every run before");
   assert.deepEqual(await listed(api, `from=${encodeURIComponent("2026-11-01T01:00:00+01:00")}&to=${encodeURIComponent("2026-10-31T19:00:00.001-05:00")}`), [atFrom], "an instant in any zone, to the ms");
   assert.deepEqual(await listed(api, `from=${from}&to=${from}`), [], "an empty window lists none");
-  assert.deepEqual(await listed(api, "from=2027-01-01T00:00:00Z"), [], "a window no run started in lists none");
+  assert.deepEqual(await listed(api, `from=${new Date(liveStart).toISOString()}&to=${new Date(liveStart + 1).toISOString()}`), [live.body.run_id], "the live run's own ms holds it");
+  assert.deepEqual(await listed(api, `from=${new Date(liveStart + 1).toISOString()}`), [], "a window no run started in lists none");
 
   assert.deepEqual(await listed(api, "model=openai/gpt-5"), [before, atFrom].sort(), "every run that used the model, its main model or not");
   assert.deepEqual(await listed(api, "model=anthropic/claude-sonnet-5"), [before, atTo].sort(), "a run that used two models is listed under each");

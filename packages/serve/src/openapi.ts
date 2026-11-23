@@ -120,7 +120,7 @@ const TO_PARAMETER: Json = {
 /** runmodel/1: GET /runs' filter on the model a run used. */
 const MODEL_PARAMETER: Json = {
   name: "model", in: "query", required: false,
-  description: "Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.",
+  description: "Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A run counts from its first finished turn: its metrics are written each time a turn ends, covering every turn so far, so a run in its first turn is not listed yet, and a model it first uses in a later turn counts once that turn ends. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.",
   schema: { type: "string" },
   "x-agentrun-serve": "runmodel/1",
 };
