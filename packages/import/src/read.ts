@@ -29,16 +29,32 @@ export async function sessionLocators(home: string, source: string, { env, reade
 
 /** The locators of `source`, each with its file's stats (one gone since it was listed is passed over), in the import's
  *  order: the reader's (Claude Code's by project folder, oldest written first: the first file holding a copied record
- *  keeps it), else as they were listed. */
+ *  keeps it), else as they were listed; and where the reader names lineage, every fork after the sessions it copied. */
 export async function inOrder(locators: readonly Locator[], source: string, readers?: Readers): Promise<{ locator: Locator; stats: Stats }[]> {
   const out: { locator: Locator; stats: Stats }[] = [];
   for (const locator of locators) {
     const stats = await stat(locator.file).catch(() => null);
     if (stats) out.push({ locator, stats });
   }
-  const order = readerOf(source, readers).order;
+  const { order, lineage } = readerOf(source, readers);
   if (order) out.sort((a, b) => order({ file: a.locator.file, mtimeMs: a.stats.mtimeMs }, { file: b.locator.file, mtimeMs: b.stats.mtimeMs }));
-  return out;
+  if (!lineage) return out;
+  // A fork after the sessions it was forked from: by how many forks deep it is (its parent's depth plus one), then as above.
+  const lines = new Map<string, { id: string; parent?: string } | undefined>();
+  for (const { locator } of out) if (!lines.has(locator.file)) lines.set(locator.file, await lineage(locator.file));
+  const parentOf = new Map<string, string | undefined>();
+  for (const line of lines.values()) if (line && !parentOf.has(line.id)) parentOf.set(line.id, line.parent);
+  const depthOf = (file: string): number => {
+    const walked = new Set<string>();
+    let id = lines.get(file)?.parent;
+    while (id !== undefined && parentOf.has(id) && !walked.has(id)) {
+      walked.add(id);
+      id = parentOf.get(id);
+    }
+    return walked.size;
+  };
+  const depth = new Map(out.map(({ locator }) => [locator, depthOf(locator.file)]));
+  return out.sort((a, b) => depth.get(a.locator)! - depth.get(b.locator)!);
 }
 
 /** The subagents' sessions of `source` under `home` that name no parent themselves, each with the session it ran under

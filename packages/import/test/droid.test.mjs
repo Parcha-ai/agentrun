@@ -3,16 +3,17 @@
 // Every record below is made up in the shape Droid 1.17.2 writes (see src/readers/droid.ts): no id, prompt or count is
 // copied from a real session.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { droidSessionId, normalizeUsage, parseHome, READERS, readSession } from "../dist/index.js";
+import { droidSessionId, inOrder, normalizeUsage, parseHome, READERS, readSession, sessionLocators } from "../dist/index.js";
 import { at, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const PARENT = "00000000-0000-4000-8000-0000000000d1";
 const WORKER = "00000000-0000-4000-8000-0000000000d2";
 const FORK = "00000000-0000-4000-8000-0000000000d3";
+const REFORK = "00000000-0000-4000-8000-0000000000d4";
 
 const droidFile = (home, id = PARENT, project = "-work-fixture") => join(home, ".factory", "sessions", project, `${id}.jsonl`);
 const settingsOf = (file) => file.replace(/\.jsonl$/, ".settings.json");
@@ -134,6 +135,50 @@ test("a fork's copied messages count once, in the first file; its own total star
   const calls = sessions.reduce((n, line) => n + line.calls, 0);
   const output = sessions.reduce((n, line) => n + line.tokens.output, 0);
   assert.deepEqual([sessions.length, calls, output], [2, 3, 42]);
+});
+
+test("a fork is read after the session it copied, though a resume wrote that one later: each keeps its own requests", async (t) => {
+  const home = await tempHome(t);
+  const parent = await writeJsonl(droidFile(home), opening);
+  await writeSettings(parent, tokens(300, 40));
+  const fork = await writeJsonl(droidFile(home, FORK), [start(FORK, { parent: PARENT }), ...opening.slice(1), answer("f1", 9)]);
+  await writeSettings(fork, tokens(20, 2));
+  // A fork of the fork, in a folder listed first, holding the copies of both.
+  const refork = await writeJsonl(droidFile(home, REFORK, "-work-a"), [start(REFORK, { parent: FORK }), ...opening.slice(1), answer("f1", 9), answer("g1", 10)]);
+  await writeSettings(refork, tokens(7, 1));
+  // Oldest written first would read them backwards: the refork, the fork, then the source, resumed with a prompt alone.
+  await utimes(refork, new Date(at(20)), new Date(at(20)));
+  await utimes(fork, new Date(at(30)), new Date(at(30)));
+  await appendFile(parent, `${JSON.stringify(user("m5", "Resumed question.", 40))}\n`);
+  await utimes(parent, new Date(at(40)), new Date(at(40)));
+  const order = await inOrder(await sessionLocators(home, "droid"), "droid");
+  assert.deepEqual(order.map(({ locator }) => locator.file), [parent, fork, refork]);
+  const sessions = await parseHome(home, { sources: ["droid"], catalog: false });
+  const byId = Object.fromEntries(sessions.map((line) => [line.id, [line.calls, line.tokens.output]]));
+  assert.deepEqual(byId, { [PARENT]: [2, 40], [FORK]: [1, 2], [REFORK]: [1, 1] });
+});
+
+test("a fork that made no request of its own, its total all zeros, adds none: it is no session", async (t) => {
+  const home = await tempHome(t);
+  const parent = await writeJsonl(droidFile(home), opening);
+  await writeSettings(parent, tokens(300, 40));
+  const fork = await writeJsonl(droidFile(home, FORK), [start(FORK, { parent: PARENT }), ...opening.slice(1)]);
+  await writeSettings(fork, tokens(0, 0));
+  const sessions = await parseHome(home, { sources: ["droid"], catalog: false });
+  assert.deepEqual(sessions.map((line) => [line.id, line.calls]), [[PARENT, 2]]);
+  // Read alone, no record is a copy: the fork's own two answers, the zeros on the last.
+  const alone = await readSession(fork, "droid");
+  assert.equal(alone.turns.filter((turn) => turn.role === "assistant").length, 2);
+});
+
+test("a settings file that cannot be checked, for any cause but its absence, fails the read: no silent zero", async (t) => {
+  const home = await tempHome(t);
+  // A name the session file can have (253 bytes) that its settings file's (261) cannot: lstat says ENAMETOOLONG.
+  const file = await writeJsonl(droidFile(home, "d".repeat(247)), opening);
+  await assert.rejects(readSession(file, "droid"), { code: "ENAMETOOLONG" });
+  const failures = [];
+  assert.deepEqual(await parseHome(home, { sources: ["droid"], catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ source, error }) => [source, error.code ?? error]), [["droid", "ENAMETOOLONG"]]);
 });
 
 test("droidSessionId: session_start's id, else the file's name; the reader and serve read it alike", async (t) => {

@@ -17,10 +17,11 @@
 //   - thinkingTokens is a part of outputTokens in the binary itself too: the function that splits a request's usage for
 //     its /cost view takes min(thinkingTokens, outputTokens) out of outputTokens.
 // So a session's requests are its assistant messages, and its total goes on the last of them (the others 0), or on one
-// of its own when the transcript holds none. Its cost is the total at the list price of the model settings.json names
-// (the session's latest), else the model that last request ran on; with neither, unknown. A session with no
-// settings.json, or one with no tokenUsage, has no counts: unmetered.
-import { lstat, readFile } from "node:fs/promises";
+// of its own when the transcript holds none and the total counts a token (an unused fork's zeros add no request). Its
+// cost is the total at the list price of the model settings.json names (the session's latest), else the model that
+// last request ran on; with neither, unknown. A session with no settings.json, or one with no tokenUsage, has no
+// counts: unmetered. A fork is read after the session it was forked from (lineage), which a resume writes later.
+import { lstat, open, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { type FileCursor, type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries, type Reader } from "../reader.js";
@@ -126,7 +127,7 @@ const spec: LineSource<"droid", undefined> = {
     }
     return out;
   },
-  // By folder, oldest written first: a fork's copies count in the session it copied them from.
+  // By folder, oldest written first; lineage puts a fork after its source, which a resume writes later than the fork.
   order: (a, b) => dirname(a.file).localeCompare(dirname(b.file)) || a.mtimeMs - b.mtimeMs || a.file.localeCompare(b.file),
   start: () => undefined,
   record,
@@ -137,7 +138,12 @@ const spec: LineSource<"droid", undefined> = {
  *  text). Nothing when there is none, it is no regular file, or it is not whole JSON (being written). */
 async function settingsOf(file: string): Promise<{ usage?: Usage; model?: string; read: number }> {
   const path = `${file.replace(/\.jsonl$/, "")}.settings.json`;
-  if (!(await lstat(path).catch(() => null))?.isFile()) return { read: 0 };
+  // No file there is no settings; any other failure is the read's.
+  const stats = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
+  });
+  if (!stats?.isFile()) return { read: 0 };
   const bytes = await readFile(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
@@ -155,17 +161,54 @@ async function settingsOf(file: string): Promise<{ usage?: Usage; model?: string
   return { ...(usage ? { usage } : {}), ...(model ? { model } : {}), read: bytes.length };
 }
 
+/** The session a file holds and the one it was forked from: its session_start's `id` and `parent`, read from the
+ *  file's first 64 KiB (the record opens it). Undefined when none is there whole, or the file cannot be read (its
+ *  read says why). */
+async function lineage(file: string): Promise<{ id: string; parent?: string } | undefined> {
+  let text: string;
+  let whole: boolean;
+  try {
+    const handle = await open(file, "r");
+    try {
+      const bytes = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      text = bytes.subarray(0, bytesRead).toString("utf8");
+      whole = bytesRead < bytes.length;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+  // A line cut at 64 KiB is no record.
+  for (const line of whole ? text.split("\n") : text.split("\n").slice(0, -1)) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isObject(value) || value.type !== "session_start") continue;
+    const parent = str(value.parent);
+    return { id: droidSessionId(file, value), ...(parent ? { parent } : {}) };
+  }
+  return undefined;
+}
+
 const lines = lineReader(spec);
 const none = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+/** Whether a total counts any token: an all-zero one (a fork that made no request of its own) adds no request. */
+const counts = (usage: Usage): boolean => Object.values(usage).some((n) => typeof n === "number" && n > 0);
 
 export const droid: Reader<"droid", FileCursor> = {
   ...lines,
+  lineage,
   async read(locator, cursor, options) {
     const result = await lines.read(locator, cursor, options);
     const { usage, model, read } = await settingsOf(locator.file);
     const sessions = result.sessions.map(({ locator, session, requests }) => {
       if (model) session.model = modelOf(model);
-      if (!usage) return { locator, session, requests };
+      if (!usage || (!requests.length && !counts(usage))) return { locator, session, requests };
       // New requests, never the read's own (its state holds them): the total on the last, at the session's model, the
       // others 0 and folded into it.
       const last = requests.at(-1);

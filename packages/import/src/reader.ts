@@ -57,6 +57,10 @@ export type Reader<S extends string = string, C = unknown> = {
   read: (locator: Locator, cursor?: C, options?: ReadOptions) => Promise<ReadResult<S, C>>;
   /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's). */
   order?: (a: { file: string; mtimeMs: number }, b: { file: string; mtimeMs: number }) => number;
+  /** The session a file holds and the one it was forked from (`parent`), where its source writes it: a fork is read
+   *  after the sessions it copied, whatever `order` says (Droid's source, resumed, is written after its fork). Undefined
+   *  when the file names neither. */
+  lineage?: (file: string) => Promise<{ id: string; parent?: string } | undefined>;
   /** Subagents' sessions that name no parent themselves, each with the session it ran under (`of`). */
   children?: (home: string, env?: Env) => Promise<{ locator: Locator; of: Locator }[]>;
 };

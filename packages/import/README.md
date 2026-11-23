@@ -63,14 +63,16 @@ line's usage.
 
 Sessions are `~/.factory/sessions/<cwd slug>/<session id>.jsonl` (some in `sessions/` itself), under
 `$FACTORY_HOME_OVERRIDE` instead of the home where `env` names it. Each assistant message is one request, each record
-counted once by its `id` (a fork copies its source's records). A Worker, whose `session_start` names its
-`callingSessionId`, counts under that session.
+counted once by its `id` (a fork copies its source's records), in the session it was forked from: a fork, whose
+`session_start` names its `parent`, is read after it, even when a resume wrote the source later. A Worker, whose
+`session_start` names its `callingSessionId`, counts under that session.
 
 Droid writes no request's tokens. The `<session id>.settings.json` beside the transcript holds the session's running
 total (`tokenUsage`, its own calls alone; `inclusiveTokenUsage` is not read, as the Workers count on their own) and its
 latest `model`, read whole on each read. That total goes on the session's last request, the others 0 and marked
 `folded: true` (their tokens are counted in that later request: known, not unknown), or on a request of its own when
-the transcript holds none. So:
+the transcript holds none and the total is not all zeros (a fork that made no request of its own adds none). A settings
+file that cannot be checked for any cause but its absence fails the read. So:
 
 - A session with no settings file, or one with no `tokenUsage`, is unmetered: its requests have no usage, and cost
   `null`.
@@ -96,6 +98,7 @@ type Reader<S extends string, C> = {
   discover(home: string, env?: Env): Promise<Locator[]>;
   read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
+  lineage?(file: string): Promise<{ id: string; parent?: string } | undefined>;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
 };
 ```
@@ -107,4 +110,5 @@ newline yet is read but not consumed. A source that keeps many sessions in one f
 `discover` and `read` itself and returns one locator per session, with its `id`.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
-`childrenOf(home, source)` are what serve's import reads through.
+`childrenOf(home, source)` are what serve's import reads through. `inOrder` sorts by the reader's `order`, then, where
+the reader names `lineage` (Droid), puts each fork after the sessions it was forked from, so their records count there.
