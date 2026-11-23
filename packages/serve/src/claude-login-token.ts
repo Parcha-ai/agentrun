@@ -10,8 +10,8 @@
 // folder and reads the file again once it holds it, so a token another holder (the CLI, another runner) renewed is
 // taken and nothing is posted. The answer is written back only to the file it came from, atomically (a temp file at mode
 // 0600 in the same folder before any byte is in it, synced, then renamed over it), every other field kept as it was. A
-// renewal that fails is refused in LOGIN_RUNNING_OUT's words after one more read of the file (another holder may have
-// renewed meanwhile), and nothing retries it; a refresh token Anthropic refused for good (`invalid_grant`) is never
+// renewal that fails is refused after one more read of the file (another holder may have renewed meanwhile), in
+// LOGIN_REFUSED_NOT_RENEWED's words when Anthropic refused the token, else LOGIN_RUNNING_OUT's, and nothing retries it; a refresh token Anthropic refused for good (`invalid_grant`) is never
 // posted again by this process. No token is in a log field, an error or an event: a failure is told by its status and
 // its OAuth error code alone, never a response body or a thrown error's words. Each value read or answered joins this
 // process's redaction (secrets.ts holdSecret), and each token handed joins every watcher's.
@@ -44,9 +44,11 @@ export const LOCK_WAIT_MS = 35_000;
 /** How often a waiting ask reads the file and tries the lock again. */
 const LOCK_POLL_MS = 200;
 
-/** The words a run gets when the login's token has less than the margin left, or was refused, and the runner could not
- *  renew it. */
+/** The words a run gets when the login's token has less than the margin left and the runner could not renew it. */
 export const LOGIN_RUNNING_OUT = "Claude Code's login on this machine runs out in less than 5 minutes, and the runner could not renew it: open Claude Code on this login once to renew it, or sign in again under Settings → Model keys, then start the run again.";
+/** The words a run gets when Anthropic refused the login's token (the run's CLI's 401), whatever time it had left, and
+ *  the runner could not renew it. */
+export const LOGIN_REFUSED_NOT_RENEWED = "Claude refused this login and it could not be renewed; open Claude Code once to sign in again.";
 /** The words a run gets when the login is kept in a form this runner does not read (not the pinned CLI's plaintext file). */
 export const LOGIN_SEALED = "Claude Code's login on this machine is kept in a form this runner cannot hand to a run of its own user: set AGENTRUN_RUN_USER=same, or give the run a model_key.";
 
@@ -128,14 +130,16 @@ export class LoginTokens {
       try {
         renewed = await this.#renew(this.#login, seen);
       } catch {
-        // Refused below in LOGIN_RUNNING_OUT's words: a renewal's own never reach a run.
+        // Refused below in LOGIN_REFUSED_NOT_RENEWED's or LOGIN_RUNNING_OUT's words: a renewal's own never reach a run.
       }
       // The one read after it: the renewal's write, or another holder's that renewed meanwhile (a failed post included).
       read = await this.#read();
       if (renewed && !("refused" in read) && read.access === seen) read = renewed;
     }
     if ("refused" in read) throw new Error(read.refused);
-    if (read.access === this.#refusedAccess || read.expiresAt - this.#now() < LOGIN_MARGIN_MS) throw new Error(LOGIN_RUNNING_OUT);
+    // A token Anthropic refused is said so, whatever time it had left: "runs out in less than 5 minutes" would not be true.
+    if (read.access === this.#refusedAccess) throw new Error(LOGIN_REFUSED_NOT_RENEWED);
+    if (read.expiresAt - this.#now() < LOGIN_MARGIN_MS) throw new Error(LOGIN_RUNNING_OUT);
     for (const listener of this.#watchers) listener([read.access]);
     return read.access;
   }

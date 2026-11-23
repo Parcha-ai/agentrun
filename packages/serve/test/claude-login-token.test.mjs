@@ -353,14 +353,47 @@ test("the run's CLI's 401 (refused): the next ask renews the refused token once,
   await reader.refused(fresh);
   assert.equal(await reader.token(), theirs);
   assert.equal(endpoint.posts.length, 1);
-  // Refused, and the renewal refused too: the old words, the token in none of them.
+  // Refused with hours left, and the renewal refused too: words that say Anthropic refused it, never that it runs out
+  // in less than 5 minutes, the token in none of them.
   await reader.refused(theirs);
   await assert.rejects(reader.token(), (error) => {
-    assert.equal(error.message, tokens.LOGIN_RUNNING_OUT);
+    assert.equal(error.message, tokens.LOGIN_REFUSED_NOT_RENEWED);
+    assert.equal(error.message, "Claude refused this login and it could not be renewed; open Claude Code once to sign in again.");
+    assert.ok(!/5 minutes/.test(error.message), "not the margin's words: the token had hours left");
     assert.ok(!String(error.stack).includes(theirs));
     return true;
   });
   assert.equal(endpoint.posts.length, 2, "one post for that ask");
+});
+
+test("a failed renewal is refused in the words of its own case: under the margin, that the login runs out in less than 5 minutes; after Anthropic refused a token with hours left, that Claude refused it; both say to open Claude Code once", async (t) => {
+  assert.equal(typeof tokens.LOGIN_REFUSED_NOT_RENEWED, "string", "the 401 case has words of its own");
+  assert.notEqual(tokens.LOGIN_REFUSED_NOT_RENEWED, tokens.LOGIN_RUNNING_OUT);
+  for (const words of [tokens.LOGIN_RUNNING_OUT, tokens.LOGIN_REFUSED_NOT_RENEWED]) assert.match(words, /open Claude Code (on this login )?once/, "the same fix");
+  const now = 1_900_000_000_000;
+  const refusing = await tokenEndpoint(t, () => ({ status: 400, json: { error: "invalid_grant" } }));
+  // Margin: less than 5 minutes left, the renewal refused.
+  const margin = loginFolder(t);
+  margin.write(oauthOf(fake("access-near"), now + 60_000));
+  await assert.rejects(new tokens.LoginTokens({ login: margin.login, now: () => now, fetch: refusing.fetch }).token(), { message: tokens.LOGIN_RUNNING_OUT }, "margin: the margin's words");
+  // 401: hours left, refused by Anthropic, the renewal refused.
+  const refused = loginFolder(t);
+  const sent = fake("access-hours");
+  refused.write(oauthOf(sent, now + 3 * HOUR, fake("refresh-hours")));
+  const reader = new tokens.LoginTokens({ login: refused.login, now: () => now, fetch: refusing.fetch });
+  assert.equal(await reader.token(), sent);
+  await reader.refused(sent);
+  await assert.rejects(reader.token(), { message: tokens.LOGIN_REFUSED_NOT_RENEWED }, "401: the refusal's words");
+  // A refused token that is also near its end: Anthropic's refusal is what is true and said.
+  const both = loginFolder(t);
+  const near = fake("access-both");
+  both.write(oauthOf(near, now + 6 * 60_000, fake("refresh-both")));
+  const late = { at: now };
+  const reader2 = new tokens.LoginTokens({ login: both.login, now: () => late.at, fetch: refusing.fetch });
+  assert.equal(await reader2.token(), near);
+  await reader2.refused(near);
+  late.at = now + 2 * 60_000;
+  await assert.rejects(reader2.token(), { message: tokens.LOGIN_REFUSED_NOT_RENEWED });
 });
 
 test("no token, old or new, access or refresh, is in any log line, error or stack of a renewal: one that lands, a 400 invalid_grant, a 5xx, and a request that throws with the request in its words", async (t) => {
