@@ -132,10 +132,12 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
 async function readOnce(url: unknown, parallel: Extract | null | undefined, firecrawl: KeylessFetch | null | undefined, checkMs: number, options: GuardOptions, log: (line: string) => void): Promise<WebRead | WebUnread> {
   let firecrawlSaid: string | undefined;
   let fallback: string | undefined;
-  // Firecrawl held (off for the run, or its rate limit's wait) is not asked, and costs no guard check; why goes with the page.
-  if (firecrawl && typeof url === "string") fallback = firecrawl.held();
-  if (firecrawl && fallback === undefined && typeof url === "string" && (await passes(url, options, checkMs))) {
-    const read = await firecrawl.read(url, options.signal);
+  // The guard first: a URL it refuses is never sent, and its answer is the guard's own refusal, with no word of why
+  // Firecrawl gave no page. Firecrawl held (off for the run, or its rate limit's wait) is not asked; why goes with the page.
+  const sent = firecrawl && typeof url === "string" && (await passes(url, options, checkMs)) ? firecrawl : undefined;
+  if (sent) fallback = sent.held();
+  if (sent && fallback === undefined) {
+    const read = await sent.read(url as string, options.signal);
     if ("ok" in read) return { ...read, via: "firecrawl-keyless" };
     firecrawlSaid = read.error;
     fallback = read.brief;

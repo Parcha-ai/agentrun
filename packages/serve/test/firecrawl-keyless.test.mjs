@@ -306,6 +306,20 @@ test("a fetch Firecrawl gave no page tells the model why in a few words (fallbac
   assert.equal("fallback" in local, false, "a URL the guard refused: Firecrawl was never asked");
 });
 
+test("a URL the guard refuses, with keyless Firecrawl off for the run (its quota spent, or keyless use refused): the answer is the guard's own refusal, with no fallback word", { timeout: 15_000 }, async (t) => {
+  for (const code of ["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE"]) {
+    const fc = await firecrawlServer(t, () => refusal(code));
+    const firecrawl = firecrawlFetch({ endpoint: fc.url });
+    assert.ok((await webFetch(PUBLIC, { ...network(), firecrawl, log: () => {} })).fallback, `${code}: Firecrawl off for the run`);
+    const asked = fc.got.length;
+    const local = await webFetch("http://127.0.0.1/x", { ...network(), firecrawl, log: () => {} });
+    const refused = await webFetch("http://127.0.0.1/x", { ...network(), log: () => {} });
+    assert.deepEqual([local.ok, local.via, local.error], [false, "direct", refused.error], `${code}: the guard's own refusal`);
+    assert.equal("fallback" in local, false, `${code}: no fallback word on a URL the guard refused`);
+    assert.equal(fc.got.length, asked, `${code}: nothing more sent to Firecrawl`);
+  }
+});
+
 test("a scrape reads up to the direct fetch's 5 MiB, past search's 1 MiB; one past that is refused in words, never parsed cut, and the fetch goes direct; search keeps 1 MiB", async (t) => {
   const big = (chars) => ({ content: [{ type: "text", text: JSON.stringify({ markdown: `# Big\n\n${"a".repeat(chars)}`, metadata: { title: "Big", sourceURL: PUBLIC, statusCode: 200 } }) }] });
   let chars = 2 * 1024 * 1024;
