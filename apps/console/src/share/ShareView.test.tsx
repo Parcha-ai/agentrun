@@ -84,6 +84,17 @@ describe("ShareView over the golden bundle", () => {
     expect(group("personal").textContent).toContain("Timeline step 1");
   });
 
+  it("each cut shows its pointer and span, and one value's cuts in a step's summary and text sit together", () => {
+    const { host } = mount();
+    const row = (id: string) => host.querySelector<HTMLElement>(`[data-cut="${id}"]`)!;
+    expect(row("c_4bc2de29bab2912d").querySelector("[data-pointer]")?.textContent).toBe("/rows/3/summary 9–30");
+    expect(row("c_2ee7ed2a38cba84e").querySelector("[data-pointer]")?.textContent).toBe("/rows/3/text 9–30");
+    const personal = [...host.querySelectorAll<HTMLElement>('[data-kind="personal"] [data-cut]')].map((li) => li.dataset.cut);
+    // Step 4's private address in its summary and its text, then its home folder in both: one value, then the next.
+    const at = personal.indexOf("c_4bc2de29bab2912d");
+    expect(personal.slice(at, at + 4)).toEqual(["c_4bc2de29bab2912d", "c_2ee7ed2a38cba84e", "c_12243d656f8c82d5", "c_3e45833dfce59dde"]);
+  });
+
   it("a switch asks for its cut: on for a cut, off for a restored one", () => {
     const restored = { ...bundle, cuts: bundle.cuts.filter((c) => c.id !== "c_05af703d64842a4a"), restored: [{ id: "c_05af703d64842a4a", at: "/rows/0/summary", start: 71, end: 87, rule: "email", kind: "personal" as const }] };
     const { host, onToggle } = mount({ bundle: restored });
