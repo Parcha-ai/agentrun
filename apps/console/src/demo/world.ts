@@ -410,7 +410,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
         after: takeover ? { runs: rows.length - before.length, mean_usd: afterMean } : null,
         after_state: takeover ? "priced" : "no_served_runs",
         times_cheaper: takeover && afterMean ? Number((agentMean / afterMean).toFixed(1)) : null,
-        hand_backs: takeover ? { ran: served.length + byHand.length, back: byHand.length } : null, withheld: null,
+        hand_backs: takeover ? { ran: served.length + byHand.length, back: byHand.length, cut: 0 } : null, withheld: null,
         replay: takeover ? { n: 24, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 22, alone: 22, agree_min: 0.95 } : null,
       },
       bill: {

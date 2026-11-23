@@ -2734,6 +2734,7 @@ export type GetLearningCostResponse = {
     hand_backs: {
       ran: number;
       back: number;
+      cut: number;
     } | null;
     withheld: {
       unknown: number;
