@@ -54,18 +54,25 @@ const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as 
 
 /** The line a person runs to sign the CLI in at `login` (the CLI opens a browser itself), with signInEnv's variables
  *  but HOME, which is their terminal's own. A folder variable signInEnv leaves unset (the CLI's default folder) is
- *  cleared with `env -u` (GNU's and macOS's env both have it), since a terminal that exports it would sign in there. */
+ *  cleared in a subshell, `(unset ...; ...)`, since a terminal that exports it would sign in there; the terminal keeps
+ *  its own. The line stays the shell's own command, never `env`'s: env reads any word holding '=' as a variable (a CLI
+ *  under /srv/a=b would never start) and skips the shell's aliases and functions, where a `claude` alias is often the
+ *  CLI's local install. sh, bash and zsh all read this line the same way. */
 export const loginCommand = (login: ClaudeAgentLogin, cli = "claude"): string => {
   const env = signInEnv(login);
   const cleared = FOLDER_VARS.filter((name) => !(name in env));
-  return [
-    ...(cleared.length ? ["env", ...cleared.flatMap((name) => ["-u", name])] : []),
+  const run = [
     ...Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`),
-    shellWord(cli), "auth", "login",
+    commandWord(cli), "auth", "login",
   ].join(" ");
+  return cleared.length ? `(unset ${cleared.join(" ")}; ${run})` : run;
 };
 
-const shellWord = (word: string): string => (/^[A-Za-z0-9_./:@%+=-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`);
+const quoted = (word: string): string => `'${word.replace(/'/g, `'\\''`)}'`;
+const shellWord = (word: string): string => (/^[A-Za-z0-9_./:@%+=-]+$/.test(word) ? word : quoted(word));
+/** The CLI as the line's command word: quoted when it holds '=', so a relative `a=b/claude` is never read as a variable;
+ *  a bare `claude` stays bare, so the shell's alias or function of that name is the one it runs. */
+const commandWord = (word: string): string => (word.includes("=") ? quoted(word) : shellWord(word));
 
 /** What the CLI says of its login: whether it is signed in, how, and the account's own words when it gives them. */
 export interface ClaudeLoginStatus {
