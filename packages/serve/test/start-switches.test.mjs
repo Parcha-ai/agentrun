@@ -4,7 +4,7 @@
 // is a yes or no, a host list or a size.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { serve, withEnv } from "./support.mjs";
+import { asOwner, serve, withEnv } from "./support.mjs";
 
 const NAMES = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS", "AGENTRUN_PRIVATE_HOSTS", "AGENTRUN_BOX_ALLOW", "AGENTRUN_BOX_CPUS", "AGENTRUN_BOX_MEMORY", "AGENTRUN_BOX_PIDS", "AGENTRUN_MCP_TOKEN_ORIGINS"];
 
@@ -31,7 +31,8 @@ test("capabilities list the start-time switches as the server was started: on, w
   // Restored with the rest (NAMES holds it).
   process.env.AGENTRUN_MCP_TOKEN_ORIGINS = "HTTPS://Tools.Example:443, http://127.0.0.1:8123";
   // The CLI turns mcpLoopback on from AGENTRUN_MCP_ALLOW_LOOPBACK=1 (cli.ts); the server reads its option.
-  const { api } = await serve(t, { runner: false, mcpLoopback: true });
+  const server = await serve(t, { runner: false, mcpLoopback: true });
+  const { api } = server;
   const caps = await api("GET", "/capabilities");
   assert.equal(caps.status, 200);
   assert.deepEqual(read(caps.body.switches), [
@@ -42,10 +43,13 @@ test("capabilities list the start-time switches as the server was started: on, w
     ["AGENTRUN_BOX_CPUS", false, null],
     ["AGENTRUN_BOX_MEMORY", true, "512m"],
     ["AGENTRUN_BOX_PIDS", false, null],
-    // The origins as the server counts them: normalised, the loopback one kept since loopback is on.
-    ["AGENTRUN_MCP_TOKEN_ORIGINS", true, "https://tools.example,http://127.0.0.1:8123"],
+    // The token's read: set, but not the list (the token's own save refuses an address in words that name none).
+    ["AGENTRUN_MCP_TOKEN_ORIGINS", true, null],
   ]);
   assert.match(caps.body.switches.AGENTRUN_MCP_TOKEN_ORIGINS.allows, /per_run/);
+  // The owner's read: the origins as the server counts them, normalised, the loopback one kept since loopback is on.
+  const owners = (await asOwner(server)("GET", "/capabilities")).body.switches.AGENTRUN_MCP_TOKEN_ORIGINS;
+  assert.deepEqual([owners.on, owners.value], [true, "https://tools.example,http://127.0.0.1:8123"]);
   // The webhook does what the listing says: a receiver on this machine is taken.
   const saved = await api("PUT", "/settings/webhook", { url: "http://127.0.0.1:9/hook" }); // key-gate: denylist allowed by the switch under test
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -56,6 +60,16 @@ test("AGENTRUN_MCP_TOKEN_ORIGINS with a loopback origin alone, on a server witho
   const { api } = await serve(t, { runner: false, mcpLoopback: false });
   const { on, value } = (await api("GET", "/capabilities")).body.switches.AGENTRUN_MCP_TOKEN_ORIGINS;
   assert.deepEqual([on, value], [false, null]);
+});
+
+test("AGENTRUN_MCP_TOKEN_ORIGINS on an API-only server: the token's capabilities say it is set and hold no origin it lists", async (t) => {
+  withEnv(t, { AGENTRUN_MCP_TOKEN_ORIGINS: "https://tools.example,https://edge.example:8443" }, NAMES);
+  const { api } = await serve(t, { runner: false, apiOnly: true });
+  const caps = await api("GET", "/capabilities");
+  assert.equal(caps.status, 200, JSON.stringify(caps.body));
+  const { on, value } = caps.body.switches.AGENTRUN_MCP_TOKEN_ORIGINS;
+  assert.deepEqual([on, value], [true, null]);
+  for (const origin of ["tools.example", "edge.example"]) assert.ok(!JSON.stringify(caps.body).includes(origin), `the answer names ${origin}`);
 });
 
 test("AGENTRUN_BOX_ALLOW=none is listed as on, its value none", async (t) => {

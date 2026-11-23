@@ -172,7 +172,7 @@ import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun 
 import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
-import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
+import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, switchesFor, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import { mcpSourceKey, tokenOriginRefusal, type SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
@@ -4555,7 +4555,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
+      // switches: AGENTRUN_MCP_TOKEN_ORIGINS's list read by the owner alone (switchesFor); any other caller reads it set or not.
+      return send(res, 200, { ...answer, switches: switchesFor(answer.switches, mayHoldSecrets(req)), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'

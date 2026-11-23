@@ -23,7 +23,8 @@ export const restartWith = (setting: string): string => `restart the server with
 export const restartToAllow = (name: string): string => `${restartWith(`${name}=1`)} to allow it, ${ALONE_WORDS}`;
 
 /** One switch as capabilities list it: `on`, whether the operator set it (a yes-or-no one, to 1); `value`, what the server
- *  read (a host list, `none` or a size), null when unset; `allows`, what it allows, in an operator's words. */
+ *  read (a host list, `none` or a size), null when unset or withheld from the caller (switchesFor); `allows`, what it
+ *  allows, in an operator's words. */
 export type StartSwitch = { on: boolean; value: string | null; allows: string };
 
 /** The switches as this server was started: from `env`, but for the two the server takes as options (ServeOptions
@@ -49,4 +50,12 @@ export function startSwitches(env: NodeJS.ProcessEnv, { mcpLoopback, webhookPriv
     [BOX_PIDS_ENV]: size(BOX_PIDS_ENV, "How many processes and threads a Docker computer may hold at once, such as 1024. Unset, the Docker provider's default."),
     [MCP_TOKEN_ORIGINS_ENV]: { on: tokenOrigins.length > 0, value: tokenOrigins.length > 0 ? tokenOrigins.join(",") : null, allows: "The exact origins (scheme, host and port) an API-only server's token may save a per_run MCP server at, which keeps no credential: a comma list of https origins, plus one loopback http origin with its port that counts only with AGENTRUN_MCP_ALLOW_LOOPBACK. Unset, none. Set the same list on each runner: each claim checks a server the token saved against its own." },
   };
+}
+
+/** `switches` as a caller reads them: AGENTRUN_MCP_TOKEN_ORIGINS's origins are the owner's alone to read (`owner`: the
+ *  session that may write secrets), as the token's own save refuses an address in words that name no listed origin. Any
+ *  other caller (the API token, on an API-only server every caller) reads only whether it is set: `on`, its value null. */
+export function switchesFor(switches: Record<string, StartSwitch>, owner: boolean): Record<string, StartSwitch> {
+  const origins = switches[MCP_TOKEN_ORIGINS_ENV];
+  return owner || !origins ? switches : { ...switches, [MCP_TOKEN_ORIGINS_ENV]: { ...origins, value: null } };
 }
