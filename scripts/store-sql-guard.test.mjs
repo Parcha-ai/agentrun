@@ -23,6 +23,9 @@ const READ_ONLY = [
 ];
 /** A SQL string that changes a database or its connection. */
 const WRITES = /\b(?:INSERT|REPLACE|UPDATE|DELETE|CREATE|ALTER|DROP|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX|BEGIN|COMMIT|SAVEPOINT)\b/i;
+/** The one statement a read-only reader may run that is no SELECT: how long its connection waits on a lock (bun:sqlite's
+ *  opener takes no timeout). It writes nothing to the database. */
+const BUSY_TIMEOUT = /^PRAGMA busy_timeout = \d+$/;
 /** A SQLite file named in source: only the store picks its file (a data directory is all anyone else passes). */
 const SQLITE_FILE = /\.sqlite\b/;
 /** The files outside the store that named a .sqlite file when the store took its data directory. Each goes at the
@@ -94,6 +97,9 @@ const DRIVER_FORMS = {
   "createRequire off a namespace import of node:module": [`import * as mod from "node:module";\nconst sqlite = mod.createRequire(import.meta.url)("node:sqlite");`, "node:sqlite"],
   "a bracket read of SqliteStorage off a namespace import": [`import * as durable from "@earendil-works/pi-durable";\nconst storage = new durable["SqliteStorage"](db);`, "@earendil-works/pi-durable SqliteStorage"],
   "a bracket read of SqliteStorage off an import()": [`const durable = await import("@earendil-works/pi-durable");\nconst storage = new durable[\`SqliteStorage\`](db);`, "@earendil-works/pi-durable SqliteStorage"],
+  "an import() of a const naming it": [`const NODE_SQLITE = "node:sqlite";\nconst { DatabaseSync } = await import(NODE_SQLITE);`, "node:sqlite"],
+  "a require of a const naming it": [`const name = \`better-sqlite3\`;\nconst Database = require(name);`, "better-sqlite3"],
+  "bun:sqlite, through a const": [`const BUN_SQLITE = "bun:sqlite";\nconst { Database } = await import(BUN_SQLITE);`, "bun:sqlite"],
 };
 for (const [form, [source, driver]] of Object.entries(DRIVER_FORMS)) {
   test(`the guard sees a SQLite driver taken by ${form}`, () => {
@@ -129,14 +135,25 @@ test("a read-only reader outside the store opens its database read-only and only
     const sql = sqlStringsIn(source, file);
     assert.ok(sql.length > 0, `${file} holds no SQL now: take it off READ_ONLY`);
     for (const text of sql) {
+      if (BUSY_TIMEOUT.test(text)) continue;
       assert.match(text, /^\s*SELECT\b/i, `${file}: ${text}`);
       assert.doesNotMatch(text, WRITES, `${file}: ${text}`);
     }
     // Both openers it may take (node:sqlite's, bun:sqlite's), each read-only.
     assert.doesNotMatch(source, /readOnly:\s*false|readonly:\s*false/, file);
-    assert.equal((source.match(/new DatabaseSync\(/g) ?? []).length, (source.match(/new DatabaseSync\([^)]*\{\s*readOnly:\s*true\s*\}\)/g) ?? []).length, `${file}: node:sqlite opened read-only`);
+    assert.equal((source.match(/new DatabaseSync\(/g) ?? []).length, (source.match(/new DatabaseSync\([^)]*\{\s*readOnly:\s*true\b[^)}]*\}\)/g) ?? []).length, `${file}: node:sqlite opened read-only`);
     assert.equal((source.match(/new Database\(/g) ?? []).length, (source.match(/new Database\([^)]*\{\s*readonly:\s*true\s*\}\)/g) ?? []).length, `${file}: bun:sqlite opened read-only`);
   }
+});
+
+test("a read-only reader waits on a lock, and its open says so: node:sqlite's timeout, bun:sqlite's busy_timeout", () => {
+  for (const file of READ_ONLY) {
+    const source = readFileSync(join(ROOT, file), "utf8");
+    assert.match(source, /new DatabaseSync\([^)]*\{\s*readOnly:\s*true,\s*timeout:/, `${file}: node:sqlite waits`);
+    assert.ok(sqlStringsIn(source, file).some((text) => BUSY_TIMEOUT.test(text)), `${file}: bun:sqlite waits`);
+  }
+  // The pragma it may run is that one alone: any other is a write to its connection.
+  for (const text of ["PRAGMA journal_mode = WAL", "PRAGMA busy_timeout = 5000; DELETE FROM session", "PRAGMA writable_schema = 1"]) assert.equal(BUSY_TIMEOUT.test(text), false, text);
 });
 
 test("the guard sees a write in a read-only reader's SQL", () => {
@@ -154,9 +171,15 @@ const TODAY_DRIVER = [
   "packages/serve/src/server-lock.ts",
 ];
 
-test("no SQLite driver taken outside the store, but for today's files on the list", () => {
+test("no SQLite driver taken outside the store, but for today's files on the list and the read-only readers", () => {
   const outside = withDriver.filter((file) => !file.startsWith(STORE));
-  assert.deepEqual(outside.filter((file) => !TODAY_DRIVER.includes(file)), [], "a SQLite driver taken outside packages/serve/src/store/: go through the Store interface");
+  assert.deepEqual(outside.filter((file) => !TODAY_DRIVER.includes(file) && !READ_ONLY.includes(file)), [], "a SQLite driver taken outside packages/serve/src/store/: go through the Store interface");
+});
+
+test("a read-only reader takes the drivers it opens read-only, each seen however it names the module", () => {
+  // OpenCode's reader names node:sqlite and bun:sqlite through consts (a Bun build bundles node:sqlite as missing).
+  assert.deepEqual(driversIn(readFileSync(join(ROOT, "packages/import/src/readers/opencode.ts"), "utf8"), "opencode.ts"), ["bun:sqlite", "node:sqlite"]);
+  assert.deepEqual(READ_ONLY.filter((file) => !withDriver.includes(file)), [], "a read-only reader that takes no driver now holds no database: take it off READ_ONLY");
 });
 
 test("the driver list only shrinks: a listed file that takes no driver is taken off it", () => {

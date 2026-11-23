@@ -505,3 +505,30 @@ export function openCodeDb(home, sessions, { file = join(home, ".local", "share"
   db.close();
   return file;
 }
+
+/** OpenCode 1.x sessions in an opencode.db under `home` (`file` elsewhere), returned: the 1.x tables (session, message,
+ *  part), each message's `data` the message as OpenCode keeps it. Each session: its `id`, `cwd`, `created` (ms),
+ *  OpenCode `version`, and its `messages` in order: a prompt ({ id, role: "user", text, at }) or an answer ({ id, role:
+ *  "assistant", input, output, cost, at, text }), one request each. */
+export function openCodeV1Db(home, sessions, { file = join(home, ".local", "share", "opencode", "opencode.db") } = {}) {
+  mkdirSync(dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(`CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, slug text NOT NULL, directory text NOT NULL, title text NOT NULL,
+  version text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE message (id text PRIMARY KEY, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
+CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);`);
+  for (const { id, cwd, created, version = "1.2.0", title = "Sort the notes", messages } of sessions) {
+    const last = Math.max(created, ...messages.map((m) => m.at));
+    db.prepare("INSERT INTO session VALUES (?, 'prj_fixture', NULL, 'fixture', ?, ?, ?, ?, ?)").run(id, cwd, title, version, created, last);
+    for (const m of messages) {
+      const data =
+        m.role === "user"
+          ? { role: "user", time: { created: m.at }, agent: "build", model: { providerID: "anthropic", modelID: "claude-sonnet-5" } }
+          : { role: "assistant", providerID: "anthropic", modelID: "claude-sonnet-5", mode: "build", agent: "build", path: { cwd, root: cwd }, time: { created: m.at, completed: m.at + 500 }, cost: m.cost, tokens: { input: m.input, output: m.output, reasoning: 0, cache: { read: 0, write: 0 } }, finish: "stop" };
+      db.prepare("INSERT INTO message VALUES (?, ?, ?, ?, ?)").run(m.id, id, m.at, m.at, JSON.stringify(data));
+      db.prepare("INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)").run(`${m.id}_p0`, m.id, id, m.at, m.at, JSON.stringify({ type: "text", text: m.text }));
+    }
+  }
+  db.close();
+  return file;
+}

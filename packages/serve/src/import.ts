@@ -232,7 +232,7 @@ export type ImportOptions = {
  *  an import would take from it, by which tools, and when the latest of them ended. */
 export type ImportCandidate = { id: string; name: string; path: string; sessions: number; sources: Source[]; last_active: string | null };
 /** Why a session file or a project's file is left out, by kind, as the left-out counts group them (leftOutLines). */
-export type LeftOut = "gone" | "temp" | "live" | "large" | "unread" | "no-project" | "no-words" | "copies" | "vanished" | "file";
+export type LeftOut = "gone" | "temp" | "live" | "large" | "unread" | "no-project" | "no-words" | "mirror" | "copies" | "vanished" | "file";
 /** `session`, when the file was read: the session it holds (`<source>:<id>`), so a session of two files (a resumed Codex
  *  thread) is counted once. */
 export type Skipped = { what: string; why: string; kind: LeftOut; session?: string };
@@ -449,8 +449,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   // Each subagent read here, by locatorKey, as its own subagents name it (`source:id`): what holdBack walks down.
   const childIds = new Map<string, string>();
-  // Each subagent read here whose requests name another source's session (`mirrors`): its run is written after the rest.
-  const mirroring = new Set<string>();
+  // Each subagent read here whose requests name another source's session (`mirrors`), with those sessions: its run is
+  // written after the rest, and waits for a Claude Code session it names that is on disk but not imported now.
+  const mirroring = new Map<string, NonNullable<Session["mirrors"]>>();
   const mirrorsBelow = new Set<string>();
   const tie = async (locator: Locator, source: Source, size: LocatorSize): Promise<void> => {
     const listed = size.bytes > MAX_SESSION_BYTES ? undefined : await readSession(locator, source, { turns: false }).catch(() => undefined);
@@ -503,7 +504,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       if (session.child && session.parent) {
         child(`${source}:${session.parent}`, locator);
         childIds.set(locatorKey(locator), `${source}:${session.id}`);
-        if (session.mirrors?.length) mirroring.add(locatorKey(locator));
+        if (session.mirrors?.length) mirroring.set(locatorKey(locator), session.mirrors);
         continue;
       }
       if (!session.cwd) {
@@ -565,6 +566,34 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.
   const chosen = only === undefined ? undefined : new Set(only);
+  // A run that leaves a request to a Claude Code session (`mirrors`, its own or a subagent's) counts it there only once
+  // that session is saved: saved by a later import, the request would count in both. So a run whose Claude Code session
+  // is on disk but not imported now (still written, held back with a live subagent, in a project not chosen, or of a
+  // source this import does not read) waits for it, said. One whose session no import brings in as it is (over the cap,
+  // unreadable, a temp or gone folder, no message of the person's), or that is no file here, imports now: the request is
+  // its own.
+  const targetsOf = (parts: readonly Session[]) => [...parts.flatMap((part) => part.mirrors ?? []), ...subagentsOf(children, parts, childIds).flatMap((locator) => mirroring.get(locatorKey(locator)) ?? [])].filter((link) => link.source === "claude-code");
+  const waiting = [...projects.values()].flatMap((project) => byRun(project.sessions).flatMap((parts) => (targetsOf(parts).length ? [{ project, parts }] : [])));
+  if (waiting.length) {
+    const stored = store ? await importedIn(store) : new Map<string, string>();
+    const now = new Set([...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).flatMap((project) => project.sessions.filter((session) => session.source === "claude-code").map((session) => session.id)));
+    const never = new Set(skipped.filter((entry) => leftFrom.get(entry)?.source === "claude-code" && NEVER_IN.has(entry.kind)).map((entry) => (entry.session?.startsWith("claude-code:") ? entry.session.slice("claude-code:".length) : basename(entry.what, ".jsonl"))));
+    const listed = new Set((await sessionLocators(home, "claude-code", { env }).catch((): Locator[] => [])).map((locator) => basename(locator.file, ".jsonl")));
+    for (const { project, parts } of waiting) {
+      const key = `${parts[0]!.source}:${parts[0]!.id}`;
+      if (stored.has(key)) continue;
+      let target: string | undefined;
+      for (const link of targetsOf(parts)) {
+        const kept = await idOf(link.sessionId, scan);
+        if (listed.has(link.sessionId) && !now.has(kept) && !stored.has(`claude-code:${kept}`) && !never.has(kept) && !never.has(link.sessionId)) target = kept;
+      }
+      if (target === undefined) continue;
+      leave({ what: locatorKey(locatorOf(parts[0]!)), why: `a request of it ran through Claude Code session ${target}, on disk but not imported now: it comes in with that session`, kind: "mirror", session: key }, parts[0]!.source, project.cwd);
+      project.sessions = project.sessions.filter((session) => `${session.source}:${session.id}` !== key);
+      mirrorsBelow.delete(key);
+      if (!project.sessions.length) projects.delete(project.cwd);
+    }
+  }
   // What is left out is said of the projects chosen alone, each file by the folder it names: as its read gave it, or,
   // for a file left out unread (still written, over the cap, unreadable), as its first records say. A file that names
   // no folder is no chosen project's.
@@ -753,16 +782,21 @@ function merged(parts: readonly Session[]): Session {
 const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
 
 /** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
- *  already (each answer's response id and each entry's record ids, as its transcript keeps them), then each file's as it
- *  is read. */
+ *  already (each answer's response id and each entry's record ids, as its transcript keeps them; an OpenCode answer's
+ *  fingerprint, what a 1.x fork's copy of it is keyed by), then each file's as it is read. */
 async function seenIn(store: ImportStore | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
   const bySource = new Map<Source, Set<string>>();
   const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
   if (!store || !(await store.agents.get(agentId))) return seen;
   for (const run of await store.runs.list({ agentId })) {
-    if (run.importedFrom?.source !== "claude-code") continue;
+    const source = run.importedFrom?.source;
+    if (source !== "claude-code" && source !== "opencode") continue;
     for (const entry of (await journalEntries(store.readJournal(run.id), ctx)) as unknown as EntryLike[]) {
       const id = (entry.model?.[0] as { responseId?: unknown } | undefined)?.responseId;
+      if (source === "opencode") {
+        if (typeof id === "string" && id.startsWith("o:")) seen("opencode").add(id);
+        continue;
+      }
       if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
       // A run imported before a request's key held its request id (message id:request id) keeps the bare message id:
       // the reader matches it against a request's message id alone.
@@ -774,6 +808,9 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
   return seen;
 }
 
+/** Why a Claude Code session is left out that no later import changes as it is: a request another run leaves to it
+ *  (`mirrors`) counts in that run. */
+const NEVER_IN = new Set<LeftOut>(["large", "unread", "no-words", "temp", "gone", "no-project"]);
 const LIVE_CHILD: Pick<Skipped, "why" | "kind"> = { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" };
 const LARGE_CHILD: Pick<Skipped, "why" | "kind"> = { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" };
 
@@ -1418,6 +1455,7 @@ const LEFT_OUT: Record<LeftOut, (n: number) => string> = {
   live: (n) => `${counted(n, "session")} still being written: ${n === 1 ? "it comes" : "they come"} in next time`,
   "no-words": (n) => `${counted(n, "session")} with no message of yours`,
   "no-project": (n) => `${counted(n, "file")} that ${n === 1 ? "is not a session" : "are not sessions"} (no project folder in ${n === 1 ? "it" : "them"})`,
+  mirror: (n) => `${counted(n, "session")} whose requests ran through a Claude Code session not imported yet: ${n === 1 ? "it comes" : "they come"} in with that session`,
   large: (n) => `${counted(n, "session")} over ${MAX_SESSION_BYTES / 1024 / 1024} MB`,
   unread: (n) => `${counted(n, "session file")} that could not be read`,
   vanished: (n) => `${counted(n, "session file")} gone since ${n === 1 ? "it was" : "they were"} counted`,

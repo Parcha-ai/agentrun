@@ -46,6 +46,17 @@ test("OpenCode: input leaves the cache out, output leaves the reasoning out (add
   assert.equal(normalizeUsage("opencode", { input: 1, output: -1 }), undefined);
 });
 
+test("OpenCode before 1.3.16 wrote output with its reasoning in it: a session's version says so where no total does", () => {
+  const tokens = { input: 100, output: 20, reasoning: 5, cache: { read: 0, write: 200 } };
+  // 1.3.15 and older (AI SDK 5, and 6 until anomalyco/opencode#21047): output 20 holds the 5.
+  for (const version of ["0.15.0", "1.2.27", "1.3.15", "v1.3.3"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 20, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, version);
+  // 1.3.16 on: output leaves it out, so 20 + 5. No version, or one that is none, reads as today's.
+  for (const version of ["1.3.16", "1.4.0", "1.19.5", "2.3.2", "1.10.0", undefined, "dev"]) assert.deepEqual(normalizeUsage("opencode", tokens, { version }), { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 }, String(version));
+  // A total says it whatever the version: 580 - 30 - 500 = 50.
+  const totalled = { total: 580, input: 30, output: 40, reasoning: 10, cache: { read: 500, write: 0 } };
+  for (const version of ["1.2.0", "1.19.5"]) assert.equal(normalizeUsage("opencode", totalled, { version }).output, 50, version);
+});
+
 test("unknown or broken counts: undefined, never zeros", () => {
   assert.equal(normalizeUsage("anthropic", undefined), undefined);
   assert.equal(normalizeUsage("anthropic", { output_tokens: 3 }), undefined);

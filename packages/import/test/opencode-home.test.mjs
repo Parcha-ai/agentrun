@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { parseHome, READERS } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
-import { buildLegacy, buildV2, T0 } from "./fixtures/opencode/fixture.mjs";
+import { buildLegacy, buildV1, buildV2, T0, v1Fork } from "./fixtures/opencode/fixture.mjs";
 
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 const DATA = ".local/share/opencode";
@@ -39,9 +39,10 @@ test("a home's OpenCode sessions: a db session keyed by relpath#id, a storage on
   assert.deepEqual([by.ses_F.tokens, by.ses_F.cost, by.ses_F.turns, by.ses_F.calls], [tokens(1, 1), 0.03125, 0, 1]);
   // No Claude Code session in the import: every claude-agent request counts.
   assert.deepEqual([by.ses_K.tokens, by.ses_K.cost, by.ses_K.turns, by.ses_K.calls], [tokens(18, 5), 0.9375, 1, 4]);
-  // ses_A 230/375/1100/200 at 0.875 (reasoning 5 + 10 + 200), its subagent ses_B 10/5 at 0.0625: one line, both costs.
+  // ses_A 230/370/1100/200 at 0.875 (reasoning 5 + 10 + 200; the storage's OpenCode, 0.15.0, wrote prt_A2d's output
+  // with its reasoning in it), its subagent ses_B 10/5 at 0.0625: one line, both costs.
   assert.equal(by.ses_A.reasoning, 215);
-  assert.deepEqual([by.ses_A.tokens, by.ses_A.cost, by.ses_A.turns, by.ses_A.calls, by.ses_A.subagents], [tokens(240, 380, 1100, 200), 0.9375, 2, 4, 1]);
+  assert.deepEqual([by.ses_A.tokens, by.ses_A.cost, by.ses_A.turns, by.ses_A.calls, by.ses_A.subagents], [tokens(240, 375, 1100, 200), 0.9375, 2, 4, 1]);
   assert.deepEqual(lines.map((line) => line.key), lines.map((line) => line.key).sort());
 });
 
@@ -119,4 +120,25 @@ test("parseHome's state: a second pass over an unchanged OpenCode home reads not
   const second = await parseHome(home, { sources: ["opencode"], catalog: false, env: {}, state });
   assert.equal(state.read, 0);
   assert.deepEqual(second, first);
+});
+
+test("a 1.x fork in a home's totals: its 30 copied requests count in its source alone, 40 there and its own 2 here; a pass over the fork changed since totals as a fresh one", async (t) => {
+  const home = await tempHome(t);
+  const file = join(home, DATA, "opencode.db");
+  await buildV1(file, v1Fork());
+  const state = {};
+  const by = byId(await parseHome(home, { sources: ["opencode"], catalog: false, env: {}, state }));
+  assert.deepEqual([by.ses_S.tokens, by.ses_S.calls, by.ses_S.cost, by.ses_S.turns], [tokens(820, 40), 40, 2.5, 1]);
+  assert.deepEqual([by.ses_F.tokens, by.ses_F.calls, by.ses_F.cost, by.ses_F.turns], [tokens(300, 4), 2, 0.5, 1]);
+  // The fork goes on: one more request of its own (input 400, output 1 + 1 reasoning, 0.125).
+  const db = new DatabaseSync(file);
+  const created = T0 + 240_000;
+  const info = { role: "assistant", providerID: "anthropic", modelID: "claude-sonnet-4-5", path: { cwd: "/fixture/fork", root: "/fixture/fork" }, time: { created }, cost: 0.125, tokens: { input: 400, output: 1, reasoning: 1, cache: { read: 0, write: 0 } } };
+  db.prepare("INSERT INTO message VALUES ('msg_F92', 'ses_F', ?, ?, ?)").run(created, created, JSON.stringify(info));
+  db.prepare("UPDATE session SET time_updated = ? WHERE id = 'ses_F'").run(created);
+  db.close();
+  // Read again whole from its cursor, its own requests are its own, not copies of what its last read added.
+  const again = await parseHome(home, { sources: ["opencode"], catalog: false, env: {}, state });
+  assert.deepEqual(again, await parseHome(home, { sources: ["opencode"], catalog: false, env: {} }));
+  assert.deepEqual([byId(again).ses_F.tokens, byId(again).ses_F.calls, byId(again).ses_F.cost], [tokens(700, 6), 3, 0.625]);
 });

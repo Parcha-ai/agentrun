@@ -82,8 +82,8 @@ export const V1 = [
 const v1Rows = (db, records) => {
   db.prepare("INSERT OR IGNORE INTO project VALUES ('prj_fixture', '/fixture/project', ?, ?, '[]')").run(T0, T0);
   for (const { session, messages } of records) {
-    db.prepare("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?, 'prj_fixture', ?, 'fixture', ?, ?, '1.19.5', ?, ?)")
-      .run(session.id, session.parentID ?? null, session.directory, session.title, session.time.created, session.time.updated);
+    db.prepare("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES (?, 'prj_fixture', ?, 'fixture', ?, ?, ?, ?, ?)")
+      .run(session.id, session.parentID ?? null, session.directory, session.title, session.version ?? "1.19.5", session.time.created, session.time.updated);
     for (const message of messages) {
       const { id, ...data } = message.info;
       db.prepare("INSERT INTO message VALUES (?, ?, ?, ?, ?)").run(id, session.id, data.time.created, data.time.created, message.raw ?? JSON.stringify(data));
@@ -103,12 +103,47 @@ async function database(file, schema) {
   return db;
 }
 
-/** A 1.x opencode.db at `file` holding V1. */
-export async function buildV1(file) {
+/** A 1.x opencode.db at `file` holding `records` (V1's shape), V1 without them. */
+export async function buildV1(file, records = V1) {
   const [v1] = (await readFile(SCHEMA, "utf8")).split("-- 2.x only from here.");
   const db = await database(file, v1);
-  v1Rows(db, V1);
+  v1Rows(db, records);
   db.close();
+}
+
+const S = T0 + 200_000;
+const SONNET = { providerID: "anthropic", modelID: "claude-sonnet-4-5" };
+const answer = (id, created, cost, steps) => ({
+  info: { id, role: "assistant", parentID: "msg_S0", ...SONNET, mode: "build", agent: "build", path: { cwd: "/fixture/fork", root: "/fixture/fork" }, time: { created, completed: created + 500 }, cost, tokens: steps.at(-1), finish: "stop" },
+  // Part ids ascend as they are written, as OpenCode's do (the reader takes a message's parts in id order).
+  parts: steps
+    .flatMap((step, i) => [
+      { type: "step-start" },
+      ...(i === 0 ? [{ type: "text", text: `Step ${id}.` }] : []),
+      { type: "step-finish", reason: "stop", cost: cost / steps.length, tokens: step },
+    ])
+    .map((part, i) => ({ id: `${id}_p${i}`, ...part })),
+});
+/** A 1.x session ses_S of 40 requests (20 messages of 2 steps; step k: input k, output 1 with 1 of reasoning, no total,
+ *  0.0625), and ses_F, which 1.x's Session.fork made of it after its 15th message: its prompt and those 15 messages (30
+ *  requests) copied under new ids, their times, model, tokens and cost kept, then a prompt and a message of 2 requests
+ *  of its own (input 100 and 200, output 1 + 1 reasoning each, 0.25 each). OpenCode 1.2.0 wrote ses_S and 1.4.0 the
+ *  fork, which read output apart from reasoning (usage.ts): the copies' usage reads another way there, their tokens as
+ *  written the same. ses_S: 40 requests, 820 in, 40 out, 2.5. ses_F's own: 2 requests, 300 in, 4 out, 0.5. */
+export function v1Fork() {
+  const prompt = { info: { id: "msg_S0", role: "user", time: { created: S }, agent: "build", model: SONNET }, parts: [{ id: "prt_S0", type: "text", text: "Split the module." }] };
+  const messages = Array.from({ length: 20 }, (_, m) => answer(`msg_S${m + 1}`, S + (m + 1) * 1000, 0.125, [tokens(2 * m + 1, 1, 1, 0, 0), tokens(2 * m + 2, 1, 1, 0, 0)]));
+  // Session.fork: each message and part under a new id (MessageID.ascending, PartID.ascending), the rest as it was.
+  const copy = ({ info, parts }, i) => ({ info: { ...info, id: `msg_F${String(i).padStart(2, "0")}` }, parts: parts.map((part, j) => ({ ...part, id: `prt_F${String(i).padStart(2, "0")}_${j}` })) });
+  const copied = [prompt, ...messages.slice(0, 15)].map(copy);
+  const own = [
+    { info: { id: "msg_F90", role: "user", time: { created: S + 31_000 }, agent: "build", model: SONNET }, parts: [{ id: "prt_F90", type: "text", text: "Now the tests." }] },
+    answer("msg_F91", S + 32_000, 0.5, [tokens(100, 1, 1, 0, 0), tokens(200, 1, 1, 0, 0)]),
+  ];
+  return [
+    { session: { id: "ses_S", directory: "/fixture/fork", title: "Split the module", version: "1.2.0", time: { created: S, updated: S + 21_000 } }, messages: [prompt, ...messages] },
+    { session: { id: "ses_F", directory: "/fixture/fork", title: "Split the module (fork #1)", version: "1.4.0", time: { created: S + 30_000, updated: S + 33_000 } }, messages: [...copied, ...own] },
+  ];
 }
 
 const MODEL = { id: "claude-opus-4-5", providerID: "anthropic", variant: "max" };

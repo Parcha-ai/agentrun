@@ -53,7 +53,7 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"` or `"opencode"` writes it:
+`normalizeUsage(format, raw, options?)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"` or `"opencode"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
@@ -66,8 +66,9 @@ A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session'
 record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
-line's usage. OpenCode's `output` leaves the reasoning out, so `output` is `output + reasoning`; an older OpenCode's
-already held it, and where a step records `total`, `output` is what the total leaves after the input and the cache. Each
+line's usage. OpenCode's `output` leaves the reasoning out, so `output` is `output + reasoning`. An OpenCode before
+1.3.16 (`options.version`, the session's `version`) wrote it in `output` already, so its `output` stays as written; where
+a step records `total`, `output` is what the total leaves after the input and the cache, whatever the version. Each
 step of an OpenCode message is one request, at its `step-finish` part's usage (the message keeps only the last step's).
 
 ## Readers
@@ -99,17 +100,22 @@ last write, which a caller's size caps and "still being written" check go by (`l
 OpenCode is that source. Its sessions are in `$XDG_DATA_HOME/opencode` (`~/.local/share/opencode`): `opencode*.db` (1.x
 and 2.x schemas; a 2.x session wins over the 1.x copy beside it), the database `OPENCODE_DB` names, and the JSON
 `storage/` OpenCode kept before SQLite. A locator is `{ file: <db>, id: <session id> }`, or a storage session's own
-JSON file; each session is listed once, the first database's that holds it. Its cursor is the file's device and inode
+JSON file; each session is listed once, from the database that wrote it last (its rows' latest `time_updated`; a tie,
+the first database). Its cursor is the file's device and inode
 and a stamp of the session's rows (each table's row count and latest `time_updated`): an unchanged session is not read
 again, a changed one is read again whole, a replaced database from its start. A fork's rows copied from its source
-session count nothing. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
-`time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun.
+session count nothing. A 2.x fork marks them. A 1.x fork (OpenCode's `fork()` copies each message under a new id, its
+time, tokens and cost as they were) and a 2.x row with no mark are told by a fingerprint: a request's time, step, model,
+tokens and cost as written, a prompt's time and text. `order` reads a home's sessions oldest first, so a source comes
+before its forks, and the cursor keeps the fingerprints its read took, so a session read again is no copy of itself.
+A row time past now reads as now. A `turns: false` read keeps a request's error as `failed`, never its text. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
+`time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun, read-only, waiting up to 5 s on a write lock.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
 `locatorSize`; one whose size query throws is kept, marked `failed`, for the caller to read or report), `locatorSize(locator, source)` (null when the session is gone, any other error thrown), `locatorParent(locator, source)` and `childrenOf(home, source)` are what
 serve's import reads through. `locatorParent` names the session a subagent ran under without reading the subagent: the
 `parent` its reader's `stat` gives (an OpenCode row's), else its reader's `parentOf`. Codex's reads a rollout's first
-line, `session_meta`, and never more than 256 KiB of it. serve uses it to tie a subagent over the cap to its run, which
+line, `session_meta`, 256 KiB at a time and never past 64 MiB: a first line longer than that names no parent. serve uses it to tie a subagent over the cap to its run, which
 it then holds back. The
 mirror rule is one export for both callers: `mirroredIn(counted)` over the `sessionKey(source, id)` of the sessions
 counted, and `ownRequests(requests, cost, mirrored)` for a session's own requests and cost.

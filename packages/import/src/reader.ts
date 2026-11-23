@@ -24,7 +24,13 @@ export type LocatorSize = {
   /** The session it ran under, when the reader knows it without reading the session (a database row's parent): a caller
    *  that leaves a subagent out (still written, too large) leaves the session it ran under out with it. */
   parent?: string;
+  /** When the session began (ms), when the reader knows it without reading the session (a database row's): what its
+   *  order of reading may go by. */
+  created?: number;
 };
+
+/** What a reader's order of locators goes by. */
+export type OrderKey = { file: string; mtimeMs: number; id?: string; created?: number };
 
 /** One session a read found: where it is, what it is, and every request read (each counted once), whether turns are kept
  *  or not: what a total counts. */
@@ -65,8 +71,9 @@ export type Reader<S extends string = string, C = unknown> = {
   /** One locator read, from its start or from `cursor` (one this reader returned for the same locator). A cursor that no
    *  longer fits (the file replaced, truncated, rewritten) is read from the start, `resumed` false. */
   read: (locator: Locator, cursor?: C, options?: ReadOptions) => Promise<ReadResult<S, C>>;
-  /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's). */
-  order?: (a: { file: string; mtimeMs: number }, b: { file: string; mtimeMs: number }) => number;
+  /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's):
+   *  each with its file's mtime, its id in the file, and when its session began where the reader's stat says. */
+  order?: (a: OrderKey, b: OrderKey) => number;
   /** The locator's own size and last write, when it is not its file's (a session in a database of many): what a caller's
    *  size caps and liveness go by. null: the session is not there. Without it, the file's (locatorSize). */
   stat?: (locator: Locator) => Promise<LocatorSize | null>;

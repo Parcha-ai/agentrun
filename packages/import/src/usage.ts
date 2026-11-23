@@ -4,15 +4,32 @@
 //   openai     input_tokens holds cached_input_tokens (and a cache write where one is counted): subtracted. output_tokens
 //              holds reasoning_output_tokens, kept as `reasoning` beside it. Codex writes OpenAI's counts.
 //   pi         already split as Usage is, cacheWrite1h included.
-//   opencode   {input, output, reasoning, cache: {read, write}, total?}: input already leaves the cache out; output leaves
-//              the reasoning out, so output is output + reasoning (reasoning kept beside it, as OpenAI's). An older
-//              OpenCode's output held the reasoning already: where a step records its `total`, output is what the total
-//              leaves after the input and the cache, when that is at least the output. All nought is no usage: a
-//              request cut before its usage came.
+//   opencode   {input, output, reasoning, cache: {read, write}, total?}: input already leaves the cache out. Since
+//              OpenCode 1.3.16 output leaves the reasoning out (anomalyco/opencode 280eb16e77, #21047: "ensure reasoning
+//              tokens arent double counted"; AI SDK 6 came in 1.3.4, and output was still the SDK's whole outputTokens
+//              until then), so output is output + reasoning (reasoning kept beside it, as OpenAI's). Before it, output
+//              held the reasoning already: a session's `version` older than 1.3.16 keeps output as it is. Where a step
+//              records its `total`, output is what the total leaves after the input and the cache, when that is at
+//              least the output, whatever the version. All nought is no usage: a request cut before its usage came.
 import { isObject } from "./text.js";
 import type { Usage } from "./types.js";
 
 export type UsageFormat = "anthropic" | "openai" | "pi" | "opencode";
+/** What a format's reading may need beyond the counts: the version of the program that wrote them (OpenCode's). */
+export type UsageOptions = { version?: string };
+
+/** The first OpenCode whose output leaves the reasoning out. */
+const OPENCODE_SPLIT = [1, 3, 16];
+/** Whether `version` ("1.2.3", a pre-release after it) is an OpenCode older than 1.3.16; unknown is not. */
+function beforeSplit(version: string | undefined): boolean {
+  const parts = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version ?? "");
+  if (!parts) return false;
+  for (let i = 0; i < 3; i += 1) {
+    const [at, split] = [Number(parts[i + 1]), OPENCODE_SPLIT[i]!];
+    if (at !== split) return at < split;
+  }
+  return false;
+}
 
 /** Each format's names for input, cache read, cache write and output, and whether its input holds its cache counts. */
 const NAMES: Record<Exclude<UsageFormat, "opencode">, { input: string; cacheRead: string; cacheWrite: string; output: string; cachedIn: boolean }> = {
@@ -26,9 +43,9 @@ const count = (value: unknown): number | undefined => (Number.isSafeInteger(valu
 /** A request's usage as `format` writes it, as Usage; undefined unless input and output are counts (an absent cache
  *  count is 0) and the input left is not negative. The 1h part of the cache write, or the reasoning part of the output,
  *  is kept only when it is a count of at most the whole. */
-export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undefined {
+export function normalizeUsage(format: UsageFormat, raw: unknown, options: UsageOptions = {}): Usage | undefined {
   if (!isObject(raw)) return undefined;
-  if (format === "opencode") return openCodeUsage(raw);
+  if (format === "opencode") return openCodeUsage(raw, beforeSplit(options.version));
   const names = NAMES[format];
   const usage = { input: count(raw[names.input]), output: count(raw[names.output]), cacheRead: count(raw[names.cacheRead] ?? 0), cacheWrite: count(raw[names.cacheWrite] ?? 0) };
   if (usage.input === undefined || usage.output === undefined || usage.cacheRead === undefined || usage.cacheWrite === undefined) return undefined;
@@ -42,13 +59,13 @@ export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undef
   return out;
 }
 
-function openCodeUsage(raw: Record<string, unknown>): Usage | undefined {
+function openCodeUsage(raw: Record<string, unknown>, holdsReasoning: boolean): Usage | undefined {
   const cache = isObject(raw.cache) ? raw.cache : {};
   const [input, output, reasoning, cacheRead, cacheWrite] = [raw.input, raw.output, raw.reasoning ?? 0, cache.read ?? 0, cache.write ?? 0].map(count);
   if (input === undefined || output === undefined || reasoning === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
   const total = count(raw.total);
   const left = total === undefined ? -1 : total - input - cacheRead - cacheWrite;
-  const usage: Usage = { input, output: left >= output ? left : output + reasoning, cacheRead, cacheWrite };
+  const usage: Usage = { input, output: left >= output ? left : holdsReasoning ? output : output + reasoning, cacheRead, cacheWrite };
   if (usage.input + usage.output + usage.cacheRead + usage.cacheWrite === 0) return undefined;
   if (raw.reasoning !== undefined && reasoning <= usage.output) usage.reasoning = reasoning;
   return usage;

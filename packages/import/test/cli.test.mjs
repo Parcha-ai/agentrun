@@ -111,7 +111,8 @@ test("an OpenCode home: a database session's key is the sha256 of relpath#id, a 
     { key: db("ses_D"), source: "opencode", tokens: tokens(7, 3), cost: 0, turns: 1, calls: 1 },
     { key: db("ses_F"), source: "opencode", tokens: tokens(1, 1), cost: 0.03125, turns: 0, calls: 1 },
     { key: db("ses_K"), source: "opencode", tokens: tokens(18, 5), cost: 0.9375, turns: 1, calls: 4 },
-    { key: sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json"), source: "opencode", tokens: tokens(240, 380, 1100, 200), cost: 0.9375, turns: 2, calls: 4 },
+    // The storage's OpenCode (0.15.0) wrote output with its reasoning in it: prt_A2d's 20, not 20 + 5.
+    { key: sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json"), source: "opencode", tokens: tokens(240, 375, 1100, 200), cost: 0.9375, turns: 2, calls: 4 },
   ].sort((a, b) => (a.key < b.key ? -1 : 1));
   assert.deepEqual(lines, expected);
   for (const leak of ["ses_", "Port the reader", "/fixture/", dir]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);

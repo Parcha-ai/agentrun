@@ -69,7 +69,8 @@ export async function inOrder(locators: readonly Locator[], source: string, read
     if (size) out.push({ locator, stats, ...size });
   }
   const order = readerOf(source, readers).order;
-  if (order) out.sort((a, b) => order({ file: a.locator.file, mtimeMs: a.stats.mtimeMs }, { file: b.locator.file, mtimeMs: b.stats.mtimeMs }));
+  const key = ({ locator, stats, size }: (typeof out)[number]) => ({ file: locator.file, mtimeMs: stats.mtimeMs, ...(locator.id !== undefined ? { id: locator.id } : {}), ...(size.created !== undefined ? { created: size.created } : {}) });
+  if (order) out.sort((a, b) => order(key(a), key(b)));
   return out;
 }
 

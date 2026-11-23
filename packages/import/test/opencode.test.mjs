@@ -2,13 +2,14 @@
 // storage OpenCode kept before SQLite), each read into the one Session shape. A locator with no id reads every session
 // of its database.
 import assert from "node:assert/strict";
-import { readdir, stat, symlink, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { locatorSize, READERS, readSession } from "../dist/index.js";
 import { openCodeFiles } from "../dist/readers/opencode.js";
 import { tempHome } from "./fixtures.mjs";
-import { buildLegacy, buildV1, buildV2, T0, V2_MESSAGES, V2_PARTS } from "./fixtures/opencode/fixture.mjs";
+import { buildLegacy, buildV1, buildV2, T0, V2_MESSAGES, V2_PARTS, v1Fork } from "./fixtures/opencode/fixture.mjs";
 
 const reader = READERS.opencode;
 const read = async (locator, options) => (await reader.read(locator, undefined, options)).sessions.map(({ session }) => session);
@@ -30,8 +31,9 @@ test("the reader is registered as opencode, run by serve's opencode harness", ()
   assert.deepEqual([reader.source, reader.name, reader.harness], ["opencode", "OpenCode", "opencode"]);
 });
 
-// ses_A and ses_B as the 1.x database and the JSON storage both hold them: one reading, wherever it was kept.
-function assertV1(sessions, fileOf) {
+// ses_A and ses_B as the 1.x database and the JSON storage both hold them: one reading, wherever it was kept, but for
+// prt_A2d's output, which records no total: the storage's OpenCode (0.15.0, `old`) wrote it with its reasoning in it.
+function assertV1(sessions, fileOf, { old = false } = {}) {
   const { ses_A: a, ses_B: b, ...rest } = byId(sessions);
   assert.deepEqual(Object.keys(rest), []);
   assert.deepEqual(
@@ -56,12 +58,12 @@ function assertV1(sessions, fileOf) {
   assert.deepEqual(first.calls, [{ type: "toolCall", id: "call_1", name: "read", arguments: { filePath: "/fixture/project/a.ts" } }]);
   assert.deepEqual([first.model, first.effort, first.costUsd, first.at], ["anthropic/claude-sonnet-4-5", "high", 0.25, T0 + 2000]);
   // Each step its own usage: the message's tokens are only its last step's. Output holds the reasoning, kept beside it.
-  assert.deepEqual(first.usage, { input: 100, output: 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 });
+  assert.deepEqual(first.usage, { input: 100, output: old ? 20 : 25, cacheRead: 0, cacheWrite: 200, reasoning: 5 });
   assert.deepEqual(second.usage, { input: 30, output: 50, cacheRead: 500, cacheWrite: 0, reasoning: 10 });
   assert.equal(second.calls[0].name, "bash");
   // An older message whose output holds its reasoning, as its total says.
   assert.deepEqual([third.model, third.effort, third.usage], ["openai/gpt-5", undefined, { input: 100, output: 300, cacheRead: 600, cacheWrite: 0, reasoning: 200 }]);
-  assert.deepEqual(total(a), { input: 230, output: 375, cacheRead: 1100, cacheWrite: 200 });
+  assert.deepEqual(total(a), { input: 230, output: old ? 370 : 375, cacheRead: 1100, cacheWrite: 200 });
   assert.equal(a.turns[2].name, "read");
 
   assert.deepEqual([b.child, b.parent, b.sourceTitle, b.costUsd, b.firstPrompt, b.model], [true, "ses_A", undefined, 0.0625, "Find the tests.", "anthropic/claude-haiku-4-5"]);
@@ -87,7 +89,7 @@ test("the JSON storage OpenCode kept before SQLite reads as its database does, a
     assert.deepEqual(one.locator, { file: fileOf(id) });
     sessions.push(one.session);
   }
-  assertV1(sessions, fileOf);
+  assertV1(sessions, fileOf, { old: true });
 });
 
 test("a 2.x opencode.db: its own tables first, 1.x history not yet moved, a fork's copied rows counted once", async (t) => {
@@ -125,6 +127,113 @@ test("a 2.x opencode.db: its own tables first, 1.x history not yet moved, a fork
 
   assert.deepEqual([d.model, d.cwd, d.costUsd, total(d)], ["openai/gpt-5", "/fixture/old", 0, { input: 7, output: 3, cacheRead: 0, cacheWrite: 0 }]);
   assert.deepEqual([f.copies, f.users, f.costUsd, said(f), total(f)], [3, 0, 0.03125, [["assistant", "Forked."]], { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }]);
+});
+
+test("a 1.x fork's copies (new ids, the same times, model, tokens and cost) count once, in the session read first; its own prompt and requests count", async (t) => {
+  const db = join(await tempHome(t), "opencode.db");
+  await buildV1(db, v1Fork());
+  const { ses_S: source, ses_F: fork } = byId(await read({ file: db }));
+  assert.deepEqual([source.turns.filter((turn) => turn.role === "assistant").length, total(source), source.costUsd, source.copies], [40, { input: 820, output: 40, cacheRead: 0, cacheWrite: 0 }, 2.5, 0]);
+  // The copied prompt and 15 messages (30 requests) are copies: the fork's own prompt and 2 requests are all it holds.
+  assert.deepEqual([fork.copies, fork.users, fork.costUsd, total(fork)], [16, 1, 0.5, { input: 300, output: 4, cacheRead: 0, cacheWrite: 0 }]);
+  assert.deepEqual(said(fork), [["user", "Now the tests."], ["assistant", "Step msg_F91."], ["assistant", ""]]);
+  assert.deepEqual([fork.firstPrompt, fork.startedAt], ["Now the tests.", at(231_000)]);
+  // Each request is keyed by its fingerprint, the same in both sessions' reads: never an id the fork made anew.
+  const keys = (session) => session.turns.filter((turn) => turn.role === "assistant").map((turn) => turn.key);
+  assert.ok([...keys(source), ...keys(fork)].every((key) => /^o:[0-9a-f]{32}$/.test(key)));
+  assert.equal(new Set([...keys(source), ...keys(fork)]).size, 42);
+  // Read alone, with no other session read before it, the fork is all its own.
+  const alone = await readSession({ file: db, id: "ses_F" }, "opencode");
+  assert.deepEqual([alone.copies, alone.turns.filter((turn) => turn.role === "assistant").length], [0, 32]);
+  // The import's `seen` carries the source's keys to a later read of the fork.
+  const seen = new Set();
+  await reader.read({ file: db, id: "ses_S" }, undefined, { seen });
+  const [later] = (await reader.read({ file: db, id: "ses_F" }, undefined, { seen, turns: false })).sessions;
+  assert.deepEqual([later.session.copies, later.requests.length], [16, 2]);
+});
+
+test("a 2.x fork that names no source (a 1.x one moved to 2.x): its copied rows count once too", async (t) => {
+  const db = join(await tempHome(t), "opencode.db");
+  const sqlite = new DatabaseSync(db);
+  sqlite.exec(await readFile(new URL("./fixtures/opencode/schema.sql", import.meta.url), "utf8"));
+  sqlite.prepare("INSERT INTO project VALUES ('prj_fixture', '/fixture/v2', ?, ?, '[]')").run(T0, T0);
+  const MODEL = { id: "claude-opus-4-5", providerID: "anthropic" };
+  const row = (n, input) => ({ agent: "build", model: MODEL, cost: 0.125, tokens: { input, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: T0 + n * 1000 }, content: [{ type: "text", text: `Answer ${n}.` }] });
+  const session = sqlite.prepare("INSERT INTO session_v2 (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, 'prj_fixture', 'fixture', '/fixture/v2', ?, '1.14.0', ?, ?)");
+  const message = sqlite.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)");
+  session.run("ses_S2", "Moved", T0, T0 + 5000);
+  const rows = [["user", { text: "Go.", time: { created: T0 } }], ["assistant", row(1, 10)], ["assistant", row(2, 20)], ["assistant", row(3, 30)]];
+  rows.forEach(([type, data], seq) => message.run(`msg_S2_${seq}`, "ses_S2", type, seq, T0, T0, JSON.stringify(data)));
+  // The fork: the first three rows under new ids, then one of its own; no fork_session_id, no fork_boundary.
+  session.run("ses_F2", "Moved (fork #1)", T0 + 10_000, T0 + 12_000);
+  rows.slice(0, 3).forEach(([type, data], seq) => message.run(`msg_F2_${seq}`, "ses_F2", type, seq, T0 + 10_000, T0 + 10_000, JSON.stringify(data)));
+  message.run("msg_F2_9", "ses_F2", "assistant", 3, T0 + 11_000, T0 + 11_000, JSON.stringify(row(11, 99)));
+  sqlite.close();
+  const { ses_S2: source, ses_F2: fork } = byId(await read({ file: db }));
+  assert.deepEqual([total(source).input, source.copies], [60, 0]);
+  assert.deepEqual([fork.copies, fork.users, total(fork).input, fork.costUsd], [3, 0, 99, 0.125]);
+});
+
+test("a session's OpenCode version says how its output reads where no total does: before 1.3.16 it holds the reasoning", async (t) => {
+  const db = join(await tempHome(t), "opencode.db");
+  const tokens = { input: 10, output: 20, reasoning: 5, cache: { read: 0, write: 0 } };
+  const session = (id, version, at) => ({
+    session: { id, directory: "/fixture/v", title: id, version, time: { created: at, updated: at + 2000 } },
+    messages: [{ info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/v", root: "/fixture/v" }, time: { created: at + 1000 }, cost: 0.5, tokens }, parts: [] }],
+  });
+  await buildV1(db, [session("ses_old", "1.3.15", T0), session("ses_new", "1.3.16", T0 + 10_000)]);
+  const { ses_old: old, ses_new: now } = byId(await read({ file: db }));
+  assert.deepEqual(old.turns[0].usage, { input: 10, output: 20, cacheRead: 0, cacheWrite: 0, reasoning: 5 });
+  assert.deepEqual(now.turns[0].usage, { input: 10, output: 25, cacheRead: 0, cacheWrite: 0, reasoning: 5 });
+});
+
+test("no time past now: a row written by a clock set ahead is not live for ever, and one past what a Date holds reads as now", async (t) => {
+  const db = join(await tempHome(t), "opencode.db");
+  const ahead = Date.now() + 365 * 24 * 60 * 60_000;
+  const tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } };
+  const session = (id, at) => ({
+    session: { id, directory: "/fixture/t", title: id, time: { created: at, updated: at } },
+    messages: [
+      { info: { id: `${id}_u`, role: "user", time: { created: at } }, parts: [{ id: `${id}_p`, type: "text", text: "Go." }] },
+      { info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/t", root: "/fixture/t" }, time: { created: at, completed: at }, cost: 0, tokens }, parts: [] },
+    ],
+  });
+  await buildV1(db, [session("ses_ahead", ahead), session("ses_far", 9e15)]);
+  const before = Date.now();
+  const size = await locatorSize({ file: db, id: "ses_ahead" }, "opencode");
+  assert.ok(size.mtimeMs <= Date.now() && size.mtimeMs >= before, "its last write is now at the latest");
+  const { ses_ahead: a, ses_far: far } = byId(await read({ file: db }));
+  for (const s of [a, far]) assert.ok(Date.parse(s.endedAt) <= Date.now() && Date.parse(s.startedAt) <= Date.parse(s.endedAt), s.id);
+  assert.ok(far.turns.every((turn) => turn.at <= Date.now()));
+});
+
+test("a session two databases hold (a channel's stale copy beside opencode.db's): the one written last is listed", async (t) => {
+  const home = await tempHome(t);
+  const data = join(home, ".local", "share", "opencode");
+  const tokens = { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } };
+  const session = (updated, messages) => ({
+    session: { id: "ses_X", directory: "/fixture/x", title: "Both", time: { created: T0, updated: T0 + 1000 } },
+    messages: Array.from({ length: messages }, (_, i) => ({ info: { id: `msg_X${i}`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/x", root: "/fixture/x" }, time: { created: T0 + 1000 + i, completed: updated }, cost: 0, tokens }, parts: [] })),
+  });
+  // opencode-beta.db sorts before opencode.db, and holds the copy from before the session went on.
+  await buildV1(join(data, "opencode-beta.db"), [session(T0 + 2000, 1)]);
+  await buildV1(join(data, "opencode.db"), [session(T0 + 9000, 3)]);
+  const latest = (rows) => {
+    const db = new DatabaseSync(rows.file);
+    db.prepare("UPDATE message SET time_updated = ?").run(rows.at);
+    db.close();
+  };
+  latest({ file: join(data, "opencode-beta.db"), at: T0 + 2000 });
+  latest({ file: join(data, "opencode.db"), at: T0 + 9000 });
+  assert.deepEqual(await reader.discover(home, {}), [{ file: join(data, "opencode.db"), id: "ses_X" }]);
+  // Written later in the channel's: that one.
+  latest({ file: join(data, "opencode-beta.db"), at: T0 + 20_000 });
+  assert.deepEqual(await reader.discover(home, {}), [{ file: join(data, "opencode-beta.db"), id: "ses_X" }]);
+  // On a tie, the first: OPENCODE_DB's comes first.
+  const named = join(home, "elsewhere.db");
+  await buildV1(named, [session(T0 + 20_000, 1)]);
+  latest({ file: named, at: T0 + 20_000 });
+  assert.deepEqual(await reader.discover(home, { OPENCODE_DB: named }), [{ file: named, id: "ses_X" }]);
 });
 
 test("a claude-agent request names the Claude Code session that also holds it; the session, each one it names", async (t) => {
@@ -212,7 +321,8 @@ test("a database session's size and last write are its own rows', not its databa
   // ses_C's 2.x rows: each message's and part's data as written, and its session row updated last, at C + 11 s.
   const data = [...V2_MESSAGES.map(([, , d]) => (typeof d === "string" ? d : JSON.stringify(d))), ...V2_PARTS.map(([, , , , d]) => JSON.stringify(d))];
   const c = await locatorSize({ file: db, id: "ses_C" }, "opencode");
-  assert.deepEqual(c, { bytes: data.reduce((n, d) => n + Buffer.byteLength(d), 0), mtimeMs: T0 + 111_000 }, "its 2.x rows, never its 1.x copy");
+  // When it began, its row's: the import reads OpenCode's sessions oldest first.
+  assert.deepEqual(c, { bytes: data.reduce((n, d) => n + Buffer.byteLength(d), 0), mtimeMs: T0 + 111_000, created: T0 + 100_000 }, "its 2.x rows, never its 1.x copy");
   // ses_D, 1.x history not yet moved: its 1.x rows, its session row updated last.
   const d = await locatorSize({ file: db, id: "ses_D" }, "opencode");
   assert.equal(d.mtimeMs, T0 + 52_000);
@@ -232,5 +342,5 @@ test("a database session's size and last write are its own rows', not its databa
   const v1 = join(dir, "v1.db");
   await buildV1(v1);
   assert.deepEqual([(await locatorSize({ file: v1, id: "ses_B" }, "opencode")).parent, (await locatorSize({ file: v1, id: "ses_A" }, "opencode")).parent], ["ses_A", undefined]);
-  assert.deepEqual(await locatorSize({ file: files[0] }, "opencode"), { bytes: stats.reduce((n, s) => n + s.size, 0), mtimeMs: Math.max(...stats.map((s) => s.mtimeMs)) });
+  assert.deepEqual(await locatorSize({ file: files[0] }, "opencode"), { bytes: stats.reduce((n, s) => n + s.size, 0), mtimeMs: Math.max(...stats.map((s) => s.mtimeMs)), created: T0 });
 });

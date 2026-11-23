@@ -1,7 +1,7 @@
 // A subagent's session is its parent's: the parent's totals hold its requests, and it is no session of its own.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { truncateSync } from "node:fs";
+import { truncateSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { locatorParent, parseHome } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -86,7 +86,7 @@ test("Claude Code: a resumed session's file that opens with a copy of another se
   assert.deepEqual([b.id, b.tokens.input, b.tokens.output, b.calls], ["s-b", 3, 9, 1]);
 });
 
-test("Codex: a rollout's parent comes from its first line alone, never read past a bounded head", async (t) => {
+test("Codex: a rollout's parent comes from its first line alone, read to its end however long within 64 MiB, never past it", async (t) => {
   const home = await tempHome(t);
   const child = codexFile(home, "rollout-2026-01-01T00-00-00-child.jsonl");
   await writeJsonl(child, [codexMeta("thread-child", "thread-top"), codexUser("Fixture task.")]);
@@ -100,8 +100,15 @@ test("Codex: a rollout's parent comes from its first line alone, never read past
   const other = codexFile(home, "rollout-2026-01-01T00-00-00-other.jsonl");
   await writeJsonl(other, [{ type: "turn_context", timestamp: "2026-01-01T00:00:00.000Z", payload: { parent_thread_id: "thread-top" } }]);
   assert.equal(await locatorParent({ file: other }, "codex"), undefined);
-  // A first line that does not end within the head (256 KiB) names none: it is never read on.
+  // A session_meta over 256 KiB (long instructions, many tools) is read to its end: its parent is still named, so a
+  // child over the cap holds its run back, never leaves it without the child's usage.
   const long = codexFile(home, "rollout-2026-01-01T00-00-00-long.jsonl");
-  await writeJsonl(long, [{ ...codexMeta("thread-long", "thread-top"), padding: "x".repeat(1024 * 1024) }]);
-  assert.equal(await locatorParent({ file: long }, "codex"), undefined);
+  await writeJsonl(long, [{ ...codexMeta("thread-long", "thread-top"), padding: "x".repeat(1024 * 1024) }, codexUser("Fixture task.")]);
+  truncateSync(long, 512 * 1024 * 1024);
+  assert.equal(await locatorParent({ file: long }, "codex"), "thread-top");
+  // A first line that runs past 64 MiB (a hole where it would end) names none: it is never read further.
+  const endless = codexFile(home, "rollout-2026-01-01T00-00-00-endless.jsonl");
+  writeFileSync(endless, JSON.stringify(codexMeta("thread-endless", "thread-top")).slice(0, -1));
+  truncateSync(endless, 128 * 1024 * 1024);
+  assert.equal(await locatorParent({ file: endless }, "codex"), undefined);
 });
