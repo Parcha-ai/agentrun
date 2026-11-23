@@ -189,6 +189,21 @@ test("an agent holds at most SDK_OPEN_PER_AGENT SDK runs open at once: the next 
   assert.equal((await start()).status, 429, "and the cap holds again");
 });
 
+test("a run whose backend task completed holds no slot, though its run still goes (its runner has yet to end it, or it is still learning)", async (t) => {
+  const { start, store, data } = await fixture(t);
+  const { SDK_OPEN_PER_AGENT } = await import("../dist/sdk/runs.js");
+  const open = [];
+  for (let i = 0; i < SDK_OPEN_PER_AGENT; i++) open.push((await start()).body.run_id);
+  assert.equal((await start()).status, 429, "full");
+  // The task's completion is in its inbox; no runner here ends the run, so it is live as one still learning is.
+  const sdk = new SdkRuns(store, data, "fake-test-key");
+  assert.deepEqual(await sdk.complete(open[0], { status: "completed", answer: "done" }), { accepted: true });
+  assert.equal((await store.runs.counts((await store.runs.get(open[0])).agentId)).live, SDK_OPEN_PER_AGENT, "the run still goes");
+  const next = await start();
+  assert.equal(next.status, 201, JSON.stringify(next.body));
+  assert.equal((await start()).status, 429, "and the cap holds again");
+});
+
 test("labels are kept on the run and found by GET /runs?label=", async (t) => {
   const { start, api } = await fixture(t);
   const labels = { tenant: "acme", "job/id": "nightly-7" };

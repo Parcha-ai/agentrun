@@ -110,6 +110,21 @@ export const SDK_OPEN_PER_AGENT = 8;
  *  once never pass the cap together. One process holds a store (its owner lock), so this queue is every start's. */
 const sdkStarts = new Map<string, Promise<unknown>>();
 const overCap = () => new ApiError("rate_limited", `This agent has ${SDK_OPEN_PER_AGENT} SDK runs open, the most it holds at once: complete or cancel one, or let its inbox close, then start again.`);
+/** Whether agent `agentId` holds SDK_OPEN_PER_AGENT open SDK runs: runs still going whose inbox has no completion and is
+ *  not closed. A run whose task completed holds no slot while its runner has yet to end it or it still learns
+ *  (learningEndOfRun), as the refusal's words promise. The live count answers alone below the cap; at it, each live run's
+ *  inbox is read (a run with no inbox yet counts as open). */
+async function capFull(store: Pick<Store, "runs" | "settings">, agentId: string): Promise<boolean> {
+  if ((await store.runs.counts(agentId)).live < SDK_OPEN_PER_AGENT) return false;
+  let open = 0;
+  for (const state of ["queued", "running", "parked"] as const)
+    for (const run of await store.runs.list({ agentId, state })) {
+      const inbox = await store.settings.get(keyOf(run.id));
+      if (!isObject(inbox) || (!inbox.completion && !inbox.closed)) open++;
+      if (open >= SDK_OPEN_PER_AGENT) return true;
+    }
+  return false;
+}
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
@@ -310,7 +325,7 @@ export class SdkRuns {
       }
     }
     // Refused early, before the work a start does, where the cap is plainly full; the count that holds is admit's, below.
-    const full = async () => !cli && (await this.store.runs.counts(entry.agent.id)).live >= SDK_OPEN_PER_AGENT;
+    const full = async () => !cli && (await capFull(this.store, entry.agent.id));
     if (await full()) throw overCap();
     const startedAt = reportedAt === undefined ? undefined : startedWithin(reportedAt, Date.now());
     const cleanedInput = this.clean({ input }).input;
