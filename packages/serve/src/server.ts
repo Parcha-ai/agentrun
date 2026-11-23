@@ -1563,8 +1563,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
   // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
   // are composed again. One that failed with the operator's addresses known changes no box: the retry only removes the
-  // containers it left. stop() awaits the retry, so a read or removal in flight at the close ends first, its container
-  // removed.
+  // containers it left. The close cuts a read in flight (its client killed) and stop() awaits the retry last, so the
+  // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
     const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
@@ -1582,7 +1582,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           env,
           ...(hostAddresses.addresses.length === 0
             ? {
-                read: () => hostAddressesOnce(env),
+                read: () => hostAddressesOnce(env, stopping.signal),
                 found: (read: HostRead) => {
                   boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
                   // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
@@ -6597,9 +6597,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await installStopped;
     await observationStopped;
     await localSourceSweep;
-    // Aborted above: a host-address read or removal in flight ends, its container removed (bounded by READ_MS and two
-    // removal bounds, about 90 s), before the close returns.
-    await hostRetried;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
@@ -6628,6 +6625,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await store.close();
     dataLock.release();
     seal.release();
+    // Last, so a stop cut at its deadline has closed the rest: the host-address retry, aborted above, its read in flight
+    // cut then and its container's removal running since, within two REMOVE_MS.
+    await hostRetried;
   }
   return {
     url,

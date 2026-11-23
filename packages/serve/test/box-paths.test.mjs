@@ -303,6 +303,30 @@ test("compose's layout, the read failing at the start: a close while the retry's
   assert.equal(waits.length, 1, "no wait after the close");
 });
 
+// The close cuts the retry's read where it stalls (its client killed, not left to READ_MS's 60 s, which outlives a
+// stop's deadline: stop-signals.ts, compose's 15 s grace) and answers once its container is removed. No clock: the case's
+// timeout, under READ_MS, bounds a close that waited out the read.
+test("compose's layout, the read failing at the start: a close while the retry's read stalls cuts that read at once and answers once its container is removed", { timeout: 30_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const { waits, hostReadWait } = testWaits();
+  const { close } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, runner: false });
+  assert.equal(waits.length, 1, "the retry began");
+  await rm(join(fake.state, "host-addresses-fail"));
+  await writeFile(join(fake.state, "host-addresses-hold"), "");
+  const held = join(fake.state, "host-addresses-held");
+  execFileSync("mkfifo", [held]);
+  waits[0].go();
+  await readFile(held, "utf8");
+  const name = nameIn(hostReads(fake).at(-1));
+  assert.equal(hasContainer(fake, name), true, "the stalled read's container is made");
+  const from = jsonLines(join(fake.state, "argv.jsonl")).length;
+  await close();
+  assert.deepEqual([hasContainer(fake, name), callsFrom(fake, from)], [false, [["rm", name], ["inspect", name]]]);
+});
+
 // The start's read fails and keeps its container's name (Docker didn't answer the check), but the operator's
 // AGENTRUN_DOCKER_HOST_ADDRESSES is set, so Docker is offered on those: the retry still starts, to remove that container,
 // reading nothing and changing no box.

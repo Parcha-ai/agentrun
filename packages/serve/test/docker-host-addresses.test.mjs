@@ -5,8 +5,9 @@
 // read. A failed read at the start is tried again in the background until one answers. A docker stand-in, or the tests'
 // fake docker, answers here: nothing reaches a daemon.
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { EGRESS_IMAGE } from "@parcha/agentrun-computer";
@@ -82,6 +83,37 @@ test("a read that runs out of time removes its container by name and checks it i
     assert.deepEqual(calls.map((args) => args.slice(0, 2)), [["run", "--rm"], ["rm", "-f"], ["inspect", "--type"]]);
     assert.deepEqual([calls[1].at(-1), calls[2].at(-1)], [NAME, NAME]);
   }
+});
+
+// The server's close (its signal) cuts a stalled read at once, through the fake docker: its client killed, not left to
+// its 60 s bound, and its container removed. A fifo `host-addresses-held` in the fake's state says when the read stalls;
+// no clock (the case's timeout, under READ_MS, bounds a read the signal didn't cut).
+test("a read in flight is cut at once by its signal (the server's close), its client killed and its container removed; one asked after the signal reads nothing", { timeout: 30_000 }, async (t) => {
+  const dir = await scratch(t);
+  const bin = join(dir, "bin");
+  const state = join(dir, "state");
+  await mkdir(bin);
+  await mkdir(join(state, "containers"), { recursive: true });
+  const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(state, "host-addresses-hold"), "");
+  const held = join(state, "host-addresses-held");
+  execFileSync("mkfifo", [held]);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state };
+  const closing = new AbortController();
+  const name = helperName();
+  const read = readHostAddresses(env, undefined, READ_MS, name, closing.signal);
+  await readFile(held, "utf8");
+  assert.deepEqual(readdirSync(join(state, "containers")).length, 1, "the stalled read's container is made");
+  closing.abort();
+  assert.deepEqual(await read, { why: "the read through Docker's socket was stopped with the server (its container was removed)" });
+  assert.deepEqual(readdirSync(join(state, "containers")), []);
+  const calls = readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(calls.map((args) => [args[0], args.at(-1) === name]), [["run", false], ["rm", true], ["inspect", true]]);
+  // Asked after the close: nothing is read.
+  const asked = [];
+  assert.deepEqual(await readHostAddresses(ownEnv(), async (args) => (asked.push(args), ANSWER), READ_MS, NAME, closing.signal), { why: "the read through Docker's socket was stopped with the server" });
+  assert.deepEqual(asked, []);
 });
 
 // Through the tests' fake docker, whose read stalls while `host-addresses-hold` is in its state (its container made and
