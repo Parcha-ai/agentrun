@@ -4,7 +4,7 @@
 // takes only the bytes written since.
 import { createReadStream } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
-import { addRequest, type Counts, counts } from "./counts.js";
+import { addRequest, type Counts, counts, trimmed } from "./counts.js";
 import { type Env, type Locator, type Reader, type ReadOptions, type ReadResult, rememberUser } from "./reader.js";
 import { isObject, mostEffortOf, timeOf } from "./text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.js";
@@ -183,7 +183,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
     const mark = await markOf(handle, offset);
     let session = finish(spec, file, state, context);
     if (!keep) {
-      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own };
+      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
     return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };

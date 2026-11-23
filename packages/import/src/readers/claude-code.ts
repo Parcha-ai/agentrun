@@ -108,7 +108,8 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     const usage = normalizeUsage("anthropic", message.usage);
     if (counts) {
       // A totals read: the request's model and usage alone, its later lines' usage over it, as below.
-      const indexes = (own.indexes ??= recordIndex(64));
+      // Started small: a session's file often holds a request or two, and its cursor keeps the index.
+      const indexes = (own.indexes ??= recordIndex(2));
       const at = key ? packInto(key, PACKED) : undefined;
       const index = at ? ownerOf(indexes, at) : -1;
       if (index !== -1) {

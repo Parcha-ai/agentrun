@@ -63,6 +63,35 @@ for (const [source, file, opening, lines, bound] of [
   });
 }
 
+// A session's file often holds a request or two (a short session, a subagent's): its cursor carries no room to grow
+// into, nor more of an index than its keys. Holding the requests as objects, a state of 300 such files held 1,370 bytes
+// a file of one request, 2,110 of three, 4,782 of ten (v8 serialize): within 200 bytes of that for one request (an
+// index and counts cost a little more than one request's object), and under it from three.
+for (const [requests, bound] of [
+  [1, 1370 + 200],
+  [3, 2110],
+  [10, 4782],
+]) {
+  test(`Claude Code: a state over files of ${requests} request${requests > 1 ? "s" : ""} each holds under ${bound} bytes a file`, async (t) => {
+    const home = await tempHome(t);
+    const FILES = 300;
+    for (let f = 0; f < FILES; f += 1) {
+      const id = `00000000-0000-4000-8000-${hex(f)}`;
+      const records = [];
+      for (let i = 0; i < requests; i += 1) {
+        records.push(claudeUser({ uuid: `10000000-0000-4000-8000-${hex(f * 100 + i)}`, text: "Go.", i: 2 * i, session: id }));
+        records.push(claudeAnswer({ uuid: `20000000-0000-4000-8000-${hex(f * 100 + i)}`, msg: `msg_${f}_${i}`, req: `req_${f}_${i}`, usage: anthropicUsage(10, 5), i: 2 * i + 1, session: id }));
+      }
+      await write(claudeFile(home, id), records);
+    }
+    const state = {};
+    const sessions = await parseHome(home, { sources: ["claude-code"], state, catalog: false });
+    assert.equal(sessions.length, FILES);
+    const bytes = serialize(state).length / FILES;
+    assert.ok(bytes < bound, `${Math.round(bytes)} bytes a file`);
+  });
+}
+
 test("passes with a state across appends (a request's lines split between them), a rewrite and a failed read give a fresh pass's totals each time", async (t) => {
   const home = await tempHome(t);
   const claude = await write(claudeFile(home), claudeLines(0, 40));

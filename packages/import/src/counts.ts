@@ -17,13 +17,15 @@ export const counts = (): Counts => ({ n: 0, models: [], model: new Int32Array(1
 /** A request added, its model `model` and its usage `usage` (either absent): its index. */
 export function addRequest(c: Counts, model: string | undefined, usage: Usage | undefined): number {
   if (c.n === c.model.length) {
-    const models = new Int32Array(c.n * 2);
+    // Doubled; from 16 when it held none, or was trimmed to its requests (a cursor's, trimmed).
+    const size = Math.max(16, c.n * 2);
+    const models = new Int32Array(size);
     models.set(c.model);
     c.model = models;
-    const usages = new Float64Array(c.n * 2 * USAGE_FIELDS);
+    const usages = new Float64Array(size * USAGE_FIELDS);
     usages.set(c.usage);
     c.usage = usages;
-    const has = new Uint8Array(c.n * 2);
+    const has = new Uint8Array(size);
     has.set(c.has);
     c.has = has;
   }
@@ -49,3 +51,7 @@ export function setUsage(c: Counts, i: number, usage: Usage): void {
   c.usage[o + 5] = usage.reasoning ?? 0;
   c.has[i] = HAS_USAGE | (usage.cacheWrite1h !== undefined ? HAS_LONG : 0) | (usage.reasoning !== undefined ? HAS_REASONING : 0);
 }
+
+/** `c` with room for its requests alone, as a cursor keeps it: no slots to grow into (a file of a few requests would
+ *  carry 16), which a read resumed from it makes again as it adds. */
+export const trimmed = (c: Counts): Counts => ({ n: c.n, models: c.models, model: c.model.slice(0, c.n), usage: c.usage.slice(0, c.n * USAGE_FIELDS), has: c.has.slice(0, c.n) });
