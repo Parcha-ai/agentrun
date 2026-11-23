@@ -3245,6 +3245,7 @@ export type GetLocalModelResponse = {
     };
   };
   ollama: {
+    asked: boolean;
     reachable: boolean;
     version: string | null;
   };
@@ -3689,6 +3690,7 @@ export type PullLocalModelResponse = {
     };
   };
   ollama: {
+    asked: boolean;
     reachable: boolean;
     version: string | null;
   };

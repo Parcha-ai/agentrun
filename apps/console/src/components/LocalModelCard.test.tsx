@@ -13,7 +13,7 @@ const GIB = 1024 ** 3;
 const LINUX: LocalModel["machine"] = { platform: "linux", arch: "x64", ram_bytes: 32 * GIB, gpu: { kind: "unknown" } };
 const base = (over: Partial<LocalModel> = {}): LocalModel => ({
   machine: LINUX,
-  ollama: { reachable: true, version: "0.40.17" },
+  ollama: { asked: true, reachable: true, version: "0.40.17" },
   recommended: { tag: "qwen3:8b", why: "qwen3:8b fits this machine's 32.0 GiB of memory (it needs 15 GiB).", pulled: false },
   pull: null,
   can_pull: true,
@@ -42,7 +42,7 @@ function server(reads: (LocalModel | Response)[], pulled?: LocalModel) {
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, props: { onReady?: () => void; onDone?: () => void } = {}) {
+async function open(v2: ReturnType<typeof createClient>, props: { onReady?: (tag: string) => void; onDone?: () => void } = {}) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(LocalModelCard, { v2, pollMs: 0, ...props })));
@@ -77,8 +77,8 @@ describe("LocalModelCard", () => {
 
   it("pulling: one click pulls the recommended tag, its progress shown until done; then ready, the capabilities read again once", async () => {
     const { v2, calls } = server([base(), pulling(2 * GIB), pulling(4 * GIB), done], pulling(0));
-    let readied = 0;
-    const card = await open(v2, { onReady: () => { readied++; } });
+    const readied: string[] = [];
+    const card = await open(v2, { onReady: (tag) => { readied.push(tag); } });
     let bars: number[] = [];
     const seen = new MutationObserver(() => {
       const bar = card.host.querySelector('[role="progressbar"]');
@@ -93,7 +93,7 @@ describe("LocalModelCard", () => {
     expect(bars).toEqual([0, 40, 80]);
     expect(card.face()).toBe("ready");
     expect(card.host.textContent).toContain("Ready: qwen3:8b runs here on this machine, at $0");
-    expect(readied).toBe(1);
+    expect(readied).toEqual(["qwen3:8b"]);
     expect(card.button(/^Pull/)).toBeUndefined();
   });
 
@@ -121,7 +121,7 @@ describe("LocalModelCard", () => {
   });
 
   it("none: no Ollama, or nothing fits: the why, and no button", async () => {
-    const { v2 } = server([base({ ollama: { reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false } })]);
+    const { v2 } = server([base({ ollama: { asked: true, reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false } })]);
     const card = await open(v2);
     expect(card.face()).toBe("none");
     expect(card.host.textContent).toContain("Install it from https://ollama.com/download");
@@ -135,6 +135,22 @@ describe("LocalModelCard", () => {
     expect(card.button(/^Pull/)).toBeUndefined();
     expect(card.host.textContent).toContain("only on one owner's own server");
   });
+
+  for (const [under, refused] of [
+    ["a model gateway", "This server sends every model to its model gateway (AGENT_MODEL_BASE_URL), so a local model would not run here."],
+    ["the faux model", "This server runs the faux model, so no local model is pulled here."],
+  ] as const) {
+    it(`under ${under}, Ollama is not asked: the refusal's words alone, never that Ollama isn't running`, async () => {
+      // The why says Ollama isn't running here on purpose: the card must not show it when Ollama was never asked.
+      const { v2 } = server([base({ ollama: { asked: false, reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false }, can_pull: false, refused })]);
+      const card = await open(v2);
+      expect(card.face()).toBe("none");
+      expect(card.host.textContent).toContain(refused);
+      expect(card.host.textContent).not.toMatch(/isn't running|no Ollama running|ollama\.com\/download/);
+      expect(card.host.querySelector("[data-machine]")?.textContent).toBe("Linux x64 · 32.0 GB memory · GPU not read");
+      expect(card.host.querySelectorAll("button")).toHaveLength(0);
+    });
+  }
 
   it("a failed pull says so in Ollama's words, and offers the pull again", async () => {
     const { v2 } = server([base({ pull: { tag: "qwen3:8b", state: "failed", status: "pulling manifest", completed_bytes: 0, total_bytes: 0, error: "pull model manifest: file does not exist" } })]);

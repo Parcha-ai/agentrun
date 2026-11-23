@@ -65,7 +65,7 @@ import { waitingOf } from "@/lib/learning";
 import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
-import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
+import { type Template, templatePick, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
@@ -498,10 +498,13 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
+  // The model a pull here just ended with (`ollama/<tag>`): the first screen's templates run on it, not on the server's
+  // default, which may be another of the Ollama's tools models.
+  const [localModel, setLocalModel] = useState<string | null>(null);
   const tryIt = async (t: Template) => {
-    const harness = templateHarness(editorCaps.harnesses);
-    if (!harness) return "This server has no model to run it on yet.";
-    try { const id = await tryTemplate(v2, t, harness, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
+    const on = templatePick(editorCaps.harnesses, localModel);
+    if (!on) return "This server has no model to run it on yet.";
+    try { const id = await tryTemplate(v2, t, on, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
   };
   // How many runs came from an import (the start-here panel says so); `imported` is the import in progress.
   const importedRuns = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
@@ -767,7 +770,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
                   modelSetup={caps && (caps.models.ready === false || planShown || localShown) ? <>
-                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onReady={() => { setLocalShown(true); void readCaps(); }} onDone={() => setLocalShown(false)} />}
+                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onReady={(tag) => { setLocalShown(true); setLocalModel(`ollama/${tag}`); void readCaps(); }} onDone={() => setLocalShown(false)} />}
                     {(caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
                   </> : undefined} /> : undefined} />

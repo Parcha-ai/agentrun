@@ -1026,7 +1026,7 @@ const LOCAL_MODEL_VIEW = closed({
       closed({ kind: { const: "unknown" } }, "No GPU read cheaply here."),
     ] },
   }, "This machine, read once when the server started."),
-  ollama: closed({ reachable: { type: "boolean", description: "Whether the Ollama here answered GET /api/version." }, version: { type: ["string", "null"], description: "The version it says; null when it did not answer." } }),
+  ollama: closed({ asked: { type: "boolean", description: "Whether this server asks an Ollama at all: false under the faux model or a model gateway (AGENT_MODEL_BASE_URL), where `reachable` is false, `version` null, and `recommended.why` is the refusal's words." }, reachable: { type: "boolean", description: "Whether the Ollama here answered GET /api/version." }, version: { type: ["string", "null"], description: "The version it says; null when it did not answer." } }),
   recommended: closed({
     tag: { type: ["string", "null"], description: `The Ollama tag recommended here: ${INKLING} on Apple silicon with Ollama ${INKLING_OLLAMA} or later, else ${QWEN3_DEFAULT} or a smaller qwen3 that fits in memory (one of ${LOCAL_MODEL_TAGS.join(", ")}). Null where none fits or no Ollama answers.` },
     why: { type: "string", description: "Why, in words: the memory each tag needs and this machine has, an Ollama to update or install, or that the tag is already pulled." },

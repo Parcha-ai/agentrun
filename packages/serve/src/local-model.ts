@@ -23,8 +23,12 @@ registerSecretPage(["getLocalModel", "pullLocalModel"], "/#/");
 export type Gpu = { readonly kind: "apple"; readonly unified: true } | { readonly kind: "nvidia"; readonly name: string; readonly memory_bytes: number } | { readonly kind: "unknown" };
 /** What this machine is. */
 export type Machine = { readonly platform: string; readonly arch: string; readonly ram_bytes: number; readonly gpu: Gpu };
-/** The Ollama here: whether it answered, and the version it says. */
-export type OllamaFacts = { readonly reachable: false; readonly version: null } | { readonly reachable: true; readonly version: string };
+/** The Ollama here: whether this server asks one at all (never under the faux model or a model gateway, model.ts
+ *  asksOllama), whether it answered, and the version it says. */
+export type OllamaFacts =
+  | { readonly asked: false; readonly reachable: false; readonly version: null }
+  | { readonly asked: true; readonly reachable: false; readonly version: null }
+  | { readonly asked: true; readonly reachable: true; readonly version: string };
 /** Everything the recommendation reads: the machine, its Ollama, and the tags that Ollama has pulled. */
 export type LocalFacts = { readonly machine: Machine; readonly ollama: OllamaFacts; readonly pulled: readonly string[] };
 /** The model recommended here, and why in words; `tag` null where none fits, and the words say what to do instead. */
@@ -82,6 +86,7 @@ const appleSilicon = (machine: Machine): boolean => machine.gpu.kind === "apple"
  */
 export function recommendLocalModel(facts: LocalFacts): Recommendation {
   const { machine, ollama } = facts;
+  if (!ollama.asked) return { tag: null, why: "This server asks no Ollama.", pulled: false };
   if (!ollama.reachable) return { tag: null, why: `Ollama isn't running on this machine. Install it from ${OLLAMA_DOWNLOAD}, start it, then come back here.`, pulled: false };
   const has = new Set(facts.pulled.map(fullTag));
   const done = (tag: string, why: string): Recommendation => (has.has(fullTag(tag)) ? { tag, why: `${why} Already pulled: no pull needed.`, pulled: true } : { tag, why, pulled: false });
@@ -190,10 +195,12 @@ export type LocalModelDeps = { env: NodeJS.ProcessEnv; notOwn: readonly string[]
 /** The read surface: the machine, its Ollama, the recommendation, the pull here, and whether a pull may be made. */
 export async function localModelView({ env, notOwn, machine, pulls }: LocalModelDeps) {
   const refused = pullRefusal(env, notOwn);
-  const asked = asksOllama(env) && !env[FAUX_ENV];
+  const asked = asksOllama(env);
   const [facts, version, listed] = await Promise.all([machine(), asked ? ollamaVersion(env) : undefined, asked ? ollamaModels(env) : []]);
-  const ollama: OllamaFacts = version === undefined ? { reachable: false, version: null } : { reachable: true, version };
-  return { machine: facts, ollama, recommended: recommendLocalModel({ machine: facts, ollama, pulled: listed.map((model) => model.name) }), pull: pulls.view(), can_pull: refused === undefined, refused: refused ?? null };
+  const ollama: OllamaFacts = !asked ? { asked: false, reachable: false, version: null } : version === undefined ? { asked: true, reachable: false, version: null } : { asked: true, reachable: true, version };
+  const recommended = recommendLocalModel({ machine: facts, ollama, pulled: listed.map((model) => model.name) });
+  // Not asked, the refusal is the only word on it: never that Ollama isn't running.
+  return { machine: facts, ollama, recommended: asked || !refused ? recommended : { ...recommended, why: refused }, pull: pulls.view(), can_pull: refused === undefined, refused: refused ?? null };
 }
 
 /** POST /settings/local-model/pull: `{ tag }`, one of LOCAL_MODEL_TAGS (422 otherwise), where a pull may be made (403 in

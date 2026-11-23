@@ -27,15 +27,18 @@ const OS: Record<string, string> = { darwin: "macOS", linux: "Linux", win32: "Wi
 export function machineLine(view: LocalModel): string {
   const { machine, ollama } = view;
   const gpu = machine.gpu.kind === "apple" ? "Apple silicon, unified memory" : machine.gpu.kind === "nvidia" ? `${machine.gpu.name}, ${bytes(machine.gpu.memory_bytes)}` : "GPU not read";
-  return [`${OS[machine.platform] ?? machine.platform} ${machine.arch}`, `${bytes(machine.ram_bytes)} memory`, gpu, ollama.reachable ? `Ollama ${ollama.version}` : "no Ollama running"].join(" · ");
+  // Under the faux model or a model gateway this server asks no Ollama, so the line says nothing of one.
+  const asked = ollama.asked === false ? [] : [ollama.reachable ? `Ollama ${ollama.version}` : "no Ollama running"];
+  return [`${OS[machine.platform] ?? machine.platform} ${machine.arch}`, `${bytes(machine.ram_bytes)} memory`, gpu, ...asked].join(" · ");
 }
 
 /** The first screen's "Free local model" card, beside the model key card while this server has no model: what this
  *  machine can run (GET /settings/local-model), one click to pull it through the owner's own Ollama (POST
- *  /settings/local-model/pull) with its progress, then ready, the model now this server's. `onReady`: the capabilities
- *  read again, so the picker has the model; `onDone`, the person is done with the card once it is ready. A server without the route (404) or a caller who is not the owner shows no
- *  card. `pollMs`: how often a pull's progress is read (a test's 0). */
-export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: { v2: Client; onReady?: () => void; onDone?: () => void; pollMs?: number }) {
+ *  /settings/local-model/pull) with its progress, then ready. `onReady(tag)`, once per tag a pull here ends: the caller
+ *  reads the capabilities again and picks `ollama/<tag>`; `onDone`, the person is done with the card once it is ready.
+ *  Under the faux model or a model gateway (`ollama.asked` false) its only words are the refusal. A server without the
+ *  route (404) or a caller who is not the owner shows no card. `pollMs`: how often a pull's progress is read (a test's 0). */
+export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: { v2: Client; onReady?: (tag: string) => void; onDone?: () => void; pollMs?: number }) {
   const [view, setView] = useState<LocalModel | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
@@ -62,7 +65,7 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
     const tag = view?.recommended.tag;
     if (state === "ready" && tag && view?.pull?.state === "done" && readied.current !== tag) {
       readied.current = tag;
-      onReady?.();
+      onReady?.(tag);
     }
   }, [state, view]); // eslint-disable-line react-hooks/exhaustive-deps
   if (gone) return null;
@@ -85,7 +88,7 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
           <h2 className="flex flex-wrap items-center gap-2 text-prose font-semibold">Free local model {view?.recommended.tag && <Chip tone={state === "ready" ? "success" : "plain"}>{view.recommended.tag}</Chip>}</h2>
           {view ? <p className="font-mono text-small text-muted-foreground" data-machine>{machineLine(view)}</p>
             : !problem && <p className="text-body text-muted-foreground" role="status">Reading this machine…</p>}
-          {view && state !== "ready" && <p className="text-body text-muted-foreground">{view.recommended.why}</p>}
+          {view && state !== "ready" && <p className="text-body text-muted-foreground">{view.ollama.asked === false ? view.refused ?? view.recommended.why : view.recommended.why}</p>}
           {state === "recommend" && view && (view.can_pull
             ? <Button type="button" size="sm" variant="primary" disabled={starting} onClick={() => void pull(view.recommended.tag!)}>{starting ? "Starting…" : failed ? "Try again" : `Pull ${view.recommended.tag}`}</Button>
             : <p className="text-body" role="status">{view.refused}</p>)}

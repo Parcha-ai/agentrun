@@ -18,8 +18,9 @@ const APPLE = (gib) => ({ platform: "darwin", arch: "arm64", ram_bytes: Math.rou
 const LINUX = (gib) => ({ platform: "linux", arch: "x64", ram_bytes: Math.round(gib * GIB), gpu: { kind: "unknown" } });
 const NVIDIA = (gib) => ({ platform: "linux", arch: "x64", ram_bytes: Math.round(gib * GIB), gpu: { kind: "nvidia", name: "Synth GPU 24", memory_bytes: 24 * GIB } });
 const WINDOWS = (gib) => ({ platform: "win32", arch: "x64", ram_bytes: Math.round(gib * GIB), gpu: { kind: "unknown" } });
-const UP = (version = INKLING_OLLAMA) => ({ reachable: true, version });
-const DOWN = { reachable: false, version: null };
+const UP = (version = INKLING_OLLAMA) => ({ asked: true, reachable: true, version });
+const DOWN = { asked: true, reachable: false, version: null };
+const NOT_ASKED = { asked: false, reachable: false, version: null };
 const facts = (machine, ollama = UP(), pulled = []) => ({ machine, ollama, pulled });
 
 test("the recommendation over the machine's facts: Apple silicon on a new Ollama gets Inkling; everyone else the qwen3 default, a smaller one, or none, in words", () => {
@@ -37,6 +38,7 @@ test("the recommendation over the machine's facts: Apple silicon on a new Ollama
     ["Linux, too little memory for any", facts(LINUX(8)), null, false, /This machine has 8\.0 GiB of memory, and the smallest local model offered here, qwen3:4b needs 11 GiB of memory\. Add a model key instead\./],
     ["no Ollama", facts(LINUX(32), DOWN), null, false, new RegExp(`Install it from ${OLLAMA_DOWNLOAD.replace(/[.]/g, "\\.")}`)],
     ["no Ollama on a Mac", facts(APPLE(32), DOWN), null, false, /Ollama isn't running/],
+    ["Ollama not asked (the faux model or a gateway)", facts(APPLE(32), NOT_ASKED, [QWEN3_DEFAULT]), null, false, /asks no Ollama/, /isn't running|Install it/],
     ["already pulled", facts(LINUX(32), UP(), ["synth-plain:1b", QWEN3_DEFAULT]), QWEN3_DEFAULT, true, /Already pulled: no pull needed\./],
     ["Inkling already pulled, as Ollama lists it (:latest)", facts(APPLE(32), UP(), [`${INKLING}:latest`]), INKLING, true, /Already pulled/],
   ];
@@ -108,7 +110,7 @@ test("one owner's own server: the machine and the qwen3 pick read, a pull of an 
   const before = await api("GET", "/settings/local-model");
   assert.equal(before.status, 200, JSON.stringify(before.body));
   assert.deepEqual(before.body.machine, machine);
-  assert.deepEqual(before.body.ollama, { reachable: true, version: INKLING_OLLAMA });
+  assert.deepEqual(before.body.ollama, { asked: true, reachable: true, version: INKLING_OLLAMA });
   assert.equal(before.body.recommended.tag, QWEN3_DEFAULT);
   assert.equal(before.body.recommended.pulled, false);
   assert.equal(before.body.pull, null);
@@ -198,7 +200,32 @@ test("no Ollama here: the read surface says to install it, and recommends nothin
   withEnv(t, { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
   const { api } = await serve(t, { faux: undefined, runner: false, machine: async () => APPLE(32) });
   const view = (await api("GET", "/settings/local-model")).body;
-  assert.deepEqual(view.ollama, { reachable: false, version: null });
+  assert.deepEqual(view.ollama, { asked: true, reachable: false, version: null });
   assert.equal(view.recommended.tag, null);
   assert.match(view.recommended.why, /ollama\.com\/download/);
 });
+
+// Under the model gateway or the faux model this server never asks Ollama (model.ts asksOllama): the read surface says
+// so, and its words are the refusal alone, never that Ollama isn't running.
+for (const [name, options, env, refusal] of [
+  ["the model gateway", { faux: undefined }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "synth-key" }, /model gateway \(AGENT_MODEL_BASE_URL\)/],
+  ["the faux model", {}, {}, /faux model/],
+]) {
+  test(`under ${name}, the read surface says Ollama was not asked, and its only words are the refusal`, { timeout: 60_000 }, async (t) => {
+    withEnv(t, {}, OWNER);
+    const ollama = await fakeOllama(t, { models: [PULLED] });
+    withEnv(t, { OLLAMA_HOST: ollama.host, ...env });
+    const { api } = await serve(t, { runner: false, machine: async () => LINUX(32), ...options });
+    const read = await api("GET", "/settings/local-model");
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    const view = read.body;
+    assert.deepEqual(view.ollama, { asked: false, reachable: false, version: null });
+    assert.equal(view.recommended.tag, null);
+    assert.equal(view.can_pull, false);
+    assert.match(view.refused, refusal);
+    assert.equal(view.recommended.why, view.refused);
+    assert.doesNotMatch(JSON.stringify(view), /isn't running|ollama\.com\/download/);
+    assert.equal(ollama.got.version, 0, "the fake was never asked its version");
+    assert.equal(ollama.got.tags, 0, "nor its tags");
+  });
+}

@@ -3003,6 +3003,7 @@ export interface operations {
         };
       };
       ollama: {
+        asked: boolean;
         reachable: boolean;
         version: string | null;
       };
@@ -5611,6 +5612,7 @@ export interface operations {
         };
       };
       ollama: {
+        asked: boolean;
         reachable: boolean;
         version: string | null;
       };

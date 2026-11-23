@@ -5038,6 +5038,7 @@ class GetLocalModelResponseMachineGpu3(TypedDict):
 
 
 class GetLocalModelResponseOllama(TypedDict):
+    asked: bool
     reachable: bool
     version: str | None
 
@@ -5605,6 +5606,7 @@ class PullLocalModelResponseMachineGpu3(TypedDict):
 
 
 class PullLocalModelResponseOllama(TypedDict):
+    asked: bool
     reachable: bool
     version: str | None
 
