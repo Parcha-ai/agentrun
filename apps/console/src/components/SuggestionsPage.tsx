@@ -31,13 +31,16 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
   const [round, setRound] = useState(0);
   const toast = useToast();
 
-  // Each read is numbered, and only the latest one started sets the page: an older read that answers last (a Refresh
-  // before a scan started) never puts back a list the newer read replaced.
-  const reads = useRef(0);
+  // Each read is numbered by when it started, and sets the page unless a newer read has already answered: an older read
+  // that answers last (a Refresh before a scan started) never puts back a list the newer one replaced, and polls slower
+  // than their interval still show what each answers.
+  const reads = useRef({ started: 0, shown: 0 });
   const read = useCallback(async () => {
-    const mine = ++reads.current;
-    try { const next = await v2.listSuggestions(); if (mine === reads.current) { setList(next); setError(null); } }
-    catch (e) { if (mine === reads.current) setError(problem(e, "the suggested agents")); }
+    const mine = ++reads.current.started;
+    try {
+      const next = await v2.listSuggestions();
+      if (mine > reads.current.shown) { reads.current.shown = mine; setList(next); setError(null); }
+    } catch (e) { if (mine > reads.current.shown) setError(problem(e, "the suggested agents")); }
   }, [v2]);
   useEffect(() => { void read(); }, [read, tries]);
   // While a scan runs, its answer is read again until it ends.
