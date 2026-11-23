@@ -69,11 +69,15 @@ type Reader<S extends string, C> = {
   name: string;
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string>; lookups?: Map<string, unknown> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
 };
 ```
+
+`lookups` is one map per import, shared by all its reads: a reader keeps there what it looks up once for the whole
+import (the Codex reader, the rollouts under a sessions directory, listed the first time a fork's parent is not on its
+own date). `parseHome` passes one; without it, each read looks up afresh.
 
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole

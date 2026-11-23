@@ -42,6 +42,9 @@ export type ReadOptions = {
    *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
    *  the cursor takes it whole. */
   keepsCursor?: boolean;
+  /** What a reader looks up once for a whole import, shared across its files: one map per import, each reader keying
+   *  its own entries. Without one, each read looks up afresh. */
+  lookups?: Map<string, unknown>;
 };
 
 export type Reader<S extends string = string, C = unknown> = {

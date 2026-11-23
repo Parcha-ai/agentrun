@@ -94,8 +94,10 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   const out: SessionTotals[] = [];
   const failed: ReadFailure[] = [];
   if (state) state.read = 0;
+  // What readers look up once for this import (a Codex fork's parent anywhere in its sessions), shared by its files.
+  const lookups = new Map<string, unknown>();
   for (const source of sources) {
-    const { tops, children, unread } = await readSource(home, source, readers, env, state);
+    const { tops, children, unread } = await readSource(home, source, readers, env, state, lookups);
     out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
@@ -110,7 +112,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
  *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, lookups: Map<string, unknown>): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
@@ -145,7 +147,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return this;
         },
       } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, seen, lookups }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a

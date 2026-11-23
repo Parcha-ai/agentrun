@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { appendFile } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { parseHome, READERS, readSession } from "../dist/index.js";
 import { at, codexAnswer, codexContext, codexUser, jsonl, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -133,4 +134,29 @@ test("a fork read while its copy is still being written: the next read finds the
   assert.equal(whole.sessions[0].requests.length, 1, "the fork's own request alone");
   assert.equal(next.sessions[0].requests.length, whole.sessions[0].requests.length);
   assert.deepEqual(next.sessions[0].session.tokens ?? null, whole.sessions[0].session.tokens ?? null);
+});
+
+test("forks whose parent is in no sessions directory walk the sessions tree once per import, not once each", async (t) => {
+  const home = await tempHome(t);
+  const sessions = join(home, ".codex", "sessions");
+  // A parent that is not UUIDv7 has no day to look in first: its forks go straight to the walk, which finds nothing.
+  const gone = "4b1d0c2e-1f3a-4c5d-8e6f-00000000000d";
+  const fork = (id) => [meta(id, 20, { forked_from_id: gone }), ...replayed(), ...ownTurn()];
+  const fs = createRequire(import.meta.url)("node:fs/promises");
+  const walks = async (forks) => {
+    await writeJsonl(rollout(home, FORK), fork(FORK));
+    if (forks === 2) await writeJsonl(rollout(home, CHILD.replace(/c$/, "e")), fork(CHILD.replace(/c$/, "e")));
+    const readdir = t.mock.method(fs, "readdir");
+    syncBuiltinESMExports();
+    try {
+      const lines = await parseHome(home, { sources: ["codex"] });
+      assert.deepEqual(lines.map((line) => line.calls), Array(forks).fill(4), "nothing to match: each fork counts its usage");
+      return readdir.mock.calls.filter((call) => call.arguments[0] === sessions).length;
+    } finally {
+      readdir.mock.restore();
+      syncBuiltinESMExports();
+    }
+  };
+  const one = await walks(1);
+  assert.equal(await walks(2), one, "a second fork of the same missing parent lists the sessions directory no more");
 });

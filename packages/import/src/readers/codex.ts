@@ -317,37 +317,53 @@ async function usagesOf(file: string): Promise<{ uses: string[]; ats: (number | 
   return out;
 }
 
-/** The parent's rollout: in the sessions directory `file` is under, named by the parent's id, on its UUIDv7 date (a
- *  day either side, as the directories are local dates) else anywhere there. Not archived_sessions: the import reads no
- *  rollout there, and a copy of a parent it does not read is the only count of that history. */
-async function parentFile(file: string, parent: string): Promise<string | undefined> {
-  const sessions = dirname(dirname(dirname(dirname(file))));
-  const named = (dir: string) => async () => (await entries(dir)).find((entry) => entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`-${parent}.jsonl`) && join(dir, entry.name) !== file)?.name;
-  const days: string[] = [];
-  const ms = /^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(parent) ? Number.parseInt(parent.replace(/-/g, "").slice(0, 12), 16) : Number.NaN;
-  if (Number.isFinite(ms)) for (const shift of [0, -1, 1]) days.push(join(sessions, ...new Date(ms + shift * 86_400_000).toISOString().slice(0, 10).split("-")));
-  for (const dir of days) {
-    const name = await named(dir)();
-    if (name) return join(dir, name);
-  }
+/** Every rollout under a sessions directory by the thread id its name ends with, in the order a walk of its
+ *  year/month/day directories meets them. */
+async function rolloutsUnder(sessions: string): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
   for (const year of await entries(sessions)) {
     if (!year.isDirectory()) continue;
     for (const month of await entries(join(sessions, year.name))) {
       if (!month.isDirectory()) continue;
       for (const day of await entries(join(sessions, year.name, month.name))) {
+        if (!day.isDirectory()) continue;
         const dir = join(sessions, year.name, month.name, day.name);
-        if (!day.isDirectory() || days.includes(dir)) continue;
-        const name = await named(dir)();
-        if (name) return join(dir, name);
+        for (const entry of await entries(dir)) {
+          const id = entry.isFile() && entry.name.startsWith("rollout-") ? /-([0-9a-f-]{36})\.jsonl$/i.exec(entry.name)?.[1] : undefined;
+          if (id) (out.get(id) ?? out.set(id, []).get(id)!).push(join(dir, entry.name));
+        }
       }
     }
   }
-  return undefined;
+  return out;
+}
+
+/** The parent's rollout: in the sessions directory `file` is under, named by the parent's id, on its UUIDv7 date (a
+ *  day either side, as the directories are local dates) else anywhere there. Anywhere is one walk of the directory per
+ *  import (`lookups`), however many forks look there, found or not. Not archived_sessions: the import reads no rollout
+ *  there, and a copy of a parent it does not read is the only count of that history. */
+async function parentFile(file: string, parent: string, lookups?: Map<string, unknown>): Promise<string | undefined> {
+  const sessions = dirname(dirname(dirname(dirname(file))));
+  const ms = /^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(parent) ? Number.parseInt(parent.replace(/-/g, "").slice(0, 12), 16) : Number.NaN;
+  if (Number.isFinite(ms)) {
+    for (const shift of [0, -1, 1]) {
+      const dir = join(sessions, ...new Date(ms + shift * 86_400_000).toISOString().slice(0, 10).split("-"));
+      const name = (await entries(dir)).find((entry) => entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`-${parent}.jsonl`) && join(dir, entry.name) !== file)?.name;
+      if (name) return join(dir, name);
+    }
+  }
+  const key = `codex:rollouts:${sessions}`;
+  let index = lookups?.get(key) as Promise<Map<string, string[]>> | undefined;
+  if (!index) {
+    index = rolloutsUnder(sessions);
+    lookups?.set(key, index);
+  }
+  return (await index).get(parent)?.find((path) => path !== file);
 }
 
 /** The parent's history `file` copied in, when it is a fork that did: read before the fork's own lines, so its records
  *  read as copies (record). */
-async function forkReplay(file: string): Promise<Replay | null> {
+async function forkReplay(file: string, lookups?: Map<string, unknown>): Promise<Replay | null> {
   const first = await firstRecord(file);
   const payload = isObject(first?.payload) ? first.payload : undefined;
   if (first?.type !== "session_meta" || !payload) return null;
@@ -367,7 +383,7 @@ async function forkReplay(file: string): Promise<Replay | null> {
     let stream: string[] | undefined;
     const parentStream = async () => {
       if (stream) return stream;
-      const path = await parentFile(file, parent);
+      const path = await parentFile(file, parent, lookups);
       if (!path) return (stream = []);
       const { uses, ats } = await usagesOf(path);
       const cut = forkedAt === undefined ? -1 : ats.findIndex((t) => t !== undefined && t > forkedAt);
@@ -503,7 +519,7 @@ export const codex: Reader<"codex", FileCursor> = {
   ...lines,
   async read(locator, cursor, options) {
     const fresh = async () => {
-      const replay = await forkReplay(locator.file);
+      const replay = await forkReplay(locator.file, options?.lookups);
       return replay ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, undefined, options) : undefined;
     };
     if (!cursor) return (await fresh()) ?? lines.read(locator, undefined, options);
