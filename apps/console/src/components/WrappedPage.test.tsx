@@ -15,7 +15,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
-  cost_usd: 42.5, unpriced_requests: 3,
+  cost_usd: 42.5, unpriced_requests: 3, unread_files: 0,
   days: [{ day: "2025-03-02", requests: 100, tokens: 4_000_000 }, { day: "2025-03-03", requests: 200, tokens: 2_300_000 }],
   hours: Array.from({ length: 24 }, (_, h) => (h === 14 ? 120 : h === 9 ? 80 : 4)), weekdays: [0, 200, 100, 0, 0, 0, 0], active_ms: 7_200_000,
   harnesses: [{ harness: "claude-agent", sessions: 10, requests: 250, tokens: 6_000_000 }, { harness: "pi", sessions: 2, requests: 50, tokens: 300_000 }],
@@ -81,6 +81,19 @@ describe("WrappedPage", () => {
     expect(link?.textContent).toBe("7 imported as runs");
     expect(document.body.textContent).toContain("codex: 2 sessions read");
     expect(document.body.textContent).toContain("none imported as runs yet");
+  });
+
+  it("warns when session files could not be read, beside the totals and in an empty year, and says nothing when none failed", async () => {
+    await mount(async () => ({ ...YEAR, unread_files: 2 }), vi.fn(), 2025);
+    expect(document.querySelector('[data-unread]')?.textContent).toBe("2 session files could not be read, so these numbers may be incomplete.");
+    expect(document.body.textContent).toContain("6.3M tokens");
+    document.body.innerHTML = "";
+    await mount(async () => ({ ...YEAR, requests: 0, unread_files: 1 }), vi.fn(), 2024);
+    expect(document.querySelector('[data-unread]')?.textContent).toBe("1 session file could not be read, so these numbers may be incomplete.");
+    expect(document.body.textContent).toContain("No readable coding agent sessions");
+    document.body.innerHTML = "";
+    await mount(async () => YEAR, vi.fn(), 2025);
+    expect(document.querySelector('[data-unread]')).toBeNull();
   });
 
   it("says a year with no sessions in a sentence", async () => {
