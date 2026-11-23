@@ -4027,19 +4027,20 @@ Never bypass the store lock. This local-store operation has no server endpoint t
 machine; importing into a different local store does not populate a remote console. Build, edit, run, query and
 connection handoffs use the shared coding-agent selector and target this server's matching skill, MCP endpoint and API.
 
-`agentrun-serve import --data DIR` reads the Claude Code, Codex and pi sessions in your own home (`~/.claude/projects`,
-`~/.codex/sessions`, `~/.pi/agent/sessions`) into the data directory, once. Each project folder becomes an agent, with its
-CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
-this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
-only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
+`agentrun-serve import --data DIR` reads the Claude Code, Codex, pi and Factory Droid sessions in your own home
+(`~/.claude/projects`, `~/.codex/sessions`, `~/.pi/agent/sessions`, `~/.factory/sessions`) into the data directory,
+once. Each project folder becomes an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and each session
+becomes a run you can read but not continue. Nothing leaves this machine, and the values of key-shaped environment
+variables are cut out of what it writes. Run it again and it takes only what it has not taken already. Sessions written
+in the last 10 minutes wait for the next import.
 
 A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
-session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
-cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
-analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
+or Droid session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows
+a run's cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats`
+and its analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
-- `--from claude-code,codex,pi` picks the sources.
+- `--from claude-code,codex,pi,droid` picks the sources.
 - `--include-deleted` also imports the sessions of project folders that no longer exist, such as a git worktree you
   deleted. Each such folder is still its own agent, with no instructions or skills to read.
 - `--all` keeps those too, as well as sessions of temporary folders and sessions with no message of yours.

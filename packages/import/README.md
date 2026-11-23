@@ -1,8 +1,8 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi, Factory Droid) into one Session shape: normalized token usage,
-subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
-server imports past sessions through it.
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, Factory Droid) into one Session shape: normalized
+token usage, subagents counted under their parent, and byte-offset cursors so a second pass reads only what was
+appended. AgentRun's server imports past sessions through it.
 
 ## Totals for a home
 
@@ -68,14 +68,19 @@ counted once by its `id` (a fork copies its source's records). A Worker, whose `
 
 Droid writes no request's tokens. The `<session id>.settings.json` beside the transcript holds the session's running
 total (`tokenUsage`, its own calls alone; `inclusiveTokenUsage` is not read, as the Workers count on their own) and its
-latest `model`. That total goes on the session's last request, the others 0, or on a request of its own when the
-transcript holds none. So:
+latest `model`, read whole on each read. That total goes on the session's last request, the others 0, or on a request
+of its own when the transcript holds none. So:
 
-- A session with no settings file has tokens 0 and cost `null`.
-- Droid writes no dollar cost. `cost` is the total at the catalog's list price for the model of the request it is on (a
-  session that switched models is priced at that one), `null` for a model the catalog does not list (a BYOK
-  `custom:` model).
-- serve's import does not bring Droid sessions in as runs; they count in `parseHome` and the CLI.
+- A session with no settings file, or one with no `tokenUsage`, is unmetered: its requests have no usage, and cost
+  `null`.
+- Droid writes no dollar cost. `cost` is the total at the catalog's list price for the model `settings.json` names (the
+  session's latest; a session that switched models is priced at that one), else the model of the last request; `null`
+  with neither, or for a model the catalog does not list (a BYOK `custom:` model).
+- A turn ends with an `agent_turn_outcome` record. One whose provider refused or never answered (`model_rate_limited`,
+  `model_provider_unreachable` and the like) is one more request, failed: its error is the reason with turns, a fixed
+  `"API error"` without them. Droid's own failures fail the session with no request; a cancel stops it.
+- `droidSessionId(file, sessionStart?)` is the one rule for a session's id (its `session_start`'s, else the file's
+  name), which serve's import reads too.
 
 ## Readers
 

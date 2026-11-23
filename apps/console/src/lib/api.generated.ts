@@ -1030,7 +1030,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "droid";
       session: string;
     } | null;
     trigger?: {
@@ -1281,7 +1281,7 @@ export interface components {
       kind: "stopped";
     } | null;
     imported_from?: {
-      source: "claude-code" | "codex" | "pi";
+      source: "claude-code" | "codex" | "pi" | "droid";
       session: string;
     } | null;
     trigger?: {
@@ -3658,7 +3658,7 @@ export interface operations {
           unknown_cost_runs: number;
         }[];
         by_source: {
-          source: "live" | "claude-code" | "codex" | "pi";
+          source: "live" | "claude-code" | "codex" | "pi" | "droid";
           runs: number;
           completed: number;
           needs_review: number;

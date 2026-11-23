@@ -12,14 +12,20 @@
 //     Worker keeps its own; `inclusiveTokenUsage`, the Workers' with it, is not read), and `model`, the latest model.
 //     No dollar cost. inputTokens leaves the cache out; thinkingTokens is a part of outputTokens (entireio's tokens.go:
 //     Droid's provider adapters store the provider's output total, reasoning in it), so it is never added to it.
+//   - A turn ends with {type: "agent_turn_outcome", turnId, reason}: "completed", "cancelled", "model_rate_limited" and
+//     the like (the binary's enum of 19; an unknown one Droid reads as "error"). It names no message and holds no text.
+//   - thinkingTokens is a part of outputTokens in the binary itself too: the function that splits a request's usage for
+//     its /cost view takes min(thinkingTokens, outputTokens) out of outputTokens.
 // So a session's requests are its assistant messages, and its total goes on the last of them (the others 0), or on one
-// of its own when the transcript holds none. Its cost is the total at the list price of the model that request ran on.
-import { lstat, open } from "node:fs/promises";
+// of its own when the transcript holds none. Its cost is the total at the list price of the model settings.json names
+// (the session's latest), else the model that last request ran on; with neither, unknown. A session with no
+// settings.json, or one with no tokenUsage, has no counts: unmetered.
+import { lstat, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { type FileCursor, type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries, type Reader } from "../reader.js";
 import { argsOf, isObject, str, textOf } from "../text.js";
-import type { Answer, ToolCall, Usage } from "../types.js";
+import type { Answer, Ended, ToolCall, Usage } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 /** Droid's model id as "provider/model": a BYOK model ("custom:<name>") is custom's, any other its maker's where the id
@@ -32,13 +38,26 @@ const PROVIDERS: [RegExp, string][] = [
 ];
 const modelOf = (id: string): string => (id.startsWith("custom:") ? `custom/${id.slice(7)}` : `${PROVIDERS.find(([pattern]) => pattern.test(id))?.[1] ?? "factory"}/${id}`);
 
+/** A Droid session's id: the one its session_start record names (`start`), else its file's name (<id>.jsonl). The one
+ *  rule, for the reader and for serve alike. */
+export function droidSessionId(file: string, start?: unknown): string {
+  return (isObject(start) && start.type === "session_start" ? str(start.id) : undefined) ?? basename(file, ".jsonl");
+}
+
 /** Text Droid adds to a user message for the model, never the person's words. */
 const REMINDER = /^\s*<system-reminder>[\s\S]*<\/system-reminder>\s*$/;
+
+/** How a turn that ended for `reason` leaves the session: a request the provider refused or never answered failed it
+ *  (FAILED_REQUEST, a request of its own), so did Droid's own failures; the person's cancel, rejection or exit stopped it. */
+const DONE = new Set(["completed", "spec_handoff"]);
+const STOPPED = new Set(["cancelled", "permission_rejected", "process_exit"]);
+const FAILED_REQUEST = new Set(["model_usage_exhausted", "model_authentication_failed", "model_request_rejected", "model_provider_unreachable", "model_provider_unavailable", "model_rate_limited", "prompt_rejected"]);
+const endOf = (reason: string): Ended => (DONE.has(reason) ? "completed" : STOPPED.has(reason) ? "stopped" : "failed");
 
 function record(value: Record<string, unknown>, at: number, { state, seen, keep, add }: ReadContext<undefined>): boolean | void {
   const { session, names } = state;
   if (value.type === "session_start") {
-    if (!session.id && str(value.id)) session.id = value.id as string;
+    if (!session.id) session.id = droidSessionId(session.file, value);
     if (str(value.cwd)) session.cwd = value.cwd as string;
     const title = str(value.sessionTitle) ?? str(value.title);
     if (title) session.sourceTitle = title;
@@ -46,6 +65,18 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       session.child = true;
       session.parent = value.callingSessionId as string;
     }
+    return;
+  }
+  if (value.type === "agent_turn_outcome") {
+    const reason = str(value.reason);
+    if (!reason) return;
+    // A fork's copy of its source's outcome is counted there.
+    const turnId = str(value.turnId);
+    if (turnId && seen.has(`o:${turnId}`)) return false;
+    if (turnId) seen.add(`o:${turnId}`);
+    session.state = endOf(reason);
+    // A request that failed: the reason as its error with turns, without them a fixed "API error" (no source text).
+    if (FAILED_REQUEST.has(reason)) add({ role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), error: keep ? reason : "API error" });
     return;
   }
   if (value.type !== "message" || !isObject(value.message)) return;
@@ -63,7 +94,7 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     for (const call of calls) names.set(call.id, call.name);
     const model = str(message.modelId);
     if (model) session.model = modelOf(model);
-    // Without turns, no answer text: the request is kept for its count, in the result and the cursor alike.
+    // Without turns, no answer text: the request is kept for its count alone.
     add({ role: "assistant", text: keep ? texts.join("\n") : "", calls, at, ...(id ? { key: id } : {}), ...(model ? { model: modelOf(model) } : {}) });
     return;
   }
@@ -99,63 +130,56 @@ const spec: LineSource<"droid", undefined> = {
   order: (a, b) => dirname(a.file).localeCompare(dirname(b.file)) || a.mtimeMs - b.mtimeMs || a.file.localeCompare(b.file),
   start: () => undefined,
   record,
-  idOf: (file) => basename(file, ".jsonl"),
+  idOf: (file) => droidSessionId(file),
 };
 
-/** The settings file as last read: its identity, size and time, and what it held (counts and a model id, no text). */
-type Settings = { dev: number; ino: number; size: number; mtimeMs: number; usage?: Usage; model?: string };
-export type DroidCursor = { lines: FileCursor; settings?: Settings };
-
-/** The settings file beside `file`, read again only when it changed since `kept`: none when there is none, or it is no
- *  regular file. One that is not whole JSON (being written) holds nothing yet, and is read again next time. */
-async function settingsOf(file: string, kept: Settings | undefined): Promise<{ settings?: Settings; read: number }> {
+/** What the settings file beside `file` holds, read whole: the session's total and its model id (counts and an id, no
+ *  text). Nothing when there is none, it is no regular file, or it is not whole JSON (being written). */
+async function settingsOf(file: string): Promise<{ usage?: Usage; model?: string; read: number }> {
   const path = `${file.replace(/\.jsonl$/, "")}.settings.json`;
   if (!(await lstat(path).catch(() => null))?.isFile()) return { read: 0 };
-  const handle = await open(path, "r").catch((error: NodeJS.ErrnoException) => {
+  const bytes = await readFile(path).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
     throw error;
   });
-  if (!handle) return { read: 0 };
+  if (!bytes) return { read: 0 };
+  let value: unknown;
   try {
-    const { dev, ino, size, mtimeMs } = await handle.stat();
-    if (kept && kept.dev === dev && kept.ino === ino && kept.size === size && kept.mtimeMs === mtimeMs) return { settings: kept, read: 0 };
-    const bytes = await handle.readFile();
-    let value: unknown;
-    try {
-      value = JSON.parse(bytes.toString("utf8"));
-    } catch {
-      return { read: bytes.length };
-    }
-    const usage = isObject(value) ? normalizeUsage("droid", value.tokenUsage) : undefined;
-    const model = isObject(value) ? str(value.model) : undefined;
-    return { settings: { dev, ino, size, mtimeMs, ...(usage ? { usage } : {}), ...(model ? { model } : {}) }, read: bytes.length };
-  } finally {
-    await handle.close();
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return { read: bytes.length };
   }
+  if (!isObject(value)) return { read: bytes.length };
+  const usage = normalizeUsage("droid", value.tokenUsage);
+  const model = str(value.model);
+  return { ...(usage ? { usage } : {}), ...(model ? { model } : {}), read: bytes.length };
 }
 
 const lines = lineReader(spec);
 const none = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 
-export const droid: Reader<"droid", DroidCursor> = {
+export const droid: Reader<"droid", FileCursor> = {
   ...lines,
   async read(locator, cursor, options) {
-    const result = await lines.read(locator, cursor?.lines, options);
-    const { settings, read } = await settingsOf(locator.file, cursor?.settings);
+    const result = await lines.read(locator, cursor, options);
+    const { usage, model, read } = await settingsOf(locator.file);
     const sessions = result.sessions.map(({ locator, session, requests }) => {
-      if (!session.model && settings?.model) session.model = modelOf(settings.model);
-      const usage = settings?.usage;
+      if (model) session.model = modelOf(model);
       if (!usage) return { locator, session, requests };
-      // New requests, never the read's own (its cursor's state holds them): the total on the last, the others 0.
+      // New requests, never the read's own (its state holds them): the total on the last, at the session's model, the
+      // others 0.
       const last = requests.at(-1);
-      const counted: Answer[] = last
-        ? requests.map((request) => ({ ...request, usage: request === last ? { ...usage } : none() }))
-        : [{ role: "assistant", text: "", calls: [], at: session.endedAt ? Date.parse(session.endedAt) : 0, ...(session.model ? { model: session.model } : {}), usage: { ...usage } }];
+      const at = session.endedAt ? Date.parse(session.endedAt) : 0;
+      const total = (request?: Answer): Answer => {
+        const priced = model ? session.model : (request?.model ?? session.model);
+        return { ...(request ?? { role: "assistant", text: "", calls: [], at }), ...(priced ? { model: priced } : {}), usage: { ...usage } };
+      };
+      const counted: Answer[] = last ? requests.map((request) => (request === last ? total(request) : { ...request, usage: none() })) : [total()];
       const swap = new Map<unknown, Answer>(requests.map((request, i) => [request, counted[i]!]));
       session.turns = session.turns.map((turn) => swap.get(turn) ?? turn);
       if (!last && options?.turns !== false) session.turns.push(counted[0]!);
       return { locator, session, requests: counted };
     });
-    return { ...result, sessions, cursor: { lines: result.cursor, ...(settings ? { settings } : {}) }, read: result.read + read };
+    return { ...result, sessions, read: result.read + read };
   },
 };

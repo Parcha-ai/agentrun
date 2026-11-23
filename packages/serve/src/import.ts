@@ -1,5 +1,5 @@
-// `agentrun-serve import`: the Claude Code, Codex and pi sessions under a person's own home, into this server's agent
-// store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
+// `agentrun-serve import`: the Claude Code, Codex, pi and Factory Droid sessions under a person's own home, into this
+// server's agent store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
 // instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
 // ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
 // Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, droidSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -30,7 +30,7 @@ import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { journalEntries } from "./runner/journal-reader.js";
-import { bodyOf, type ImportSource, type NewRevision, openStore, SchemaVersionUnknown, type Store, StoreFromEarlierVersion, StoreOwned, storeTarget } from "./store/index.js";
+import { bodyOf, type NewRevision, openStore, SchemaVersionUnknown, type Store, StoreFromEarlierVersion, StoreOwned, storeTarget } from "./store/index.js";
 import { STORE_FILE } from "./store/sqlite/store.js";
 import { foundOverStore } from "./store-reads/import-summary.js";
 
@@ -120,7 +120,8 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
   const handle = await open(file, 'r');
-  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
+  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record (Droid's by
+  // the reader's own rule, droidSessionId).
   let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
   const metadataOf = (parts: Buffer[]): void => {
@@ -131,6 +132,9 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
         cwd??=str(row.cwd);child ||= row.isSidechain===true;
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
+      }else if(source==='droid'){
+        // A Worker's session_start names the session whose Task tool ran it: a child.
+        if(row.type==='session_start'){id=droidSessionId(file,row);cwd=str(row.cwd)??cwd;child ||= !!str(row.callingSessionId);}
       }else if(row.type==='session_meta'){
         const payload=row.payload;
         if(!payload || typeof payload!=='object' || Array.isArray(payload))return;
@@ -148,7 +152,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       if (!bytesRead) {
         metadataOf(parts);
         // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=basename(file,'.jsonl');
+        id??=source==='droid'?droidSessionId(file):basename(file,'.jsonl');
         return metadata();
       }
       position += bytesRead;
@@ -188,14 +192,10 @@ const INSTRUCTIONS: Record<string, string[]> = {
   pi: ["AGENTS.md", "CLAUDE.md"],
 };
 
-/** The sources serve imports runs from: the ones a run's imported_from names. The import package reads more (Factory
- *  Droid) for its totals alone. */
-export const IMPORT_SOURCES = ["claude-code", "codex", "pi"] as const satisfies readonly Source[];
-
 export type ImportOptions = {
   /** The home whose sessions are read (the person's own). */
   home: string;
-  sources?: readonly ImportSource[];
+  sources?: readonly Source[];
   /** Keep projects whose directory is gone or under the temp directory, and sessions with no message of the person's. */
   all?: boolean;
   /** Keep projects whose directory is gone (a deleted worktree's, a moved checkout's): each still its own agent, with no
@@ -420,7 +420,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = IMPORT_SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, own = [], signal, keys: scan = true, onKeys, only }: ImportOptions, store?: ImportStore): Promise<Plan> {
+export async function planImport({ home, sources = SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, own = [], signal, keys: scan = true, onKeys, only }: ImportOptions, store?: ImportStore): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}], own);
@@ -1266,7 +1266,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         id: randomUUID(),
         agentId: project.agentId,
         revisionId: revisions.get(session.source)!,
-        importedFrom: { source: session.source as ImportSource, session: session.id, file: read },
+        importedFrom: { source: session.source, session: session.id, file: read },
         launch: { body: launchBody({ input: { content: text(session.firstPrompt ?? "") }, title, place: { mode: "runner" } }) },
         // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
         state: session.state === "completed" ? "ended" : session.state,
@@ -1440,10 +1440,10 @@ async function importWith(
       return 2;
     }
     const open = openAt(env, port);
-    const sources = values.from === undefined ? IMPORT_SOURCES : values.from.split(",").map((s) => s.trim());
-    const unknown = sources.filter((s) => !(IMPORT_SOURCES as readonly string[]).includes(s));
+    const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
+    const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
     if (unknown.length) {
-      console.error(`--from takes ${IMPORT_SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
+      console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
       return 2;
     }
     dir = values.data ?? defaultData({ ...env, HOME: home });
@@ -1463,7 +1463,7 @@ async function importWith(
       }
       const options: ImportOptions = {
         home,
-        sources: sources as ImportSource[],
+        sources: sources as Source[],
         all: values.all === true,
         deleted: values["include-deleted"] === true,
         temp,
