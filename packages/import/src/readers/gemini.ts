@@ -93,10 +93,13 @@ function conversation(text: string): { meta: Meta; messages: Record<string, unkn
   return { meta, messages: [...messages.values()] };
 }
 
+/** A session's id: the one its metadata record names, else its file's name without the extension. */
+export const sessionIdOf = (file: string, recorded?: string): string => recorded ?? basename(file).replace(/\.jsonl?$/, "");
+
 /** One file read into its session, each message not counted elsewhere kept (and claimed). */
 function sessionOf(file: string, text: string, claimed: Set<string>, seen: Set<string>, keep: boolean): { session: Session; requests: Answer[] } {
   const { meta, messages } = conversation(text);
-  const session: Session = { source: "gemini", id: meta.sessionId ?? file.replace(/^.*[\\/]/, "").replace(/\.jsonl?$/, ""), file, state: "completed", child: meta.kind === "subagent", turns: [], users: 0, activeMs: 0, copies: 0 };
+  const session: Session = { source: "gemini", id: sessionIdOf(file, meta.sessionId), file, state: "completed", child: meta.kind === "subagent", turns: [], users: 0, activeMs: 0, copies: 0 };
   if (keep && meta.summary) session.sourceTitle = meta.summary;
   const turns: Turn[] = [];
   const requests: Answer[] = [];

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
 import { HARNESS_OF, normalizeUsage, parseHome, READERS, readSession, SOURCES } from "../dist/index.js";
+import { sessionIdOf } from "../dist/readers/gemini.js";
 import { jsonl, tempHome } from "./fixtures.mjs";
 import { chatsDir, GEMINI_SESSION, geminiAnswer, geminiFile, geminiMeta, geminiSubagentFile, geminiTokens, geminiUser, writeGemini, writeLegacy } from "./gemini-fixtures.mjs";
 
@@ -165,4 +166,14 @@ test("cwd: the project's path from the CLI's projects.json (or the .project_root
   assert.equal(await cwd(third), "unlisted", "a project in neither: its id");
   assert.equal(await cwd(file, { turns: false }), undefined);
   assert.equal(serialize((await READERS.gemini.read({ file }, undefined, { turns: false })).cursor).includes(Buffer.from("/work/fixture")), false);
+});
+
+test("a session's id is the one its record names, else its file's name without the extension: one rule, exported", async (t) => {
+  assert.equal(sessionIdOf("/x/chats/session-2026-01-01T00-00-abcd1234.jsonl", "recorded-id"), "recorded-id");
+  assert.equal(sessionIdOf("/x/chats/session-2026-01-01T00-00-abcd1234.jsonl"), "session-2026-01-01T00-00-abcd1234");
+  assert.equal(sessionIdOf("/x/chats/session-old.json"), "session-old");
+  // The reader uses it: a file with no session record is named for its file.
+  const home = await tempHome(t);
+  const file = await writeGemini(geminiFile(home), [geminiUser("u1", "Fixture question.")]);
+  assert.equal((await readSession(file, "gemini")).id, sessionIdOf(file));
 });
