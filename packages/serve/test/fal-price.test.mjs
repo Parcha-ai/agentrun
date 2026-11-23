@@ -63,20 +63,49 @@ test("1000 characters are the characters of the input's text, a dialogue's lines
   assert.ok("unknown" in unitsBefore("fal-ai/elevenlabs/text-to-dialogue/eleven-v3", "1000 characters", { inputs: [{ voice: "Aria" }] }), "a line with no text");
 });
 
-test("seconds and minutes are the length the input names", async () => {
+test("seconds and minutes are the length the input names, only in the field that sets the output fal bills, on the endpoints known to take it", async () => {
   const { unitsBefore } = await load();
   const s = (input, endpoint = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video") => unitsBefore(endpoint, "seconds", input);
   assert.equal(s({ prompt: "x", duration: "5" }).units, 5);
-  assert.equal(s({ duration: "8s" }, "fal-ai/veo3/fast").units, 8);
   assert.equal(s({ duration: 10 }).units, 10);
-  assert.equal(s({ duration_seconds: 6 }).units, 6);
-  assert.equal(s({ seconds_total: 30 }).units, 30);
-  assert.equal(s({ music_length_ms: 90_000 }).units, 90);
+  assert.equal(s({ duration: "10" }, "fal-ai/kling-video/v2.5-turbo/pro/image-to-video").units, 10);
+  assert.equal(s({ duration: "12" }, "fal-ai/kling-video/v3/pro/image-to-video").units, 12);
+  assert.equal(s({ duration: "6" }, "fal-ai/minimax/hailuo-02/standard/text-to-video").units, 6);
+  for (const veo of ["fal-ai/veo3/fast", "fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video"]) assert.equal(s({ duration: "8s" }, veo).units, 8, veo);
+  assert.equal(s({ seconds_total: 30 }, "fal-ai/stable-audio-25/text-to-audio").units, 30);
+  assert.equal(s({ duration: 45 }, "fal-ai/ace-step").units, 45);
   near(unitsBefore("fal-ai/elevenlabs/music", "minutes", { prompt: "x", music_length_ms: 90_000 }).units, 1.5, "90 s in minutes");
   near(unitsBefore("fal-ai/elevenlabs/music", "minutes", { composition_plan: { sections: [{ duration_ms: 20_000 }, { duration_ms: 40_000 }] } }).units, 1, "a plan's sections");
   assert.ok("unknown" in s({ prompt: "x" }), "no length named: the model's default is not guessed");
   for (const bad of ["soon", "-5", 0, Number.NaN, null]) assert.ok("unknown" in s({ duration: bad }), `duration ${String(bad)}`);
   assert.ok("unknown" in unitsBefore("fal-ai/elevenlabs/music", "minutes", { prompt: "a song" }), "music with no length");
+  // Only the endpoint's own field: another length field on it is not what fal bills.
+  for (const other of [{ duration_seconds: 6 }, { seconds_total: 6 }, { music_length_ms: 6000 }]) assert.ok("unknown" in s(other), JSON.stringify(other));
+  assert.ok("unknown" in unitsBefore("fal-ai/elevenlabs/music", "minutes", { duration: 60 }), "music's length is music_length_ms or its plan, not duration");
+});
+
+test("a length the input names is never read on an endpoint fal bills by its media or by an output no input sets", async () => {
+  const { unitsBefore } = await load();
+  const v = "https://v3.fal.media/files/v.mp4";
+  const a = "https://v3.fal.media/files/a.mp3";
+  const tiny = [{ duration: 0.001 }, { duration: "0.001" }, { duration_seconds: 0.001 }, { seconds_total: 0.001 }, { music_length_ms: 1 }, { composition_plan: { sections: [{ duration_ms: 1 }] } }];
+  // Billed by the media it is given: priced from that media, never from the named length.
+  for (const [endpoint, unit, input, media] of [
+    ["fal-ai/sync-lipsync/v2", "minutes", { video_url: v, audio_url: a }, [a, v]],
+    ["fal-ai/elevenlabs/dubbing", "minutes", { video_url: v, target_lang: "es" }, [v]],
+    ["fal-ai/elevenlabs/audio-isolation", "minutes", { video_url: v }, [v]],
+    ["fal-ai/elevenlabs/speech-to-text", "minutes", { audio_url: a }, [a]],
+  ]) {
+    for (const named of tiny) assert.deepEqual(unitsBefore(endpoint, unit, { ...input, ...named }), { media }, `${endpoint} ${JSON.stringify(named)}`);
+  }
+  // Billed by an output no input sets (a talking head not on the list, a lip-sync, a merge, an endpoint not known):
+  // unknown, whatever length the input names.
+  for (const endpoint of ["fal-ai/infinitalk", "fal-ai/latentsync", "fal-ai/ffmpeg-api/merge-audio-video", "veed/fabric-1.0/fast", "fal-ai/bytedance/omnihuman", "fal-ai/some/new-video-model"]) {
+    for (const named of tiny) {
+      const units = unitsBefore(endpoint, "seconds", { image_url: "https://v3.fal.media/files/i.png", video_url: v, audio_url: a, resolution: "480p", ...named });
+      assert.equal(units.unknown, `fal bills ${endpoint} per second, and no input of this endpoint is known to set the length fal bills, so a length it names is not read`, `${endpoint} ${JSON.stringify(named)}`);
+    }
+  }
 });
 
 test("a job that names no length is billed by its input media only where fal bills that media's length: its URLs are what must be read", async () => {
@@ -115,10 +144,15 @@ test("a talking head is billed by the voice at its audio_url alone, https only; 
   // The voice is read once here and fetched again by fal: only fal's own media, which serves the same file to both, is
   // priced. A voice anywhere else could play 1 s to this read and 60 s to fal.
   assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: "https://fal.media/files/a.mp3", resolution: "480p" }), { voice: "https://fal.media/files/a.mp3" });
+  // The voice read is the exact URL fal fetches: one whose parsed form is written otherwise is not priced.
+  for (const audio_url of ["https://V3.fal.media/files/a.mp3", "https://v3.fal.media/files/a b.mp3", "https://v3.fal.media/files/x/../a.mp3", "https://v3.fal.media:443/files/a.mp3", " https://v3.fal.media/files/a.mp3", "https://v3.fal.media/files/a.mp3\t", "https://v3.fal.media\\files\\a.mp3"]) {
+    const units = unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url, resolution: "480p" });
+    assert.match(units.unknown ?? "", /audio_url is not an https URL on fal\.media, written as fal answered it/, JSON.stringify(audio_url));
+  }
   // The host is the parsed URL's: fal.media as a user name or in a path is not fal's host.
   for (const audio_url of ["https://m.example/a.mp3", "https://fal.media.example/a.mp3", "https://notfal.media/a.mp3", "https://v3.fal.media.m.example/a.mp3", "https://storage.googleapis.com/falserverless/a.mp3", "https://fal.media@evil.example/x", "https://v3.fal.media@evil.example/a.mp3", "https://evil.example/fal.media", "https://evil.example/?u=https://v3.fal.media/a.mp3", "https://evil.example#.fal.media"]) {
     const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
-    assert.equal(units.unknown, "fal bills fal-ai/bytedance/omnihuman/v1.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times", audio_url);
+    assert.equal(units.unknown, "fal bills fal-ai/bytedance/omnihuman/v1.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media, written as fal answered it (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times", audio_url);
   }
 });
 

@@ -257,6 +257,10 @@ test("a job billed by the media it is given is priced from that media's length, 
   await run.call("run_model", { endpoint_id: "fal-ai/sync-lipsync/v2", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
   assert.deepEqual(run.asked.media.sort(), ["https://media.example/clip.mp4", "https://media.example/voice.mp3"], "each was read");
   near(run.spent(), (4 / 60) * 3, "the 4 s clip, longer than the 3.1 s voice, at $3 a minute");
+  // A length its input names is not what fal bills: the media are, read before the call.
+  await run.call("run_model", { endpoint_id: "fal-ai/sync-lipsync/v2", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3", duration: 0.001 } });
+  near(run.admits.at(-1).holdUsd, (4 / 60) * 3, "held at the 4 s clip, not the 0.001 s it names");
+  run.admits.pop();
   assert.equal(run.admits[0].basis, "fal's price for fal-ai/sync-lipsync/v2: $3 per minute × 0.066667 (the longest of its input media, read before the call), from get_pricing at 2026-11-20T12:00:00.000Z");
   await run.call("run_model", { endpoint_id: "fal-ai/elevenlabs/speech-to-text", input: { audio_url: "https://media.example/voice.wav" } });
   near(run.admits[1].holdUsd, (2 / 60) * 0.03, "2 s at $0.03 a minute");
@@ -284,7 +288,10 @@ test("only an endpoint fal bills by the length of the media it is given is price
     ["fal-ai/ffmpeg-api/merge-audio-video", { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" }],
   ]) {
     const refused = await capped.call("run_model", { endpoint_id, input });
-    assert.match(textOf(refused), new RegExp(`^mcp:fal/run_model was not sent: fal bills ${endpoint_id.replaceAll("/", "\\/")} per second, and this job's input names no length`), endpoint_id);
+    assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills ${endpoint_id} per second, and no input of this endpoint is known to set the length fal bills, so a length it names is not read, so a run with a spend cap can't send it. Nothing was sent.`, endpoint_id);
+    // A length it names changes nothing: still refused unsent.
+    const named = await capped.call("run_model", { endpoint_id, input: { ...input, duration: 0.001 } });
+    assert.equal(textOf(named), textOf(refused), `${endpoint_id} with duration 0.001`);
   }
   assert.equal(capped.received("run_model"), 0, "never sent under a cap");
   assert.deepEqual(capped.asked.media, [], "their media were never read");
@@ -367,7 +374,7 @@ test("a talking head whose voice can't be read, or whose rate get_pricing doesn'
   // A readable voice off fal's own media is never read either: fal fetches it again, and another host could serve fal a
   // longer voice than the one this read measured.
   const elsewhere = await refusedFor(head(FABRIC, { resolution: "480p", audio_url: "https://media.example/voice.mp3" }));
-  assert.equal(elsewhere, "mcp:fal/run_model was not sent: fal bills veed/fabric-1.0 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times, so a run with a spend cap can't send it. Nothing was sent.");
+  assert.equal(elsewhere, "mcp:fal/run_model was not sent: fal bills veed/fabric-1.0 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media, written as fal answered it (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times, so a run with a spend cap can't send it. Nothing was sent.");
   assert.deepEqual(run.asked.media, [], "never read");
   // A voice whose length can't be read: not there, not media, a WAV whose fields disagree, an ISO file (whose only
   // length is the one its header states), or refused by the reader (too big, a private host, its deadline): fail closed.

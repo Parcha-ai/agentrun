@@ -4,7 +4,8 @@
 //  - The unit price is the server's own get_pricing, asked with exactly `{ endpoint_id: "<id>" }` (a contract: a fake
 //    server matches arguments by equality), one endpoint a call, kept PRICE_TTL_MS.
 //  - The units are read from the job's input (unitsBefore). Nothing is guessed: an input that leaves out the size or
-//    length its model would default is unpriceable. A job billed by its media's length reads that media first; a talking
+//    length its model would default is unpriceable, and a length is read only from the field that sets it on the
+//    endpoints known to take one (NAMED_LENGTH). A job billed by its media's length reads that media first; a talking
 //    head reads its voice alone (TALKING_HEADS).
 //  - fal's reply states no cost, so the charge is this estimate (chargeOfJob).
 // fal can bill what get_pricing does not expose (a minimum, a discount, a rate that depends on a setting such as
@@ -84,16 +85,27 @@ function countOf(input: Record<string, unknown>, unit: string): { n: number; fro
   return Number.isInteger(n) && (n as number) > 0 ? { n: n as number, from: field } : undefined;
 }
 
-/** The length in seconds the input names: `duration` ("5", "5s" or a number), duration_seconds, seconds_total,
- *  music_length_ms, or a music composition plan's sections. */
-function namedSeconds(input: Record<string, unknown>): { seconds: number; from: string } | "bad" | undefined {
-  for (const [field, per] of [["duration", 1], ["duration_seconds", 1], ["seconds_total", 1], ["music_length_ms", 1000]] as const) {
-    const given = input[field];
-    if (given === undefined) continue;
+/** The endpoints whose input sets the length of the output fal bills, and the one field that does, from fal's OpenAPI
+ *  (read 2026-11-23): Kling's and Hailuo's `duration` ("5", "10"), Veo's ("4s", "6s", "8s"), ACE-Step's (seconds),
+ *  Stable Audio's `seconds_total`, and ElevenLabs Music's `music_length_ms` or its composition plan's sections. Only
+ *  these are read: on another endpoint a length its input names may be a field fal ignores, or none it has, while fal
+ *  bills its media or an output no input sets, so a job could name 0.001 s and be billed for minutes. A listed endpoint
+ *  whose input names no length is not priced at the model's default either. */
+const NAMED_LENGTH: ReadonlyMap<string, "duration" | "seconds_total" | "music_length_ms"> = new Map([
+  ...["fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "fal-ai/kling-video/v3/pro/image-to-video", "fal-ai/minimax/hailuo-02/standard/text-to-video", "fal-ai/veo3/fast", "fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video", "fal-ai/ace-step"].map((endpoint) => [endpoint, "duration"] as const),
+  ["fal-ai/stable-audio-25/text-to-audio", "seconds_total"],
+  ["fal-ai/elevenlabs/music", "music_length_ms"],
+]);
+
+/** The length in seconds `input` names in `field` (NAMED_LENGTH): `duration` as "5", "5s" or a number, seconds_total,
+ *  or music_length_ms, else a music composition plan's sections. "bad" when it names one that is not above 0. */
+function namedSeconds(input: Record<string, unknown>, field: "duration" | "seconds_total" | "music_length_ms"): { seconds: number; from: string } | "bad" | undefined {
+  const given = input[field];
+  if (given !== undefined) {
     const said = typeof given === "string" && /^\d+(\.\d+)?s?$/.test(given.trim()) ? Number.parseFloat(given) : given;
-    return positive(said) ? { seconds: said / per, from: field } : "bad";
+    return positive(said) ? { seconds: said / (field === "music_length_ms" ? 1000 : 1), from: field } : "bad";
   }
-  const sections = isObject(input.composition_plan) ? input.composition_plan.sections : undefined;
+  const sections = field === "music_length_ms" && isObject(input.composition_plan) ? input.composition_plan.sections : undefined;
   if (Array.isArray(sections) && sections.length) {
     const each = sections.map((section) => (isObject(section) ? section.duration_ms : undefined));
     return each.every(positive) ? { seconds: each.reduce((sum, ms) => sum + ms, 0) / 1000, from: "its composition plan's sections" } : "bad";
@@ -104,9 +116,9 @@ function namedSeconds(input: Record<string, unknown>): { seconds: number; from: 
 /** The endpoints fal bills per minute of media whose length the input's media bound (fal's model pages, read 2026-11-21):
  *  dubbing and voice isolation return the media they are given, re-voiced or cleaned; speech-to-text returns text, so
  *  its input is the only media to bill; sync-lipsync v2 bills "per minute of video", held at the longest it is given.
- *  Each settles at the length its output states, if it states one. Another endpoint billed by length
- *  whose input names none bills its output's (LatentSync's video, infinitalk's, a merge, an upscale), which no input
- *  states: it is unpriceable, but for the talking heads (TALKING_HEADS). */
+ *  Each settles at the length its output states, if it states one, and none is priced from a length its input names.
+ *  Another endpoint billed by length, not in NAMED_LENGTH, bills its output's (LatentSync's video, infinitalk's, a
+ *  merge, an upscale), which no input states: it is unpriceable, but for the talking heads (TALKING_HEADS). */
 const BY_INPUT_MEDIA: ReadonlySet<string> = new Set(["fal-ai/elevenlabs/dubbing", "fal-ai/elevenlabs/audio-isolation", "fal-ai/elevenlabs/speech-to-text", "fal-ai/sync-lipsync/v2"]);
 /** The input's audio_url and video_url. */
 const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, input.video_url].filter((url): url is string => typeof url === "string" && url !== "");
@@ -122,19 +134,23 @@ const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, 
  *  and what is uploaded to it, a new URL for each file) is priced. Any other is unpriceable.
  *  Each value is why a job's input can't be priced, or undefined when it can. Fabric's rate depends on its resolution
  *  (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the 480p one, and its OpenAPI gives
- *  resolution no default, so only a job that sends "480p" is priced. OmniHuman has one rate. */
+ *  resolution no default, so only a job that sends "480p" is priced. OmniHuman v1.5 has one rate: fal's model page
+ *  (read 2026-11-23) bills it per second at $0.16, with no rate by resolution or turbo_mode. */
 const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => string | undefined> = new Map<string, (input: Record<string, unknown>) => string | undefined>([
   ["veed/fabric-1.0", (input) => (input.resolution === "480p" ? undefined : `fal bills veed/fabric-1.0 per second at the rate get_pricing states only for resolution "480p" (720p costs more), and this job's resolution is ${input.resolution === undefined ? "not set" : JSON.stringify(input.resolution)}`)],
   ["fal-ai/bytedance/omnihuman/v1.5", () => undefined],
 ]);
-/** A talking head's voice: its input's audio_url when that is an https URL on fal's own media (TALKING_HEADS). */
+/** A talking head's voice: its input's audio_url when that is an https URL on fal's own media, written as it parses
+ *  (TALKING_HEADS). */
 function voiceOf(input: Record<string, unknown>): string | undefined {
   const url = typeof input.audio_url === "string" ? URL.parse(input.audio_url) : null;
   // The cap rests on this check. It assumes a file on fal.media never changes: fal gives each file its own path and
   // never overwrites one, so the voice this meter reads (VOICE_READ, no redirect followed) is the voice fal fetches. If
   // fal ever serves changing bytes at one fal.media URL, this is where the cap breaks. The host is the parsed URL's, so
   // fal.media as a user name, a path or a query is not it.
-  return url?.protocol === "https:" && (url.hostname === "fal.media" || url.hostname.endsWith(".fal.media")) ? (input.audio_url as string) : undefined;
+  // The URL read is the URL fal is sent, as written: one whose parsed form differs (case, spaces, dot segments, a port)
+  // is not priced, so no difference between two URL parsers can make the read and fal's fetch two files.
+  return url?.protocol === "https:" && url.href === input.audio_url && (url.hostname === "fal.media" || url.hostname.endsWith(".fal.media")) ? url.href : undefined;
 }
 
 /** ffmpeg-api/compose's timeline end in seconds: the last keyframe's end across its tracks (timestamp and duration are
@@ -179,14 +195,17 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
       const why = head(input);
       if (why) return { unknown: why };
       const voice = voiceOf(input);
-      return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times` };
+      return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media, written as fal answered it (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times` };
     }
-    const named = namedSeconds(input);
+    if (BY_INPUT_MEDIA.has(endpoint)) {
+      const media = mediaOf(input);
+      return media.length ? { media } : { unknown: `${bills} of the media it is given, and this job's input has no audio_url or video_url` };
+    }
+    const field = NAMED_LENGTH.get(endpoint);
+    if (!field) return { unknown: `${bills}, and no input of this endpoint is known to set the length fal bills, so a length it names is not read` };
+    const named = namedSeconds(input, field);
     if (named === "bad") return { unknown: `${bills}, and the length this job's input names is not a number above 0` };
-    if (named) return { units: named.seconds / per, from: named.from };
-    const media = BY_INPUT_MEDIA.has(endpoint) ? mediaOf(input) : [];
-    if (media.length) return { media };
-    return { unknown: `${bills}, and this job's input names no length (duration, duration_seconds, seconds_total or music_length_ms)` };
+    return named ? { units: named.seconds / per, from: named.from } : { unknown: `${bills}, and this job's input names no length (its ${field === "music_length_ms" ? "music_length_ms or composition_plan" : field})` };
   }
   return { unknown: `${bills}, a unit this server can't count` };
 }
