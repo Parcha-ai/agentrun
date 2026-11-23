@@ -38,7 +38,7 @@ const OTHER_KEY = `not-a-secret-${"other-env-key-0004"}`;
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { gmail: { no_auth: false, tools: [ADD] } };
-const USER_A = "grep-user-alice-0001";
+const USER_A = "user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
 const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
@@ -326,7 +326,7 @@ test("API-only: the token's Composio save over a Composio server it did not save
   assert.equal(own.status, 200, JSON.stringify(own.body));
 });
 
-test("API-only: the token's Composio save naming an auth config another saved server made uses it and takes nothing from that server's record: the owner's server still made it, and the token's delete of its own removes it nowhere", async (t) => {
+test("API-only: the token's Composio save naming an auth config another saved server made uses it and takes nothing from that server's record: the owner's server still made it, the token's delete of its own removes it nowhere, and the owner's delete of theirs removes it at Composio", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t);
   const store = s.server.store;
@@ -345,6 +345,14 @@ test("API-only: the token's Composio save naming an auth config another saved se
   assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
   assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method === "DELETE" && call.path.includes(config.id)), [], "the auth config the owner's server stands on is not removed");
   assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "and the owner's record still says its server made it");
+  // The same data served whole, where the owner has a session: the owner's delete of its server removes the auth config
+  // it made at Composio.
+  await s.server.stop();
+  const whole = await serve(t, { faux: FAUX_MCP, composioControl: { baseUrl: s.composio.baseUrl }, composioMcpOrigin: s.composio.mcpOrigin, data: s.server.data });
+  const before = s.composio.calls.length;
+  const gone = await asOwner(whole)("DELETE", "/settings/mcp-servers/mail");
+  assert.equal(gone.status, 200, JSON.stringify(gone.body));
+  assert.equal(s.composio.calls.slice(before).filter((call) => call.method === "DELETE" && call.path.includes(config.id)).length, 1, "the auth config the owner's server made is removed at Composio");
 });
 
 test("API-only, AGENTRUN_MCP_TOKEN_ORIGINS unset: the token's per_run save is 422 url not_an_option naming the variable, any other auth the secret-write refusal (403); no list or read (404); the address gets nothing", async (t) => {
