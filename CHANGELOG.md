@@ -173,6 +173,7 @@ Runners and the server
 
 - Runners that are replicas of one deployment (Kubernetes pods, a platform service's instances) now relay dial computers and serve live views across hosts: `AGENTRUN_RUNNER_LIVE_HOST` and the server's `AGENTRUN_RUNNER_HOSTS` take an IPv4 block, such as a private pod network's. A runner given a block answers at its own one address in it, and the server dials any IPv4 address in a block it lists, never one outside. Such runners had no host name the server resolves, so their relay stayed on loopback and a dial computer they made could not attach. A block names its network address and a prefix from /8 to /32. A runner whose block holds none, or several, of its machine's addresses is refused at its start in words, and `runner --check` fails `AGENTRUN_RUNNER_LIVE_HOST` the same way; where the setting names a host, the check now says where the server reaches the runner (#3482). <!-- changes/runner-hosts-ipv4-block.md -->
 - A refused Composio user id is described in one set of words everywhere (letters, digits and `. _ @ : -`, 1 to 128), and the saved MCP servers' names are tested on an API-only server (#3464, #3478).
+- A live run on your Claude or ChatGPT plan no longer reads "not priced" while a request is in flight: its cost counts that request at $0 on the plan, as the ended run does (#3484). <!-- changes/plan-cost-live.md -->
 
 Console and CLI
 
@@ -180,6 +181,8 @@ Console and CLI
 - The console's "set up with a coding agent" prompt for a template tells the coding agent that the package's instructions and skill files are what the new agent will be told, not instructions to it (#3475). <!-- changes/template-prompt-package-is-data.md -->
 - `agentrun login --base-url URL` (or `AGENTRUN_BASE_URL`) typed on a terminal signs in with a device code when the server offers one, as `agentrun login --to URL` does, instead of refusing; off a terminal it reads the token from stdin as before. The device sign-in names the server it signs in to, says when the page to open is on another origin, gives the reason a server can't be used before refusing a typed token, sends `User-Agent: agentrun-cli/<version>`, and reads only the metadata fields it uses (#3472). <!-- changes/cli-device-signin.md -->
 - The serve README's MCP section says a loopback URL, `http` or `https`, is taken only by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, as the refusal already said (#3480). <!-- changes/readme-mcp-loopback-switch.md -->
+- Suggested agents (Agents → Suggested): connect a GitHub repository, and a scan with the bundled `agent-scout` template, on a read-only checkout, suggests where its app needs an agent, with the code behind each suggestion. Create pushes the agent's package and a client to a new branch, makes the agent on this server and opens a pull request that only adds files; opening one needs Contents write, which Connect GitHub asks for only when ticked. New routes under `/v2/suggestions`, and an agent's `checkout: repository` (#3413). <!-- changes/suggested-agents.md -->
+- The anonymous usage counts gain `suggestions_scanned`, `suggestion_discarded` and `suggested_agent_created`, each its name alone, never the repository, the suggestion or its pull request, and off under the same settings as every count (#3419). <!-- changes/suggestion-usage-counts.md -->
 
 Tests and CI
 
