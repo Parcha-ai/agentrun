@@ -14,7 +14,7 @@
 import { createHash } from "node:crypto";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import type { McpKeys, McpMeter, McpQuote } from "./mcp-gateway.js";
-import { mediaSeconds } from "./media-duration.js";
+import { mediaSeconds, voiceSeconds } from "./media-duration.js";
 import { usd } from "./paid-calls.js";
 import { SAVE_MAX_BYTES, type SaveSlots, SERVER_SLOTS } from "./web-save.js";
 
@@ -110,12 +110,13 @@ const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, 
 
 /** The talking heads fal bills per second of the video they make, which runs as long as the voice they lip-sync: fal's
  *  OpenAPI (read 2026-11-23) gives OmniHuman v1.5's output `duration` as "Duration of audio input/video output as used
- *  for billing", and Fabric's video is its voice's picture. Such a job is held at that voice's length, read from the audio
- *  at its audio_url alone (https only, under VOICE_MAX_BYTES), never from a length its input states or from its image,
- *  in whole seconds as fal bills them. Each value is why a job's input can't be priced, or undefined when it can:
- *  Fabric's rate depends on its resolution (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the
- *  480p one, and its OpenAPI gives resolution no default, so only a job that sends "480p" is priced. OmniHuman has one
- *  rate. */
+ *  for billing", and Fabric's video is its voice's picture. Such a job is held at that voice's length in whole seconds,
+ *  as fal bills them. The length is read from the audio at its audio_url alone (https only, under VOICE_MAX_BYTES), as
+ *  long as it plays (media-duration.ts voiceSeconds: an MP3 or a PCM WAV), never from a length its header or its input
+ *  states, never from its image.
+ *  Each value is why a job's input can't be priced, or undefined when it can. Fabric's rate depends on its resolution
+ *  (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the 480p one, and its OpenAPI gives
+ *  resolution no default, so only a job that sends "480p" is priced. OmniHuman has one rate. */
 const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => string | undefined> = new Map<string, (input: Record<string, unknown>) => string | undefined>([
   ["veed/fabric-1.0", (input) => (input.resolution === "480p" ? undefined : `fal bills veed/fabric-1.0 per second at the rate get_pricing states only for resolution "480p" (720p costs more), and this job's resolution is ${input.resolution === undefined ? "not set" : JSON.stringify(input.resolution)}`)],
   ["fal-ai/bytedance/omnihuman/v1.5", () => undefined],
@@ -260,10 +261,11 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   return usd(quote.unitPrice * (quote.whole ? wholeSeconds(after, quote.unit) : after));
 }
 
-/** `units` of `unit` (seconds or minutes) rounded up to whole seconds, in `unit`. */
+/** `units` of `unit` (seconds or minutes) rounded up to whole seconds, in `unit`. Rounded to the microsecond first, so a
+ *  length a float sum or a conversion leaves a hair over a whole second (125 frames of 0.024 s) is that second. */
 const wholeSeconds = (units: number, unit: string): number => {
   const per = unit === "minutes" ? 60 : 1;
-  return Math.ceil(units * per) / per;
+  return Math.ceil(Math.round(units * per * 1e6) / 1e6) / per;
 };
 
 /** fal's tools that take a submission_key: the three that submit jobs, and get_submission, which reads one back. */
@@ -323,11 +325,11 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     prices.set(endpoint, read);
     return read;
   };
-  /** The longest of the media at `urls`, in seconds, or the URL whose length could not be read. */
-  const longest = async (urls: readonly string[], signal: AbortSignal, read?: MediaRead): Promise<number | { unread: string }> => {
+  /** The longest of the media at `urls`, in seconds by `measure`, or the URL whose length could not be read. */
+  const longest = async (urls: readonly string[], signal: AbortSignal, read?: MediaRead, measure: (bytes: Uint8Array) => number | undefined = mediaSeconds): Promise<number | { unread: string }> => {
     const lengths = await Promise.all([...new Set(urls)].map(async (url) => {
       try {
-        return (media && mediaSeconds(await media(url, signal, read))) || { unread: url };
+        return (media && measure(await media(url, signal, read))) || { unread: url };
       } catch {
         return { unread: url };
       }
@@ -346,9 +348,10 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     }
     let whole: { whole?: true } = {};
     if ("voice" in units) {
-      const seconds = await longest([units.voice], signal, { maxBytes: VOICE_MAX_BYTES, httpsOnly: true });
+      // The length the voice plays (voiceSeconds), never one its header states: whoever sends the job made the file.
+      const seconds = await longest([units.voice], signal, { maxBytes: VOICE_MAX_BYTES, httpsOnly: true }, voiceSeconds);
       if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of the voice at its audio_url, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
-      units = { units: Math.ceil(seconds) / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call, in whole seconds" };
+      units = { units: wholeSeconds(seconds, "seconds") / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call, in whole seconds" };
       whole = { whole: true };
     }
     if ("unknown" in units) return { job, why: units.unknown };
