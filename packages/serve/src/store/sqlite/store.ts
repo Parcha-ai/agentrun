@@ -177,18 +177,22 @@ const lockCommandsOf = (tx: Tx, runId: string): Promise<void> => tx.dialect.lock
  *  that can answer it once its backoff (a failed resume's) has passed. A row marked `answers: false` (a trigger's
  *  follow-up message) answers no park: it waits, untaken, and its loop gets it after the person's answer wakes the run.
  *  With `claimer` (a claim's runner), a parked run whose computer is pinned to another runner (keptElsewhere) is left
- *  out; without it (a count of what waits) it is in. */
+ *  out while only its wake or an answering command makes it claimable; without it (a count of what waits) it is in.
+ *  An untaken stop or cancel row is its own branch, outside the pin: a person's stop never waits on a pin, and any
+ *  runner claims the run at once to end it (runner.ts claimMore ends it without a loop, never taking the kept machine).
+ *  The SQL tells the branches apart by place: the stop/cancel EXISTS is OR'ed beside a parenthesis holding the wake and
+ *  the answer, and only that parenthesis carries `AND NOT keptElsewhere`. */
 const claimableIn = (d: Dialect, n: StoreNow, claimer?: string): { sql: string; params: SqliteValue[] } => {
   const pin = claimer === undefined ? undefined : keptElsewhere(d, n, claimer);
   return {
     sql: `(state = 'queued'
   OR (state = 'running' AND (runner IS NULL OR claimed_until < ${n.sql}) AND (backoff_until IS NULL OR backoff_until <= ${n.sql}))
   OR (state = 'parked' AND (runner IS NULL OR claimed_until < ${n.sql}) AND (
-    (wake_at IS NOT NULL AND wake_at <= ${n.sql})
-    OR EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
-    OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
-      AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))${pin ? `
-    AND NOT ${pin.sql}` : ""}))`,
+    EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind IN ('stop', 'cancel'))
+    OR (((wake_at IS NOT NULL AND wake_at <= ${n.sql})
+      OR ((backoff_until IS NULL OR backoff_until <= ${n.sql}) AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL
+        AND ${d.jsonNotFalse(readableJson(d, "commands.body"), ["answers"])})))${pin ? `
+      AND NOT ${pin.sql}` : ""}))))`,
     params: [...n.params, ...n.params, ...n.params, ...n.params, ...n.params, ...(pin?.params ?? [])],
   };
 };

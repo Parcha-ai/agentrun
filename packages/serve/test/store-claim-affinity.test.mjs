@@ -3,7 +3,9 @@
 // and its incarnation, computer-kept.ts pinnedOf) is claimable by that runner alone while that runner is there under
 // that incarnation (seen within the stale time, not refusing) and the keep lasts (not ending or ended, its time ahead).
 // Another runner's claim, claimMany and claimable({runner}) leave it out: nothing is claimed and given back, the epoch
-// stays. Once the pin stops holding, any runner claims it. The count of what waits (no runner) still counts it.
+// stays. Once the pin stops holding, any runner claims it. The count of what waits (no runner) still counts it. The pin
+// holds a run claimable by its wake or an answering command only: an untaken stop or cancel row makes it any runner's at
+// once (a person's stop never waits on a pin).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
@@ -14,18 +16,35 @@ const { PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
 const RUN = "run-1";
 
 /** run-1 parked and released by runner-a at the store's clock, its desktop kept and pinned to runner-a's `inc-a`, woken
- *  (its wake_at now), with runner-a's word on the store. The row is put raw, as this build's park writes it, so a store
- *  without the pin fails on its claim rule alone. */
-async function pinnedParked(t, extra = {}) {
+ *  (its wake_at now) unless `wake` is false, with runner-a's word on the store. The row is put raw, as this build's park
+ *  writes it, so a store without the pin fails on its claim rule alone. */
+async function pinnedParked(t, extra = {}, { wake = true } = {}) {
   const { store, clock } = await storeOn(t);
   await queued(store, RUN);
   assert.equal(await store.runners.put({ runner: "runner-a", incarnation: "inc-a", refused: null }), true);
   const claim = await store.claim(RUN, "runner-a", { leaseMs: 30_000 });
   await store.release(claim, { state: "parked" });
   await store.settings.put(keptKeyOf(RUN), { provider: "docker", kind: "desktop", id: "a-d1", name: "a-d1", epoch: claim.epoch, until: clock.now + KEEP_MS, runner: "runner-a", incarnation: "inc-a", ...extra });
-  assert.equal(await store.runs.wake(RUN), true, "woken");
+  if (wake) assert.equal(await store.runs.wake(RUN), true, "woken");
   return { store, clock, epoch: (await store.runs.get(RUN)).epoch };
 }
+
+test("store: a stop or a cancel of a run kept on a live runner is any runner's at once: B's poll 0 takes it, while a woken or an answered one stays runner-a's", async (t) => {
+  for (const kind of ["stop", "cancel"]) {
+    const one = await pinnedParked(t, {}, { wake: false });
+    await one.store.command(RUN, { kind });
+    assert.deepEqual(await one.store.runs.claimable({ runner: "runner-b" }), [RUN], `B's memory path sees the ${kind}`);
+    const taken = await one.store.runs.claimMany("runner-b", 1);
+    assert.deepEqual(taken.map((claim) => [claim.runId, claim.runner, claim.epoch, claim.from]), [[RUN, "runner-b", one.epoch + 1, "parked"]], `B's poll 0 takes the run on its ${kind}, runner-a live and the keep in its time`);
+    assert.equal((await readKept(one.store.settings, RUN))?.runner, "runner-a", `the ${kind}'s claim leaves the kept row runner-a's`);
+  }
+  const woken = await pinnedParked(t);
+  assert.deepEqual(await woken.store.runs.claimMany("runner-b", 1), [], "a woken one stays runner-a's");
+  const answered = await pinnedParked(t, {}, { wake: false });
+  await answered.store.command(RUN, { kind: "steer", body: { content: "go on" } });
+  assert.deepEqual(await answered.store.runs.claimMany("runner-b", 1), [], "an answered one stays runner-a's");
+  assert.deepEqual((await answered.store.runs.claimMany("runner-a", 1)).map((claim) => claim.runner), ["runner-a"], "and runner-a claims it");
+});
 
 test("store: a woken run kept on a live runner is that runner's alone; B's polls claim nothing and move nothing until runner-a goes stale, then B's next poll claims it once", async (t) => {
   const one = await pinnedParked(t);

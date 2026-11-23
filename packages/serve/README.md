@@ -420,7 +420,9 @@ timeline and, once, to the model as an "AgentRun server note"), and the agent's 
 The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
 One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
 parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
-keep lasts: no other runner claims the run, so a runner whose loops are full makes it wait until then. Once that runner
+keep lasts: no other runner claims the run to resume it, so a runner whose loops are full makes an answer wait until
+then. A stop or a cancel never waits: any runner claims the run at once and ends it without taking the kept machine,
+which the runner that kept it ends at its time, or sooner at its janitor's next pass once the run is over. Once that runner
 is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
 is gone.` `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,

@@ -31,7 +31,9 @@
 // engine (a local provider), or a machine that dials this server, whose socket is in that runner's attach hub. Its row
 // names the runner and its process (`runner`, `incarnation`: the presence incarnation, runner/presence.ts), and while
 // that runner is there under that incarnation and the keep lasts, the claim rule gives the run to that runner alone
-// (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). Once it is gone (its row stale
+// (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). A stop or cancel is exempt:
+// any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore), and the
+// row's runner ends the machine at its time, or at its janitor's pass once the run is over. Once it is gone (its row stale
 // for PRESENCE_STALE_MS, a new incarnation, a refusal) any runner claims the run; a claim that then finds the machine gone
 // says so (computerLostWords), and its janitor never ends a row pinned to another runner still there (sweepKept): that
 // runner's own timer or janitor does. A machine any runner reaches by its id (an exec vendor's sandbox, a phone) is not

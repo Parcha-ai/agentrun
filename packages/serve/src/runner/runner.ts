@@ -25,6 +25,7 @@ import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
+import { keptBy, readKept } from "../workspace/computer-kept.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
@@ -700,6 +701,20 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** Whether the run under `claim` has a computer its park kept pinned to a runner other than this one, this process
+   *  (computer-kept.ts: the row names a runner and incarnation, keptBy). A row that cannot be read says no (the claim's
+   *  loop applies the stop as it would). */
+  const keptElsewhere = async (claim: Claim): Promise<boolean> => {
+    if (!store.settings) return false;
+    try {
+      const kept = await readKept(store.settings, claim.runId);
+      const ours = (options.presence ?? presence)?.incarnation;
+      return kept?.runner !== undefined && !keptBy(kept, ours ? { runner: name, incarnation: ours } : undefined);
+    } catch {
+      return false;
+    }
+  };
+
   /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
    *  so no turn, model request or tool runs on a run that is stopping. */
   const endRetried = async (claim: Claim, stop: Command) => {
@@ -980,13 +995,17 @@ export function startRunner(options: RunnerOptions): Runner {
       //   starts now, not even its first input: a loop started first would send that input before the stop reached it;
       // - a run whose untaken stop row has tries, which failed to apply that stop before. Either source of tries counts: a
       //   refused stopped end (endRefused, released running) or a failed resume (resumeFailed's store.retry, released
-      //   parked).
+      //   parked);
+      // - a parked run stopped or cancelled whose computer its park kept pinned to another runner (keptElsewhere): the
+      //   store gives a stop to any runner at once, never waiting on the pin, and this runner can't reach that machine.
+      //   A loop would take the kept row (takeKept) and try to attach it, orphaning it on that runner's host; ending here
+      //   leaves the row that runner's, whose own timer at its time, or its janitor once the run is final, ends it.
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
       for (const claim of claims) {
         const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))));
+        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))) || (claim.from === "parked" && (await keptElsewhere(claim))));
         if (stop && endsOnly && !closed && !killed && !runs.has(claim.runId)) {
           const key = `${claim.runId}:${claim.epoch}`;
           endingClaims.add(key);

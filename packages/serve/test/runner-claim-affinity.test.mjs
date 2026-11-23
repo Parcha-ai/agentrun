@@ -29,7 +29,7 @@ const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
-const { endKept, keptKeyOf, readKept } = await import("../dist/workspace/computer-kept.js");
+const { endKept, keptKeyOf, readKept, sweepKept } = await import("../dist/workspace/computer-kept.js");
 const { PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 
@@ -109,17 +109,21 @@ function hostVendor(host) {
 
 const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
 
-/** `store` with its runs' claimMany counted (`calls`) and, while `gate.shut`, held until the gate opens: how the test
- *  makes A's poll wait while B's polls run, so a B that may claim the run claims it first whatever the timing. */
-function watchedStore(store, gate = { shut: false }, calls = { n: 0 }) {
+/** `store` with its runs' claimMany counted (`calls.n`, each claim by the number of the call that made it in
+ *  `calls.claimed`) and, while `gate.shut`, held until the gate opens: how the test makes A's poll wait while B's polls
+ *  run, so a B that may claim the run claims it first whatever the timing. */
+function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: [] }) {
   const runs = new Proxy(store.runs, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
       if (key !== "claimMany") return typeof value === "function" ? value.bind(target) : value;
       return async (...args) => {
         calls.n += 1;
+        const n = calls.n;
         if (gate.shut) await gate.opened;
-        return value.apply(target, args);
+        const claims = await value.apply(target, args);
+        if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
+        return claims;
       };
     },
   });
@@ -176,7 +180,7 @@ async function parkedOnA(t) {
   const start = async (name, host, { gate } = {}) => {
     const raw = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(raw);
-    claimManyCalls[name] = { n: 0 };
+    claimManyCalls[name] = { n: 0, claimed: [] };
     const store = watchedStore(raw, gate, claimManyCalls[name]);
     const computerDeps = { kinds: PINNED_KINDS, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => hosts[host].provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf } };
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
@@ -278,6 +282,46 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   assert.deepEqual(said.filter((summary) => summary.endsWith(SAME)), [], "never called the same one");
   assert.deepEqual(said.filter((summary) => summary.includes("10 minutes passed")), [], "not the lapsed words: its time had not passed");
   assert.equal(await readKept(one.server.settings, RUN), undefined, "the keep was taken");
+});
+
+test("a stop of a parked run pinned to a live runner whose loops are full ends within one poll on another runner, and that runner never takes the kept machine", { timeout: 120_000 }, async (t) => {
+  const one = await parkedOnA(t);
+  const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
+  await one.start("runner-b", "b");
+  // A's loops full: its polls claim nothing while the gate is shut (as a runner with no free loop claims nothing).
+  one.gate.close();
+  await one.server.command(RUN, { kind: "stop" });
+  const polledFrom = one.claimManyCalls["runner-b"].n;
+  // A person's stop never waits on the pin: the poll B had in flight when it landed, or B's next, claims the run.
+  const ended = await until(async () => {
+    const row = await one.server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(row.state) && row.runner === null && row;
+  }, "B ends the run on the stop, runner-a live with its loops full", 10_000);
+  assert.equal(ended.state, "stopped", JSON.stringify(ended));
+  const claimedAt = one.claimManyCalls["runner-b"].claimed.find(({ runIds }) => runIds.includes(RUN))?.n;
+  assert.ok(claimedAt !== undefined && claimedAt - polledFrom <= 1, `B claimed it within one poll of the stop: at poll ${claimedAt}, the stop landed at ${polledFrom}`);
+  // B ends the run with no loop: it never takes the kept row, and asks no provider of its own anything (no attach of
+  // A's machine, no new desktop, no delete).
+  assert.deepEqual(one.hosts.b.calls, [], "B asked its provider nothing");
+  const kept = await readKept(one.server.settings, RUN);
+  assert.equal(kept?.id, "a-d1", `the kept row is still there: ${JSON.stringify(kept)}`);
+  assert.deepEqual([kept?.runner, kept?.incarnation], ["runner-a", rowA.incarnation], "and still names runner-a: B did not take it");
+  assert.ok(!kept.ending && !kept.ended, "nor ended it");
+  assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
+  one.gate.open();
+
+  // B's janitor leaves it though the run is final: runner-a is still there (leak (b)).
+  const janitor = (self) => sweepKept({ settings: one.server.settings, runs: one.server.runs, now: Date.now() + one.clock.skewMs, providerOf: async () => (self.runner === "runner-a" ? one.hosts.a.provider : one.hosts.b.provider), runners: one.server.runners, self });
+  const byB = await janitor({ runner: "runner-b", incarnation: "b-any" });
+  assert.deepEqual(byB.ended, [], "B's janitor ends nothing of runner-a's");
+  assert.equal((await readKept(one.server.settings, RUN))?.runner, "runner-a", "the row stays runner-a's");
+  // A sees the run ended at its janitor's pass (the run final, the row its own) and ends its desktop on its own host;
+  // else its park's timer does at the keep's time.
+  const byA = await janitor({ runner: "runner-a", incarnation: rowA.incarnation });
+  assert.deepEqual(byA.ended, ["a-d1"], `A's janitor ends its own kept desktop: ${JSON.stringify(byA)}`);
+  assert.equal(one.hosts.a.computers.has("a-d1"), false, "gone from A's host");
+  assert.equal(await readKept(one.server.settings, RUN), undefined, "and its row with it, the run being over");
+  assert.deepEqual(one.hosts.b.calls, [], "B's host was never asked, start to end");
 });
 
 test("a single runner, unchanged: its resume gets the same desktop at once; after its clean restart, the next runner on the same host gets it too", { timeout: 120_000 }, async (t) => {
