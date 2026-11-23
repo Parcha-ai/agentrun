@@ -9,6 +9,7 @@
 // a trigger, the hooks and the settings stay refused. Off by default: the whole server's apply makes every trigger, as
 // before.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -95,6 +96,18 @@ const TRIGGER_WRITES_REFUSED = (agent, trigger) => [
   ["a trigger's secret rotated", "POST", `/v2/triggers/${trigger}/secret`],
   ["a Composio server's triggers", "GET", "/v2/settings/mcp-servers/composio/composio/triggers"],
 ];
+
+/** The agentrun CLI (packages/agentrun) run with `args` against `server` with its token, its config folder `config` (none
+ *  of this machine's): its exit code and output. */
+const AGENTRUN = new URL("../../agentrun/bin/agentrun.mjs", import.meta.url).pathname;
+const cliRun = (server, config, args) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [AGENTRUN, ...args], { env: { PATH: process.env.PATH, HOME: config, XDG_CONFIG_HOME: config, AGENTRUN_BASE_URL: `${server.url}/v2`, AGENTRUN_API_KEY: server.token }, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let err = "";
+  child.stdout.on("data", (chunk) => (out += chunk));
+  child.stderr.on("data", (chunk) => (err += chunk));
+  child.on("close", (code) => resolve({ code, out, err }));
+});
 
 /** The runs of `agent` on `server`, through its API. */
 const runsOf = async (server, agent) => {
@@ -493,6 +506,20 @@ test("an API-only server with the launch hook turns an auto-paused schedule on a
   assert.deepEqual([off.status, off.body.enabled], [200, false], JSON.stringify(off.body));
   for (const [what, method, path, body] of TRIGGER_WRITES_REFUSED(agent, made.id)) refusedHere(await send(server, method, path, body === undefined ? {} : { body }), path, what);
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.id), [made.id], "none made or deleted");
+
+  // The CLI command the notices name: its --enabled sends `enabled: true` through the same PATCH, --no-enabled false. A
+  // value after the flag is no part of it (a boolean flag takes none): the CLI refuses it, and nothing is sent.
+  const config = await scratch(t);
+  const cli = (...args) => cliRun(server, config, ["triggers", "update", made.id, ...args]);
+  const turnedOn = await cli("--enabled");
+  assert.equal(turnedOn.code, 0, turnedOn.err);
+  assert.deepEqual([JSON.parse(turnedOn.out).enabled, (await server.store.triggers.get(made.id)).enabled], [true, true], turnedOn.out);
+  const turnedOff = await cli("--no-enabled");
+  assert.equal(turnedOff.code, 0, turnedOff.err);
+  assert.equal((await server.store.triggers.get(made.id)).enabled, false, turnedOff.out);
+  const valued = await cli("--enabled", "true");
+  assert.notEqual(valued.code, 0, valued.out);
+  assert.equal((await server.store.triggers.get(made.id)).enabled, false, "a refused command sends nothing");
 });
 
 test("an API-only server without the launch hook turns no trigger on through PATCH, as its unarchive turns none on; it turns one off", { timeout: 60_000 }, async (t) => {

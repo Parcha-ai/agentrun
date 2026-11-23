@@ -3369,7 +3369,8 @@ serves these routes alone:
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
   (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
-  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`). A trigger whose firings failed 5 times in
+  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
+  `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
   a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
   takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
   or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
