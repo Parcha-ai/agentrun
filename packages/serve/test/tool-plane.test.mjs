@@ -108,6 +108,32 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
   assert.equal(resolveOnBuiltin("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's auto with the server's Parallel key is the guarded direct fetch: no URL goes to a keyless service");
 });
 
+test("the server's kernel for web_fetch and native for web_search are a ceiling an agent's pick cannot raise: a pick of keyless Firecrawl, keyless Exa or auto is kept on the server, the why says so, and a run's plane and a relaunch agree; Parallel stays the agent's pick", () => {
+  const kept = (capability, override, extra = {}) => explainCapability(capability, { ...base, harness: "pi", pick: capability === "web_fetch" ? "kernel" : "native", override, ...extra });
+  for (const override of ["firecrawl-keyless", "auto"]) {
+    const fetch = kept("web_fetch", override);
+    assert.deepEqual(fetch, { resolves: "kernel", why: `kept on the server: the server's setting is kernel, over this agent's pick of ${override}; the guarded direct fetch, picked in settings` }, override);
+  }
+  for (const override of ["firecrawl-keyless", "exa-keyless", "auto"]) {
+    assert.deepEqual(kept("web_search", override, { model: "anthropic/claude-sonnet-5-5" }).resolves, "native", `${override} on a model with its own search`);
+    const none = kept("web_search", override, { gateway: true });
+    assert.deepEqual(none, { resolves: "unavailable: no native search for pi behind a gateway", why: `kept on the server: the server's setting is native, over this agent's pick of ${override}; no native search for pi behind a gateway` }, `${override} with no native search: unavailable, never keyless`);
+  }
+  assert.equal(kept("web_fetch", "parallel", { parallelKey: true }).resolves, "parallel", "Parallel on the server's key: the agent's pick, as before");
+  assert.equal(kept("web_search", "parallel", { parallelKey: true, gateway: true }).resolves, "parallel");
+  assert.equal(explainCapability("web_fetch", { ...base, harness: "pi", override: "firecrawl-keyless" }).resolves, "firecrawl-keyless", "no ceiling set: the agent's pick");
+  assert.equal(explainCapability("web_search", { ...base, harness: "pi", gateway: true, pick: "parallel", override: "exa-keyless" }).resolves, "exa-keyless", "a server pick that is no ceiling: the agent's over it");
+
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
+  const ceilings = { web_fetch: { provider: "kernel" }, web_search: { provider: "native" } };
+  const tooling = { tools: ["web_search", "web_fetch"], overrides: { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "firecrawl-keyless" } } };
+  assert.deepEqual(planeFor(env, tooling, ceilings), { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "the run's plane: nothing keyless");
+  assert.deepEqual(explainsView(env, ceilings, tooling.overrides).web_fetch.resolves.pi, "kernel", "capabilities agree with the plane");
+  const relaunched = relaunchPlane({ web_search: "exa-keyless", web_fetch: "firecrawl-keyless" }, env, tooling, ceilings);
+  assert.deepEqual(relaunched, { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "a run kept on keyless before the ceiling was set: relaunched under it");
+  assert.deepEqual(relaunchPlane({ web_fetch: "firecrawl-keyless" }, env, { tools: ["web_fetch"] }, {}), { web_fetch: "firecrawl-keyless" }, "no ceiling: kept as it was");
+});
+
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
   // The web tools; the browser's words are browser-pick.test.mjs'.
   const why = (env, settings = {}) => Object.fromEntries(toolsView(env, settings).filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.why]));

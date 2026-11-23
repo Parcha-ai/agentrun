@@ -1735,7 +1735,8 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
+(`PUT /settings/tools`), except that the server's `kernel` for `web_fetch` and `native` for `web_search` are a ceiling
+no agent's keyless pick raises ([below](#search-and-fetch)); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
 only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
 keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
@@ -1763,7 +1764,8 @@ unavailable for a workflow.
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
-default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
+default). An agent's `definition.tool_settings` has the same shape and is over the server's, except under the server's
+`kernel` for `web_fetch` or `native` for `web_search`, which an agent's pick of a keyless third party cannot raise. A provider is one offered
 for its capability (`auto`, `native`, `firecrawl-keyless`, `exa-keyless`, `parallel` or `off` for `web_search`; `auto`,
 `firecrawl-keyless`, `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
@@ -1835,9 +1837,10 @@ sees the URL, its query string included, so a token in a URL's query goes to Fir
 guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
 or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
 to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
-`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
-agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
-Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+`auto` is the guarded direct fetch. The server's `kernel` for `web_fetch`, and its `native` for `web_search`, are a
+ceiling an agent cannot raise: an agent's own `tool_settings` (an imported template's among them) that pick
+`firecrawl-keyless`, `exa-keyless` or `auto` are kept on the server, and capabilities' `why` says so. A run made before
+the setting is kept on the server at its next launch too. An agent may still pick `parallel`, on the server's own key.
 
 A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
 Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.

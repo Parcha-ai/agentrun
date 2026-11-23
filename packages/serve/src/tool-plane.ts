@@ -245,9 +245,29 @@ const nativeWhy = (input: ResolveInput): string => {
 const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa behind it";
 export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
 
+/** The server's settings that are a ceiling an agent's pick cannot raise: web_fetch `kernel` keeps every URL on the
+ *  server, web_search `native` every query with the harness's own search. Under one, an agent's pick that would resolve
+ *  to a keyless third party (Firecrawl, Exa) resolves as the server's setting does. Parallel, on the server's own key,
+ *  is the agent's to pick. */
+const CEILINGS: Partial<Record<Pickable, string>> = { web_fetch: DIRECT_FETCH, web_search: "native" };
+const KEYLESS: readonly string[] = ["firecrawl-keyless", "exa-keyless"];
+/** The server's setting `resolves` is kept under: the ceiling `settings` sets for `capability` when `resolves` is a
+ *  keyless third party; else undefined. */
+const ceilingOver = (capability: Pickable, pick: string | undefined, resolves: string | undefined): string | undefined => (pick !== undefined && pick === CEILINGS[capability] && KEYLESS.includes(resolves ?? "") ? pick : undefined);
+
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
- *  the two never disagree. */
+ *  the two never disagree. An agent's pick the server's setting is a ceiling over (CEILINGS) is kept on the server, and
+ *  the why says so. */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
+  const said = explained(capability, input);
+  const ceiling = ceilingOver(capability, input.pick, said.resolves);
+  if (input.override === undefined || ceiling === undefined) return said;
+  const { override, ...server } = input;
+  const kept = explained(capability, server);
+  return { resolves: kept.resolves, why: `kept on the server: the server's setting is ${ceiling}, over this agent's pick of ${override}; ${kept.why}` };
+}
+
+function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
   const picked = input.override !== undefined ? "picked for this agent" : "picked in settings";
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
@@ -441,8 +461,20 @@ export const browserKeyRow = (picked: string | undefined, resolution: string | u
  *  under ask, so a deny lifted while that process lives is lifted at the next call. */
 export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
   const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
-  if (kept) return recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}, tooling?.approvals ?? "ask") });
+  if (kept) return underCeilings(recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}, tooling?.approvals ?? "ask") }), fresh, settings);
   return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
+}
+
+/** A kept Plane under the server's ceilings today (CEILINGS): a capability kept on a keyless third party, where the
+ *  server's setting now keeps it on the server, is handed today's resolution, so a relaunch sends nothing the setting
+ *  keeps. */
+function underCeilings(plane: Plane, fresh: Plane, settings: ToolSettingsMap): Plane {
+  const out: Plane = { ...plane };
+  for (const name of PICKABLE) {
+    if (fresh[name] !== undefined && ceilingOver(name, settings[name]?.provider, plane[name]) !== undefined) out[name] = fresh[name];
+  }
+  if (out.web_search === "native" && plane.web_search !== "native" && fresh.model) out.model = fresh.model;
+  return out;
 }
 
 /** The Plane the server handed this run's process; empty when it handed none. */
