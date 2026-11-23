@@ -1,6 +1,8 @@
 // A parked run's kept computer survives a resume while the runner that kept it is alive: that runner alone claims the
 // run, and the same machine comes back. Once that runner is stale (no word of it for PRESENCE_STALE_MS) any runner
-// claims it, starts a new machine, and the run says in words that the kept one was lost with its runner. A runner that
+// claims it, starts a new machine, and the run says in words that the kept one was lost with its runner. Once that runner
+// refuses claims but is still there, any runner claims it too, and puts the kept row back as it read it when it can't
+// reach the machine, so the runner that kept it still ends it at its time. A runner that
 // may not claim the run claims nothing and moves nothing (no claim-and-give-back), at its usual poll. A single runner
 // is unchanged. The store's own rule, on both dialects, is store-claim-affinity.test.mjs; the janitor's,
 // workspace-computer-kept.test.mjs.
@@ -169,12 +171,14 @@ function claimGate() {
 
 /**
  * run-1 on a pinned desktop whose tools ask, parked on its screenshot's ask by runner-a (host a). The server's store and
- * the runners' stores share one clock the test moves (`clock.skewMs`). `start(name, host, options)` starts another runner
- * on host `host`'s vendor; `gate` holds runner-a's polls.
+ * the runners' stores share one clock the test moves (`clock.skewMs`, from `skewMs`); the runners' own clocks (their
+ * computers') stay the real one. `start(name, host, options)` starts another runner on host `host`'s vendor; `gate` holds
+ * runner-a's polls; while `refusal.words` is set, runner-a's claim gate refuses in those words (as runner/main.ts
+ * diskFreeGate does), so it stays there and claims nothing.
  */
-async function parkedOnA(t) {
+async function parkedOnA(t, { skewMs = 0 } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-claim-affinity-"));
-  const clock = { skewMs: 0 };
+  const clock = { skewMs };
   const now = () => Date.now() + clock.skewMs;
   const server = await openSqliteStore({ dataDir: dir, role: "server", now });
   const stores = [];
@@ -193,7 +197,7 @@ async function parkedOnA(t) {
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin([{ call: "computer_screenshot", args: {} }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const hosts = { a: hostVendor("a"), b: hostVendor("b") };
   const claimManyCalls = {};
-  const start = async (name, host, { gate, keptReads } = {}) => {
+  const start = async (name, host, { gate, keptReads, refusal } = {}) => {
     const raw = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(raw);
     claimManyCalls[name] = { n: 0, claimed: [] };
@@ -202,13 +206,15 @@ async function parkedOnA(t) {
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
     const runner = startRunner({
       store, name, ...TIMING,
+      ...(refusal ? { claimGate: async () => refusal.words } : {}),
       createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
     });
     runners.push(runner);
     return runner;
   };
   const gate = claimGate();
-  const a = await start("runner-a", "a", { gate });
+  const refusal = { words: undefined };
+  const a = await start("runner-a", "a", { gate, refusal });
   const parked = await until(async () => {
     const row = await server.runs.get(RUN);
     return ["ended", "failed", "stopped", "parked"].includes(row.state) && row.runner === null && row;
@@ -218,7 +224,7 @@ async function parkedOnA(t) {
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   assert.ok(ask, "parked on the screenshot's ask");
   assert.deepEqual(creates(hosts.a), ["a-d1"], "runner-a made the desktop on its host");
-  return { server, clock, hosts, ask, a, gate, start, claimManyCalls, parkedEpoch: parked.epoch };
+  return { server, clock, hosts, ask, a, gate, refusal, start, claimManyCalls, parkedEpoch: parked.epoch };
 }
 
 /** Until the run ends; its row and its timeline's summaries. */
@@ -298,6 +304,34 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   assert.deepEqual(said.filter((summary) => summary.endsWith(SAME)), [], "never called the same one");
   assert.deepEqual(said.filter((summary) => summary.includes("10 minutes passed")), [], "not the lapsed words: its time had not passed");
   assert.equal(await readKept(one.server.settings, RUN), undefined, "the keep was taken");
+});
+
+test("park on A, A still there but refusing claims: B claims on the answer, can't reach A's desktop, and puts the kept row back as A's park wrote it, so A's own end at its time deletes the desktop", { timeout: 120_000 }, async (t) => {
+  const one = await parkedOnA(t);
+  const key = keptKeyOf(RUN);
+  // The row as A's park wrote it: A's timer ends the desktop only while the row still reads this (endKept's compare).
+  const written = await one.server.settings.get(key);
+  const atPark = await readKept(one.server.settings, RUN);
+  assert.equal(atPark?.id, "a-d1");
+  // A's claim gate refuses (a disk that filled up): A stays there, renewing its word, and claims nothing. The pin needs a
+  // runner that claims, so the run is any runner's.
+  one.refusal.words = "this runner's disk is full";
+  await until(async () => (await one.server.runners.list()).find((row) => row.runner === "runner-a")?.refused, "runner-a's word says it refuses", 10_000);
+  await one.start("runner-b", "b");
+  await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
+  await ends(one.server);
+  assert.deepEqual(creates(one.hosts.b), ["b-d1"], "B went on on a new desktop of its own host");
+  assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
+  assert.ok((await one.server.runners.live(PRESENCE_STALE_MS)).some((row) => row.runner === "runner-a"), "runner-a is still there");
+  // B took the row and could not reach the machine: the row is back, the same text, for A's end to compare against.
+  assert.deepEqual(await one.server.settings.get(key), written, `the kept row is back as runner-a's park wrote it: ${JSON.stringify(await one.server.settings.get(key))}`);
+  assert.equal(JSON.stringify(await one.server.settings.get(key)), JSON.stringify(written), "byte for byte");
+  // A's timer at the keep's time (computer-for-claim.ts park): its end finds the row it wrote and deletes the desktop.
+  const ended = await endKept(one.server.settings, RUN, atPark, async () => {
+    await one.hosts.a.provider.release({ id: atPark.id, name: atPark.name }, "delete");
+  });
+  assert.equal(ended, true, "A's end found its row");
+  assert.equal(one.hosts.a.computers.has("a-d1"), false, "and deleted A's desktop: nothing left running with nothing to end it");
 });
 
 test("a stop of a parked run pinned to a live runner whose loops are full ends within one poll on another runner, and that runner never takes the kept machine", { timeout: 120_000 }, async (t) => {
