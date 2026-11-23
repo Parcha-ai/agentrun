@@ -46,7 +46,8 @@ export type Turn = (
       at: number;
     }
 ) & {
-  /** The source's own ids of the records the turn was read from (Claude Code's uuids): a later import counts them once. */
+  /** The source's own ids of the records the turn was read from (Claude Code's uuids, an OpenCode prompt's fingerprint): a
+   *  later import counts them once. */
   uuids?: string[];
 };
 export type Answer = Extract<Turn, { role: "assistant" }>;

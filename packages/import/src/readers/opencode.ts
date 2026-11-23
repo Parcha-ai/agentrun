@@ -221,7 +221,7 @@ function v1Session(reading: Reading, messages: { info: Row; parts: Row[] }[]): F
       }
       reading.own(key);
       reading.at(time.created, time.completed);
-      if (text) reading.add({ role: "user", text, at: created });
+      if (text) reading.add({ role: "user", text, at: created, uuids: [key] });
       continue;
     }
     const mark = reading.mark();
@@ -344,7 +344,7 @@ function v2Session(reading: Reading, rows: Row[], parts: Map<string, unknown[]>,
       reading.own(key);
     }
     reading.at(created, time.completed);
-    if (row.type === "user" && typeof data.text === "string" && data.text) reading.add({ role: "user", text: data.text, at: created });
+    if (row.type === "user" && typeof data.text === "string" && data.text) reading.add({ role: "user", text: data.text, at: created, uuids: [key!] });
     else if (row.type === "model-switched" && model) reading.session.model = model;
     else if (row.type === "idle" && typeof data.outcome === "string" && IDLE[data.outcome]) reading.ended(IDLE[data.outcome]!);
     else if (request) {

@@ -2794,6 +2794,26 @@ test("an OpenCode 1.x fork imported after its source counts its own requests alo
   assert.deepEqual([metrics.requests, metrics.input, metrics.output, (await store.runs.get(run.id)).costUsd], [1, 500, 7, 0.25]);
 });
 
+test("an OpenCode 1.x fork imported after its source holds its own prompt alone: the store's run keys its source's prompts too", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const { source, fork } = v1Fork(project);
+  openCodeV1Db(h.at, [source]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h), store), options(h));
+  openCodeV1Db(h.at, [fork], { file: join(h.at, ".local", "share", "opencode", "opencode-beta.db") });
+  await runImport(store, await planImport(options(h), store), options(h));
+  const prompts = async (id) => (await entriesOf(store, (await runOf(store, id)).id)).filter((e) => e.kind === "pi.user").map((e) => JSON.stringify(e.model[0].content));
+  const [own] = await prompts("ses_1src");
+  assert.match(own, /Sort the notes\./);
+  const forked = await prompts("ses_0fork");
+  assert.equal(forked.length, 1, "the copied prompt is the source's");
+  assert.match(forked[0], /Now tag them\./);
+});
+
 test("an OpenCode run whose request ran through a Claude Code session waits, said, while that session is on disk and not imported: --from opencode, then claude-code, then opencode counts the request once", async (t) => {
   const root = await scratch(t);
   const h = { at: join(root, "home"), temp: join(root, "tmp") };

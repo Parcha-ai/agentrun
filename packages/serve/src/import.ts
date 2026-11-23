@@ -783,7 +783,7 @@ const ownless = (session: Session) => session.copies > 0 && !session.turns.some(
 
 /** The records and responses an import has counted, by source, for one project: first those its runs in `store` hold
  *  already (each answer's response id and each entry's record ids, as its transcript keeps them; an OpenCode answer's
- *  fingerprint, what a 1.x fork's copy of it is keyed by), then each file's as it is read. */
+ *  fingerprint and its prompts', what a 1.x fork's copies of them are keyed by), then each file's as it is read. */
 async function seenIn(store: ImportStore | undefined, agentId: string): Promise<(source: Source) => Set<string>> {
   const bySource = new Map<Source, Set<string>>();
   const seen = (source: Source) => bySource.get(source) ?? bySource.set(source, new Set()).get(source)!;
@@ -793,15 +793,16 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
     if (source !== "claude-code" && source !== "opencode") continue;
     for (const entry of (await journalEntries(store.readJournal(run.id), ctx)) as unknown as EntryLike[]) {
       const id = (entry.model?.[0] as { responseId?: unknown } | undefined)?.responseId;
+      const uuids = (entry.data as { record_uuids?: unknown } | undefined)?.record_uuids;
       if (source === "opencode") {
-        if (typeof id === "string" && id.startsWith("o:")) seen("opencode").add(id);
+        // A request's fingerprint is its answer's response id; a prompt's, its record id.
+        for (const key of [id, ...(Array.isArray(uuids) ? uuids : [])]) if (typeof key === "string" && key.startsWith("o:")) seen("opencode").add(key);
         continue;
       }
       if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
       // A run imported before a request's key held its request id (message id:request id) keeps the bare message id:
       // the reader matches it against a request's message id alone.
       if (typeof id === "string" && id && !id.includes(":")) seen("claude-code").add(`l:${id}`);
-      const uuids = (entry.data as { record_uuids?: unknown } | undefined)?.record_uuids;
       if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
     }
   }

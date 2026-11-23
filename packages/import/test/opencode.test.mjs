@@ -172,6 +172,8 @@ test("a 2.x fork that names no source (a 1.x one moved to 2.x): its copied rows 
   const { ses_S2: source, ses_F2: fork } = byId(await read({ file: db }));
   assert.deepEqual([total(source).input, source.copies], [60, 0]);
   assert.deepEqual([fork.copies, fork.users, total(fork).input, fork.costUsd], [3, 0, 99, 0.125]);
+  // A prompt is keyed by its fingerprint, which serve keeps as the turn's record id, so a fork read later is told too.
+  assert.match(source.turns.find((turn) => turn.role === "user")?.uuids?.[0] ?? "", /^o:[0-9a-f]{32}$/);
 });
 
 test("a session's OpenCode version says how its output reads where no total does: before 1.3.16 it holds the reasoning", async (t) => {
