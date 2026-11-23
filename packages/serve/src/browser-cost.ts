@@ -239,10 +239,11 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
       take(data.call === null ? undefined : calls.get(data.call)?.hold, Math.max(0, usd - personBooked));
       // Its reserve is one stretch again: a kept session's (a reopen's, a delayed release's) held what it ran before this
       // charge, which booked it. On the run's ledger too, where a hold keeps the figure it was admitted at: that hold is
-      // given back for one of a stretch, so the time this charge booked is never held beside it. Owed, as the session runs.
+      // given back for one of a stretch, so the time this charge booked is never held beside it. Held as a new session's
+      // reserve is: its next stretch is not owed yet, so the cap may refuse it (the run already past its cap).
       if (session.reserve.usd !== stretch) {
         session.reserve.drop();
-        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`, { owed: true, tag: data.tag }).hold;
+        session.reserve = holdOf("this browser session's reserve", stretch, `${provider}'s next stretch of session time, held until its release is booked`, { tag: data.tag }).hold;
       }
       Object.assign(session, { at: through, call: data.call ?? session.call });
     } else {
