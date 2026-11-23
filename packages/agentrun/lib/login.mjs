@@ -191,9 +191,10 @@ export const LOGIN = {
         offer = deviceOffer(await capabilitiesOf(base), base);
       } catch (error) {
         if (!(error instanceof SignInError)) throw error;
-        // A server named otherwise that offers no sign-in this CLI takes, or is not reached: the refusal below, as
-        // before, for a token typed on a terminal.
         if (named) throw cli.fail(error.code, error.message);
+        // A server named otherwise that offers a sign-in this CLI does not take, or is not reached: why, then the
+        // refusal below of a token typed on a terminal, exit 2 as for a server that offers none.
+        io.stderr.write(`${error.message}\n`);
       }
       if (offer) {
         try {
