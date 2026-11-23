@@ -131,3 +131,29 @@ test("an OpenCode storage session with a file or folder that cannot be read is a
     }
   }
 });
+
+test("a session whose size query fails is a failure when its read fails too, never left out unsaid; one its reader says is gone is passed over", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = await tempHome(t);
+  const db = join(dir, ".local", "share", "opencode", "opencode.db");
+  await mkdir(join(db, ".."), { recursive: true });
+  await writeFile(db, "");
+  const broken = Object.assign(new Error("database disk image is malformed"), { code: "ERR_SQLITE_ERROR" });
+  // Listed with two sessions; ses_gone no longer there by its size, ses_bad's size and read both failing (a database
+  // damaged after it was listed).
+  const reader = {
+    ...READERS.opencode,
+    discover: async () => [{ file: db, id: "ses_bad" }, { file: db, id: "ses_gone" }],
+    stat: async ({ id }) => {
+      if (id === "ses_gone") return null;
+      throw broken;
+    },
+    read: async () => {
+      throw broken;
+    },
+  };
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], readers: { opencode: reader }, catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db#ses_bad"), source: "opencode" }]);
+});

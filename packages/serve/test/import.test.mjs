@@ -2612,3 +2612,20 @@ test("an OpenCode request run through Claude Code counts once when the Claude Co
   assert.deepEqual([metrics.requests, metrics.input, metrics.output], [1, 6, 1], "the Claude Code run's request counts there alone");
   assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
 });
+
+test("an OpenCode session whose size cannot be queried is left out as unreadable, said, never passed over unsaid", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const file = join(h.at, ".local", "share", "opencode", "opencode.db");
+  mkdirSync(dirname(file), { recursive: true });
+  // Its sessions list, but its messages have no data column: neither its size nor its read can be had.
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, directory text, title text, time_created integer, time_updated integer); CREATE TABLE session_message (id text PRIMARY KEY, session_id text, seq integer, time_created integer, time_updated integer);");
+  db.prepare("INSERT INTO session_v2 VALUES ('ses_x', NULL, ?, 'Tidy', 1, 1)").run(project);
+  db.close();
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["unread", `${file}#ses_x`]]);
+});

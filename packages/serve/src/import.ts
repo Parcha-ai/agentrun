@@ -302,7 +302,10 @@ const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
 const stampOf = (size: LocatorSize) => `${size.bytes}:${size.mtimeMs}`;
 /** A listed session's own size and last write (locatorSize): its file's, or its own rows' in a database of many. What
  *  LIVE_MS, MAX_SESSION_BYTES, MAX_RUN_BYTES and an unchanged session go by. */
-const sizeOf = (listed: Pick<Session, "file" | "within" | "source">) => locatorSize(locatorOf(listed), listed.source);
+const sizeOf = (listed: Pick<Session, "file" | "within" | "source">) => sizeNow(locatorOf(listed), listed.source);
+/** locatorSize after the plan: none when it cannot be had now, as when the session is gone (the read that follows, if
+ *  any, says why). */
+const sizeNow = (locator: Locator, source: Source) => locatorSize(locator, source).catch(() => null);
 /** Bind remote consent to the enumerated source, including archive replacements that preserve size and mtime. */
 const remoteHistoryStamp = (stats: Stats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
 const keptId = (envs: readonly NodeJS.ProcessEnv[], own: readonly string[] = []) => {
@@ -455,11 +458,16 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     // Each source's own folders where `env` puts them (CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_DATA_HOME, OPENCODE_DB).
-    for (const { locator, size } of await inOrder(await sessionLocators(home, source, { env }), source)) {
+    for (const { locator, size, failed } of await inOrder(await sessionLocators(home, source, { env }), source)) {
       const { file } = locator;
       if (signal?.aborted) {
         stopped = true;
         break;
+      }
+      // One whose own size cannot be had (a database locked or damaged since it was listed) is named and passed over.
+      if (failed !== undefined) {
+        leave(unread(locatorKey(locator), failed), source);
+        continue;
       }
       const known = seen.get(hash(locatorKey(locator)));
       if (sameFile(known, size)) {
@@ -644,7 +652,7 @@ export async function untiedFound(plan: Plan): Promise<Found[]> {
   // A thread resumed in a second file of the same id is one: its own subagents, which name it, count once with it.
   const threads = new Map<string, Session[]>();
   for (const { locator, source } of plan.untied) {
-    const stats = await locatorSize(locator, source);
+    const stats = await sizeNow(locator, source);
     if (!stats || stats.bytes > MAX_SESSION_BYTES) continue;
     const session = await readSession(locator, source, { seen: counted(source) }).catch(() => undefined);
     if (session) threads.set(`${source}:${session.id}`, [...(threads.get(`${source}:${session.id}`) ?? []), session]);
@@ -770,7 +778,7 @@ async function holdBack(children: Plan["children"], parts: readonly Session[], c
       const key = locatorKey(locator);
       if (visited.has(key)) continue;
       visited.add(key);
-      const size = await locatorSize(locator, source);
+      const size = await sizeNow(locator, source);
       if (size && size.bytes > MAX_SESSION_BYTES) return LARGE_CHILD;
       if (size && now - size.mtimeMs < LIVE_MS) return LIVE_CHILD;
       const id = childIds.get(key);
@@ -798,7 +806,7 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
       const key = locatorKey(locator);
       if (visited.has(key)) continue;
       visited.add(key);
-      const stats = await locatorSize(locator, session.source);
+      const stats = await sizeNow(locator, session.source);
       if (!stats) continue;
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
       // No subagent is passed over for its size: the run would be kept without its usage.

@@ -103,7 +103,7 @@ session count nothing. A database session's `stat` is the bytes of its messages'
 `time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
-`locatorSize`), `locatorSize(locator, source)`, `locatorParent(locator, source)` and `childrenOf(home, source)` are what
+`locatorSize`; one whose size query throws is kept, marked `failed`, for the caller to read or report), `locatorSize(locator, source)` (null when the session is gone, any other error thrown), `locatorParent(locator, source)` and `childrenOf(home, source)` are what
 serve's import reads through. `locatorParent` names the session a subagent ran under without reading the subagent: the
 `parent` its reader's `stat` gives (an OpenCode row's), else its reader's `parentOf`. Codex's reads a rollout's first
 line, `session_meta`, and never more than 256 KiB of it. serve uses it to tie a subagent over the cap to its run, which
