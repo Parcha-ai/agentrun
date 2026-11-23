@@ -189,28 +189,36 @@ test("a run whose launch's sealed part doesn't open here is withheld, as a run w
   run.release();
 });
 
-test("a key its caller typed into the input (the run's title) or a message is cut where the server writes them, so the run's view, list row and timeline never show it, live or after its end", { timeout: 180_000 }, async (t) => {
+/** What run `run` shows of itself: its view's title, and its view, list row and timeline as text. */
+async function served(run) {
+  const view = (await run.api("GET", `/runs/${run.runId}`)).body;
+  const row = (await run.api("GET", "/runs")).body.runs.find((one) => one.run_id === run.runId);
+  const timeline = (await run.api("GET", `/runs/${run.runId}/timeline`)).body;
+  return { title: view.title, text: JSON.stringify([view, row, timeline]) };
+}
+
+test("a key its caller typed into a start's input is cut where the server writes it, so the run's title never shows it after its end erased the key", { timeout: 180_000 }, async (t) => {
   const run = await liveRun(t, { start: { model_key: KEY, input: { content: `Use the key ${KEY} for this.` } } });
-  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: `Again: ${KEY_TWO}.`, model_key: KEY_TWO });
-  assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  const served = async () => {
-    const view = (await run.api("GET", `/runs/${run.runId}`)).body;
-    const row = (await run.api("GET", "/runs")).body.runs.find((one) => one.run_id === run.runId);
-    const timeline = (await run.api("GET", `/runs/${run.runId}/timeline`)).body;
-    return { title: view.title, text: JSON.stringify([view, row, timeline]) };
-  };
-  const held = (text) => text.includes(KEY) || text.includes(KEY_TWO);
-  const live = await served();
-  assert.equal(held(live.text), false, "live: not in its view, list row or timeline");
+  assert.equal((await served(run)).text.includes(KEY), false, "live: not in its view, list row or timeline");
   await run.ended();
-  const ended = await served();
-  assert.equal(held(ended.title), false, `after the end, when the values are erased: not in its title (${ended.title})`);
-  assert.equal(held(ended.text), false, "nor anywhere in its view, list row or timeline");
+  const ended = await served(run);
+  assert.equal(ended.title.includes(KEY), false, `after the end, when the key is erased: not in its title (${ended.title})`);
+  assert.equal(ended.text.includes(KEY), false, "nor anywhere in its view, list row or timeline");
   assert.match(ended.title, /Use the key \[redacted\] for this/, "cut in place");
-  // Where the server wrote them: the launch body and the message's command row hold the cut text, so no read of them
-  // after the values are gone could show the key.
-  const stored = JSON.stringify([(await run.store.runs.launch(run.runId)).body, (await run.store.commands(run.runId, 0)).map((command) => command.body)]);
-  assert.equal(held(stored), false, "not in the stored launch body or message");
+  assert.equal(JSON.stringify((await run.store.runs.launch(run.runId)).body).includes(KEY), false, "not in the stored launch body");
+});
+
+test("a message's text is cut of the key it hands and of the one the run held, so neither shows after the run's end", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: `Again: ${KEY_TWO}, not ${KEY}.`, model_key: KEY_TWO });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const held = (text) => text.includes(KEY) || text.includes(KEY_TWO);
+  assert.equal(held((await served(run)).text), false, "live: not in its view, list row or timeline");
+  await run.ended();
+  assert.equal(held((await served(run)).text), false, "after the end: not in its view, list row or timeline");
+  const commands = (await run.store.commands(run.runId, 0)).map((command) => command.body);
+  assert.equal(held(JSON.stringify(commands)), false, "not in the message's stored command row");
+  assert.match(JSON.stringify(commands), /Again: \[redacted\], not \[redacted\]\./, "cut in place");
 });
 
 test("a message that hands a new model_key mid-turn keeps the one it replaced cut from the run's files, live and after its end by its census", { timeout: 180_000 }, async (t) => {
