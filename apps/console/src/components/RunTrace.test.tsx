@@ -60,7 +60,10 @@ describe("the Dev tools tab", () => {
     const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 3 };
     const host = await open(TRACE, { run, view: "breakdown" });
     expect(tile(host, "Cost, estimated")?.textContent).toMatch(/\$0\.6336.*84% of its \$0\.75 cap · requests \$0\.6132 · tools \$0\.0204/);
-    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budget3 tool calls were refused, unrun, near its $0.75 cap. The run answered from what it had.");
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had. 3 tool calls were refused, unrun, for its budget.");
+    // A cost that is a ceiling is at most that share of the cap, never an exact one.
+    const held = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75, upper_bound: true } } });
+    expect(tile(held, "Cost, estimated")?.textContent ?? tile(held, "Cost")?.textContent).toMatch(/at most 84% of its \$0\.75 cap/);
     // A run with no cap says none, and one that never came near its cap says nothing of a stop.
     const plain = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 5 } }, view: "breakdown" });
     expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);

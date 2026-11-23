@@ -781,9 +781,11 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   // The Call column takes what is left of the table; where the time axis shows beside it, the two share it.
   const callWidth = selected ? "w-full md:max-xl:w-[30%] @4xl:w-[30%]" : "w-full md:w-[30%]";
   const priced = totals!.cost.requests;
-  // The run's spend cap, where it has one: how much of it the run's cost is, or the cap alone while the cost is not one figure.
+  // The run's spend cap, where it has one: how much of it the run's cost is, or the cap alone while the cost is not one
+  // figure. A cost that is a ceiling (a request cut before its usage was known counts at what was held for it) is at most
+  // that share of the cap.
   const cap = typeof run.cost?.cap_usd === "number" ? run.cost.cap_usd : null;
-  const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
+  const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${run.cost?.upper_bound ? "at most " : ""}${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
   const costParts = priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole";
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;

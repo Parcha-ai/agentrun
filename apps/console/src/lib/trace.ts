@@ -358,17 +358,19 @@ function conversationOf(trace: Pick<RunTrace, "spans" | "model_requests">): (s: 
 /** What of a run says it wound down for its spend cap. */
 export type BudgetRun = Pick<Run, "stopped_for" | "budget_refused_calls"> & { cost?: Pick<NonNullable<Run["cost"]>, "cap_usd"> | null };
 /** A run that wound down for its spend cap, in words: it stopped short (`stopped_for`: its model was told to wrap up
- *  near the cap, and it answered from what it had), or tool calls of it were refused, unrun, near the cap
- *  (`budget_refused_calls`, each call once). Null for a run that did neither. The cap is said as it was set. */
+ *  near the cap, and it answered from what it had), or tool calls of it were refused, unrun, for the cap
+ *  (`budget_refused_calls`, each call once). Null for a run that did neither. The cap is named, as it was set, only for
+ *  the stop: a run stops short under the cap it has now, while its refused calls count every one since it began, so one
+ *  refused before a raise was refused under an earlier cap the run's view no longer says. */
 export function budgetStop(run: BudgetRun): { title: string; detail: string } | null {
   const refused = run.budget_refused_calls ?? 0;
   const stopped = run.stopped_for === "budget";
   if (!stopped && refused === 0) return null;
   const cap = typeof run.cost?.cap_usd === "number" ? `its ${capDollars(run.cost.cap_usd)} cap` : "its spend cap";
-  const calls = `${refused} tool call${refused === 1 ? " was" : "s were"} refused, unrun, near ${cap}`;
+  const calls = `${refused} tool call${refused === 1 ? " was" : "s were"} refused, unrun, for its budget`;
   return stopped
-    ? { title: "The run stopped short for its budget", detail: refused > 0 ? `${calls}. The run answered from what it had.` : `Its model was told to wrap up near ${cap}, and answered from what it had.` }
-    : { title: `${refused} call${refused === 1 ? "" : "s"} refused for the run's budget`, detail: `${calls}.` };
+    ? { title: "The run stopped short for its budget", detail: `It wound down near ${cap} and answered from what it had.${refused > 0 ? ` ${calls}.` : ""}` }
+    : { title: `${refused} call${refused === 1 ? "" : "s"} refused for the run's budget`, detail: `${calls}, under the cap it had then.` };
 }
 
 /** One thing about the run worth a look, with the span it is about. */
