@@ -1,11 +1,11 @@
-// A Mode 2 run with a skill, on the path a deployed server's run takes: a server started with its runner apart
-// (--no-runner, the image's server-and-runner), one runner of its own on the same data (support.mjs
-// startInProcessRunner, its Archil disk the fake), and each run in a process of its own (run-child.ts), which reaches its
-// folder on the disk through the runner's Workspace across the run channel. The agent is saved the way a backend ships
-// a custom agent's skill: the skill's name in `definition.skills` and its file in the body's `skills` map, at
-// `expert-<slug>/SKILL.md`. v0.1.0-beta.50 failed every such run at its claim, before its first turn, with `".agents/skills" is not there` (cost 0): the run's process got
-// the folder's NOT_FOUND as a plain Error, and the skills lay rethrew it. A run with no skill never lists the folder,
-// which is why a built-in agent passed beside it.
+// A Mode 2 run with a skill, on the path a staging run takes: a server started with its runner apart (--no-runner, the
+// image's server-and-runner), one runner of its own on the same data (support.mjs startInProcessRunner, its Archil disk
+// the fake), and each run in a process of its own (run-child.ts), which reaches its folder on the disk through the
+// runner's Workspace across the run channel. The agent is saved as a host saves an agent with a skill: the skill's name
+// in `definition.skills` and its file in the body's `skills` map, at `expert-<slug>/SKILL.md`. v0.1.0-beta.50 failed
+// every such run at its claim, before its first turn, with `".agents/skills" is not there` (cost 0): the run's process
+// got the folder's NOT_FOUND as a plain Error, and the skills lay rethrew it. A run with no skill never lists the
+// folder, which is why a built-in expert passed beside it.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -67,7 +67,7 @@ async function apart(t) {
   return { disk, lines, runOf, start };
 }
 
-test("runner apart, the run in its own process, Mode 2: an agent with a skill, saved the way a backend ships a custom agent's skill, has it laid on its fresh folder and completes", { timeout: 180_000 }, async (t) => {
+test("runner apart, the run in its own process, Mode 2: an agent with a skill, saved as a host saves an agent with a skill, has it laid on its fresh folder and completes", { timeout: 180_000 }, async (t) => {
   const { disk, lines, runOf } = await apart(t);
   const { runId, run } = await runOf({ ...agent("acme-expert", { skills: ["expert-acme"], tools: ["read", "write"] }), skills: { "expert-acme/SKILL.md": SKILL } });
   const said = `${JSON.stringify(run)}\n${lines.join("\n")}`;

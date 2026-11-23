@@ -59,6 +59,13 @@ export const ERROR_STATUS = {
   github_no_public_url: 409,
   github_wrong_origin: 409,
   github_failed: 502,
+  // Suggested agents (suggestions.ts): a repository the GitHub App is not installed on, an installation that lacks the
+  // permissions a pull request needs (contents and pull requests, write), a file the pull request would add that the
+  // repository already has, and a suggestion already decided (created, or discarded and not restored).
+  github_not_installed: 409,
+  github_permission_missing: 409,
+  github_file_exists: 409,
+  suggestion_decided: 409,
   // Composio triggers (composio-triggers.ts): one made with no public address Composio could send to, one whose project's
   // webhook subscription is at another address (moved here only when asked), one whose server's Composio user has no
   // connected account (answered with the link to connect it) or several (naming them: never one picked), and a Composio

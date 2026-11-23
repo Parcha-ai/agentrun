@@ -1,7 +1,8 @@
 # Anonymous usage counts
 
-AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are. The
-counts are anonymous, and one setting turns them off.
+AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are, and
+how often suggested agents are scanned for, discarded and created. The counts are anonymous, and one setting turns them
+off.
 
 **The counts are on** from the release that set the key; earlier releases send nothing. The first start that can send
 only prints the notice below.
@@ -49,17 +50,20 @@ nothing.
 | `server_started` | The server starts, from its second start on |
 | `heartbeat` | Every 24 hours while the server runs |
 | `first_run_completed` | Once per data directory, when its first run completes (held at the notice's start: see below) |
+| `suggestions_scanned` | A scan of a repository for suggested agents starts (not one that is already running) |
+| `suggestion_discarded` | A suggestion is discarded (not one discarded already) |
+| `suggested_agent_created` | A suggested agent's pull request is opened: once per suggestion |
 
 The start that first could send prints a notice on stderr and sends nothing until its first heartbeat, 24 hours
 later. A first run that completes before then is said with that heartbeat, or at the next start, whichever comes
-first.
+first. A suggested-agents event before then is not sent at all, and is not kept for later.
 
 ## What an event holds
 
 | Field | Example | What it is |
 | --- | --- | --- |
 | `api_key` | `phc_…` | The project's public write-only key, the same in every event |
-| `event` | `server_started` | One of the three names above |
+| `event` | `server_started` | One of the six names above |
 | `distinct_id` | `b8d015a7-…` | A random id made for this data directory, kept in `.telemetry.json` there |
 | `timestamp` | `2026-11-17T10:00:00.000Z` | When the event was made |
 | `version` | `0.1.0-beta.42` | The server's version |
@@ -76,6 +80,7 @@ That is every field. A test (`packages/serve/test/telemetry.test.mjs`) fails whe
 ## What it never holds
 
 Prompts, messages, workflows, agents, files, keys, tokens, user names, host names, paths, URLs, model names, costs.
+A suggested-agents event is its name alone: never the repository, the suggestion, its agent or its pull request.
 The id is random: it is not made from the machine, the user or the network.
 
 The request reaches the receiver from the server's IP address, as any request does. `telemetry.agentrun.ai` is PostHog's
@@ -88,8 +93,8 @@ Events go to `https://telemetry.agentrun.ai`, which forwards them to PostHog, an
 the counts are stored in the United States. They land in a
 PostHog project that holds these counts and nothing else: it is separate from the projects behind Parcha's products and
 websites, so the counts are never joined with an account, a visit or a customer. Parcha, the company behind AgentRun,
-reads them as totals: servers running per week, new servers, how many are still running a month later, and versions in
-use.
+reads them as totals: servers running per week, new servers, how many are still running a month later, versions in
+use, and how many scans, discards and created agents.
 
 ## What it costs the server
 
@@ -103,3 +108,6 @@ no request or run waits on the disk.
 - A data directory that does not outlive its container gets a new id at each start.
 - A restart that overlaps a run's end can count a few runs short. The count is sent as a range.
 - Use of the packages as a library, with no server, is not counted.
+- Suggested agents used during the first day of the start that printed the notice, or in the moment a server starts
+  before its counts do, are not counted.
+- A discard undone (Undo, or `POST /v2/suggestions/{id}/restore`) still counts as a discard; the undo is not counted.

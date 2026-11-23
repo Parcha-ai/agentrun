@@ -511,6 +511,20 @@ test("a verified deletion of the last installation the server tracks is confirme
   assert.deepEqual(server.lines.filter((line) => /connection_lost|github_installation_lost/.test(line)), [], "nothing turned off");
 });
 
+test("the App's repositories and the suggested agents' list repair a missed installation from GitHub's own list first, as a read of the connection does", { timeout: 60_000 }, async (t) => {
+  for (const path of ["/integrations/github/repositories", "/suggestions"]) {
+    const server = await connectable(t);
+    await connect(server);
+    // GitHub holds an installation whose event the server missed.
+    server.github.installations.set(778, { account: "other", suspended_at: null });
+    const before = server.github.requests.filter((r) => r.url.startsWith("/app/installations?")).length;
+    const read = await server.api("GET", path);
+    assert.equal(read.status, 200, `${path}: ${JSON.stringify(read.body)}`);
+    assert.equal(server.github.requests.filter((r) => r.url.startsWith("/app/installations?")).length, before + 1, `${path} asked GitHub for its installations`);
+    if (path === "/suggestions") assert.deepEqual(read.body.github.installations.map((i) => i.account).sort(), ["acme", "other"], "the missed one is listed");
+  }
+});
+
 test("PATCH keeps a trigger's source kind: a webhook given a github source is refused on source.kind, with or without a GitHub App", { timeout: 60_000 }, async (t) => {
   const server = await connectable(t);
   await made(server.api, "review");

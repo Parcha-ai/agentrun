@@ -126,7 +126,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...(isObject(definition.input_schema) ? { inputSchema: definition.input_schema } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
-    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
+    ...(definition.checkout === "pull_request" || definition.checkout === "repository" ? { checkout: definition.checkout } : {}),
     ...common,
     ...learning,
     ...capped,

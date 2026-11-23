@@ -211,9 +211,10 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 
 ## Anonymous usage counts
 
-The server sends three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
-a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
-range; never a prompt, a file, a key or a name.
+The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
+suggested agents, `suggestions_scanned`, `suggestion_discarded` and `suggested_agent_created`. Each holds a random id
+kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a range; never a
+prompt, a file, a key, a name or a repository.
 `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI`, a test runner (`node --test`) and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
 event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
 [docs/telemetry.md](../../docs/telemetry.md) lists every field.
@@ -2260,8 +2261,8 @@ handed none, so a per-run server never calls as a default account. A malformed u
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
-With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
-each run binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
+binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
 refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
 
 What can go wrong, told apart:
@@ -2884,8 +2885,9 @@ has each instance on, and the subscription's place.
 ### GitHub triggers (Connect GitHub)
 
 A server has at most one GitHub App, made with GitHub's app-manifest flow, and every `github` trigger (and every
-GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?}`, to make
-the App under an organization) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
+GitHub template) uses it. In the console, Connect GitHub calls `POST /v2/integrations/github/connect` (`{org?, contents?}`:
+`org` makes the App under an organization; `contents: "write"` asks for Contents write too, which suggested agents' pull
+requests need, below) and posts the form it answers to GitHub: `action`, GitHub's new-App page, and
 `manifest`, which names a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its
 callback and setup URLs, the permissions (pull requests write; contents, metadata and issues read) and the events
 (`pull_request`, `issue_comment`, `release`). It needs the address GitHub can reach, `AGENTRUN_PUBLIC_URL` (`409 github_no_public_url`,
@@ -3028,6 +3030,71 @@ is outside this email's thread"). The pending approval carries the reason as `as
 says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
+An agent whose definition says `checkout: repository` starts each run in a checkout of the repository the run names: its
+start's `repo`, else the first `https://github.com/<owner>/<repo>` in its first message (a github trigger's run, its
+payload's). The same command, token and rules as a pull request's checkout fetch the remote's `HEAD` (its default branch)
+one commit deep and check it out detached in `repo/` (ref `repo/head`), and list its files one a line in
+`repo/.git/agentrun-files`, so an agent with `read` and no shell can still find what to open. The run's system prompt
+names the repository, the branch, the commit and the list, or why there is no checkout.
+
+### Suggested agents
+
+The console's Suggested agents page (`#/suggestions`) connects a GitHub repository, finds where its app needs an agent,
+and lets a person create or discard each suggestion. Every write to GitHub is the server's, made when a person presses
+Create; no run ever holds a token that can write.
+
+1. **Connect.** Connect GitHub as above. The page asks for `contents: "write"` unless the person unticks it; a scan needs
+   only what every App holds (metadata and contents read). `GET /v2/integrations/github/repositories` lists what the
+   App's installations cover (a metadata-read token per installation, revoked after; at most 500; an installation GitHub
+   did not list is in `unread`).
+2. **Scan.** `POST /v2/suggestions/scans` with `{repo}` (`owner/name` or its github.com URL) runs the bundled `agent-scout`
+   template's agent, applied here the first time and reused: a read-only checkout of the default branch (`checkout:
+   repository`), read-only bash where there is a shell, and an answer of at most five suggestions against its schema.
+   Its first message lists the suggestions already decided on that repository, so none comes back. 202 with the run;
+   200 while one runs; what the apply or the start refuses is the answer (`409 agent_not_runnable` with no model key).
+   A scan whose run stopped without ending (at its cost cap or asking for input, or paused) is listed as `waiting`: it is
+   resumed or cancelled on its run's page, and a new scan starts a new run.
+3. **List.** `GET /v2/suggestions` (`?repo=`, `?status=open|created|discarded|all`; open and created by default) answers
+   GitHub's state, each repository's newest scan, and its suggestions. A scan that ended is read once: each suggestion is
+   checked again field by field (paths inside the repository, a client path in its language's extension and outside
+   `.github/`, `.git` and `.agentrun/agents/`, typed inputs and answer, answer labels that can't end a string or a
+   comment), and one that fails is dropped and listed with why in `scan.dropped`. A suggestion's id comes from its
+   repository and key, so a newer scan replaces the open ones of the scan before, and a decision outlives every rescan.
+   Decisions are kept in the store's settings (`suggestions.item.<id>`, `suggestions.scan.<repo>`).
+4. **Discard.** `POST /v2/suggestions/{id}/discard` hides it and keeps later scans from suggesting it again;
+   `POST .../restore` brings it back (the page's Undo). A created one is `409 suggestion_decided`.
+5. **Create.** `GET /v2/suggestions/{id}` shows the suggestion whole: the files a create adds, rendered now, whether its
+   package checks, and whether the App can open its pull request now (read from GitHub: the installation that covers the
+   repository and its permissions), with the App's permissions page and the installation's page when it can't.
+   `POST /v2/suggestions/{id}/create` (`{name?}`) then:
+   - claims the suggestion on its row in the store, which every server on that store shares: another create of it, a
+     discard or a scan's answer meanwhile is `409 home_busy` or leaves the row alone, so one agent and one pull request
+     are made. A claim older than 15 minutes (a server that stopped mid-create) is taken over. A scan is reserved the
+     same way before its run starts;
+   - refuses before anything is written: `409 github_not_connected`, `409 github_not_installed` (`details.install_url`),
+     `409 github_permission_missing` when the installation lacks Contents or Pull requests write (`details.missing`,
+     `permissions_url`, `installation_url`), or `409 github_file_exists` when the repository has a file it would add;
+   - mints one installation token for that repository with `{contents: write, pull_requests: write, metadata: read}`,
+     revoked at the end whatever happens;
+   - commits, over the default branch's head on a new branch `agentrun/<key>` (GitHub's Git Data API, no clone), the
+     agent's package (`.agentrun/agents/<key>/agent.md` and `output.schema.json`, rendered here from the checked fields)
+     and a client at the suggestion's path (TypeScript or JavaScript over `fetch`, Python over `urllib` taking the input
+     as one dict, or a Markdown page of the HTTP calls for any other language; no dependency). It only adds files;
+   - keeps that package as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at the pushed commit,
+     then applies it here (an apply refused takes the package back, deletes the branch and makes nothing). The push is
+     recorded on the suggestion first, so a create after a write that failed finds the agent made from that template at
+     that commit and reuses it, never making a second one;
+   - opens the pull request, naming the agent's id and the variables the client reads (`AGENTRUN_URL`,
+     `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_<KEY>`). A pull request GitHub refuses keeps the agent (`502 github_failed`,
+     `details.agent_id`), and the next create opens the pull request alone. A created suggestion answers `200` as it is.
+
+`--faux-github` (with `--faux`) serves the list, the checks and the create from its fake App: its installation holds
+contents write, its one repository answers the Git Data API and pull requests, `GET /_faux/state` on its API shows what a
+create wrote, and `POST /_faux/permissions` changes what the installation holds. Its repository is also a bare git
+repository beside the data, which a test's own runner checks out from. The CLI's runner is never pointed at it (a
+runner's GitHub API and site have one way in, a test runner's option), so a scan on a faux CLI server finds no repository
+to check out and is told so.
+
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
@@ -3038,7 +3105,8 @@ package's `version` is SemVer and never `definition.version`, the agent's revisi
 need's toolkit as its `server` (`server: github` for a required `{source: composio, toolkit: github}` need), and apply makes it
 on the saved Composio server that need maps to, its `config` filled from the parameters it names
 (`repo: "${parameters.repo}"`); one this server can't set up yet (no public URL, say) is skipped with a
-warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository. The format and the
+warning, as a github trigger is with GitHub not connected. The first package is `code-review`, a code review agent for one GitHub repository;
+`agent-scout` finds where a repository's app needs an agent ([Suggested agents](#suggested-agents)). The format and the
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
