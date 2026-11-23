@@ -440,6 +440,23 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   // Each listed session's place in the import's order (inOrder).
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
+  // Whether a session's project is one the import leaves out (a temp folder, a deleted one), said in the left-out list.
+  // Only --all brings those in. The session's project is `session.cwd`.
+  const outsideProject = async (session: Session, file: string, source: Source): Promise<boolean> => {
+    const cwd = session.cwd;
+    if (all || !cwd) return false;
+    // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
+    if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
+      leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
+      return true;
+    }
+    const there = await lstat(cwd).catch(() => null);
+    if (!there?.isDirectory() && !deleted) {
+      leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
+      return true;
+    }
+    return false;
+  };
   for (const source of sources) {
     // Every session file the source lists, kept or left out: a subagent whose owner is none of them ran under a session
     // that is gone.
@@ -481,22 +498,13 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       if (!all && session.users === 0 && !session.child) {
-        leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
+        // A legacy file whose migrated copy is beside it reads as only copies: that is what it is, not an empty session.
+        if (session.copies > 0) leave({ what: file, why: "holds only records of sessions imported already", kind: "copies", session: `${source}:${session.id}` }, source, session.cwd);
+        else leave({ what: file, why: "no message of the person's", kind: "no-words", session: `${source}:${session.id}` }, source, session.cwd);
         continue;
       }
       const cwd = session.cwd;
-      if (!all) {
-        // A temp folder first, gone or not: only --all brings it in, as the left-out line says.
-        if (temps.some((temp) => cwd === temp || cwd.startsWith(temp + sep))) {
-          leave({ what: file, why: `its project ${cwd} is a temp directory`, kind: "temp", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-        const there = await lstat(cwd).catch(() => null);
-        if (!there?.isDirectory() && !deleted) {
-          leave({ what: file, why: `its project ${cwd} is gone`, kind: "gone", session: `${source}:${session.id}` }, source, cwd);
-          continue;
-        }
-      }
+      if (await outsideProject(session, file, source)) continue;
       if (session.child) {
         untied.push({ locator, source });
         continue;
@@ -518,8 +526,19 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     // A subagent whose session's file is gone (Claude Code's folder or Gemini's with no file beside it) is untied: it counts
     // in the totals alone, as a Codex thread naming no parent does.
     for (const { locator, of } of await childrenOf(home, source)) {
-      if (listed.has(locatorKey(of))) child(locatorKey(of), locator);
-      else untied.push({ locator, source });
+      if (listed.has(locatorKey(of))) {
+        child(locatorKey(of), locator);
+        continue;
+      }
+      // Its project is checked as any session's is: one in a temp folder or a deleted one stays out of the default totals.
+      const orphan = await readSession(locator, source, { turns: false }).catch((error: unknown) => leave(unread(locator.file, error), source));
+      if (!orphan) continue;
+      if (!orphan.cwd) {
+        leave({ what: locator.file, why: "no project directory in it", kind: "no-project" }, source);
+        continue;
+      }
+      if (await outsideProject(orphan, locator.file, source)) continue;
+      untied.push({ locator, source });
     }
   }
   ownRuns(projects, rank);

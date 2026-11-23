@@ -26,3 +26,19 @@ test("a Claude Code subagent whose session's .jsonl is gone has its usage in unt
   assert.equal(found[0].source, "claude-code");
   assert.deepEqual([found[0].metrics.input, found[0].metrics.output], [11 + 17, 13 + 19], "its usage");
 });
+
+test("an orphan subagent's project is checked as a session's is: one in a temp folder is out of the default summary, and in with --all", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const temp = join(root, "tmp");
+  const scratchProject = join(temp, "scratch");
+  mkdirSync(scratchProject, { recursive: true });
+  claudeSubagent(home, scratchProject, 3, 1);
+  const options = { home, env: { PATH: "/usr/bin" }, temp, sources: ["claude-code"] };
+  const plan = await planImport(options);
+  assert.deepEqual(await untiedFound(plan), [], "left out like a temp project's session");
+  assert.deepEqual(plan.skipped.map((s) => s.kind), ["temp"]);
+  const all = await untiedFound(await planImport({ ...options, all: true }));
+  assert.equal(all.length, 1);
+  assert.deepEqual([all[0].metrics.input, all[0].metrics.output], [11 + 17, 13 + 19]);
+});
