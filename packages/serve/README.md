@@ -1581,8 +1581,9 @@ lists no models and slows nothing: the listing has 2 seconds in all, and follows
   model, so the tags never reach the answer.
 - Tools: a model whose capabilities include `tools` takes them natively. Any other takes them as text: the tools are
   described in its prompt, and a call written in its answer comes back as a real call.
-- Cost: $0, booked as a known cost. Its requests never count toward the [limit on free
-  requests](#a-limit-on-free-requests): there is no shared quota behind them.
+- Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
+  requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
+  with its other free requests, so a run on Ollama that keeps calling tools still stops there.
 - Harness: pi alone. claude-agent, codex and opencode never list them.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
@@ -4716,6 +4717,9 @@ workflow's agent nodes. Every such request of the run counts, its own model's, i
 compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
 workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
 request, so a restart or a claim moved to another runner keeps it.
+
+An agent's own `max_requests` is a lower limit of the same kind, in the same words. It counts everything the server's
+limit counts and a local model's requests (Ollama's) too: the only limit a run on Ollama meets besides its turns.
 
 ### A run paused at its cap
 

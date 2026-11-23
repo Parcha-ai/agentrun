@@ -70,7 +70,7 @@ import type { ParkCause } from "../workspace/computer-kept.js";
 import type { ScriptComputer } from "../workspace/run-tools.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, limitedFree, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, limitedFree, localRequestsIn, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -1731,6 +1731,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  between a request's admission and its leaving: that wait let a cancel close the session before the request was
          *  booked, its cost left unknown. */
         let freeMade = 0;
+        /** Its requests on local models (free.ts localRequestsIn), kept the same way: the agent's own limit adds them. */
+        let localMade = 0;
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
@@ -1740,6 +1742,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const judged: RunCapOptions["judged"] = (request, answer) => {
             config.judged?.(request, answer);
             if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
+            if (request.localRequestsMade !== undefined) localMade = request.localRequestsMade + (answer && !("refuse" in answer) && answer.localRequest === true ? 1 : 0);
           };
           // A step waiting for room leaves once the run has a pause (pendingPause, below): nothing more is sent until a
           // raise, and it is refused in the pause's words (beforeRequest). It leaves at the run's stop too, unsent.
@@ -2075,8 +2078,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // The free requests the run made before this claim, in every session (freeMade: each admission's from here on).
         let madeBefore = 0;
-        for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
+        let localBefore = 0;
+        for (const key of await sessions.keys()) {
+          const records = await sessions.read(key);
+          madeBefore += freeRequestsIn(records);
+          localBefore += localRequestsIn(records);
+        }
         freeMade = madeBefore;
+        localMade = localBefore;
         const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures; lastModel?: string; lastEffort?: string } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
@@ -2178,10 +2187,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The free-model limit's wrap-up (free.ts): the same note and offer, one per run and limit, on a request of a free
           // model. The dollar cap's note, when it is due on this request, goes first: one note per request, and it is told
           // once, so the free one waits for the next request (or never comes, the run having answered).
+          // On a local model (CapModel.local) the limit is the agent's own alone, over its free and local requests together.
           const freeNote = (): ServerNote | undefined => {
-            const limit = config.freeRequests;
-            if (limit === undefined || toldFreeLimits.has(limit) || !limitedFree(capModel)) return undefined;
-            const due = freeWrapUpDue(limit, freeMade);
+            const local = capModel.local === true;
+            const limit = local ? config.maxRequests : config.freeRequests;
+            if (limit === undefined || toldFreeLimits.has(limit) || !(local || limitedFree(capModel))) return undefined;
+            const due = freeWrapUpDue(limit, local ? freeMade + localMade : freeMade);
             return due ? { words: freeWrapUpWords(due.left), freeLimit: limit } : undefined;
           };
           if (capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return freeNote();

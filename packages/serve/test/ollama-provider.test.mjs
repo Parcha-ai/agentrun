@@ -176,6 +176,25 @@ test("a run on an Ollama model books $0, and its requests never count toward the
   assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the limit");
 });
 
+test("an agent's max_requests stops a run on an Ollama model at that many requests: local skips the server's limit alone, never the agent's", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  // A model that calls a tool on every answer: with no limit the run would loop until its turns ran out.
+  const ollama = await fakeOllama(t, { reply: (_body, n) => ({ calls: [{ name: "lookup", arguments: { n } }], usage: { input: 50, output: 5 } }) });
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api, data } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 2 }))).status, 201);
+  const started = await api("POST", "/agents/capped/runs", { input: { content: "Look it up until told to stop." }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.status, "failed", JSON.stringify(view));
+  assert.match(String(view.error?.message ?? view.error), /2-request limit/, JSON.stringify(view.error));
+  assert.equal(ollama.got.chat.length, 2, "the third request was never sent");
+  assert.match(JSON.stringify(ollama.got.chat[0].messages), /2 free-model requests left in this run/, "told to finish, as a run near the server's limit is");
+  const requests = journalOf(data, started.body.run_id).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
+  assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the server's limit");
+});
+
 test("a run on the host default books the Ollama model it ran on: its usage line names ollama and the tag, as the run page reads it", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
   const ollama = await fakeOllama(t);

@@ -6,4 +6,4 @@ The server lists the models of this machine's Ollama itself, as `ollama/<tag>` o
 - `agentrun service install --env OLLAMA_HOST=<host:port>` gives the service an Ollama off its default address. A service that reaches Ollama through `AGENT_MODEL_BASE_URL` keeps working as before; under a gateway, Ollama is never asked.
 - A run's page names the model it ran on, a run on the host default included, read from its `tokens` usage line: "qwen3:8b · local (Ollama)" for an Ollama model.
 - A model without the `thinking` capability whose answer opens with `<think>` has that part as thinking up to `</think>`, so the tags stay out of the answer.
-- `CapModel.local` marks a model on the host's own machine: free, and never counted toward the free-model limit (`limitedFree`).
+- `CapModel.local` marks a model on the host's own machine: free, and never counted toward the server's free-model limit (`limitedFree`). An agent's own `max_requests` still counts its requests, beside the run's other free ones, so a run on Ollama stops there.
