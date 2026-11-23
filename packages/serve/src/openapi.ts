@@ -3967,6 +3967,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   RunFile: {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
+    name: { type: "string", description: "In a run's listing read with `?cut=run` alone, on every file: its `path` under the run's own cut, as a cut read cuts a file's text (each value the cut holds and each secret shape replaced by `[redacted]` in place), so a file named by a held value can be shown by its name. Absent without `cut` (and from a server that doesn't know it: show such a file by no name, never its `path`).", "x-agentrun-serve": "filecut/2" },
   },
   DefinitionInput: {
     cli_learning: CLI_LEARNING_BINDING,
@@ -4646,6 +4647,14 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
   readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), parameters: "filecut/1" };
+  // filecut/2: `?cut=run` on the listing names each file under the run's cut (RunFile.name), so a grader is told of every
+  // file a run left, media included, without a path that holds a held value.
+  const listFilesOp = (doc.paths["/runs/{run_id}/files"] as Json).get as Json & { parameters?: Json[] };
+  listFilesOp.parameters = [
+    ...(listFilesOp.parameters ?? []),
+    query("cut", "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.", { type: "string", enum: ["run"] }),
+  ];
+  listFilesOp["x-agentrun-serve-changed"] = { ...(listFilesOp["x-agentrun-serve-changed"] as Json), parameters: "filecut/2" };
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;
   cancel.description = `${String(cancel.description).trimEnd()}\nHere an agentic run reads \`cancelled\` from the 202 on, \`final\` once it has stopped: a run's first terminal status is its last, so nothing its cut turn writes later (an answer, a cost over its cap) moves it. A workflow run reads \`cancelled\` once its workflow has stopped.\n`;

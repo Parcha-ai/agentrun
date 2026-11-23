@@ -3,10 +3,11 @@
 // place, through redactSecrets over the whole text, so compact JSON past 8 KB with no whitespace comes through whole. A
 // type that isn't text, or bytes that aren't UTF-8 or hold a NUL, is 415; a file over RUN_FILE_CUT_MAX is 413. Without
 // the cut the file is the bytes as written. A handed sign-in's ref and a withheld run's 403 are read in
-// planted-run-reads.test.mjs, beside every other run read. An API-only server serves it as the whole server does.
+// planted-run-reads.test.mjs, beside every other run read. An API-only server serves it as the whole server does. The
+// listing with the cut (GET /v2/runs/{id}/files?cut=run) names each file by its path under the same cut.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { redactSecrets } from "../dist/learn/secrets.js";
@@ -128,4 +129,27 @@ test("an API-only server serves the cut read with its token: a key the server ho
   const raw = await get(server.baseUrl, server.token, `/runs/${inline.body.run_id}/files/out.txt`);
   assert.equal(await raw.text(), text, "the raw read as written");
   assert.equal((await fetch(`${server.baseUrl}/runs/${inline.body.run_id}/files/out.txt?cut=run`)).status, 401, "and it takes the token");
+});
+
+test("a listing with cut=run gives each file its name under the run's cut, a held value in a path cut in place; without cut no name; another cut 400", { timeout: 120_000 }, async (t) => {
+  const { baseUrl, token, run_id, work, monid } = await heldRun(t);
+  await mkdir(join(work, "cache"), { recursive: true });
+  await mkdir(join(work, "media"), { recursive: true });
+  await writeFile(join(work, "cache", `${monid}.json`), "{}\n");
+  await writeFile(join(work, "media", `${monid}.mp3`), Buffer.from("fffb9000", "hex"));
+  await writeFile(join(work, "plain.txt"), "plain\n");
+  const cut = await get(baseUrl, token, `/runs/${run_id}/files?cut=run`);
+  assert.equal(cut.status, 200);
+  const listed = await cut.json();
+  const byPath = new Map(listed.files.map((file) => [file.path, file]));
+  assert.equal(byPath.get(`cache/${monid}.json`)?.name, "cache/[redacted].json");
+  assert.equal(byPath.get(`media/${monid}.mp3`)?.name, "media/[redacted].mp3", "a file the cut read doesn't take (audio) is named under the cut too");
+  assert.equal(byPath.get("plain.txt")?.name, "plain.txt", "a path with no held value is its own name");
+  assert.ok(listed.files.every((file) => typeof file.name === "string" && !file.name.includes(monid)), "every entry has a name, none holding the value");
+  const raw = await (await get(baseUrl, token, `/runs/${run_id}/files`)).json();
+  assert.ok(raw.files.every((file) => file.name === undefined), "without the cut, no name");
+  assert.ok(raw.files.some((file) => file.path === `cache/${monid}.json`), "and the paths as they are");
+  const bad = await get(baseUrl, token, `/runs/${run_id}/files?cut=whole`);
+  assert.equal(bad.status, 400);
+  assert.equal((await bad.json()).error?.code, "bad_request");
 });

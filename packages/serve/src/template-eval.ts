@@ -541,8 +541,10 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
  *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
 export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
-/** A file a run left in its work folder: its path, its size in bytes and, for a text file read whole, its text. */
-export type FinalFile = { path: string; bytes: number; text?: string };
+/** A file a run left in its work folder, as a grader is told of it: its name (its path under the run's cut, the listing's
+ *  `name`; absent from a server that doesn't cut its listing's names, when the file is shown by no name, never its path),
+ *  its size in bytes and, for a text file read whole, its text. */
+export type FinalFile = { name?: string; bytes: number; text?: string };
 /** What a run left, for its graders. */
 export type RunRecord = {
   /** The run's final answer, or "" when it has none. */
@@ -726,8 +728,8 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   const lines = run.calls.map((call, i) => {
     const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
     const result = call.result ?? "";
-    const named = texts.filter((file) => head.includes(file.path) || result.includes(file.path)).sort((a, b) => b.path.length - a.path.length)[0];
-    return { head: named ? `${head} [the file ${named.path} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+    const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
+    return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
   });
   // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
@@ -822,12 +824,13 @@ function middle(text: string, keep: number): string {
 /** A run's final files in at most `room` characters: each text file in a <file> block, whole when they all fit; else each
  *  text past a length L keeps its head and tail with its middle cut and marked, L the longest that fits (so the largest
  *  is cut first); else every text left out. A file with no text (media, a binary, one past what was read) is named with
- *  its size on a last line, cut to the room when even that passes it. */
+ *  its size on a last line, cut to the room when even that passes it. Each file is named by its cut name alone: one with
+ *  none is in a block with no path, or counted. */
 export function fitFiles(files: readonly FinalFile[], room: number): string {
-  const block = (file: FinalFile, text: string) => `<file path="${file.path}" bytes="${file.bytes}">\n${text}\n</file>`;
+  const block = (file: FinalFile, text: string) => `<file${file.name === undefined ? "" : ` path="${file.name}"`} bytes="${file.bytes}">\n${text}\n</file>`;
   const texts = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
   const others = files.filter((file) => file.text === undefined);
-  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${others.map((file) => `${file.path} (${file.bytes})`).join(", ")}`] : [];
+  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : [];
   const whole = [...texts.map((file) => block(file, file.text)), ...named].join("\n");
   if (whole.length <= room) return whole;
   const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
@@ -841,8 +844,17 @@ export function fitFiles(files: readonly FinalFile[], room: number): string {
     }
     return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
   }
-  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${files.map((file) => `${file.path} (${file.bytes})`).join(", ")}`].join("\n");
+  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${namesOf(files)}`].join("\n");
   return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;
+}
+
+/** Files by their cut names and sizes, "a.mp4 (9000000), b.txt (5)", and those with no name counted after them: a file is
+ *  never named to a grader by anything but its cut name. */
+function namesOf(files: readonly FinalFile[]): string {
+  const named = files.flatMap((file) => (file.name === undefined ? [] : [`${file.name} (${file.bytes})`]));
+  const unnamed = files.length - named.length;
+  const count = unnamed ? `${unnamed} file${unnamed === 1 ? "" : "s"} not named (this server doesn't cut file names)` : "";
+  return named.length && count ? `${named.join(", ")}; and ${count}` : named.length ? named.join(", ") : count;
 }
 
 /** A grader run's answer read as its verdict: the last json block's (else the last JSON object's) {pass, reason}. */
@@ -1037,17 +1049,18 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
   });
 }
 
-/** A file of a run's work folder as its listing names it: its size, its type (null for an extension the server does not
- *  type) and whether the server could read it. */
-export type Listed = { path: string; bytes: number; type: string | null; unreadable: boolean };
-/** Every file of a run's work folder (the files route, page by page). */
+/** A file of a run's work folder as its listing names it: its path (for this eval's own reads, never a grader's prompt),
+ *  its name under the run's cut (the listing's `name`, absent from a server that doesn't cut it), its size, its type
+ *  (null for an extension the server does not type) and whether the server could read it. */
+export type Listed = { path: string; name?: string; bytes: number; type: string | null; unreadable: boolean };
+/** Every file of a run's work folder (the files route, page by page), each with its name under the run's cut (`?cut=run`). */
 async function filesOf(api: Api, runId: string): Promise<Listed[]> {
   const files: Listed[] = [];
   for (let cursor: string | null = null; ; ) {
-    const page = await api("GET", `/runs/${runId}/files${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+    const page = await api("GET", `/runs/${runId}/files?cut=run${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
     if (page.status !== 200 || !isObject(page.body)) return files;
     for (const file of (page.body.files as Json[] | undefined) ?? []) {
-      if (typeof file.path === "string") files.push({ path: file.path, bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
+      if (typeof file.path === "string") files.push({ path: file.path, ...(typeof file.name === "string" ? { name: file.name } : {}), bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
     }
     cursor = typeof page.body.next_cursor === "string" ? page.body.next_cursor : null;
     if (!cursor) return files;
@@ -1092,7 +1105,8 @@ export async function finalFilesOf(api: Api, runId: string, listed: readonly Lis
     texts.set(file.path, read.body);
     left -= bytes;
   }
-  return listed.map((file) => ({ path: file.path, bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
+  // Each by its cut name alone: its path is for the reads above, never a grader.
+  return listed.map((file) => ({ ...(file.name !== undefined ? { name: file.name } : {}), bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
