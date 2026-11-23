@@ -15,14 +15,23 @@
 // reasoning, which it keeps in `reasoning`. The importer's output holds the reasoning, as Codex's does. An older
 // OpenCode's output held it already: where a step records its `total`, the output is what the total leaves after the
 // input and the cache.
+//
+// OpenCode's claude-agent provider runs Claude Code, which writes the same requests into its own session files: each
+// such request's content names that Claude Code session in `native.sessionID` (2.x only; the provider came after the
+// 1.x tables). The reader keeps those requests and names the session they mirror, for an import to set the copy aside.
 import type { Dirent } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ACTIVE_GAP_MS, mostEffortOf, personsWords, type Ended, type Session, type ToolCall, type Turn, type Usage } from "./import-sources.js";
 
-/** An OpenCode session: the importer's Session, of the source "opencode". */
-export type OpenCodeSession = Omit<Session, "source"> & { source: "opencode" };
-type Answer = Extract<Turn, { role: "assistant" }>;
+/** The Claude Code session a claude-agent request was also written in. */
+export type Mirror = { source: "claude-code"; sessionId: string };
+/** A turn; a claude-agent request's names the Claude Code session that holds it too. */
+export type OpenCodeTurn = Turn & { mirrors?: Mirror };
+/** An OpenCode session: the importer's Session, of the source "opencode"; `mirrors`, each Claude Code session its
+ *  claude-agent requests were also written in, in the order first named (with or without its turns). */
+export type OpenCodeSession = Omit<Session, "source" | "turns"> & { source: "opencode"; turns: OpenCodeTurn[]; mirrors?: Mirror[] };
+type Answer = Extract<Turn, { role: "assistant" }> & { mirrors?: Mirror };
 type Row = Record<string, unknown>;
 type Options = { turns?: boolean };
 
@@ -101,6 +110,10 @@ class Reading {
   }
   result(callId: string, name: string, text: string, isError: boolean, at: number): void {
     this.add({ role: "toolResult", callId, name, text, isError, at });
+  }
+  mirror(link: Mirror): void {
+    const links = (this.session.mirrors ??= []);
+    if (!links.some((known) => known.sessionId === link.sessionId)) links.push(link);
   }
   /** A message's cost, which the session's sums; unknown once a request with usage has none. */
   priced(cost: unknown, used: boolean): void {
@@ -252,6 +265,8 @@ function v2Session(head: ConstructorParameters<typeof Reading>[0], rows: Row[], 
           else if (item.state.status === "error") reading.result(id, name, errorOf(item.state.error) ?? contentText(item.state.content), true, end);
         }
       }
+      const sessionId = isObject(data.model) && data.model.providerID === "claude-agent" ? content.map((item) => (isObject(item) && isObject(item.native) && typeof item.native.sessionID === "string" ? item.native.sessionID.trim() : "")).find(Boolean) : undefined;
+      if (sessionId) reading.mirror((turn.mirrors = { source: "claude-code", sessionId }));
       const usage = usageOf(data.tokens);
       if (usage) turn.usage = usage;
       const cost = count(data.cost);
@@ -398,20 +413,27 @@ export async function readOpenCodeStorage(dir: string, { turns: keep = true }: O
   return out;
 }
 
-/** OpenCode's databases and JSON storage under `home` (~/.local/share/opencode), or in `dataRoot` when the caller names
- *  OpenCode's data folder (OPENCODE_DATA_DIR, $XDG_DATA_HOME/opencode). Never through a link; a database's -wal and -shm
- *  files are its own. */
-export async function openCodeFiles(home: string, dataRoot?: string): Promise<{ dbs: string[]; storage?: string }> {
-  const root = dataRoot ?? join(home, ".local", "share", "opencode");
+/** The environment OpenCode reads its paths from. */
+export type Env = Readonly<Record<string, string | undefined>>;
+/** OpenCode's databases and JSON storage under `home`, as OpenCode finds them in `env`: its data folder
+ *  $XDG_DATA_HOME/opencode (~/.local/share/opencode without it), opencode.db and each channel's opencode-<channel>.db in
+ *  it; and first the database OPENCODE_DB names, a path as given or one relative to the data folder. OpenCode opens
+ *  only that one; the ones it wrote before are still the person's history. Never through a link; a database's -wal and
+ *  -shm files are its own. */
+export async function openCodeFiles(home: string, env: Env = process.env): Promise<{ dbs: string[]; storage?: string }> {
+  const root = join(env.XDG_DATA_HOME || join(home, ".local", "share"), "opencode");
   const dbs = (await entries(root)).filter((entry) => entry.isFile() && /^opencode(?:-[\w.-]+)?\.db$/.test(entry.name)).map((entry) => join(root, entry.name)).sort();
+  // ":memory:" names no file, and is found as none.
+  const named = env.OPENCODE_DB ? resolve(root, env.OPENCODE_DB) : undefined;
+  if (named && !dbs.includes(named) && (await lstat(named).catch(() => null))?.isFile()) dbs.unshift(named);
   const storage = join(root, "storage");
   return (await lstat(join(storage, "session")).catch(() => null))?.isDirectory() && (await lstat(storage)).isDirectory() ? { dbs, storage } : { dbs };
 }
 
-/** Every OpenCode session under `home`: each database's, then the storage's the databases do not hold. A database that
+/** Every OpenCode session under `home` (`env` as openCodeFiles reads it): each database's, then the storage's the databases do not hold. A database that
  *  cannot be read is passed over. */
-export async function readOpenCode(home: string, { dataRoot, ...options }: Options & { dataRoot?: string } = {}): Promise<OpenCodeSession[]> {
-  const { dbs, storage } = await openCodeFiles(home, dataRoot);
+export async function readOpenCode(home: string, { env, ...options }: Options & { env?: Env } = {}): Promise<OpenCodeSession[]> {
+  const { dbs, storage } = await openCodeFiles(home, env);
   const out: OpenCodeSession[] = [];
   const read = new Set<string>();
   const keep = (sessions: OpenCodeSession[]) => {

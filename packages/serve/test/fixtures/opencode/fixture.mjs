@@ -141,7 +141,7 @@ export const V2_PARTS = [
 
 /** A 2.x opencode.db at `file`: ses_C in the 2.x tables, with the 1.x copy the 2.x migration leaves behind (which counts
  *  nothing); ses_D, 1.x history not yet migrated; and ses_F, a fork of ses_C through msg_C2, whose copied rows count
- *  nothing. */
+ *  nothing; and ses_K, run on the claude-agent provider, whose requests Claude Code also wrote in its own sessions. */
 export async function buildV2(file) {
   const db = await database(file, await readFile(SCHEMA, "utf8"));
   v1Rows(db, [
@@ -169,6 +169,19 @@ export async function buildV2(file) {
   session.run("ses_F", "ses_C", JSON.stringify({ type: "through", messageID: "msg_C2" }), "Port the reader (fork)", JSON.stringify(MODEL), C + 20_000, C + 22_000);
   V2_MESSAGES.slice(0, 3).forEach(([id, type, data], seq) => message.run(`${id}_fork`, "ses_F", type, seq, C + 20_000, C + 20_000, JSON.stringify(data)));
   message.run("msg_F3", "ses_F", "assistant", 3, C + 21_000, C + 21_000, JSON.stringify({ agent: "build", model: MODEL, cost: 0.03125, tokens: tokens(1, 1, 0, 0, 0), time: { created: C + 21_000, completed: C + 22_000 }, content: [{ type: "text", text: "Forked." }] }));
+  // claude-agent runs Claude Code, which keeps its own transcript: each request's content names that session in
+  // native.sessionID (and the transcript line's uuid in native.messageID). A fork of the Claude session is a new one.
+  const AGENT = { id: "opus", providerID: "claude-agent" };
+  const K = C + 30_000;
+  session.run("ses_K", null, null, "Through Claude Code", JSON.stringify(AGENT), K, K + 9000);
+  [
+    ["msg_K1", "user", { text: "Use Claude here.", files: [], agents: [], time: { created: K } }],
+    ["msg_K2", "assistant", { agent: "build", model: AGENT, cost: 0, tokens: tokens(3, 2, 0, 0, 0), time: { created: K + 1000, completed: K + 2000 }, content: [{ type: "reasoning", text: "…", native: { sessionID: "", messageID: "u0" } }, { type: "text", text: "On it.", native: { sessionID: "claude-session-1", messageID: "u1" } }] }],
+    ["msg_K3", "assistant", { agent: "build", model: AGENT, cost: 0, tokens: tokens(4, 1, 0, 0, 0), time: { created: K + 3000, completed: K + 4000 }, content: ["junk", { type: "text", text: "Still on it.", native: { sessionID: "claude-session-1", messageID: "u2" } }] }],
+    ["msg_K4", "assistant", { agent: "build", model: AGENT, cost: 0, tokens: tokens(5, 1, 0, 0, 0), time: { created: K + 5000, completed: K + 6000 }, content: [{ type: "text", text: "Forked over.", native: { sessionID: "claude-session-2", messageID: "u3" } }] }],
+    // Another provider's native data names no Claude Code session.
+    ["msg_K5", "assistant", { agent: "build", model: MODEL, cost: 0, tokens: tokens(6, 1, 0, 0, 0), time: { created: K + 7000, completed: K + 8000 }, content: [{ type: "text", text: "Back on Opus.", native: { sessionID: "not-claude-code" } }] }],
+  ].forEach(([id, type, data], seq) => message.run(id, "ses_K", type, seq, K, K, JSON.stringify(data)));
   db.close();
 }
 

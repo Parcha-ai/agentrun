@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -74,7 +74,7 @@ test("the JSON storage OpenCode kept before SQLite reads as its database does", 
 test("a 2.x opencode.db: its own tables first, 1.x history not yet moved, a fork's copied rows counted once", async (t) => {
   const db = join(await folder(t), "opencode.db");
   await buildV2(db);
-  const { ses_C: c, ses_D: d, ses_F: f, ...rest } = byId(await readOpenCodeDb(db));
+  const { ses_C: c, ses_D: d, ses_F: f, ses_K: _k, ...rest } = byId(await readOpenCodeDb(db));
   assert.deepEqual(Object.keys(rest), []);
   assert.deepEqual(
     { ...c, turns: undefined },
@@ -106,6 +106,25 @@ test("a 2.x opencode.db: its own tables first, 1.x history not yet moved, a fork
   assert.deepEqual([f.copies, f.users, f.costUsd, said(f), total(f)], [3, 0, 0.03125, [["assistant", "Forked."]], { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }]);
 });
 
+test("a claude-agent request names the Claude Code session that also holds it; the session, each one it names", async (t) => {
+  const db = join(await folder(t), "opencode.db");
+  await buildV2(db);
+  const one = { source: "claude-code", sessionId: "claude-session-1" };
+  const two = { source: "claude-code", sessionId: "claude-session-2" };
+  const k = (await readOpenCodeDb(db)).find((session) => session.id === "ses_K");
+  assert.deepEqual(k.turns.map((turn) => [turn.role, turn.text, turn.mirrors]), [
+    ["user", "Use Claude here.", undefined],
+    ["assistant", "On it.", one],
+    ["assistant", "Still on it.", one],
+    ["assistant", "Forked over.", two],
+    ["assistant", "Back on Opus.", undefined],
+  ]);
+  assert.deepEqual(k.mirrors, [one, two]);
+  // A listing names them too, for a registry to set the copies aside before it reads any turn.
+  assert.deepEqual((await readOpenCodeDb(db, { turns: false })).find((session) => session.id === "ses_K").mirrors, [one, two]);
+  assert.equal((await readOpenCodeDb(db)).find((session) => session.id === "ses_C").mirrors, undefined);
+});
+
 test("a listing reads the same sessions without their turns", async (t) => {
   const db = join(await folder(t), "opencode.db");
   await buildV2(db);
@@ -122,16 +141,25 @@ test("OpenCode's files under a home: its databases and its JSON storage, never a
   await writeFile(join(data, "opencode-beta.db"), "");
   await writeFile(join(data, "opencode.db-wal"), "");
   await symlink(join(data, "opencode.db"), join(data, "opencode-linked.db"));
-  assert.deepEqual(await openCodeFiles(home), { dbs: [join(data, "opencode-beta.db"), join(data, "opencode.db")], storage: join(data, "storage") });
-  // A data folder of its own (OPENCODE_DATA_DIR, XDG_DATA_HOME/opencode), when the caller names one.
-  const elsewhere = join(home, "elsewhere");
-  await mkdir(elsewhere);
-  await buildV1(join(elsewhere, "opencode.db"));
-  assert.deepEqual(await openCodeFiles(home, elsewhere), { dbs: [join(elsewhere, "opencode.db")] });
-  assert.deepEqual(await openCodeFiles(join(home, "nobody")), { dbs: [] });
+  assert.deepEqual(await openCodeFiles(home, {}), { dbs: [join(data, "opencode-beta.db"), join(data, "opencode.db")], storage: join(data, "storage") });
+  // $XDG_DATA_HOME/opencode is OpenCode's data folder when it is set.
+  const xdg = join(home, "xdg");
+  await buildV1(join(xdg, "opencode", "opencode.db"));
+  assert.deepEqual(await openCodeFiles(home, { XDG_DATA_HOME: xdg }), { dbs: [join(xdg, "opencode", "opencode.db")] });
+  assert.deepEqual(await openCodeFiles(join(home, "nobody"), {}), { dbs: [] });
+  // OPENCODE_DB names the database OpenCode opens: a path as given, a relative one under the data folder. The databases
+  // it wrote before it was set are still the person's.
+  const own = join(home, "work", "mine.sqlite");
+  await buildV1(own);
+  assert.deepEqual((await openCodeFiles(home, { OPENCODE_DB: own })).dbs, [own, join(data, "opencode-beta.db"), join(data, "opencode.db")]);
+  await buildV1(join(data, "nested", "named.db"));
+  assert.deepEqual((await openCodeFiles(home, { OPENCODE_DB: "nested/named.db" })).dbs, [join(data, "nested", "named.db"), join(data, "opencode-beta.db"), join(data, "opencode.db")]);
+  // Named twice (the default's own name), :memory:, a missing file or a link: nothing more.
+  for (const name of ["opencode.db", ":memory:", "", join(home, "missing.db"), join(data, "opencode-linked.db")])
+    assert.deepEqual((await openCodeFiles(home, { OPENCODE_DB: name })).dbs, [join(data, "opencode-beta.db"), join(data, "opencode.db")], name);
 
   // A session both in the database and in the storage it was moved from is the database's, once; an unreadable
   // database is passed over.
-  const sessions = await readOpenCode(home);
+  const sessions = await readOpenCode(home, { env: {} });
   assert.deepEqual(sessions.map((session) => [session.id, session.file]), [["ses_A", join(data, "opencode.db")], ["ses_B", join(data, "opencode.db")]]);
 });
