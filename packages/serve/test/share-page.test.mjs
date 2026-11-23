@@ -64,6 +64,39 @@ test("with the printed link's session /share/<run> is share.html under the conso
   assert.equal((await call(server.port, { path: `/v2/runs/${run}/export` })).status, 401, "and nothing without it");
 });
 
+test("the printed link's code on /share/<run> sets the console session as / does and lands on the page without the code; a wrong code is a 401 that sets nothing", async (t) => {
+  const server = await serve(t, { console: await consoleWithShare(t), runner: false });
+  const run = nonce();
+  const opened = await call(server.port, { path: `/share/${run}?launch=${server.launchCode}` });
+  assert.equal(opened.status, 303);
+  assert.equal(opened.headers.location, `/share/${run}`, "the code leaves the address");
+  const set = opened.headers["set-cookie"]?.[0] ?? "";
+  assert.match(set, new RegExp(`^agentrun-${server.port}=[A-Za-z0-9_-]+; HttpOnly; SameSite=Strict; Path=/$`), "the cookie / sets");
+  assert.ok(!set.includes(server.launchCode) && !set.includes(server.token), "a session id, never the code or the token");
+  const cookie = cookieOf(opened);
+  assert.deepEqual([(await call(server.port, { path: `/share/${run}`, headers: { cookie } })).text], [SHARE_INDEX], "the session opens the page");
+  assert.equal((await call(server.port, { path: `/v2/runs/${run}/export`, headers: { cookie } })).status, 404, "and reads the export (no such run)");
+  // Its other words stay in the address; a token there signs nothing in and leaves it.
+  const kept = await call(server.port, { path: `/share/${run}?launch=${server.launchCode}&tab=files` });
+  assert.equal(kept.headers.location, `/share/${run}?tab=files`);
+  const token = await call(server.port, { path: `/share/${run}?token=${server.token}` });
+  assert.deepEqual([token.status, token.headers.location, token.headers["set-cookie"]], [303, `/share/${run}`, undefined]);
+  for (const code of ["wrong", server.token]) {
+    const wrong = await call(server.port, { path: `/share/${run}?launch=${encodeURIComponent(code)}` });
+    assert.deepEqual([wrong.status, wrong.headers["set-cookie"]], [401, undefined]);
+    assert.notEqual(wrong.text, SHARE_INDEX);
+    assert.match(wrong.text, /Sign in/);
+  }
+});
+
+test("with accounts a launch code on /share/<run> signs nothing in: it leaves the address, and the page still needs the owner", async (t) => {
+  const server = await serve(t, { accounts: true, openSetup: true, console: await consoleWithShare(t), runner: false });
+  const run = nonce();
+  const given = await call(server.port, { path: `/share/${run}?launch=anything` });
+  assert.deepEqual([given.status, given.headers.location, given.headers["set-cookie"]], [303, `/share/${run}`, undefined]);
+  assert.equal((await call(server.port, { path: `/share/${run}` })).status, 401);
+});
+
 test("the share page's assets are the console's, public, under /share/assets/; nothing else under /share/ is served", async (t) => {
   const dir = await consoleWithShare(t);
   const server = await serve(t, { console: dir, runner: false });

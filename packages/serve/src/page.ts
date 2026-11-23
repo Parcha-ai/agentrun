@@ -143,29 +143,43 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   if (raw.startsWith(SHARE)) return share(req, res, raw, dir, server, held);
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
-  // Without accounts, the printed link's launch code gives this browser a console session (ConsoleSessions). The token
-  // is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it (the same
-  // address without it, no cookie). With an owner the console is the owner's session alone.
+  const given = launch(req, res, raw, server, raw);
+  if (given === "answered") return;
+  return file(req, res, raw, dir, "index.html", given === "wrong" ? 401 : 200);
+}
+
+/** The printed link's code in a page's address (`raw`: `/`, or `/share/<run>` the CLI opens). Without accounts, a right
+ *  code gives this browser a console session (ConsoleSessions) and a redirect to the same page without it; "answered".
+ *  The token is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it
+ *  (the same address without it, no cookie). With an owner the console is the owner's session alone, so a code leaves
+ *  the same way. A wrong code is "wrong" and sets nothing (the page answers 401); none is "none". `where` names the page
+ *  in the failure log. */
+function launch(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, where: string): "answered" | "wrong" | "none" {
   const url = new URL(req.url ?? "/", "http://serve");
-  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
+  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `${raw}${url.searchParams.size ? `?${url.searchParams}` : ""}`);
   const given = url.searchParams.get("launch");
-  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without());
+  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without()), "answered";
+  if (given === null) return "none";
   // A code holds no "+", but a space in the link is one that was not encoded all the same.
-  const id = given === null ? undefined : server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
-  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
-  if (given !== null) server.authFailed?.(raw, "wrong_launch_code");
-  return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
+  const id = server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
+  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` }), "answered";
+  server.authFailed?.(where, "wrong_launch_code");
+  return "wrong";
 }
 
 /** The share preview (share.html) at /share/<run>, the owner's alone: a browser without this server's session (`held`:
- *  the owner's signed-in session with accounts, the printed link's without) gets SIGN_IN_FIRST, a 401. The page reads the
- *  run's export with that session (GET /v2/runs/<run>/export) and nothing else. Its assets are the console's, public. */
+ *  the owner's signed-in session with accounts, the printed link's without) gets SIGN_IN_FIRST, a 401, and so does a
+ *  wrong launch code; a right one opens the session here as on `/` (launch). The page reads the run's export with that
+ *  session (GET /v2/runs/<run>/export) and nothing else. Its assets are the console's, public. */
 async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, server: PageServer, held: boolean): Promise<void> {
   const rest = raw.slice(SHARE.length);
   if (rest.startsWith("assets/")) return file(req, res, raw, dir, rest);
   if (!SHARE_RUN.test(rest)) return refuse(req, res, new ApiError("not_found", `no page ${raw}: a share preview is /share/<run id>`));
-  if (!held) {
-    server.authFailed?.("/share", "no_session");
+  // The CLI opens /share/<run>?launch=<code> when it knows the code: the same session as `/?launch=`, landing here.
+  const given = launch(req, res, raw, server, "/share");
+  if (given === "answered") return;
+  if (given === "wrong" || !held) {
+    if (given === "none") server.authFailed?.("/share", "no_session");
     return send(req, res, 401, HTML, SIGN_IN_FIRST);
   }
   return file(req, res, raw, dir, "share.html");
