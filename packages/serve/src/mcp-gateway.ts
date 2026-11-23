@@ -56,9 +56,10 @@ export interface McpServerSource {
  *  (`unpriceable`, in words; the hold then covers only what could be), and what it charged, by the server's reply
  *  (none: no reply came back). Null: unknown. */
 export type McpQuote = { holdUsd: number; basis: string; unpriceable?: string; chargeOf(reply: Record<string, unknown> | undefined): number | null };
-/** A server's keys scoped to the run (fal's submission keys, fal-price.ts falKeys): `out`, a call's arguments as they
- *  leave; `back`, the text of its answer or error as the model reads it, each scoped key read as the agent's own. */
-export type McpKeys = { out(tool: string, args: Record<string, unknown>): Record<string, unknown>; back(text: string): string };
+/** A server's keys scoped to the run (fal's submission keys, fal-price.ts falKeys): `refused`, why a call's keys can't
+ *  be scoped (it is then refused unsent); `out`, a call's arguments as they leave; `back`, the text of its answer or error
+ *  as the model reads it, each scoped key read as the agent's own. */
+export type McpKeys = { refused?(tool: string, args: Record<string, unknown>): string | undefined; out(tool: string, args: Record<string, unknown>): Record<string, unknown>; back(text: string): string };
 /** A server that prices its own calls. `ask` calls one of the server's tools with the run's credential, unbooked and
  *  unrecorded, and answers its raw result (none: it failed). `keys`: the keys it scopes to the run, on every call of
  *  the server, billed or not. */
@@ -458,6 +459,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     }
     const why = unsendable(server, tool);
     if (why) return said(why, true);
+    // A key the server could not take once scoped to the run, refused before anything is priced or held.
+    const keys = meters.get(server)?.keys;
+    const keyless = keys?.refused?.(tool, args);
+    if (keyless) return said(`${mcpToolName(server, tool)} was not sent: ${keyless}. Nothing was sent.`, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;
     const listed = pinnedTools.find((t) => t.name === tool)!;
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
@@ -465,7 +470,6 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     let raw: Record<string, unknown> | undefined;
     // The server's keys scoped to the run as the call leaves (fal's submission keys): its price is read from the call as
     // the agent made it.
-    const keys = meters.get(server)?.keys;
     const call = async (mark: () => Promise<string | undefined> = async () => undefined) => {
       const outcome: { unsent?: true; raw?: Record<string, unknown> } = {};
       const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, keys ? keys.out(tool, args) : args, signal, async () => {

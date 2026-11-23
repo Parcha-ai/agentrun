@@ -227,44 +227,40 @@ function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
 /** fal's tools that take a submission_key: the three that submit jobs, and get_submission, which reads one back. */
 const KEYED = new Set(["run_model", "submit_job", "submit_jobs", "get_submission"]);
 /** fal's longest submission_key: its tools declare `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`. */
-export const KEY_MAX = 128;
+const KEY_MAX = 128;
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+/** What a run adds to each key: `.` and 16 hex. */
+const KEY_TAIL = 17;
+/** The longest submission_key an agent can send fal in a run: fal's KEY_MAX less the run's KEY_TAIL. */
+export const KEY_ROOM = KEY_MAX - KEY_TAIL;
+
+/** The submission keys of a call of fal's `tool`: its own, and for submit_jobs each request's. */
+const keysOf = (tool: string, args: Record<string, unknown>): unknown[] => [args.submission_key, ...(tool === "submit_jobs" && Array.isArray(args.requests) ? args.requests.map((one: unknown) => (isObject(one) ? one.submission_key : undefined)) : [])];
 
 /** The submission keys of one run on fal's hosted server (McpMeter.keys). fal's journal is per account, so the same key
  *  from two runs (a model makes the same key for the same task) would bind the second run's request to the first's and be
  *  refused. Each key leaves as the agent's key and `.<16 hex of the run>`: the same run's key leaves the same each time,
- *  so a retry is deduped, and another run's never matches it. A key too long for KEY_MAX with that suffix keeps its start
- *  and a hash of the whole key in its place, never cut into another key, and ends `:<16 hex of the run>` instead: its
- *  shortened start is itself a valid key, and the different mark keeps an agent key that spells it from leaving as the
- *  same key. `back` reads each scoped key in a reply as the agent's: by the keys this gateway sent, else by taking the
+ *  on every claim of it, so a retry is deduped, and another run's never matches it. A key with no room for that suffix
+ *  (over KEY_ROOM) is refused unsent, in words. `back` reads each scoped key in a reply as the agent's by taking the
  *  suffix off. */
 export function falKeys(run: string): McpKeys {
   const mark = hex16(`agentrun fal submission_key\0${run}`);
-  const tail = mark.length + 1;
-  const own = new Map<string, string>();
-  const scoped = (key: unknown): unknown => {
-    if (typeof key !== "string" || !key) return key;
-    const sent = key.length + tail <= KEY_MAX ? `${key}.${mark}` : `${key.slice(0, KEY_MAX - tail - 17)}.${hex16(key)}:${mark}`;
-    own.set(sent, key);
-    return sent;
-  };
-  const anyScoped = new RegExp(`[A-Za-z0-9._:-]+[.:]${mark}(?![A-Za-z0-9._:-])`, "g");
+  const scoped = (key: unknown): unknown => (typeof key === "string" && key ? `${key}.${mark}` : key);
+  // The suffix where a key ends: one pass, so an agent's key that itself ends like a scoped one keeps that ending.
+  const suffix = new RegExp(`\\.${mark}(?![A-Za-z0-9._:-])`, "g");
   return {
+    refused(tool, args) {
+      if (!KEYED.has(tool)) return undefined;
+      const long = keysOf(tool, args).find((key): key is string => typeof key === "string" && key.length > KEY_ROOM);
+      return long === undefined ? undefined : `its submission_key ${long.slice(0, 24)}… is ${long.length} characters, over the ${KEY_ROOM} a run can send fal (fal takes ${KEY_MAX}, and the run adds ${KEY_TAIL} to keep its keys its own): send a shorter key`;
+    },
     out(tool, args) {
       if (!KEYED.has(tool)) return args;
       let sent = Object.hasOwn(args, "submission_key") ? { ...args, submission_key: scoped(args.submission_key) } : args;
       if (tool === "submit_jobs" && Array.isArray(args.requests)) sent = { ...sent, requests: args.requests.map((one: unknown) => (isObject(one) && Object.hasOwn(one, "submission_key") ? { ...one, submission_key: scoped(one.submission_key) } : one)) };
       return sent;
     },
-    back(text) {
-      if (!text.includes(mark)) return text;
-      // One pass: a key read back once is never read again, so an agent's key that ends like a scoped one stays as it is.
-      const known = [...own.keys()].sort((a, b) => b.length - a.length);
-      return text.replace(anyScoped, (token) => {
-        const sent = known.find((key) => token.endsWith(key));
-        return sent ? `${token.slice(0, -sent.length)}${own.get(sent)}` : token.slice(0, -tail);
-      });
-    },
+    back: (text) => (text.includes(mark) ? text.replace(suffix, "") : text),
   };
 }
 
