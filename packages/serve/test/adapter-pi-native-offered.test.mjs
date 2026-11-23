@@ -14,6 +14,7 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -56,7 +57,7 @@ async function nativeRun(t) {
   const provider = { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"x"}` };
   const extension = defineExtension({ name: "native", tools: [browse] });
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop((claim, run) => ({
-    adapter: piAdapter({ run, model: "claude-sonnet-5-5", provider, price, fetch: globalThis.fetch, extensions: [extension] }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: "claude-sonnet-5-5", provider, price, fetch: globalThis.fetch, extensions: [extension] }),
     session: { key: `run:${claim.runId}`, label: "root", system: ["Go."], tools: [], context: "fresh" },
     input: "Go.",
     hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },

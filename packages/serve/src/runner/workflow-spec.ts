@@ -48,7 +48,7 @@ import type { NodeLine } from "../pause.js";
 import { cutStrings } from "../key-refusal.js";
 import { CLOSE_MS } from "./loop.js";
 import { type CapRefusal, PAUSED_WORDS, type WorkflowCapRule, type WorkflowHostHooks, type WorkflowRunSpec, type WorkflowSpecRun } from "./workflow-loop.js";
-import { holdClaimed } from "./redact.js";
+import { holdClaimed, mustHold } from "./redact.js";
 import { holdStored } from "./store-secrets.js";
 import { type DecisionDriver, type NodeToolBinding, type PollDriver, type WorkflowCap, workflowHost, type WorkflowHostDeps } from "./workflow-host.js";
 import type { Journal, Store } from "../store/store.js";
@@ -218,10 +218,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     }
   };
   async function claimSpec(claim: { runId: string; runner?: string }, run: WorkflowSpecRun, proxies: ModelProxy[]): Promise<WorkflowRunSpec> {
+    const redact = mustHold(run?.redact, "A workflow run's spec");
     /** The keys a claim opens, held by the runner's one redactor (run.redact) before a decision can echo one. */
     const holding = async (opening: Promise<NodeJS.ProcessEnv>): Promise<NodeJS.ProcessEnv> => {
       const opened = await opening;
-      if (run?.redact) holdClaimed(run.redact, opened);
+      holdClaimed(redact, opened);
       return opened;
     };
     const claimed = await readClaim(deps, claim.runId);
@@ -232,7 +233,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const unbound = nodeNames.find((name) => !RUNNER_NODE_TOOLS.includes(name));
     if (unbound !== undefined) throw new Error(nodeToolUnboundText(unbound));
     // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor before the workflow runs.
-    if (run?.redact && deps.sealKey) await holdStored(run.redact, deps.store, deps.sealKey, deps.data);
+    if (deps.sealKey) await holdStored(redact, deps.store, deps.sealKey, deps.data);
     const tiers = tiersOf(claimed.workflow);
 
     // The run's own keys, as the server's runnable check reads them: each by its name from the runner's environment first,
@@ -240,7 +241,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
     // keys or on this process's whole environment.
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact: run?.redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).
@@ -249,7 +250,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // its start handed, for the run's life.
     const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env ?? process.env }, claim.runId);
     if (keyedAtClaim(runKey)) withoutModelKeys(claimedEnv);
-    if (runKey && run?.redact) holdRunKey(run.redact, runKey);
+    if (runKey) holdRunKey(redact, runKey);
     const providerOf = deps.providerOf ?? routeProviderOf(claimModelEnv(deps.env ?? process.env, claimedEnv, runKey, claim));
 
     // Each tier's provider and cap model, resolved once; the proxies start here (before the Harness opens, since the models
@@ -341,6 +342,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const nodeHost: ToolHost = {
       where: { root: claimed.workRoot, work: claimed.workRoot, ref: { id: claim.runId } },
       env: callEnv,
+      redact,
       install: (extension) => void installed.push(extension),
       onConversation: () => {},
       beforeResume: () => {},
@@ -389,7 +391,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
           // would book beside the run's ledger), and the run's gate over them by name (main's registry.install).
           sharedExtensions: [nodeToolGate(nodeNames, nodePolicy), ...[...nodeTools.values()].flatMap((binding) => binding.extensions)],
           nodeTool: (name) => nodeTools.get(name),
-          runEffect: runEffectOf(claimed, complete, callEnv, callPolicyOf(deps.store, claim.runId, claimed), () => paidTools, (line) => nodeLog?.append([{ kind: KINDS.nodeEffect, data: (run?.redact ? cutStrings(line, run.redact) : line) as never }]) ?? Promise.resolve()),
+          runEffect: runEffectOf(claimed, complete, callEnv, callPolicyOf(deps.store, claim.runId, claimed), () => paidTools, (line) => nodeLog?.append([{ kind: KINDS.nodeEffect, data: cutStrings(line, redact) as never }]) ?? Promise.resolve()),
           workRoot: claimed.workRoot,
           flush: () => deps.store.flush(),
           // A decision node books through the run's one cap (admitted and settled as main holds it); a cap refusal for room

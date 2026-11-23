@@ -17,6 +17,7 @@ import { linkHarnesses } from "./support.mjs";
 import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
@@ -80,7 +81,7 @@ async function codexSpec(t, { toolSettings }) {
   await harnessRun.commit((tx) => tx.createRootConversation(), ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  built = await cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
   return built;
 }
 

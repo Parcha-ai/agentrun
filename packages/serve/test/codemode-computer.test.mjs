@@ -18,6 +18,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { CODEMODE } = await import("../dist/runner/meta-tools.js");
 const { suiteTools } = await import("../dist/runner/conformance/harness.js");
 const { localWorkspace, runTools } = await import("../dist/workspace/index.js");
@@ -85,7 +86,7 @@ async function codemodeRun(t, script, computerTools, gate = () => "allow", resta
   const { tools } = suiteTools();
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
+    adapter: options.adapterOf ? await options.adapterOf(run) : options.adapter ?? piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0 }),
     facts: options.facts,
     ...(options.record ? { record: options.record } : {}),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [...hostTools(tools), ...computerTools], context: "fresh" },

@@ -17,6 +17,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { stranger } from "./fixtures/stranger.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -184,7 +185,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...more };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}), ...given };
-  built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await spec.cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN), control, outbound, claim, dead };
 }
 

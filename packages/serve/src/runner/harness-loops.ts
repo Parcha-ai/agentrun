@@ -1,6 +1,6 @@
 import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
 import { GATEWAY_KEY_ENV } from "../model.js";
-import { heldRedactor } from "./redact.js";
+import { mustHold } from "./redact.js";
 import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
 import { createNativeLoop } from "./native-loop.js";
@@ -67,7 +67,7 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
   const key = env && savedGatewayIn(env) ? env[GATEWAY_KEY_ENV] : undefined;
   if (!key) return made;
   return (loopDeps) => {
-    if (loopDeps.redact) heldRedactor(loopDeps.redact).hold([key]);
+    mustHold(loopDeps.redact, "A loop over the saved gateway").hold([key]);
     return made(loopDeps);
   };
 }

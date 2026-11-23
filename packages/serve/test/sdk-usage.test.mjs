@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { serve, client } from "./support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { journalEntries } from "../dist/runner/journal-reader.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const SDK_USAGE = { input_tokens: 20, output_tokens: 5, cache_read_tokens: 3, cache_write_tokens: 2, cost_usd: 0.25 };
 
@@ -85,7 +86,7 @@ async function completedSdk(t, { learning = true, usage = SDK_USAGE, status = "c
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const loop = createSdkLoop(launch, { store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => asker)({ journal: () => guarded, flush: () => server.store.flush(), signal: abort.signal });
+    const loop = createSdkLoop(launch, { store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => asker)({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => server.store.flush(), signal: abort.signal });
     const end = await loop.start(claim);
     if (interruptEnd) {
       assert.equal(interrupted, true, "the fault fired at the end's commit");

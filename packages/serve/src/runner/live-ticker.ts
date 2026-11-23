@@ -83,10 +83,9 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
       };
       deps.signal.addEventListener("abort", onAbort, { once: true });
       // The run's one redactor: a running tool's args and output and a partial answer can quote a secret the runner holds
-      // (a key its claim opened), and the live view is read by people and consoles. A loop given none (never one the runner
-      // makes) has no live view: its held state is never written uncut. Nor has a loop whose redactor does not know its
-      // values (a bare function): a value still streaming, a number or an object's names cannot be cut by text alone.
-      const values = deps.redact?.heldValues;
+      // (a key its claim opened), and the live view is read by people and consoles. A loop whose redactor does not know its
+      // values has no live view: a value still streaming, a number or an object's names cannot be cut by text alone.
+      const values = deps.redact.heldValues;
       const loop: Loop = createLoop({
         ...deps,
         live: (read) => {

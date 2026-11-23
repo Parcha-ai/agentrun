@@ -26,6 +26,7 @@ import { sessionProvider, type SessionLike, type SessionModelPort, tierProvider 
 import { type CallStatus, KINDS } from "../journal-kinds.js";
 import { CALL_REFUSED } from "../../timeline/index.js";
 import { type ComputerCallRecord, recordingCalls } from "../../computer-calls.js";
+import { type HeldRedact, mustHold } from "../redact.js";
 
 /** What the adapter loop lends pi for one claim: the run's Harness, its registry, and where pi's models go. */
 export interface PiRun {
@@ -101,7 +102,7 @@ export interface PiAdapterOptions {
   readonly fetch?: typeof fetch;
   /** The runner's one redactor, which a provider's error passes through in the session's proxy before pi has it
    *  (ModelProxyOptions.redact; the proxy's own cut of the credential comes first). */
-  readonly redact?: (text: string) => string;
+  readonly redact: HeldRedact;
   /** pi-native extensions the run's root agent carries beside the session's own (the browser's durable extension, as a
    *  pi DurableRun on main installs it): installed in the claim's registry, so their tools run as pi's own tool tasks (a
    *  taskId, a memo, conversations they own) and their own task kinds (a browser.release) under pi's recovery, all in the
@@ -140,6 +141,7 @@ const INPUT_REQUEST = "agentrun:input";
 
 /** pi as an AgentAdapter for one claim's run. */
 export function piAdapter(options: PiAdapterOptions): AgentAdapter {
+  mustHold(options.redact, "A pi adapter");
   return {
     // pi is the default harness: its id is the harness table's, never a literal of its own.
     id: DEFAULT_HARNESS,
@@ -192,7 +194,7 @@ export interface TierProxies {
  *  origin, credential, price and fetch, its provider's errors through `redact`. `tools`: the tool names its policy admits
  *  by name on a request of the session's own key (none for a tier's: only side keys reach it). `webSearch`: the session's
  *  own proxy admits its provider's hosted search and prices each search it ran (policyFor, withSearches). */
-async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact?: (text: string) => string, tier?: string, webSearch = false): Promise<ModelProxy> {
+async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: readonly string[], redact: (text: string) => string, tier?: string, webSearch = false): Promise<ModelProxy> {
   const price = route.price && webSearch ? await withSearches(route.provider.api, route.price) : route.price;
   return startModelProxy({
     // A tier's proxy names its tier on each request (ModelRequest.route), so the run's cap prices it as this route books it.
@@ -206,7 +208,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
     ...(price ? { price: price as never } : {}),
     ...(route.provider.headers ? { headers: route.provider.headers } : {}),
     ...(route.fetch ? { fetch: route.fetch } : {}),
-    ...(redact ? { redact } : {}),
+    redact,
   }, randomBytes(32).toString("base64url"));
 }
 
@@ -216,7 +218,7 @@ async function routeProxy(route: TierModel, hooks: SessionIO["models"], tools: r
  *  keys, AdapterSession.port's `tier`), sent by pi-ai's client of the tier model's own wire (port-models.ts), so a tier
  *  proxy speaks its model's route (model-route.ts routeOf, its translation fetch for a model of neither wire), never the
  *  harness's. One that fails to start closes those started. */
-export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact?: (text: string) => string, tools: readonly string[] = []): Promise<TierProxies> {
+export async function openTierProxies(tiers: ReadonlyMap<string, TierModel>, hooks: SessionIO["models"], redact: (text: string) => string, tools: readonly string[] = []): Promise<TierProxies> {
   const open = new Map<string, { proxy: ModelProxy; route: TierModel }>();
   const close = async () => {
     for (const { proxy } of open.values()) await proxy.close().catch(() => undefined);

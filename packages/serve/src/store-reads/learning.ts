@@ -564,7 +564,7 @@ export const costStopOverStore = async (store: Store, agentId: string) => costSt
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
  *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
@@ -577,7 +577,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // The workflow's answer as it produced it (its journal's), and as a follow-up showed it to the agent (cut by the
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
-    const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
+    const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact(answer));
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}) };
   }
   const path = runPathOf(rows);

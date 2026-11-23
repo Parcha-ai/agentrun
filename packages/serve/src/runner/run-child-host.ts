@@ -1106,7 +1106,7 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
 
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
   const { deps, isolation } = options;
-  const cut: (text: string) => string = loopDeps.redact ?? ((text) => text);
+  const cut: (text: string) => string = loopDeps.redact;
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;

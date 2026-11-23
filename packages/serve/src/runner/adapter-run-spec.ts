@@ -89,7 +89,7 @@ import { hadComputer, type RunComputerHold } from "./computer-journal.js";
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, holdClaimed, mustHold, runnerSecrets } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
@@ -444,13 +444,14 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 }
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds, runner: RunnerHarness): Promise<AdapterRunSpec> {
+  mustHold(run.redact, "A pi run's spec");
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
-  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
-  // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
-  const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. It holds the keys the
+  // claim opens (below), too.
+  const cut = run.redact;
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
@@ -864,7 +865,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -880,7 +881,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
+  }), { ...audits, launch, redact: run.redact });
 
   return {
     adapter,

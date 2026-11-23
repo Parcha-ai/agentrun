@@ -77,7 +77,7 @@ import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
-import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { heldRedactor, holdClaimed, mustHold, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginCli, loginForRun, withClaudeLogin } from "../claude-login.js";
 import { heldSpecOf } from "./held-run.js";
@@ -255,6 +255,7 @@ export function cliRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, deps: C
 }
 
 async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, claim: Claim, holds: SpecHolds): Promise<AdapterRunSpec> {
+  mustHold(run.redact, "A CLI run's spec");
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
@@ -284,7 +285,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.hold({ scratch: { sweep: () => sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
   // Every secret the server keeps sealed (store-secrets.ts) held by the runner's one redactor (the loop's) and this spec's
   // log cut, before any of the run's text is written: a run's text may quote one it was never handed.
-  for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) await holdStored(redact, deps.store, deps.sealKey, deps.data);
+  for (const redact of [run.redact, cut]) await holdStored(redact, deps.store, deps.sealKey, deps.data);
   const revisionRow = await deps.store.agents.revision(runRow.revisionId);
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
@@ -341,7 +342,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
   // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
-  const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
+  const hold = (values: string[]) => { for (const redact of [run.redact, cut]) redact.hold(values); };
   const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web, slots: deps.saveSlots } });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
@@ -460,7 +461,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const runKey = await claimModelKey({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, claim.runId);
   const keyed = keyedAtClaim(runKey);
   if (keyed) withoutModelKeys(claimed);
-  for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) {
+  for (const redact of [run.redact, cut]) {
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
@@ -582,7 +583,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const ctx = hostToolCtxOf(run, context, results, root);
   // The runner's one redactor (the loop's), else this spec's log cut: the claim's keys join it, and the answers of the tools
   // that run on them pass it.
-  const held = run.redact ? heldRedactor(run.redact) : cut;
+  const held = run.redact;
   // The run's monid endpoints (monid-run.ts), one host tool each from its revision's pin, on the claim's keys and beside
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
   const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
@@ -697,7 +698,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -713,7 +714,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     learningFolder: archil === undefined
       ? (agentId: string) => learningFolderOf(deps.data, agentId)
       : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
+  }), { ...audits, launch, redact: run.redact });
 
   return {
     adapter,
