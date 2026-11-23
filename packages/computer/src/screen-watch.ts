@@ -89,16 +89,27 @@ const MAX_FRAME_BYTES = 64 << 20;
 /** The most input calls a watch has in flight at once: one more is refused as limit, never queued. */
 const MAX_INPUTS_IN_FLIGHT = 8;
 
-/** The characters of each part of a login and of a secret-named parameter, one character at a time. */
+/** The characters of each part of a URL, a login, a secret-named parameter and an endpoint, one character at a time. */
+const URL_SCHEME = /[A-Za-z0-9+.-]/;
+const URL_REST = /[^\s"'<>]/;
 const LOGIN_USER = /[\w.+-]/;
 const LOGIN_PASSWORD = /[^\s@/'"]/;
 const LOGIN_HOST = /[\w.-]/;
 const PARAM_NAME = /[\w-]/;
 const PARAM_VALUE = /[^\s&"';,]/;
 const PARAM_SECRET = /token|password|passwd|secret|key|jwt|auth|code|signingKey|credential/i;
+const ENDPOINT_NAME = /[A-Za-z0-9.-]/;
+const LETTER = /[A-Za-z]/;
+const DIGIT = /\d/;
+const WORD = /\w/;
 
-/** The characters the login and secret-parameter scans read in the last redactWords call, for tests: a few per character. */
+/** The characters redactWords' four scans read in its last call, for tests: a few per character. */
 export let redactWordsReads = 0;
+
+/** Whether a word character (\w) is at `at`; none is before the start or past the end. */
+function wordAt(words: string, at: number): boolean {
+	return at >= 0 && at < words.length && WORD.test(words[at]);
+}
 
 /** The end of the run of `part` characters that starts at `from`. */
 function runEnd(words: string, from: number, part: RegExp): number {
@@ -106,6 +117,32 @@ function runEnd(words: string, from: number, part: RegExp): number {
 	while (at < words.length && part.test(words[at])) at++;
 	redactWordsReads += at - from + 1;
 	return at;
+}
+
+/**
+ * A URL of any scheme: a letter where \b holds, more scheme characters, :// and one or more characters. Every start in
+ * a run of scheme characters meets the same :// at the run's end, so the run is read to that end once, and the cut
+ * starts at its first letter that follows no word character.
+ */
+function cutUrls(words: string): string {
+	let cut = "";
+	let kept = 0;
+	let at = 0;
+	while (at < words.length) {
+		const schemeEnd = runEnd(words, at, URL_SCHEME);
+		if (schemeEnd + 3 < words.length && words.startsWith("://", schemeEnd) && URL_REST.test(words[schemeEnd + 3])) {
+			let start = at;
+			while (start < schemeEnd && !(LETTER.test(words[start]) && !wordAt(words, start - 1))) start++;
+			redactWordsReads += start - at + 4;
+			if (start < schemeEnd) {
+				cut += `${words.slice(kept, start)}[a URL]`;
+				kept = at = runEnd(words, schemeEnd + 3, URL_REST);
+				continue;
+			}
+		}
+		at = schemeEnd + 1;
+	}
+	return cut + words.slice(kept);
 }
 
 /**
@@ -166,22 +203,66 @@ function cutSecretParams(words: string): string {
 }
 
 /**
+ * An endpoint with a DNS name, as adb names a phone's: labels of [A-Za-z0-9-], a dot after each, a top-level name of
+ * two or more letters, a colon and a port of one to five digits that no word character follows. The name runs to the
+ * end of its run of [A-Za-z0-9.-], so every start in a run meets the same top-level name, colon and port. The port is
+ * read six digits at most, so a run that fails is read once.
+ */
+function cutEndpoints(words: string): string {
+	let cut = "";
+	let kept = 0;
+	let at = 0;
+	while (at < words.length) {
+		const nameEnd = runEnd(words, at, ENDPOINT_NAME);
+		if (words[nameEnd] === ":") {
+			let portEnd = nameEnd + 1;
+			while (portEnd < words.length && portEnd <= nameEnd + 6 && DIGIT.test(words[portEnd])) portEnd++;
+			redactWordsReads += portEnd - nameEnd;
+			const digits = portEnd - nameEnd - 1;
+			const start = digits >= 1 && digits <= 5 && !wordAt(words, portEnd) ? endpointStart(words, at, nameEnd) : -1;
+			if (start >= 0) {
+				cut += `${words.slice(kept, start)}[an endpoint]`;
+				kept = at = portEnd;
+				continue;
+			}
+		}
+		at = nameEnd + 1;
+	}
+	return cut + words.slice(kept);
+}
+
+/**
+ * Where an endpoint's name in words[from, end) starts, or -1: the first place where \b holds, that is no dot, and
+ * that has no empty label between it and the last dot, which the top-level name follows.
+ */
+function endpointStart(words: string, from: number, end: number): number {
+	let dot = end - 1;
+	while (dot >= from && LETTER.test(words[dot])) dot--;
+	redactWordsReads += end - dot;
+	if (dot < from || words[dot] !== "." || end - dot - 1 < 2) return -1;
+	let low = from;
+	for (let at = from + 1; at <= dot; at++) if (words[at] === "." && words[at - 1] === ".") low = at + 1;
+	redactWordsReads += 2 * (dot - from);
+	for (let at = low; at < dot; at++) if (words[at] !== "." && wordAt(words, at - 1) !== wordAt(words, at)) return at;
+	return -1;
+}
+
+/**
  * Words with no URL and no secret: a URL of any scheme, a login, a bearer, a secret-named parameter, a key- or
- * token-shaped value and an endpoint (a host or an IPv4 address with a port) are taken out.
+ * token-shaped value and an endpoint (a host or an IPv4 address with a port) are taken out. The URL, the login, the
+ * parameter and the endpoint with a DNS name are scans that read each character a few times: as regexes with no
+ * anchored start they read to the end of a long word run from every character in it.
  */
 export function redactWords(words: string): string {
 	redactWordsReads = 0;
-	const loginsCut = cutLogins(words.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]"));
-	return (
+	const loginsCut = cutLogins(cutUrls(words));
+	return cutEndpoints(
 		cutSecretParams(loginsCut.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]"))
 			.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
 			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
 			.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
-			.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]")
-			// An endpoint: a DNS name or an IPv4 address with a port, as adb names a phone's.
-			.replace(/\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}:\d{1,5}\b/g, "[an endpoint]")
-			.replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[an endpoint]")
-	);
+			.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]"),
+	).replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g, "[an endpoint]");
 }
 
 /** The code a watch ends with for an error the computer gave. */
