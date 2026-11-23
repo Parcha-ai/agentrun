@@ -634,6 +634,12 @@ test("readCases checks a case's files: each a relative path in the work folder, 
   assert.deepEqual(problems('{"inputs/message.md": "x"}'), ["evals/resume/case.yaml: files: \"inputs/message.md\" is under inputs/, where the server puts the run's uploads and its message"]);
   assert.deepEqual(problems('{"a.json": 5, "b.json": {"stem": "x"}}'), ["evals/resume/case.yaml: files: \"a.json\" is the file's text, a string", "evals/resume/case.yaml: files: \"b.json\" is the file's text, a string"]);
   assert.deepEqual(problems("[media/run-keys.json]"), ["evals/resume/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with"]);
+  // A path that names an object's own property is a file like any other: none is lost to the object it is kept in.
+  assert.deepEqual(problems('{"__proto__": "p", "constructor": "c", "a/__proto__": "q"}'), []);
+  const named = readCases(dir, ["resume"]).cases[0].files;
+  assert.deepEqual(Object.keys(named).sort(), ["__proto__", "a/__proto__", "constructor"]);
+  assert.deepEqual([named.__proto__, named.constructor, named["a/__proto__"]], ["p", "c", "q"]);
+  assert.equal(Object.getPrototypeOf(named), Object.prototype);
   // The eval's own runner writes them at the claim: a named server's runs would start without them.
   assert.equal(problems('{"media/run-keys.json": "{}"}').length, 0);
   await assert.rejects(evalTemplate({ dir, cases: ["resume"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/resume: files seeds its runs' work folders on the eval's own server alone: run it without --server"));

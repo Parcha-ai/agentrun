@@ -546,7 +546,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
           if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
           else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
           else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
-          else files[path] = text;
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
         }
       }
     }
