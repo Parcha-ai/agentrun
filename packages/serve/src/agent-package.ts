@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
-import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
+import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage, uncappedTriggers } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
 import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
@@ -301,14 +301,19 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const shellKept = (plain ?? []).filter((tool) => Object.hasOwn(SHELL_FAMILY, tool));
   if (typeof bash === "string" && shellKept.length && !shellKept.includes("bash")) blocked.push({ kind: "tool_policy", name: "bash", reason: `Its bash policy (${bash}) holds ${shellKept.join(", ")}, and a package writes that policy only beside bash: grant bash too, or take ${shellKept.length === 1 ? "it" : "them"} out of the agent.` });
   const description = (agent.description?.trim() || agent.name).slice(0, 1024);
-  // A package's budget is a spend cap per run first, and one with triggers has one: what fires runs nobody watches.
+  // A package's budget is a spend cap per run first. Every run a package's trigger starts is capped, what fires runs
+  // nobody watches: by the budget (the agent's max_cost_usd), else by the trigger's own cap, as readPackage holds it
+  // (uncappedTriggers). A trigger with neither is blocked, and left out, so the read-back does not name it again.
   const cost = typeof definition.max_cost_usd === "number" ? definition.max_cost_usd : undefined;
   const requests = typeof definition.max_requests === "number" ? definition.max_requests : undefined;
   if (cost === undefined && requests !== undefined) blocked.push({ kind: "budget", name: "max_requests", reason: "It caps each run's requests and not its spend, and a package's budget is a spend cap per run: set the agent's max_cost_usd." });
-  if (cost === undefined && triggers.length) {
-    blocked.push({ kind: "budget", name: "max_cost_usd", reason: "It has triggers and no spend cap per run, and a package with triggers caps what each run they fire may spend: set the agent's max_cost_usd." });
-    triggers.length = 0;
-    remade.splice(0, remade.length, ...remade.filter((note) => note.kind !== "trigger"));
+  const uncapped = cost === undefined ? uncappedTriggers(triggers) : [];
+  if (uncapped.length) {
+    const names = new Set(uncapped.map((one) => one.name));
+    for (const name of names) blocked.push({ kind: "trigger", name, reason: "It has no spend cap of its own and the agent has no max_cost_usd, and every run a package's trigger starts is capped: give the trigger's target a max_cost_usd, or set the agent's max_cost_usd." });
+    const left = triggers.filter((_, index) => !uncapped.some((one) => one.index === index));
+    triggers.splice(0, triggers.length, ...left);
+    remade.splice(0, remade.length, ...remade.filter((note) => !(note.kind === "trigger" && names.has(note.name))));
   }
 
   // The manifest, in the order templates.ts reads its fields.
