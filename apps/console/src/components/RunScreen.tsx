@@ -148,8 +148,9 @@ type Kind = RunMachine["kind"];
  *  metered provider's line shows for every kind but the browser. The panel sets its own width on the run page: the
  *  reading column's while its screen is alone, wider by about the list's width with the run's steps beside the screen. */
 export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl, rows = NO_ROWS, working = false, onOpenCall, seek }: {
-  /** Opens a tool call in the Dev tools tab, by its id: offered under a recording's steps where the run's trace can be read. */
-  onOpenCall?: (toolUseId: string) => void;
+  /** Opens a tool call in the Dev tools tab, by its call row's id on the timeline: offered under a recording's steps where
+   *  the run's trace can be read. */
+  onOpenCall?: (rowId: string) => void;
   /** A place on a recording to show, asked for from the Dev tools tab: the file and the seconds into it. `n` tells one
    *  ask from the next, so the same place asked for twice is shown twice. */
   seek?: { path: string; at: number; n: number };

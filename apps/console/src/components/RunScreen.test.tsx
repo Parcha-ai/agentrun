@@ -1189,6 +1189,67 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     expect(p.video().currentTime).toBe(6);
   });
 
+  it("opens the very call a step is, though another conversation made a call of the same id, and shows that one on the recording", async () => {
+    // A subagent's conversation (1) makes a call with the id the run's own first call has: two spans, two steps.
+    const rows = [...ROWS.slice(0, 7),
+      row("tool_use", "computer_act", at(40), { tool_name: "computer_act", tool_use_id: "c1", conversation_id: 1 }),
+      row("tool_result", "Typed the query: ok", at(42), { tool_name: "computer_act", tool_use_id: "c1", conversation_id: 1, tool_status: "success" }),
+      ...ROWS.slice(7)];
+    const twice = { ...TRACE, spans: [TRACE.spans[0]!, TRACE.spans[1]!, { ...call("c1", at(40), "ok"), id: "t:1:c1" }] };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: recorded([rec("recordings/desk.mp4")]), agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF, readTrace: async () => twice } as never));
+    });
+    await settle();
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    const button = (words: string) => [...host.querySelectorAll("button")].find((b) => b.textContent === words);
+    const steps = [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')];
+    expect(steps.map((b) => b.textContent)).toContain("0:42Computer actTyped the query");
+    await press(steps.find((b) => b.textContent === "0:42Computer actTyped the query"));
+    await press(button("Open this step in Dev tools"));
+    // The subagent's call, by its span, never the run's own call of the same id.
+    const details = () => host.querySelector("aside[aria-label='Call details']")!;
+    expect(details().textContent).toContain("Spant:1:c1");
+    await press(button("Show on the recording"));
+    await act(async () => { host.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")); });
+    expect(host.querySelector("video")!.currentTime).toBe(42);
+  });
+
+  it("brings a call opened from the recording into view, as one opened from the table is", async () => {
+    // Under the wide layout the details sit below the table: far down the page here.
+    const into = vi.fn();
+    (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView = into;
+    const box = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) { return { top: this.tagName === "ASIDE" ? 5000 : 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect; });
+    try {
+      const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS);
+      await p.press(p.steps()[3]);
+      await p.press(p.toDevTools());
+      expect(p.callPanel()).toBeTruthy();
+      expect(into.mock.contexts.some((el) => (el as Element).tagName === "ASIDE")).toBe(true);
+    } finally {
+      box.mockRestore();
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("says so when a step's call is past what the trace returned, and opens no other call", async () => {
+    // A read serves a run's first spans: this one left the failed click out, with 12 more.
+    const short = { ...TRACE, spans: [TRACE.spans[0]!], dropped: 12 };
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run: recorded([rec("recordings/desk.mp4")]), agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: ROWS, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab: "screen", fileUrl: URL_OF, readTrace: async () => short } as never));
+    });
+    await settle();
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    await press([...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')][3]);
+    await press([...host.querySelectorAll("button")].find((b) => b.textContent === "Open this step in Dev tools"));
+    expect(host.querySelector('[role=tab][aria-selected="true"]')!.textContent).toBe("Dev tools");
+    expect(host.querySelector("aside[aria-label='Call details']")).toBeNull();
+    expect(host.textContent).toContain("That step's call is not in this traceThe trace shows the run's first 1 requests and calls, and that call came after them.");
+  });
+
   it("offers neither where the trace can't be read, or while the run can still open its computer", async () => {
     const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
     expect([...p.panel.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Open this step in Dev tools");

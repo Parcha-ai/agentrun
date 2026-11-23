@@ -3,7 +3,7 @@
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
 import { matchesFilter } from "./filter";
 import { capDollars } from "./format";
-import type { Run, RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
+import type { Run, RunTrace, RunUsage, TimelineRow, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
 export type SpanSort = "started" | "duration" | "cost" | "tokens";
@@ -393,6 +393,24 @@ export function redoOf(usage: Pick<RunUsage, "lines" | "infra_usd" | "total"> | 
 }
 /** A run's repeated requests' cost in words: "$0.0312", "at most $0.0312" (a ceiling), "Unknown". */
 export const redoWords = (redo: Pick<Redo, "usd" | "bound">) => (redo.usd === null ? "Unknown" : `${redo.bound ? "at most " : ""}${usd(redo.usd)}`);
+
+/** The trace span each of a run's tool calls is, by its call row's id on the Timeline: `t:<conversation>:<call id>`, and
+ *  `#2`, `#3` after it for the same id called again in one conversation. A call's id alone does not name it: two
+ *  conversations may each make a call of one id, and one may make it twice, and each is a span of its own. The server
+ *  names its spans by the same rule over the same rows, in their order (run-trace.ts), so what a row links to is that
+ *  call and no other. A row with no call id has no span. */
+export function callSpanIds(rows: readonly Pick<TimelineRow, "id" | "kind" | "tool_use_id" | "conversation_id">[]): Map<string, string> {
+  const made = new Map<string, number>();
+  const ids = new Map<string, string>();
+  for (const row of rows) {
+    if (row.kind !== "tool_use" || !row.tool_use_id) continue;
+    const key = `${row.conversation_id ?? 0}:${row.tool_use_id}`;
+    const nth = made.get(key) ?? 0;
+    made.set(key, nth + 1);
+    ids.set(row.id, nth === 0 ? `t:${key}` : `t:${key}#${nth + 1}`);
+  }
+  return ids;
+}
 
 /** Reads a span's conversation off a trace: the call that started it ("" for the run's own), from the request the span
  *  is or ran under. Null where the trace does not say. The trace says it only where each request is a span of a pi run

@@ -49,9 +49,10 @@ function StepWords({ when, row, wide = false }: { when: string; row: TimelineRow
  *  or paused as it was; the step the video is at is marked, and kept in sight as the video plays. `video` is the player's
  *  element (null until it is drawn). A step's time is its time on the timeline since the recording began.
  *  `onOpenCall`: where the run's trace can be read, the step the video is at opens in the Dev tools tab when it is a tool
- *  call (by the call's id): what it was given, what it returned, how long it took and what it cost. The button is under
+ *  call (by its call row's id on the timeline, which names that call and no other of the same call id): what it was
+ *  given, what it returned, how long it took and what it cost. The button is under
  *  the list and always there, so the list keeps its height as the video plays. */
-export function RunVideoSteps({ video, steps, onOpenCall }: { video: HTMLVideoElement | null; steps: readonly VideoStep[]; onOpenCall?: (toolUseId: string) => void }) {
+export function RunVideoSteps({ video, steps, onOpenCall }: { video: HTMLVideoElement | null; steps: readonly VideoStep[]; onOpenCall?: (rowId: string) => void }) {
   const [now, setNow] = useState(-1);
   const list = useRef<HTMLOListElement | null>(null);
   useEffect(() => {
@@ -75,7 +76,7 @@ export function RunVideoSteps({ video, steps, onOpenCall }: { video: HTMLVideoEl
     video.currentTime = at;
     setNow(stepAt(steps, at));
   };
-  const call = now >= 0 && steps[now] ? stepCall(steps[now].step) : null;
+  const call = now >= 0 && steps[now] && stepCall(steps[now].step) ? steps[now].step.row.id : null;
   return (
     <StepsBox hint="Click a step to jump to it" foot={onOpenCall && (
       <Button size="xs" disabled={!call} onClick={() => call && onOpenCall(call)} title={call ? undefined : "The step the video is at is not a tool call"}>Open this step in Dev tools</Button>
