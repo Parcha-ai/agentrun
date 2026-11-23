@@ -32,7 +32,9 @@ const span = (a?: string | null, b?: string | null) => (a && b ? Date.parse(b) -
 
 /** The drawer beside the run's graph: what one node, or one map item, did. A decision's verdict card (a bar per answer,
  *  the rule and the action it took), its sources, the images and the state the model saw; a tool call's input and output. */
-export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { data: RunGraph; selected: NonNullable<Selection>; onSelect: (s: Selection) => void; onClose: () => void; fileUrl: FileUrl }) {
+/** `offline`: a page that loads nothing from elsewhere (a public share's): an image is the run's own file or none, never
+ *  the provider's URL. */
+export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl, offline = false }: { data: RunGraph; selected: NonNullable<Selection>; onSelect: (s: Selection) => void; onClose: () => void; fileUrl: FileUrl; offline?: boolean }) {
   const node = data.graph.nodes.find((n) => n.path === selected.path);
   const [zoom, setZoom] = useState<string | null>(null);
   if (!node) return null;
@@ -70,12 +72,12 @@ export function NodeDrawer({ data, selected, onSelect, onClose, fileUrl }: { dat
         {item && <button type="button" className="caps mt-3 text-label text-muted-foreground hover:text-foreground" onClick={() => onSelect({ path: mapPath!, item: null })}>All {data.nodes[mapPath!]?.items?.length} items of {data.graph.nodes.find((n) => n.path === mapPath)?.label}</button>}
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-auto px-5 py-5">
-        {item ? <ItemDetail data={data} mapPath={mapPath!} index={item.index} status={item.status} fileUrl={fileUrl} zoom={setZoom} />
+        {item ? <ItemDetail data={data} mapPath={mapPath!} index={item.index} status={item.status} fileUrl={fileUrl} zoom={setZoom} offline={offline} />
           : node.kind === "map" ? <ItemTable data={data} mapPath={node.path} onSelect={onSelect} />
           : inMap && (decisionsHere.length || effectsHere.length) ? <PerItem data={data} path={node.path} mapPath={mapPath!} onSelect={onSelect} />
           : <>
               {node.kind === "parallel" && <Jury data={data} path={node.path} onSelect={onSelect} />}
-              {decisionsHere.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={setZoom} />)}
+              {decisionsHere.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={setZoom} offline={offline} />)}
               {effectsHere.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={setZoom} />)}
               {!decisionsHere.length && !effectsHere.length && node.kind !== "parallel" && <NoRecord kind={node.kind} status={run?.status} meta={meta} />}
             </>}
@@ -202,7 +204,7 @@ function Jury({ data, path, onSelect }: { data: RunGraph; path: string; onSelect
 }
 
 /** One map item: each node of the map's body in order, with what it did for this item. */
-function ItemDetail({ data, mapPath, index, status, fileUrl, zoom }: { data: RunGraph; mapPath: string; index: number; status: string; fileUrl: FileUrl; zoom: (src: string) => void }) {
+function ItemDetail({ data, mapPath, index, status, fileUrl, zoom, offline }: { data: RunGraph; mapPath: string; index: number; status: string; fileUrl: FileUrl; zoom: (src: string) => void; offline: boolean }) {
   // Every body node with a record for this item: a leaf, or a container that decides (a judged route).
   const body = data.graph.nodes.filter((n) => n.path.startsWith(`${mapPath}/body`));
   const records = body.map((n) => ({ n, ds: data.decisions.filter((d) => d.node === n.path && d.item === index), es: data.effects.filter((e) => e.node === n.path && e.item === index) }))
@@ -214,7 +216,7 @@ function ItemDetail({ data, mapPath, index, status, fileUrl, zoom }: { data: Run
         <div key={n.path} className="space-y-3">
           <p className="caps text-label text-muted-foreground">{n.label}</p>
           {es.map((e, k) => <ToolCard key={k} e={e} fileUrl={fileUrl} zoom={zoom} compact />)}
-          {ds.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={zoom} />)}
+          {ds.map((d, k) => <VerdictCard key={d.id ?? k} d={d} fileUrl={fileUrl} zoom={zoom} offline={offline} />)}
         </div>
       ) : null)}
       {status === "working" && !records.some((r) => r.ds.length) && <p className="border border-dashed px-4 py-3 text-body text-muted-foreground">In flight: the verdict shows here when it comes back.</p>}
@@ -300,7 +302,7 @@ function actionText(d: Decision): string {
 }
 
 /** A decision's receipt as a card: who answered, at what cost and speed, each answer, the rule and what it decided. */
-export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUrl; zoom: (src: string) => void }) {
+export function VerdictCard({ d, fileUrl, zoom, offline = false }: { d: Decision; fileUrl: FileUrl; zoom: (src: string) => void; offline?: boolean }) {
   const ids = Array.from(new Set([...Object.keys(d.questions ?? {}), ...Object.keys(d.answers ?? {})]));
   const tone = d.status === "answered" ? "success" : d.status === "cancelled" ? "warning" : "error";
   return (
@@ -318,8 +320,9 @@ export function VerdictCard({ d, fileUrl, zoom }: { d: Decision; fileUrl: FileUr
       {d.error && <p className={cn("border-b px-4 py-2.5 font-mono text-small", d.status === "cancelled" ? "text-warning-text" : "text-destructive-text")}>{d.error}</p>}
       {!!d.images?.length && (
         <div className="space-y-3 border-b px-4 py-3">
-          {/* The run's own file (ref), else the provider's URL only when it is http or https: an image source is server data. */}
-          {d.images.map((img) => ({ img, src: (img.ref && fileUrl(img.ref)) || httpHref(img.url) })).filter(({ src }) => src).map(({ img, src }) => (
+          {/* The run's own file (ref), else the provider's URL only when it is http or https (an image source is server
+              data), and never on an offline page. */}
+          {d.images.map((img) => ({ img, src: (img.ref && fileUrl(img.ref)) || (offline ? undefined : httpHref(img.url)) })).filter(({ src }) => src).map(({ img, src }) => (
             <figure key={img.token} className="flex gap-3">
               <button type="button" className="block shrink-0 border bg-white hover:border-foreground" onClick={() => zoom(src!)} aria-label={`Open ${img.ref}`}>
                 <img src={src} alt={`The page the model saw as ${img.token}`} className="block h-[155px] w-[120px] object-cover object-top" loading="lazy" />
