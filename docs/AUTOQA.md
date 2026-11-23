@@ -52,10 +52,11 @@ there and never print it.
 | `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | Only where a check sends the webhook to a receiver on loopback: without it, `PUT /v2/settings/webhook` to a loopback address is a 422 (a private network or this machine). It takes a restart. |
 
 On a box with a local key broker that holds the model key, point the gateway rows at the broker instead and keep the key
-out of every process: `AGENT_MODEL_BASE_URL=<broker>/v1` and `AGENT_MODEL_API_KEY=placeholder` for pi and codex (the
-gateway form, with `AGENT_MODEL=<model>`), and `ANTHROPIC_BASE_URL=<broker>` and `ANTHROPIC_API_KEY=placeholder` for
-claude-agent. Through a broker, the OpenRouter-native forms (codex managed through OpenRouter, pi's
-`openrouter/<vendor>/<model>`) are not covered; QA reports them as a gap.
+out of every process: `AGENT_MODEL_BASE_URL=<broker>/v1` and `AGENT_MODEL_API_KEY=<dummy>` for pi and codex (the
+gateway form, with `AGENT_MODEL=<model>`), and `ANTHROPIC_BASE_URL=<broker>` and `ANTHROPIC_API_KEY=<dummy>` for
+claude-agent. `<dummy>` is a random string, never a word (see [Model and key caveats](#model-and-key-caveats): a word as a key stops learning).
+Through a broker, the OpenRouter-native forms (codex managed through OpenRouter, pi's `openrouter/<vendor>/<model>`)
+are not covered; QA reports them as a gap.
 
 Stop the server with SIGTERM to its exact PID. The runner beside it stops every run where it can resume, and the next claim carries on from the run's journal.
 
