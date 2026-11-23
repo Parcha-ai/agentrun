@@ -77,7 +77,7 @@ test("fly.toml holds no secret: the token and the seal key are Fly secrets", () 
 // its environment, the secrets imported) in $FAKE, outside the script's directories, so the test can see the values the
 // script made. `--json` answers in flyctl's shapes: `secrets list` an array of {name, digest, status}
 // (internal/command/secrets/list.go), `volumes list` an array of fly-go's Volume ({id, name, state, region, ...}).
-// FAKE_LIST: `fails` (an empty list on stdout, but exit 1: only the exit status says it failed), `stderr` (the names on stderr, nothing on stdout, exit 0) or `table` (a table on stdout).
+// FAKE_LIST: `fails` (an empty list on stdout, but exit 1: only the exit status says it failed), `stderr` (the names on stderr, nothing on stdout, exit 0), `table` (a table on stdout) or `Name` (the JSON list, its key spelled `Name`: a flyctl whose shape changed).
 const FAKE_FLY = String.raw`#!/bin/sh
 printf '%s\n' "$*" >> "$FAKE/argv.log"
 env >> "$FAKE/env.log"
@@ -103,7 +103,8 @@ case $1 in
         printf '['
         sep=
         if [ -f "$FAKE/names" ]; then
-          while IFS= read -r n; do printf '%s\n  {\n    "name": "%s",\n    "digest": "deadbeef",\n    "status": "Deployed"\n  }' "$sep" "$n"; sep=,; done < "$FAKE/names"
+          key=name; [ "$mode" != Name ] || key=Name
+          while IFS= read -r n; do printf '%s\n  {\n    "%s": "%s",\n    "digest": "deadbeef",\n    "status": "Deployed"\n  }' "$sep" "$key" "$n"; sep=,; done < "$FAKE/names"
         fi
         printf '\n]\n' ;;
       import) while IFS= read -r line; do printf '%s\n' "$line" >> "$FAKE/imported"; printf '%s\n' "$line" | sed 's/=.*//' >> "$FAKE/names"; done ;;
@@ -184,7 +185,7 @@ test("launch.sh makes the token and the seal key once, from openssl, gives them 
 });
 
 test("launch.sh never makes a seal key over one Fly has: a list that fails, or names it can't read, stop it before any import", async (t) => {
-  for (const mode of ["fails", "stderr", "table"]) {
+  for (const mode of ["fails", "stderr", "table", "Name"]) {
     const { fake, launch, argv, imported } = await stage(t);
     await launch(["my-agents"]);
     const before = await imported();
@@ -192,7 +193,8 @@ test("launch.sh never makes a seal key over one Fly has: a list that fails, or n
     await assert.rejects(launch(["my-agents"], { env: { FAKE_LIST: mode } }), /secrets/, mode);
     assert.deepEqual(await imported(), before, `${mode}: nothing imported, so the seal key Fly holds is still the one`);
     assert.deepEqual(made((await argv()).slice(calls)), [], `${mode}: no import and no deploy`);
-    // A first run whose list can't be read makes nothing either.
+    // A first run whose list can't be read makes nothing either (a first `Name` list is `[]`, which reads: no secrets).
+    if (mode === "Name") continue;
     const fresh = await stage(t);
     await assert.rejects(fresh.launch(["my-agents"], { env: { FAKE_LIST: mode } }), /secrets/, mode);
     await assert.rejects(readFile(join(fresh.fake, "imported")), { code: "ENOENT" }, mode);

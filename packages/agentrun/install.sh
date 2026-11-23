@@ -692,10 +692,11 @@ vps_install_docker() {
 
 # A server that has just booted may still be running cloud-init's or unattended-upgrades' apt. dpkg's lock is waited for
 # (DPkg::Lock::Timeout); the package lists' lock, which that option does not cover, by trying again, for 600 s as well.
+# dpkg's lock refused after its own 600 s is not tried again: a dpkg still stuck then stops the install.
 vps_apt() {
   apt_waited=0
   until DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 -o DPkg::Lock::Timeout=600 "$@" > "$work/apt.log" 2>&1; do
-    if [ "$apt_waited" -lt 600 ] && grep -q 'Could not get lock' "$work/apt.log"; then
+    if [ "$apt_waited" -lt 600 ] && grep -q 'Could not get lock /var/lib/apt/lists/' "$work/apt.log"; then
       [ "$apt_waited" -gt 0 ] || say "Waiting for the apt-get another process is running ..."
       sleep 5
       apt_waited=$((apt_waited + 5))

@@ -57,9 +57,16 @@ names=$(fly secrets list -a "$app" --json) || {
   exit 1
 }
 names=$(printf '%s' "$names" | tr -d ' \t\r\n')
+unreadable() { echo "launch.sh: fly secrets list -a $app --json gave no list of secrets this script can read, so no secret was made" >&2; exit 1; }
 case $names in
-  "[]" | null | "[{"*"}]") ;;
-  *) echo "launch.sh: fly secrets list -a $app --json gave no list of secrets this script can read, so no secret was made" >&2; exit 1 ;;
+  "[]" | null) ;;
+  # Every entry names its secret under "name": entries that name theirs another way (a flyctl that spells it "Name")
+  # would read as no secrets at all, and the ones Fly has would be made again over them.
+  "[{"*"}]")
+    entries=$(printf '%s' "$names" | tr -cd '{' | wc -c)
+    named=$(printf '%s' "$names" | grep -o '"name":"' | wc -l)
+    [ $((entries)) -eq $((named)) ] || unreadable ;;
+  *) unreadable ;;
 esac
 has() { case $names in *"\"name\":\"$1\""*) return 0 ;; esac; return 1; }
 token= seal= url=
