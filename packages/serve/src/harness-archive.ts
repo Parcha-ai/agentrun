@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, rename } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rename } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -216,6 +216,9 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     const unpacked = binaryUnder(tree, release.cmd)!;
     const found = await lstat(unpacked).catch(() => undefined);
     if (!found?.isFile()) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds no file at ${release.cmd}`);
+    // On its path, a link out of the tree: the tree's digest holds the link, never the file it leads to.
+    const [real, realTree] = await Promise.all([realpath(unpacked), realpath(tree)]);
+    if (!real.startsWith(`${realTree}${sep}`)) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive reaches ${release.cmd} through a link out of its files; it was not put in place`);
     if (pinned !== undefined) {
       const binarySha = await digestOf(unpacked);
       if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the pin is ${pinned}; it was not put in place`);

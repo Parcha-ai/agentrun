@@ -4271,8 +4271,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     harness_keys: {
-      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses"],
-      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." } },
+      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses", "kept"],
+      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." }, kept: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "Each harness id with keys saved whose recipe this server is no longer started with: kept sealed, run by nothing, listed by GET /settings/harness-keys until a DELETE removes them." } },
       description: "GET /settings/harness-keys and PUT/DELETE /settings/harness-keys/{harness_id}/{key}: the keys a plan-billed harness recipe runs on, each kept `sealed` for that harness alone, opened at the claim of a run on it and never handed to another harness or to any run's tools.",
       "x-agentrun-serve": "harnesskeys/1",
     },

@@ -1104,8 +1104,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
       /** GET /settings/harness-keys and PUT/DELETE of one key: a plan-billed recipe's keys, saved for that harness alone
-       *  (harness-keys.ts); `harnesses` its ids here, so the console offers the page only where there is one. */
-      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id) },
+       *  (harness-keys.ts); `harnesses` its ids here, and `kept` each id with keys saved whose recipe it no longer names
+       *  (a running server's, from its store: HarnessKeysOverStore.unnamed), so the console offers the page only where
+       *  there is one or a key to remove. */
+      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
        *  grant (runnable.ts takes one on any), a module's among them. */
@@ -1501,7 +1503,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
   const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
+  // harness_keys.kept from the store's snapshot, made again at each key's save or removal (harnessKeysChanged's probe).
+  const compose = (runnerShell?: ReadonlySet<string>) => {
+    const made = askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
+    return { ...made, features: { ...made.features, harness_keys: { ...made.features.harness_keys, kept: harnessKeys.unnamed() } } };
+  };
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;

@@ -118,6 +118,25 @@ describe("HarnessKeysPage", () => {
     expect(asked.find((a) => a.method === "DELETE")).toEqual({ method: "DELETE", path: "/v2/settings/harness-keys/old-agent/OLD_AGENT_API_KEY" });
   });
 
+  it("a saved key that does not open stays removable: one to enter again for a changed recipe, and a kept one under another seal key", async () => {
+    const unopened: HarnessKeys = { harnesses: [
+      { ...unsaved.harnesses[0]!, reenter: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", why: "recipe_changed" }] },
+      { id: "old-agent", label: "old-agent", named: false, ready: false, keys: [], kept: [{ name: "harness:old-agent:OLD_AGENT_API_KEY", set: false, source: null, changed_at: null }], reenter: [] },
+    ] };
+    const { host, asked } = await mount(true, { list: () => unopened });
+    const current = host.querySelector('[data-harness="model-agent"]')!;
+    await act(async () => { button(current, "Remove")!.click(); });
+    await act(async () => { [...current.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(asked.filter((a) => a.method === "DELETE")).toEqual([{ method: "DELETE", path: "/v2/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY" }]);
+    const old = host.querySelector('[data-harness="old-agent"]')!;
+    expect(old.textContent).toContain("Does not open under this server's seal key");
+    await act(async () => { button(old, "Remove")!.click(); });
+    await act(async () => { [...old.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(asked.filter((a) => a.method === "DELETE").at(-1)).toEqual({ method: "DELETE", path: "/v2/settings/harness-keys/old-agent/OLD_AGENT_API_KEY" });
+  });
+
   it("a server with no plan-billed recipe says there is nothing to save", async () => {
     const { host } = await mount(true, { list: () => ({ harnesses: [] }) });
     expect(host.textContent).toContain("no harness recipe billed to its vendor's plan");

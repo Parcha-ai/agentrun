@@ -1,5 +1,6 @@
 // A harness recipe (HARNESS.md#a-recipe): the one loader, refusing by RECIPE_CODES before anything is downloaded.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
@@ -414,10 +415,14 @@ export function recipeInstall(data: string, recipe: Recipe, file: string, env: N
 }
 
 /** Whether every file of the install is still its tree's (RecipeInstall), digested now: undefined, or the refusal
- *  (HARNESS_BINARY_MISMATCH; HARNESS_NOT_INSTALLED where the ACP adapter that takes the digest is not beside this server). */
+ *  (HARNESS_BINARY_MISMATCH; HARNESS_NOT_INSTALLED where the ACP adapter that takes the digest is not beside this server).
+ *  The tree digest holds a link by its target's name, never the file it leads to, so an executable whose path leaves the
+ *  folder through a link is refused: its bytes would be checked by nothing. */
 export async function installHolds(install: RecipeInstall): Promise<InstallRefusal | undefined> {
   const acp = acpPackage();
   if (!acp) return { code: "HARNESS_NOT_INSTALLED", message: `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server` };
+  const [binary, dir] = await Promise.all([realpath(install.binary), realpath(install.dir)]).catch(() => [undefined, undefined]);
+  if (!binary || !dir || !binary.startsWith(`${dir}${sep}`)) return { code: ARCHIVE_CODES.binary, message: `${install.binary} leads outside ${install.dir} (through a link), so the digest of the folder's files does not hold it. Install it again with: ${install.line}` };
   const found = await acp.treeDigest(install.dir).catch(() => undefined);
   if (found === install.tree.sha256) return undefined;
   return { code: ARCHIVE_CODES.binary, message: `${install.dir} has the tree sha256 ${found ?? "(unreadable)"}, and ${install.tree.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${install.tree.sha256}. Install it again with: ${install.line}` };

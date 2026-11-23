@@ -256,15 +256,20 @@ describe("App, Settings", () => {
   });
 
   it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {
-    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"] } }, "#/settings/harness-keys");
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] } }, "#/settings/harness-keys");
     expect(page.host.querySelector("h1")?.textContent).toBe("Harness keys");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["Harness keys", "page"]]);
     expect(page.asked).toContain("GET /v2/settings/harness-keys");
     expect(page.host.querySelector('[data-harness="model-agent"]')?.textContent).toContain("MODEL_AGENT_API_KEY");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [] } }, "#/settings/keys");
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: [] } }, "#/settings/keys");
     expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    // No recipe named, keys still kept: the tab stays, so its keys can be removed.
+    const kept = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: ["old-agent"] } }, "#/settings/keys");
+    expect([...kept.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
   });
 
   it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {

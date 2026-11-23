@@ -124,9 +124,10 @@ function HarnessSection({ harness: h, writable, open, problem, onOpen, onSave, o
             {h.keys.map((k) => {
               const why = again(k);
               return (
-                <SecretRow key={k.name} field={k} writable={writable && open === null} note={why ? REENTER_WORDS[why] : undefined}
+                // A key to enter again (`why`) is a saved row that did not open: it is removable as one that opens is.
+                <SecretRow key={k.name} field={k} writable={writable && open === null} note={why ? REENTER_WORDS[why] : undefined} stored={k.set || why !== undefined}
                   onPaste={() => void pasteFromClipboard(() => onOpen(name(k), "edit"), () => box.current?.querySelector("form")?.elements.namedItem("value") as HTMLInputElement | null)}
-                  onRemove={k.source === "console" ? () => onOpen(name(k), "remove") : undefined} />
+                  onRemove={k.source === "console" || why !== undefined ? () => onOpen(name(k), "remove") : undefined} />
               );
             })}
           </ul>
@@ -136,7 +137,7 @@ function HarnessSection({ harness: h, writable, open, problem, onOpen, onSave, o
             <p className="caps mt-4 text-label text-muted-foreground">{h.named ? "Kept: its recipe runs on these no more" : "Kept"}</p>
             <ul className="mt-2 space-y-1.5" aria-label={`${h.label} kept keys`}>
               {h.kept.map((k) => (
-                <SecretRow key={k.name} field={k} writable={writable && open === null} note={k.set ? undefined : "Does not open under this server's seal key"}
+                <SecretRow key={k.name} field={k} writable={writable && open === null} note={k.set ? undefined : "Does not open under this server's seal key"} stored
                   onRemove={() => onOpen(name(k), "remove")} />
               ))}
             </ul>

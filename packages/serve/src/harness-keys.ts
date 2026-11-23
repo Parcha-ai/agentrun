@@ -256,15 +256,20 @@ export class HarnessKeysOverStore {
     return { id: recipe.id, label: recipe.label, named: true, keys, kept: this.kept(recipe.id, recipe.keys), ready: this.saved(recipe), reenter };
   }
 
-  /** GET /settings/harness-keys: every plan-billed recipe this server is started with, its keys by name; then each id
-   *  with keys saved whose recipe it no longer names, its keys kept. */
-  list(): { harnesses: HarnessKeysView[] } {
+  /** Each id with keys saved whose recipe this server does not name, sorted: capabilities' harness_keys.kept, so the
+   *  console offers the page that removes them. */
+  unnamed(): string[] {
     const named = new Set(this.recipes.map((recipe) => recipe.id));
-    const unnamed = [...new Set([...this.current.keys()].flatMap((row) => rowParts(row)?.harness ?? []))].filter((id) => !named.has(id)).sort();
+    return [...new Set([...this.current.keys()].flatMap((row) => rowParts(row)?.harness ?? []))].filter((id) => !named.has(id)).sort();
+  }
+
+  /** GET /settings/harness-keys: every plan-billed recipe this server is started with, its keys by name; then each id
+   *  with keys saved whose recipe it no longer names (unnamed), its keys kept. */
+  list(): { harnesses: HarnessKeysView[] } {
     return {
       harnesses: [
         ...this.recipes.map((recipe) => this.view(recipe)),
-        ...unnamed.map((id) => ({ id, label: id, named: false, keys: [], kept: this.kept(id, []), ready: false, reenter: [] })),
+        ...this.unnamed().map((id) => ({ id, label: id, named: false, keys: [], kept: this.kept(id, []), ready: false, reenter: [] })),
       ],
     };
   }

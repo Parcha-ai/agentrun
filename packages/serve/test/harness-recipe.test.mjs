@@ -317,6 +317,50 @@ test("every file the archive unpacks to is pinned, not the binary alone: a sidec
   assert.equal(existsSync(join(elsewhere, "harnesses", "model-agent")), false);
 });
 
+test("an executable reached through a link out of its install folder is refused: the tree digest holds the link, not the file it leads to", async (t) => {
+  const { symlinkSync } = await import("node:fs");
+  const { treeDigest } = await import("@parcha/agentrun-harness-acp");
+  const { firstSeenTreeOf, installHolds, recipeInstall } = await import("../dist/harness-recipe.js");
+  const root = await scratch(t);
+  const data = join(root, "agents");
+  const file = await recipeFile(t, formatRecipe(Buffer.from("unused"), "tar.gz", { cmd: "./bin/agent" }));
+  const { recipe } = loadRecipe(file);
+  const dir = join(data, "harnesses", recipe.id);
+  const record = firstSeenTreeOf(data, recipe, PLATFORM);
+  const recordTree = async () => {
+    mkdirSync(join(record, ".."), { recursive: true });
+    writeFileSync(record, `${await treeDigest(dir)}\n`);
+  };
+  const outside = join(root, "outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "agent"), "#!/bin/sh\necho outside\n", { mode: 0o755 });
+  mkdirSync(dir, { recursive: true });
+  symlinkSync(outside, join(dir, "bin"));
+  await recordTree();
+  const linked = recipeInstall(data, recipe, file, process.env, PLATFORM);
+  assert.equal(linked.code, undefined, linked.message);
+  const refused = await installHolds(linked);
+  assert.equal(refused?.code, "HARNESS_BINARY_MISMATCH");
+  assert.match(refused.message, /outside/);
+  // The installer refuses such an archive before anything is put in place.
+  const packed = join(root, "packed");
+  mkdirSync(packed);
+  symlinkSync(outside, join(packed, "bin"));
+  const archive = join(root, "linked.tar.gz");
+  assert.equal(spawnSync("tar", ["-czf", archive, "-C", packed, "bin"]).status, 0);
+  const bytes = readFileSync(archive);
+  const linkedFile = await recipeFile(t, formatRecipe(bytes, "tar.gz", { cmd: "./bin/agent" }));
+  const elsewhere = join(root, "elsewhere");
+  await assert.rejects(installRecipe(loadRecipe(linkedFile).recipe, linkedFile, elsewhere, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && /through a link/.test(error.message));
+  assert.equal(existsSync(join(elsewhere, "harnesses", recipe.id)), false);
+  // The same executable inside the folder holds: the link alone was refused.
+  rmSync(join(dir, "bin"));
+  mkdirSync(join(dir, "bin"));
+  writeFileSync(join(dir, "bin", "agent"), "#!/bin/sh\necho inside\n", { mode: 0o755 });
+  await recordTree();
+  assert.equal(await installHolds(recipeInstall(data, recipe, file, process.env, PLATFORM)), undefined);
+});
+
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
  *  for its model (`step`'s answers, checkStep's by default). */
 async function installed(t, recipe, step = checkStep) {
@@ -1196,7 +1240,7 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
   const server = await serve(t, { harnessRecipes: [file], accounts: true, openSetup: true, runner: false, log: (line) => logs.push(line) });
   const { owner, token, cookie, origin } = await asOwnerAndToken(server);
   const caps = (await server.api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"] });
+  assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] });
   const listed = await token("GET", "/settings/harness-keys");
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(JSON.parse(listed.text), { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
@@ -1245,6 +1289,22 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
   assert.ok(sources.length > 20, `the sweep read ${sources.length} answers`);
   assert.deepEqual(findPlanted(sources, [first, second]), []);
 
+});
+
+test("Settings → Harness keys stays offered while keys are kept: restarted without the recipe, capabilities name the id kept until its keys are removed", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const file = await recipeFile(t, planOn({ url: "http://127.0.0.1:9" }));
+  const first = await serve(t, { harnessRecipes: [file], accounts: true, openSetup: true, runner: false });
+  assert.deepEqual((await first.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] });
+  const { owner } = await asOwnerAndToken(first);
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: plantedValue("harness-key") })).status, 204);
+  await first.stop();
+  // The same data, started with no recipe: the key is kept, and the page that removes it is still offered.
+  const later = await serve(t, { data: first.data, accounts: true, runner: false });
+  assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: [], kept: ["model-agent"] });
+  const { owner: laterOwner } = await asOwnerAndToken(later);
+  assert.equal((await laterOwner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
+  assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys.kept, [], "with nothing kept, nothing offers the page");
 });
 
 test("a shared server runs a plan-billed recipe on the keys its owner saved for its harness: offered once saved with no restart, the vendor hears the saved key, the sign-in rule no longer refuses a trigger's message to its run, the key is cut from what the agent prints, and removing it stops its runs", { skip: linux, timeout: 240_000 }, async (t) => {

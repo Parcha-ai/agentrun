@@ -88,6 +88,7 @@ test("a recipe the server no longer names keeps its keys, sealed and cut and run
   await later.load();
   const listed = later.list().harnesses;
   assert.deepEqual(listed.map((h) => [h.id, h.named]), [["other", true], ["acme", false]], "named first, then each id kept");
+  assert.deepEqual(later.unnamed(), ["acme"], "what capabilities name kept");
   const acme = listed[1];
   assert.deepEqual({ label: acme.label, keys: acme.keys, ready: acme.ready, kept: acme.kept.map((k) => [k.name, k.set, k.source]) },
     { label: "acme", keys: [], ready: false, kept: [["harness:acme:ACME_API_KEY", true, "console"]] });
@@ -98,6 +99,7 @@ test("a recipe the server no longer names keeps its keys, sealed and cut and run
   assert.equal(await store.sealedKeys.get(harnessKeyRow("acme", "ACME_API_KEY")), undefined, "its row is gone");
   assert.ok(later.values().includes(VALUE), "kept retired for the cut");
   assert.deepEqual(later.list().harnesses.map((h) => h.id), ["other"]);
+  assert.deepEqual(later.unnamed(), []);
   assert.throws(() => later.held("acme"), notFound, "with nothing kept, a DELETE is a 404 again");
   assert.deepEqual(await openHarnessKeys(store, SEAL, OTHER), { ACME_API_KEY: `${VALUE}-other` }, "the named recipe's key never moved");
 });
