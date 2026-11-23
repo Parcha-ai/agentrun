@@ -298,8 +298,9 @@ const CASES = [
   // A PEM-like held value with line breaks in it, placed so the first piece of an answer or a call's result ends at
   // its first line break: no piece holds it whole, and no line of it shows.
   (() => {
-    const lines = Array.from({ length: 12 }, (_, i) => `${"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC".slice(i % 8)}${String(i).padStart(4, "0")}${"0123456789abcdefABCDEFGHijklmnop".slice(0, 28 + (i % 4))}`);
-    const pem = ["-----BEGIN PRIVATE KEY-----", ...lines, "-----END PRIVATE KEY-----"].join("\n");
+    // A made-up body (base64 of "fake-body-not-a-real-key"), and its armor built in pieces, as the repo's other key fixtures are.
+    const lines = Array.from({ length: 12 }, (_, i) => `${"ZmFrZS1ib2R5LW5vdC1hLXJlYWwta2V5".slice(i % 8)}${String(i).padStart(4, "0")}${"0123456789abcdefABCDEFGHijklmnop".slice(0, 28 + (i % 4))}`);
+    const pem = [`-----BEGIN ${"PRIVATE KEY"}-----`, ...lines, `-----END ${"PRIVATE KEY"}-----`].join("\n");
     return {
       name: "a PEM-like held value across the edge of an answer's pieces shows no line of it",
       text: `${"y ".repeat(4050)}${pem}${" the words after it. ".repeat(500)}`,
