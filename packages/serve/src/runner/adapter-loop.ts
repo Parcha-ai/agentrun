@@ -1557,12 +1557,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    // A harness that takes no message mid-turn, or a CLI's message that is no steer of the turn in flight (a trigger's that
-    // answers nothing, or the person's answer to the question its last turn ended on, whose session is idle): the API
-    // answered it `follow_up` (it waits for the turn's end), so it is the run's next turn, after any taken before it
-    // (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take is the commit of its submission, once
-    // sent.
-    if (!session.steer || (cliRecord && (followUp || askedLast))) {
+    // A harness that takes no message mid-turn, a trigger's message (it answers nothing) while a turn is open, or a CLI's
+    // message that is no steer of the turn in flight (a trigger's, or the person's answer to the question its last turn
+    // ended on, whose session is idle): the API answered it `follow_up` (it waits for the turn's end), so it is the run's
+    // next turn, after any taken before it (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take
+    // is the commit of its submission, once sent. A trigger's message is never pi's own follow-up: pi runs one as soon as
+    // its turn would end, before this loop reads that end, so one that met a turn ending on ask_person ran in place of the
+    // person's answer and the run ended with its question unasked. Held here, that turn's end parks on the question first,
+    // and the row, untaken, runs as a turn of its own after the answer.
+    if (!session.steer || (followUp && session.state === "open_turn") || (cliRecord && (followUp || askedLast))) {
       if (turnsOver) return { later: "the run has answered and is ending: the message waits for the run's end" };
       afterTurn.push({ commandId: command.id, text, requestId, ...(origin ? { origin } : {}) });
       return { taken: true };

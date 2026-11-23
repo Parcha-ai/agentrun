@@ -485,6 +485,35 @@ test("wait in the claim: a trigger's message (answers: false) delivered between 
   await answeredThenTheTrigger(server, gw, trigger);
 });
 
+test("park: a trigger's message (answers: false) that reaches the runner while the turn that asks is in flight never runs before the answer: the run parks on its question, the row untaken, and the message runs as a turn of its own after the answer", async (t) => {
+  const outcomes = [];
+  let server;
+  let trigger;
+  let requests = 0;
+  // The first model request held until the loop has the trigger's row: the message reaches the runner mid-turn, and the
+  // turn then ends on ask_person.
+  const upstream = async (input, init) => {
+    if (new URL(String(input?.url ?? input)).pathname.endsWith("/messages") && requests++ === 0) {
+      const store = await until(() => server, "the server's store");
+      trigger = await sendCommand(store, RUN, { kind: "steer", body: { text: "A push came in.", answers: false } });
+      await until(() => outcomes.some((one) => one.id === trigger.id), "the trigger's row reached the loop while the turn is in flight");
+    }
+    return globalThis.fetch(input, init);
+  };
+  const { row, gw } = await askRun(t, { tools: ["ask_person"], upstream, outcomes, settled: async (s) => {
+    server = s;
+    const now = await s.runs.get(RUN);
+    return ["parked", "ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  } });
+  assert.equal(row.state, "parked", `the run parks on its question, never ended by the trigger's message: ${JSON.stringify({ state: row.state, summary: row.summary })}`);
+  assert.equal(modelCalls(gw).length, 1, "the trigger's message never reached the model while the question stood");
+  const held = (await server.commands(RUN, 0)).find((c) => c.id === trigger.id);
+  assert.deepEqual([held.takenAt, held.refused], [null, null], `the trigger's row waits untaken, never refused: ${JSON.stringify(held)}`);
+  const view = await viewOverStore(server, RUN, VIEW_DEPS);
+  assert.deepEqual([view.status, view.state, view.pending?.kind], ["input_required", "waiting", "question"], "the question stands, unanswered");
+  await answeredThenTheTrigger(server, gw, trigger);
+});
+
 test("a parked question's answer whose turn fails ends the run failed, never ended: the claim that resumes it reads the answer's own submission", async (t) => {
   let refuse = false;
   // Once the question is asked, the provider refuses every request for good (a 400 no retry fixes).
