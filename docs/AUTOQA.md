@@ -35,9 +35,10 @@ address.
 To walk a published release, `npm i @parcha/agentrun-serve@<version>` into a fresh folder and start its
 `node_modules/.bin/agentrun-serve` the same way.
 
-The banner prints `AGENTRUN_BASE_URL`, then the token (on the first start only), then `Open <url>/` and
-`Set your password: <url>/setup`. Wait for the `Open` line. The token is also in `DIR/.token` (mode 0600). Read it from
-there and never print it.
+The launcher's banner prints `AGENTRUN_BASE_URL`, then the token (on the first start only), then `Open <url>/` and
+`Set your password: <url>/setup`. Wait for the `Open` line. `npx @parcha/agentrun`, a new user's start, prints one line
+on stdout instead once the server answers, `AgentRun is running at <url>/`; on that path, wait for that line. The token
+is also in `DIR/.token` (mode 0600). Read it from there and never print it.
 
 | Env | Why |
 | --- | --- |
@@ -74,7 +75,7 @@ Stop the server with SIGTERM to its exact PID. The runner beside it stops every 
 
 Each row: entry point, then what makes it pass.
 
-1. **Boot + health**: banner `Open` line; `GET /v2/health` → `200 {"status":"ok","checks":{"store":"ok","disk":"ok"}}`.
+1. **Boot + health**: the start's ready line (`Open <url>/` from the launcher, `AgentRun is running at <url>/` from npx); `GET /v2/health` → `200 {"status":"ok","checks":{"store":"ok","disk":"ok"}}`.
 2. **Capabilities**: `GET /v2/capabilities` → `harnesses[]` (`pi`, `claude-agent`, `codex`, each with `available`),
    `models.source`, `tools[]` with `available` (an unavailable one says why in `reason`, and a tool short of a key
    names its variables in `missing`), `features`, and `limits.max_concurrent_runs`.

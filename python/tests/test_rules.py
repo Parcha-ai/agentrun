@@ -127,6 +127,25 @@ class Rules(unittest.TestCase):
             self.assertNotIn(KEY, printed(error))
         self.assertNotIn(KEY, printed(client), "nor does the printed client")
 
+    def test_a_refusals_message_says_the_servers_reason_with_the_key_cut_from_it_on_one_line(self) -> None:
+        def answer(request: Request, reply: Reply) -> Any:
+            if request.url == "/v2/agents":
+                return json_answer(422, {"error": {"code": "invalid_input", "message": f"name is taken (key {KEY})\nby agent a"}})
+            if request.url == "/v2/runs":
+                return json_answer(409, {"error": {"code": "conflict", "message": "x" * 400}})
+            return json_answer(403, {"error": {"code": "forbidden", "message": "Only the owner may archive an agent."}})
+
+        server = Listener(self, answer)
+        client = AgentRun(base_url=server.base, api_key=KEY, max_retries=0)
+        taken = self.thrown(client.agents.list)
+        assert isinstance(taken, AgentRunRefused)
+        self.assertEqual(str(taken), "The server refused GET /agents: 422 invalid_input: name is taken (key [hidden]) by agent a")
+        long = self.thrown(client.runs.list)
+        self.assertEqual(str(long), f"The server refused GET /runs: 409 conflict: {'x' * 299}…")
+        owner = self.thrown(client.agents.archive, "a")
+        assert isinstance(owner, AgentRunAuthError)
+        self.assertEqual(str(owner), "The server refused the API key for POST /agents/{agent_id}/archive: 403 forbidden: Only the owner may archive an agent.")
+
     def test_a_bad_key_a_missing_key_and_a_base_url_that_would_carry_it_elsewhere_are_refused_before_any_request(self) -> None:
         server = Listener(self)
         for api_key in (f"{KEY}\nX-Other: 1", f"{KEY} ", "a\tb", "ключ", "a\x7f"):

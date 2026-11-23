@@ -44,6 +44,7 @@
 //         "answer" in the words of the error it answers, alive.
 //   grow: {bytes}: at each save of a session, append `bytes` random bytes to <sessions>/store.db-wal and rewrite a
 //         store.db-shm beside it: a store that grows each turn, as Cursor's SQLite WAL does.
+//   holdInit: a file; while it exists, initialize is not answered, so the host can send this process nothing.
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
@@ -375,16 +376,19 @@ const signInWith = (methodId) => {
 };
 
 const app = agent({ name: "fake-acp" })
-  .onRequest("initialize", () => ({
-    protocolVersion: 1,
-    agentCapabilities: {
-      loadSession: config.advertiseLoad ?? loads,
-      mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
-      ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
-    },
-    agentInfo: { name: "fake-acp", version: "1.0.0" },
-    authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
-  }))
+  .onRequest("initialize", async () => {
+    while (config.holdInit && existsSync(config.holdInit)) await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      protocolVersion: 1,
+      agentCapabilities: {
+        loadSession: config.advertiseLoad ?? loads,
+        mcpCapabilities: { http: config.advertiseHttp ?? config.http ?? true, sse: false },
+        ...(config.systemPrompt ? { sessionCapabilities: { systemPrompt: {} } } : {}),
+      },
+      agentInfo: { name: "fake-acp", version: "1.0.0" },
+      authMethods: (config.auth?.methods ?? []).map((id) => ({ id, name: id })),
+    };
+  })
   .onRequest("authenticate", ({ params }) => {
     const text = signInWith(params.methodId);
     if (text === undefined) throw RequestError.authRequired({ methodId: params.methodId });
