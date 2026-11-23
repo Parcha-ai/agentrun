@@ -3266,6 +3266,7 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    degraded: Literal[True]
     plan: CostPlan
 
 

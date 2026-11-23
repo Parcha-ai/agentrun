@@ -126,17 +126,20 @@ export function runCap(options: RunCapOptions): RunCap {
   // runner.request, so the next count holds it in any process). A paid tool call and a decision book under their own
   // sessions and never count; nor does a ChatGPT plan's request (no free model). A free model's request is also admitted
   // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One on a person's plan
-  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. A request is never both:
-  // freeModel refuses a plan model (its listing's price is no price), so `free` is false for every plan request, and the
-  // plan mark is returned before the free one is looked at. One the rule refused stays refused.
+  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. Only a model request of
+  // the run's own sessions is: a decision goes to its own provider, which charges it, and with no cap it is priced by no
+  // model of its own, so the run's model reader may answer the run's plan model for it (a CLI session's one model). A
+  // request is never both: freeModel refuses a plan model (its listing's price is no price), so `free` is false for every
+  // plan request, and the plan mark is returned before the free one is looked at. One the rule refused stays refused.
   const limit = options.freeRequests;
   const judge: BeforeRequest = async (request) => {
     const free = freeRequest(request, pricing.modelOf);
-    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    const own = request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    const counted = free && own;
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return await roomOf(request, answer);
-    if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
+    if (own && !request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
     if (!free) return answer;
     return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
   };
