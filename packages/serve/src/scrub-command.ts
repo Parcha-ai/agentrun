@@ -69,8 +69,9 @@ export async function shareTexts(store: Store, runId: string, deps: ShareTextDep
   const row = await store.runs.get(runId).catch(() => undefined);
   if (!row) return "unknown";
   if ((await runCutValues(deps, store, runId)) === "unreadable") return "withheld";
-  // The origin names the console's link, which the allowlist drops: none of it is read.
-  const viewDeps: ViewDeps = { origin: "http://localhost", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
+  // The origin names the console's link, which the allowlist drops: none of it is read. A reserved .invalid name, so the
+  // package scan finds no service endpoint.
+  const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
   const view = await viewOverStore(store, runId, viewDeps);
   if (!view) return "unknown";
   const texts: string[] = [];
