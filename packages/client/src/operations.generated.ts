@@ -1956,12 +1956,12 @@ export type GetAgentPackageResponse = {
   sha256: string;
   report: {
     blocked: Array<{
-      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
     remade: Array<{
-      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
+      kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
       name: string;
       reason: string;
     }>;
@@ -5328,6 +5328,7 @@ export type ApplyTemplateResponse = {
     action: "create" | "revise";
     agent_id: string | null;
     current_revision_id: string | null;
+    twins: Array<string>;
     missing_secrets: Array<string>;
     unmatched_mcp: Array<{
       source: string;
@@ -5338,6 +5339,7 @@ export type ApplyTemplateResponse = {
       name: string;
       kind: string;
       action: "create" | "update" | "remove" | "skip";
+      code?: "not_set_up_here" | "not_an_option";
       reason?: string;
     }>;
     computer: {

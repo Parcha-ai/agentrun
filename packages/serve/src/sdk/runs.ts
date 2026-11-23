@@ -20,12 +20,12 @@ import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { snapshotAt } from "../learn/folder.js";
-import { purgedRun, purgedWorkflows } from "../purged-workflow.js";
+import { purgedRun, purgeGate, refusedIn, refusedOf } from "../purged-workflow.js";
 import type { RunRow } from "../store/index.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
-import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
+import { promotionOf, type PromotionRecord, promotionsOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { sdkTakes, workflowDigest } from "../runner/workflow-first.js";
 
@@ -363,7 +363,7 @@ export class SdkRuns {
       // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
       // draft takes (sdkTakes). A prose turn whose input the client cannot resolve is given back (releaseSdkCheck).
       const takes = (flow: LearnedWorkflow) => !redacted && sdkTakes(flow, input, resolveSchemaForWorkflow as never);
-      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }), refused: refusedIn(() => learningFolderOf(this.data, entry.agent.id), this.store) };
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
@@ -466,14 +466,14 @@ export class SdkRuns {
       },
     };
   }
-  /** The purged run (purged-workflow.ts) that wrote a workflow of `pinned`, each read at the learning commit a start took
-   *  its text from. One read-only exec per commit. */
+  /** The purged run (purgeGate) that wrote a workflow of `pinned`, each read at the learning commit a start took its
+   *  text from. One read-only exec per commit. */
   private async purgedPinned(agentId: string, pinned: readonly (readonly [LearnedWorkflow, string])[]): Promise<RunRow | undefined> {
     if (pinned.length === 0) return undefined;
     const folder = learningFolderOf(this.data, agentId);
     try {
       const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
-      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then((snapshot) => purgedWorkflows(snapshot, this.store))).get(commit)!;
+      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then(async (snapshot) => (await purgeGate(snapshot, this.store)).workflows)).get(commit)!;
       for (const [flow, commit] of pinned) {
         const row = (await at(commit)).get(flow.name);
         if (row) return row;
@@ -501,8 +501,10 @@ export class SdkRuns {
       const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], commits: Record<string, string> = {};
       const atCommit = async (name: string, commit: string) =>
         chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+      // The champion skips a record the purge gate refuses at its commit (purged-workflow.ts refusedOf), as a claim's does.
+      const refused = async (all: readonly PromotionRecord[], names?: Iterable<string>) => refusedOf(all, names ?? all.map((one) => one.workflow), folder.workspace, this.store);
       for (const flow of flows) {
-        const { text: serving, champion } = await championTextOf(records, flow, atCommit);
+        const { text: serving, champion } = await championTextOf(records, flow, atCommit, refused);
         if (serving && compatible(serving)) {
           workflows.push(serving);
           commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;

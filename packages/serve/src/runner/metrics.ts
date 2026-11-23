@@ -119,7 +119,9 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     if (e.kind === RUNNER_RECORDS.request && !answered.has(turnOf(e))) {
       requests += 1;
       count(e);
-      unpriced += 1;
+      // One billed to a person's plan (its record's `plan`, Admitted.plan) is $0 to the run however it ends, as the cap's
+      // reader (the kernel's sessionSpendOf) holds it: in flight it is a known $0, never unpriced.
+      if ((e.data as { plan?: unknown } | undefined)?.plan !== true) unpriced += 1;
       unmetered += 1;
       continue;
     }
@@ -228,13 +230,21 @@ export function runCostOf(entries: readonly EntryLike[], { unbooked = false }: {
 export type EndCost = { readonly costUsd: number | null; readonly costUpperBound: boolean };
 export const endCostOf = (cost: RunCost): EndCost => ({ costUsd: cost.usd, costUpperBound: cost.usd !== null && cost.atMost > 0 });
 
-/** The run's model requests billed to a ChatGPT plan (runner.turn `billing` "plan", booked at no price, chatgpt-plan.ts):
+/** The run's model requests billed to a person's plan (runner.turn `billing` "plan", booked at no price: a ChatGPT plan's,
+ *  chatgpt-plan.ts, or Claude Code's login's):
  *  how many and their tokens (input, output and cache, as each booking reported them). Each is $0 to the run by the
- *  kernel's one rule (turnCostOf), however it ended: the plan pays for it, so no reader counts it unpriced. */
+ *  kernel's one rule (turnCostOf), however it ended: the plan pays for it, so no reader counts it unpriced. One still in
+ *  flight (its runner.request marked `plan`, no runner.turn yet) is one of them, with no tokens yet. */
 export function planSpend(entries: readonly EntryLike[]): { readonly requests: number; readonly tokens: number } {
+  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const answered = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.turn).map(turnOf));
   let requests = 0;
   let tokens = 0;
   for (const e of entries) {
+    if (e.kind === RUNNER_RECORDS.request) {
+      if ((e.data as { plan?: unknown } | undefined)?.plan === true && !answered.has(turnOf(e))) requests += 1;
+      continue;
+    }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
     const d = (e.data ?? {}) as { billing?: unknown; givenBack?: unknown; unsent?: unknown; usage?: Record<string, unknown> };
     if (d.billing !== "plan" || d.givenBack === true || d.unsent === true) continue;

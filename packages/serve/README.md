@@ -1395,7 +1395,7 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 
 - A name that is not a tool key, or one no tool of the run's revision reads (its tools, its workflow's nodes and
   decision providers, and the keys its template declares), is 422 at `keys.<NAME>`, the value never echoed. So is a
-  value that is not text of 8 or more characters with no space or control character (`invalid`): the runner could
+  value that is not 8 or more characters of visible ASCII (`invalid`), as a header carries it: the runner could
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
@@ -2261,8 +2261,8 @@ handed none, so a per-run server never calls as a default account. A malformed u
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
-With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
-each run binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
+binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
 refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
 
 What can go wrong, told apart:
@@ -2675,7 +2675,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agen
 auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
 the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
 target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
-trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
+trigger off (`disabled: {reason: "auto_paused"}`); a firing tried again (a busy server) counts once, when it fails,
+however many tries it took. A firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
 upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
@@ -2775,7 +2776,8 @@ tried again, a later one can start first.
 
 Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
 start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
-is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
+is tried again, and is never skipped. It counts the runs this trigger started while they work (with the launch hook,
+also a firing its host took, until that firing's run starts or its `start_by` passes), kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -3301,11 +3303,12 @@ serves these routes alone:
 - a deploy, for a backend that deploys agents here: a template's apply (`POST /templates/{id}/apply`, a redeploy with
   its `agent_id`), the agent's read (`GET /agents/{id}`), its revisions (`GET /agents/{id}/revisions`), a rollback
   (`POST /agents/{id}/current`), and its archive and unarchive (`POST /agents/{id}/archive`, `/unarchive`). The archive
-  is what its delete (`DELETE /agents/{id}`) needs first. A run here starts through the backend, on its keys and
-  budget, never on this server's own model key. So with the [launch hook](#launch-hook) set, the apply makes the
-  package's schedule and feed triggers, and each firing goes to the backend, which starts its run through the API; the
-  unarchive turns them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set
-  the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
+  is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
+  package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
+  the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
+  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
+  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
+  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
@@ -3339,26 +3342,59 @@ host, and this server starts no run for it:
 
 The POST carries `webhook-id` (the firing's id, the same if it is handed again), `webhook-timestamp` and
 `webhook-signature` as [webhooks](#webhooks) do: check them with any Standard Webhooks library before reading the
-body. The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
+body.
+
+The host starts the run with `POST /v2/agents/{agent_id}/runs`, giving the input, its own `model_key`, `keys` and
 `max_cost_usd`, and `"trigger_firing": { "trigger_id": ..., "firing_id": ... }` as it was sent, and answers 2xx within
-10 s. It can start the run before it answers or after: a firing it answered 2xx with no run yet reads `sent` with
+10 s. That run is the firing's, as one this server started would be: it names the trigger and the firing, carries the
+trigger's title and input origin, and the firing reads `started` with it, so the trigger's overlap check and
+`max_active_runs` count it.
+
+The run starts on the trigger's target, as the run this server would start for the firing:
+
+- Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
+  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
+  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
+  5 and its 1 at 1.
+- Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
+- It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
+  body is refused with 422 `not_allowed`, naming the field.
+- The rest of the host's body is taken as on any start: its `model_key`, `keys` and `mcp_auth` are sealed for the run.
+- Its input is the host's, followed by the trigger's last completed result when its source hands one on (a schedule
+  does), as a run this server starts for it is.
+
+The host can start the run before it answers or after. A firing it answered 2xx with no run yet reads `sent` with
 `start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
 The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
-waited on `max_active_runs`, one handed again after a restart) gets the same time; the server never hands a `sent`
-firing over again. That run is
-the firing's, as one this server started would be: it names the trigger and the firing, carries the trigger's title and
-input origin, is capped, and the firing reads `started` with it, so the trigger's overlap check and `max_active_runs`
-count it. The firing is the run's key, so a second start for the same firing answers the same run and the request
-takes no `Idempotency-Key` (422 with one); a firing that is not being handed over (skipped, or one of another agent's
-triggers) is refused with 422. Until its run starts, a `sent` firing is one the overlap check cannot see. Any other
-answer, a redirect included (it is not followed), no answer in 10 s, or no connection, and the firing reads `skipped`
-with why, unless the host started its run by then; a skip is no failure and never turns the trigger off, and the
-server does not try that firing again. A firing the server's stop cuts short stays due and is handed again at the next
-start, under the same `webhook-id`. A `message_run` target starts no run and is unchanged. The start prints the hook's
-origin, never its path or the secret. The hook is `https`: a firing's input can carry a person's data, and the
-signature proves who sent it, not that no one else read it, so plain `http` is taken only for 127.0.0.0/8, `::1` or
-`localhost`. One of the two set without the other, a URL that is not https (or http to this machine) or holds a user
-or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in words.
+waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
+firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
+would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+
+The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+`Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
+another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
+by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+
+A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
+then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
+`timeout` (no answer in 10 s) or `unreachable` (no connection). No answer, no connection, a 5xx or a 429 leaves the
+firing due with `retry_at`, tried again on the trigger's backoff under the same `webhook-id`; any other answer, a
+redirect included (it is not followed), fails it at once. A firing counts once toward the trigger's failure streak,
+when it fails, however many tries it took: 5 failed firings in a row turn the trigger off, and a firing that fails
+sends `trigger.failed`. A host whose start lands while its firing waits on a retry (it answered too late) has that run
+made the firing's, `started`, while its trigger has room for it. A start that lands just as the server records the
+hook's answer keeps the firing `started` with its run: the answer doesn't set it back to `sent`, fail it or count it.
+
+A firing the server's stop cuts short stays due and is handed again at the next start, under the same `webhook-id`. A
+`message_run` target starts no run and is unchanged.
+
+The start prints the hook's origin, never its path or the secret. The hook is `https`: a firing's input can carry a
+person's data, and the signature proves who sent it, not that no one else read it, so plain `http` is taken only for
+127.0.0.0/8, `::1` or `localhost`. One of the two set without the other, a URL that is not https (or http to this
+machine) or holds a user or password, or a secret that is not a `whsec_` one of 24 bytes or more stops the start, in
+words.
 
 ## Uploads
 
@@ -3741,11 +3777,12 @@ stays in every total.
   (`DELETE /v2/agents/{id}/learning`) or the agent's purge, which delete the folder whole. Each merge's feedback line goes in
   one commit by the host (none when nothing is left to remove), a line a person edited since stays, and another
   merge's diff that shows the line as context is written without it. The log and a workflow's revisions leave out its
-  merges, known by the run the log names for each (its newest 200 changes). A purge takes each learned workflow whose
-  `workflow.json` the run changed last (by the commits' run trailers over the whole history, past those 200) off main
-  in one host commit, its whole folder: its file reads are `404`, no run lays it, and a read at an older commit
-  (a champion by its digest, an SDK receipt's pinned commit, a later merge's diff, which shows its files as added)
-  never serves its text. Each merge's scrub lands once, so a `DELETE` sent again
+  merges, known by the run the log names for each (its newest 200 changes). A purge takes off main only what the run
+  put there, in one host commit: each learned workflow whose `workflow.json` it wrote last (over the whole history,
+  past those 200; a host commit that puts a version back names that version's run) goes back, its whole folder, to
+  the version before it that no purged run wrote, so another run's champion keeps serving; one it wrote new leaves
+  main, its file reads `404`. No run lays its text, and a read at an older commit (a champion by its digest, an SDK
+  receipt's pinned commit, a later merge's diff, which shows its files as added) never serves it. Each merge's scrub lands once, so a `DELETE` sent again
   after a stop takes no other run's same line, and a merge of the run made since is scrubbed by it. A second `DELETE`
   does this again. It covers the learning folder on this
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.

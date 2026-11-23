@@ -11,22 +11,13 @@
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve, win32 } from "node:path";
 import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
-import { SECRETS, guarded, refusalExit } from "./login.mjs";
-import { DOCTOR } from "./doctor.mjs";
-import { OPEN, SERVICE, STOP } from "./service.mjs";
-import { SKILL_INSTALL } from "./skill.mjs";
-import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
-import { HARNESS_CHECK, HARNESS_INSTALL, HARNESS_KEYS, HARNESS_SIGN_IN } from "./harness.mjs";
-import { EXPORT } from "./export.mjs";
-import { DEPLOY, DEPLOY_DELETE, DEPLOY_ROLLBACK } from "./deploy.mjs";
+import { guarded, refusalExit } from "./login.mjs";
+import { LOCAL } from "./local.mjs";
 
-/** The hand-written commands that run as they are given (`run`), beside the table's. A command of one word that has
- *  verbs too (deploy) comes after them: `run` takes the first whose words match. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, EXPORT, HARNESS_INSTALL, HARNESS_SIGN_IN, HARNESS_KEYS, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR, DEPLOY_ROLLBACK, DEPLOY_DELETE, DEPLOY];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -46,12 +37,15 @@ class Exit extends Error {
 const usageError = (message) => new Exit(2, message);
 const flag = (name) => name.replace(/_/g, "-").toLowerCase();
 
-/** The words of `argv` that are not flags, past the values of the flags placed before a command (--data, --base-url,
- *  login's --to, and the server's --port) or before a verb (deploy's --to and --params). */
+/** The flags that take the next word as their value: --data, --base-url, the server's --port, and each hand-written
+ *  command's own (login's and deploy's --to, deploy's --params). */
+const VALUED = new Set(["--data", "--base-url", "--port", ...LOCAL.flatMap((entry) => Object.entries(entry.options ?? {}).filter(([, option]) => option.type === "string").map(([name]) => `--${name}`))]);
+
+/** The words of `argv` that are not flags, past the values of the flags placed before a command or a verb. */
 export function words(argv) {
   const found = [];
   for (let i = 0; i < argv.length; i++) {
-    if (["--data", "--base-url", "--port", "--to", "--params"].includes(argv[i])) i++;
+    if (VALUED.has(argv[i])) i++;
     else if (!argv[i].startsWith("-")) found.push(argv[i]);
   }
   return found;
@@ -68,8 +62,9 @@ const HELP = () => {
     ...[...groups].map(([noun, verbs]) => `  ${noun.padEnd(width)}  ${verbs.join(", ")}`),
     `  ${"api".padEnd(width)}  METHOD PATH [${BODY}] [--header 'NAME: VALUE'], any route, PATH under the base URL (/agents)`,
     "",
-    "Any other NAME: agentrun NAME [args] runs the program agentrun-NAME from an absolute folder of PATH with the rest of",
-    "the arguments and passes on its exit code, as git runs git-NAME; a tool adds a command by installing agentrun-NAME.",
+    "Any other NAME, when it comes first: agentrun NAME [args] runs the program agentrun-NAME from an absolute folder of",
+    "PATH with the rest of the arguments and passes on its exit code, as git runs git-NAME; a tool adds a command by",
+    "installing agentrun-NAME.",
     "",
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun). The token: AGENTRUN_API_KEY,",
@@ -148,6 +143,7 @@ function privateFile(file) {
   }
 }
 
+/** Whether process `pid` runs: one of another user's still counts. Hand-written commands get it as `cli.alive`. */
 const alive = (pid) => {
   try {
     return process.kill(pid, 0);
@@ -527,7 +523,7 @@ async function local(entry, argv, env, io) {
   const count = entry.pathParams.length;
   // An entry whose arguments a flag can stand in for (`harness install --recipe FILE`) takes none too; its run checks.
   if (args.length !== count && !(entry.argsOptional && args.length === 0)) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, alive, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 
@@ -582,7 +578,7 @@ export function external(file, args, env, io, platform = process.platform) {
   // Node runs a .bat or .cmd only through cmd.exe, which reads the arguments again (% expands; " ^ & | < > ! are its
   // own), and no quoting holds for every argument: none is run.
   if (platform === "win32" && /\.(?:bat|cmd)$/i.test(file)) {
-    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install agentrun-NAME as an .exe.\n`);
+    io.stderr.write(`${file} is a batch file, which Node runs only through cmd.exe, and cmd.exe would read the arguments again: agentrun runs no command through a shell. Run it yourself, or install ${win32.basename(file).replace(/\.(?:bat|cmd)$/i, "")}.exe.\n`);
     return Promise.resolve(126);
   }
   return new Promise((resolve) => {
@@ -618,7 +614,8 @@ async function run(argv, env, io) {
   if (noun === undefined || noun === "help") return io.stdout.write(`${HELP()}\n`), 0;
   if (noun === "api") return api(argv, env, io);
   if (noun === WAIT.command[0] && verb === WAIT.command[1]) return wait(argv, env, io);
-  const own = LOCAL.find((e) => e.command[0] === noun && (e.command.length === 1 || e.command[1] === verb));
+  // A command's own verb first (deploy rollback), then the command of one word (deploy, its verb being its argument).
+  const own = LOCAL.find((e) => e.command[0] === noun && e.command[1] === verb) ?? LOCAL.find((e) => e.command[0] === noun && e.command.length === 1);
   if (own) return local(own, argv, env, io);
   const entries = COMMANDS.filter((entry) => entry.command[0] === noun);
   const listed = [...entries, ...LOCAL.filter((e) => e.command[0] === noun), ...(noun === WAIT.command[0] ? [WAIT] : [])];
