@@ -5,7 +5,7 @@
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
 // grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
-// call's arguments and its output's head through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
+// call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
 // server: a grader agent with no tools that sees the rubric, the run's input, its answer and its calls, never another
 // grader or an expected answer, and answers {pass, reason}. readCases checks a package's cases without running one.
@@ -15,7 +15,7 @@ import { chmodSync, cpSync, lstatSync, mkdtempSync, readdirSync, readFileSync, r
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseDocument } from "yaml";
-import { answerJson, lastJsonBlock } from "./answer-json.js";
+import { answerJson, jsonBlockOf } from "./answer-json.js";
 import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
 import { frontMatter } from "./manifest.js";
@@ -35,7 +35,7 @@ import type { IcsFaux } from "./calendar/ics-faux.js";
 import type { MonidFake } from "./runner/monid-run.js";
 import { nameMapOf, settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { builtinHarness } from "./harness-table.js";
-import { webShownOf } from "./timeline/index.js";
+import { CALLS_PAGE_ROWS, webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
@@ -857,9 +857,9 @@ function namesOf(files: readonly FinalFile[]): string {
   return named.length && count ? `${named.join(", ")}; and ${count}` : named.length ? named.join(", ") : count;
 }
 
-/** A grader run's answer read as its verdict: the last json block's (else the last JSON object's) {pass, reason}. */
+/** A grader run's answer read as its verdict: its json block's (jsonBlockOf), else the last flat JSON object's, {pass, reason}. */
 export function verdictOf(answer: string): { pass: boolean; reason: string } | undefined {
-  const candidates = [lastJsonBlock(answer), ...[...answer.matchAll(/\{[^{}]*"pass"[^{}]*\}/g)].map((m) => m[0]).reverse()];
+  const candidates = [jsonBlockOf(answer), ...[...answer.matchAll(/\{[^{}]*"pass"[^{}]*\}/g)].map((m) => m[0]).reverse()];
   for (const text of candidates) {
     if (text === undefined) continue;
     try {
@@ -1002,8 +1002,9 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
       signal.throwIfAborted();
     }
-    // calls=whole: each call's arguments and its output's head (tool_input, tool_result_text), which its graders read.
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole`));
+    // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
+    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500).
+    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole&limit=${CALLS_PAGE_ROWS}`));
     if (page.reset) view.clear();
     for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
     for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
@@ -1035,7 +1036,7 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
  *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
  *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
  *  under another name) is named on the package's toolkit, as the package's graders name it. Each with its arguments and
- *  its output's head as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
+ *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
