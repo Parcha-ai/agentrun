@@ -77,11 +77,12 @@ export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "D
 }
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
- *  form OLLAMA_HOST usually takes) and `got` (ollamaHandler's). */
-export async function fakeOllama(t, options = {}) {
+ *  form OLLAMA_HOST usually takes) and `got` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
+ *  address closedPort gave), else any. */
+export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
   const got = { tags: 0, show: [], chat: [] };
   const server = createServer(ollamaHandler({ ...options, got }));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());

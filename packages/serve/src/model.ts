@@ -25,6 +25,9 @@ import { ollamaBase, ollamaModels, ollamaProvider, ollamaToolsModel } from "./ol
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
+/** Whether the Ollama here is asked for its models under `env`: not under the faux model or a model gateway, which take
+ *  every model. The one rule for listing (withOllamaModels), the host default (localDefault) and the server's refresh. */
+export const asksOllama = (env: NodeJS.ProcessEnv): boolean => !env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL;
 /** Every test hook's name starts so (AGENTRUN_SERVE_FAUX, AGENTRUN_SERVE_FAUX_WEB, ...), but the harness table's
  *  (harness-table.ts HARNESS_TABLE_ENV), which withoutFaux drops by name, as it drops the resolved harness modules list
  *  (HARNESS_MODULES_ENV) and recipes list (HARNESS_RECIPES_ENV). */
@@ -155,7 +158,7 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
  *  entry's facts: pi any model, an adapter its wire's vendor's alone); none behind a gateway or under the faux model. A
  *  model that takes no tools is never a default: a run on it would have none. */
 function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
-  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL) return undefined;
+  if (!asksOllama(env)) return undefined;
   const model = ollamaToolsModel(env);
   return model && harnessRuns(env, model, harness) ? model : undefined;
 }
@@ -240,7 +243,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
   // The Ollama here listed first, so a host with no key reads its default from it (hostModel's localDefault).
-  if (ref === undefined && !env.AGENT_MODEL_BASE_URL) await ollamaModels(env);
+  if (ref === undefined && asksOllama(env)) await ollamaModels(env);
   const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
@@ -704,8 +707,9 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
 
 /** `models` with the Ollama `env` names (OLLAMA_HOST, read from `env` itself, never through the auth context: it is no
  *  secret), its chat models listed live (ollama-provider.ts ollamaModels): provider `ollama`, keyless, at $0. None where
- *  it is down, hung or refused, and nothing thrown. */
+ *  it is down, hung or refused, and nothing thrown. None asked under the faux model or a gateway (asksOllama). */
 async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv): Promise<M> {
+  if (!asksOllama(env)) return models;
   const listed = await ollamaModels(env);
   if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed) as never);
   return models;

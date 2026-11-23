@@ -11,7 +11,7 @@
 //     default context is small, so every request names it: options.num_ctx, the model's trained context up to 64k
 //     (OLLAMA_NUM_CTX), and the model's window here is that same number.
 // Listing never stalls a caller: one short deadline for the whole listing, no redirects, and a down, hung or refused Ollama
-// lists no models and throws nothing. Each address's answer is kept (TTL_MS) and refreshed behind the caller.
+// lists no models and throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller.
 import { calculateCost, collapseSystemMessages, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
 import { createProvider } from "@earendil-works/pi-ai/models";
@@ -24,10 +24,10 @@ export const OLLAMA_PROVIDER = "ollama";
 export const OLLAMA_API = "ollama-chat";
 /** The most context a request asks Ollama for (options.num_ctx), and so the most window a model has here: 64k. */
 export const OLLAMA_NUM_CTX = 65_536;
-/** How long a listing may take, all of it: a stuck Ollama costs a caller this once per TTL_MS at most. */
+/** How long a listing may take, all of it: a stuck Ollama costs a caller this once per OLLAMA_TTL_MS at most. */
 export const OLLAMA_LIST_TIMEOUT_MS = 2_000;
 /** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). */
-const TTL_MS = 30_000;
+export const OLLAMA_TTL_MS = 30_000;
 /** Ollama's port, where OLLAMA_HOST names none and no scheme. */
 const OLLAMA_PORT = "11434";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
@@ -75,6 +75,20 @@ function splitHostPort(hostport: string): [string, string | undefined] {
 /** Each address's last listing, by base URL, and the listing under way for it. */
 const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
 const asking = new Map<string, Promise<readonly OllamaListed[]>>();
+/** The clock a listing is kept by: Date.now, or a test's (ollamaClock). */
+let now: () => number = Date.now;
+
+/** A test's clock for the kept listings, so it ages them without waiting; with none, Date.now again. */
+export function ollamaClock(clock?: () => number): void {
+  now = clock ?? Date.now;
+}
+
+/** The listing under way for the Ollama `env` names (one a stale answer started behind its caller), or undefined: for a
+ *  test to await what a refresh brings. */
+export function ollamaAsking(env: NodeJS.ProcessEnv): Promise<readonly OllamaListed[]> | undefined {
+  const base = baseOf(env);
+  return base === undefined ? undefined : asking.get(base);
+}
 
 /** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase). */
 const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
@@ -120,7 +134,7 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   } catch {
     models = [];
   }
-  kept.set(base, { at: Date.now(), models });
+  kept.set(base, { at: now(), models });
   return models;
 }
 
@@ -130,7 +144,7 @@ export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly Oll
   const base = baseOf(env);
   if (base === undefined) return [];
   const known = kept.get(base);
-  if (known && Date.now() - known.at < TTL_MS) return known.models;
+  if (known && now() - known.at < OLLAMA_TTL_MS) return known.models;
   let listing = asking.get(base);
   if (!listing) {
     listing = listOllama(env).finally(() => asking.delete(base));

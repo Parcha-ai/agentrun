@@ -12,7 +12,7 @@ import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
 const { hostModel, providerModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
-const { listOllama, ollamaBase, OLLAMA_NUM_CTX } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 const PLAIN = "synth-plain:1b";
 const TOOLS = "synth-tools:2b";
@@ -47,6 +47,16 @@ test("providerModels lists exactly the chat models the Ollama here lists, from /
   const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
   assert.deepEqual(down.getModels("ollama"), [], "nothing listening: no ollama models");
   assert.ok(down.getModels("openai").length > 0, "and every other provider as before");
+});
+
+test("under the model gateway or the faux model, providerModels never asks Ollama and lists no Ollama model", async (t) => {
+  const ollama = await fakeOllama(t);
+  for (const env of [{ AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway" }, { AGENTRUN_SERVE_FAUX: "1" }]) {
+    const models = await providerModels({ OLLAMA_HOST: ollama.host, ...env });
+    assert.deepEqual(models.getModels("ollama"), [], Object.keys(env)[0]);
+  }
+  assert.equal(ollama.got.tags, 0, "the fake was never asked for its tags");
+  assert.deepEqual(ollama.got.show, []);
 });
 
 test("an Ollama that takes the request and never answers lists nothing once its timeout passes, and that answer is kept for its address", async (t) => {
@@ -217,16 +227,23 @@ test("an Ollama whose models take no tools gives no default: they stay pickable,
   assert.ok(pi.models.includes(`ollama/${PLAIN}`), String(pi.models));
 });
 
-test("a model pulled after the server started shows in the next capabilities, with no restart and no key saved", { timeout: 120_000 }, async (t) => {
+test("an Ollama started after the server, with a model pulled, shows in capabilities once the kept listing goes stale: refreshed behind one answer, in the next, with no restart and no key saved", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
-  const pulled = [];
-  const ollama = await fakeOllama(t, { models: pulled });
-  withEnv(t, { OLLAMA_HOST: ollama.host });
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const port = await closedPort();
+  const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
+  withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });
-  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "nothing pulled yet");
-  pulled.push(SYNTH_MODELS.find((model) => model.name === TOOLS));
-  // What a stale listing asks behind an answer, asked now: the next answer sees it.
-  await listOllama({ OLLAMA_HOST: ollama.host });
+  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "Ollama down: nothing listed");
+  const ollama = await fakeOllama(t, { port, models: [SYNTH_MODELS.find((model) => model.name === TOOLS)] });
+  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "the down answer is still fresh");
+  assert.equal(ollama.got.tags, 0, "nothing asked while it is fresh");
+  clock += OLLAMA_TTL_MS;
+  await api("GET", "/capabilities");
+  await ollamaAsking(env);
+  assert.equal(ollama.got.tags, 1, "the stale answer asked again, behind the answer");
   const caps = (await api("GET", "/capabilities")).body;
   assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
   assert.equal(caps.models.ready, true);
