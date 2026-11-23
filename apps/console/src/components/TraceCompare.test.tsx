@@ -47,18 +47,35 @@ describe("the compare page", () => {
     const figures = table(host, "The runs in figures");
     expect(figures.map((row) => row[0])).toEqual(["Model requests", "Tool calls", "Failed", "Tokens", "Input read from cache", "Cost", "Time", "A model answering", "A tool running"]);
     // The CLI run's record keeps no model request and its cost is not one figure: unknown, with no difference said.
-    expect(figures[0]).toEqual(["Model requests", "8", "–Not known", "–Not known"]);
-    expect(figures[5]).toEqual(["Cost", "$0.6336", "–Not known", "–Not known"]);
+    expect(figures[0]).toEqual(["Model requests", "8", "–Not known", "–Not said"]);
+    expect(figures[5]).toEqual(["Cost", "$0.6336", "–Not known", "–Not said"]);
+    // Nor the time a model took answering, which that record does not keep: never 0 with −100% beside it.
+    expect(figures[7]).toEqual(["A model answering", figures[7]![1], "–Not known", "–Not said"]);
     expect(figures[1]![1]).toBe("16");
     expect(figures[1]![3]).toMatch(/^[+−]\d+ \([+−]\d+%\)$|^Same$/);
     expect(host.querySelector("section[aria-label='By tool']")).toBeTruthy();
     expect(table(host, "By model")[0]![1]).toMatch(/^8 · [\d,]+ · \$0\.6132$/);
+    // The CLI run may have used that model: its record keeps no request, so it is not said to be unused.
+    expect(table(host, "By model")[0]![2]).toBe("Not recorded");
   });
   it("with three runs has a column a run and no difference, and says which are still going", async () => {
     const { host } = await shown(["run_a", "run_b", "run_c"]);
     expect([...host.querySelectorAll("section[aria-label='The runs in figures'] thead th")].map((th) => th.textContent!.slice(0, 5))).toEqual(["Figur", "Run 1", "Run 2", "Run 3"]);
     expect(host.querySelector("[data-difference]")).toBeNull();
     expect(host.querySelector("[role=status]")!.textContent).toBe("One of these runs is still going: its figures are as they stood when this page opened. Open the page again for newer ones.");
+  });
+  it("says a run's trace is its first spans only, its figures as at least, and no difference of them", async () => {
+    RUNS.run_long = { run: run("run_long"), trace: { ...TRACE, spans: TRACE.spans.slice(0, 10), dropped: 14 } };
+    const { host } = await shown(["run_a", "run_long"]);
+    delete RUNS.run_long;
+    expect(host.querySelector("[data-partial]")!.textContent).toBe("The second run's trace holds its first 10 requests and calls; 14 later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the whole run's.");
+    const figures = table(host, "The runs in figures");
+    expect(figures[1]![2]).toMatch(/^at least \d+$/);
+    expect(figures.filter((row) => row[0] !== "Cost").every((row) => row[3] === "–Not said")).toBe(true);
+    // The run's cost is its own, whole: a difference of it is said.
+    expect(figures[5]).toEqual(["Cost", "$0.6336", "$0.6336", "Same"]);
+    // A tool the part read has no call of is not said to be uncalled.
+    expect(table(host, "By tool").flatMap((row) => row.slice(2)).filter((cell) => cell === "Not called")).toEqual([]);
   });
   it("says what a comparison takes where the address names fewer than two runs, and reads none", async () => {
     const { host, client } = await shown(["run_a"]);
@@ -108,6 +125,10 @@ describe("what opens the compare page", () => {
     await go();
     expect(document.querySelector("[role=dialog]")!.textContent).toContain("That is this run. Name another one.");
     expect(location.hash).toBe("");
+    // An address with a broken escape is refused in words too, never left with no answer.
+    await type("https://console.example/#/runs/%");
+    await go();
+    expect(document.querySelector("[role=dialog]")!.textContent).toContain("That is not a run's id or its page's address.");
     await type("https://console.example/#/runs/run_b");
     await go();
     expect(location.hash).toBe("#/compare?runs=run_a,run_b");

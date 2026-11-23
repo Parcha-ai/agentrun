@@ -7,7 +7,7 @@ import type { Client } from "@/lib/client";
 import { runTitle } from "@/lib/format";
 import { problem } from "@/lib/problem";
 import { duration, usd } from "@/lib/trace";
-import { compareFigures, compareModels, compareTools, differenceWords, MIN_COMPARED, type Side, sideOf } from "@/lib/traceCompare";
+import { compareFigures, compareModels, compareTools, differenceWords, MIN_COMPARED, partial, type Side, sideOf } from "@/lib/traceCompare";
 import { cn } from "@/lib/utils";
 
 const TH = "caps whitespace-nowrap px-3 py-2 text-right text-label font-normal text-muted-foreground first:text-left";
@@ -50,6 +50,9 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
 
   const pair = sides.length === 2;
   const going = sides.filter((side) => !side.run.ended_at).length;
+  /** How the page names a run: by its place. */
+  const nameOf = (i: number) => (pair ? (i === 0 ? "The first run" : "The second run") : `Run ${i + 1}`);
+  const NOT_SAID = <><span aria-hidden>–</span><span className="sr-only">Not said</span></>;
   /** A run's column heading: where it stands in the comparison, its title (a link to its page) and how it ended. */
   const heads = sides.map((side, i) => (
     <th key={side.run.run_id} scope="col" className={cn(TH, "min-w-40 max-w-64 align-bottom")}>
@@ -63,6 +66,10 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
     <div className="flex flex-col">
       {bar}
       <div className="space-y-6 p-5 md:p-8">
+        {/* A trace is a run's first 2,000 requests and calls: a longer run's figures are of that part, and are said so. */}
+        {sides.map((side, i) => partial(side) && (
+          <p key={side.run.run_id} role="status" data-partial className="text-body text-muted-foreground">{nameOf(i)}'s trace holds its first {side.trace.spans.length.toLocaleString("en-US")} requests and calls; {side.trace.dropped.toLocaleString("en-US")} later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the whole run's.</p>
+        ))}
         {going > 0 && <p role="status" className="text-body text-muted-foreground">{going === 1 ? "One of these runs is" : `${going} of these runs are`} still going: {going === 1 ? "its" : "their"} figures are as they stood when this page opened. Open the page again for newer ones.</p>}
         <section aria-label="The runs in figures">
           <h2 className="caps mb-2 text-small font-semibold">The runs in figures</h2>
@@ -75,15 +82,15 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
                   return (
                     <tr key={row.label} className="border-b last:border-b-0">
                       <th scope="row" className={ROW_HEAD}>{row.label}</th>
-                      {row.words.map((words, i) => <td key={i} className={TD}>{words === "–" ? <><span aria-hidden>–</span><span className="sr-only">Not known</span></> : words}</td>)}
-                      {pair && <td className={cn(TD, said === "Same" && "text-muted-foreground")} data-difference>{said ?? <><span aria-hidden>–</span><span className="sr-only">Not known</span></>}</td>}
+                      {row.cells.map((cell, i) => <td key={i} className={TD}>{cell.value === null ? <><span aria-hidden>–</span><span className="sr-only">Not known</span></> : cell.words}</td>)}
+                      {pair && <td className={cn(TD, said === "Same" && "text-muted-foreground")} data-difference>{said ?? NOT_SAID}</td>}
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <p className="mt-2 max-w-prose text-small text-muted-foreground">Each figure is the one the run's own Dev tools tab shows. A difference is the second run's figure less the first's; its percent is of the first's.</p>
+          <p className="mt-2 max-w-prose text-small text-muted-foreground">Each figure is the one the run's own Dev tools tab shows. A difference is the second run's figure less the first's; its percent is of the first's. None is said of a figure that is not known, or not exact: "at least" is a sum over a part of the run, "at most" a cost that counts a cut request at what was held for it.</p>
         </section>
 
         {tools.length > 0 && (
@@ -97,7 +104,7 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
                     <tr key={tool.name} className="border-b last:border-b-0">
                       <th scope="row" className={cn(ROW_HEAD, "font-mono text-small")}>{tool.name}</th>
                       {tool.calls.map((calls, i) => (
-                        <td key={i} className={cn(TD, calls === 0 && "text-muted-foreground")}>{calls === 0 ? "Not called" : `${calls.toLocaleString("en-US")}${tool.failed[i] ? ` (${tool.failed[i]} failed)` : ""} · ${duration(tool.ms[i]!)}`}</td>
+                        <td key={i} className={cn(TD, calls === 0 && "text-muted-foreground")}>{calls === 0 ? (partial(sides[i]!) ? "None in the part read" : "Not called") : `${partial(sides[i]!) ? "at least " : ""}${calls.toLocaleString("en-US")}${tool.failed[i] ? ` (${tool.failed[i]} failed)` : ""} · ${duration(tool.ms[i]!)}`}</td>
                       ))}
                     </tr>
                   ))}
@@ -118,7 +125,7 @@ export function TraceCompare({ v2, ids, now: fixed }: { v2: Pick<Client, "getRun
                     <tr key={model.name} className="border-b last:border-b-0">
                       <th scope="row" className={cn(ROW_HEAD, "font-mono text-small")}>{model.name}</th>
                       {model.requests.map((requests, i) => (
-                        <td key={i} className={cn(TD, requests === 0 && "text-muted-foreground")}>{requests === 0 ? "Not used" : `${requests.toLocaleString("en-US")} · ${model.tokens[i]!.toLocaleString("en-US")} · ${model.usd[i] === null ? "cost unknown" : usd(model.usd[i]!)}`}</td>
+                        <td key={i} className={cn(TD, !requests && "text-muted-foreground")}>{requests === null ? "Not recorded" : requests === 0 ? (partial(sides[i]!) ? "None in the part read" : "Not used") : `${partial(sides[i]!) ? "at least " : ""}${requests.toLocaleString("en-US")} · ${model.tokens[i]!.toLocaleString("en-US")} · ${model.usd[i] === null ? "cost unknown" : usd(model.usd[i]!)}`}</td>
                       ))}
                     </tr>
                   ))}
