@@ -212,6 +212,20 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trig
   }
 });
 
+test("AGENTRUN_RUN_KEYS=1: a template eval on a server that takes a key the package declares from each run stops before any run, naming the key, as a case that does not check", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const templates = searcherTemplate(dir);
+  const pkg = join(templates, "searcher");
+  mkdirSync(join(pkg, "evals", "widgets", "graders"), { recursive: true });
+  writeFileSync(join(pkg, "evals", "widgets", "prompt.md"), "---\nruns: 1\nmax_cost_usd: 0.25\n---\nSearch the web for widgets.\n");
+  writeFileSync(join(pkg, "evals", "widgets", "graders", "named.md"), "---\ntype: regex\npattern: 'widgets'\n---\n");
+  const { api, baseUrl, token } = await setup(t, { templates, runKeys: true, runner: false });
+  const { CaseError, evalTemplate } = await import("../dist/template-eval.js");
+  await assert.rejects(evalTemplate({ dir: pkg, server: { baseUrl, token } }), (error) => error instanceof CaseError && error.problems.length === 1 && /PARALLEL_API_KEY/.test(error.problems[0]) && /AGENTRUN_RUN_KEYS=1/.test(error.problems[0]) && /without --server/.test(error.problems[0]));
+  assert.deepEqual((await api("GET", "/runs")).body.runs, [], "no run was started");
+  assert.deepEqual((await api("GET", "/agents")).body.agents.filter((one) => !one.archived_at).map((one) => one.id), [], "the agent the eval made is gone");
+});
+
 test("AGENTRUN_RUN_KEYS=1 on a server that holds the key, or the setting off: the template's schedule trigger is made, planned as made", { timeout: 60_000 }, async (t) => {
   for (const runKeys of [true, false]) {
     await t.test(`runKeys ${runKeys}`, async (t) => {
