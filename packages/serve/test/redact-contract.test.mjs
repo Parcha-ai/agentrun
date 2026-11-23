@@ -375,6 +375,26 @@ const CASES = [
       },
     ];
   })(),
+  // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
+  // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
+  // characters and no held value shows as it came.
+  ...[["a zero-width space", "​"], ["a soft hyphen", "­"]].map(([what, mark]) => ({
+    name: `a held value with ${what} between each of its characters withholds the text`,
+    text: `v=${[...CUT_KEY].join(mark)} ok`,
+    values: [CUT_KEY],
+    hides: [[...CUT_KEY.slice(14, 22)].join(mark)],
+    exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
+  })),
+  (() => {
+    const text = "co­op­er­a­tion, a​zero​width​join, and ﻿a byte order mark stay as they came";
+    return {
+      name: "a text with characters that render as nothing and no held value shows as it came (control)",
+      text,
+      values: [CUT_KEY],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    };
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
