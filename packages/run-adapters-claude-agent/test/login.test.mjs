@@ -76,7 +76,8 @@ test('the status check asks the CLI with the login directories alone, never open
   assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
   assert.equal(env.ANTHROPIC_CONFIG_DIR, login.profiles);
   for (const name of TOKENS) assert.equal(env[name], undefined, name);
-  assert.notEqual(env.CLAUDE_CONFIG_DIR, login.dir);
+  // Its config dir is the login's, as the sign-in's is: `auth status` reads the account `auth login` wrote there.
+  assert.equal(env.CLAUDE_CONFIG_DIR, login.dir);
   assert.notEqual(env.HOME, login.dir);
   const signedOut = fakeCli({ loggedIn: false, authMethod: 'none' });
   assert.deepEqual(await claudeLoginStatus(signedOut.cli, login), { signedIn: false, method: 'none' });
