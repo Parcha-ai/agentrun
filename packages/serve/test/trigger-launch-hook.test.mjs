@@ -489,7 +489,7 @@ test("AGENTRUN_RUN_KEYS=1: a key the agent does not declare in the host's trigge
   assert.deepEqual([still.status, still.run_id], ["sent", null]);
 });
 
-test("the host's start runs on its trigger's target: the target's cap, which the host's max_cost_usd may lower and never raise, over the agent's default; the target's effort when it sets one, else the host's", { timeout: 120_000 }, async (t) => {
+test("the host's start runs on its trigger's target: the target's cap, else the agent's default, which the host's max_cost_usd may lower and never raise; the target's effort when it sets one, else the host's", { timeout: 120_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   let api;
   // Each trigger's host sends its own max_cost_usd (none, more than the target's, or less) and effort.
@@ -502,8 +502,9 @@ test("the host's start runs on its trigger's target: the target's cap, which the
   ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } }));
   await made(api, "nightly", { max_cost_usd: 5 });
   const ids = {};
-  for (const [name, cap, effort, targetEffort] of [["none", undefined, undefined, "high"], ["more", 10, "low", "high"], ["less", 0.2, undefined, "high"], ["own", undefined, "low", undefined]]) {
-    const target = { kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, max_cost_usd: 0.5, ...(targetEffort ? { effort: targetEffort } : {}) };
+  // [name, the host's cap, the host's effort, the target's effort, the target's cap]
+  for (const [name, cap, effort, targetEffort, targetCap = 0.5] of [["none", undefined, undefined, "high"], ["more", 10, "low", "high"], ["less", 0.2, undefined, "high"], ["own", undefined, "low", undefined], ["open-more", 500, undefined, undefined, null], ["open-less", 1, undefined, undefined, null]]) {
+    const target = { kind: "start_run", agent_id: "nightly", input: { content: "Say hello." }, ...(targetCap === null ? {} : { max_cost_usd: targetCap }), ...(targetEffort ? { effort: targetEffort } : {}) };
     const created = await api("POST", "/triggers", { ...schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }), name, target });
     assert.equal(created.status, 201, JSON.stringify(created.body));
     host.set(created.body.id, { cap, effort });
@@ -520,6 +521,8 @@ test("the host's start runs on its trigger's target: the target's cap, which the
   assert.equal(none.cost.cap_usd, 0.5, "the target's cap, never the agent's $5 default");
   assert.equal(more.cost.cap_usd, 0.5, "a host's cap never raises the target's");
   assert.equal((await runOf("less")).cost.cap_usd, 0.2, "a host's cap lowers it");
+  assert.equal((await runOf("open-more")).cost.cap_usd, 5, "with no cap on the target, the agent's $5 default bounds the host's");
+  assert.equal((await runOf("open-less")).cost.cap_usd, 1, "and the host's lowers it");
   assert.equal(none.effort, "high", "the target's effort");
   assert.equal(more.effort, "high", "the target's effort over the host's");
   assert.equal((await runOf("own")).effort, "low", "the host's effort when the target sets none");
@@ -692,6 +695,67 @@ test("a host start that lands after the hook's bound, while its firing waits on 
   assert.equal(posts(hook).length, 1, "neither its retry nor the overlapping time was handed again");
 });
 
+test("a host start for a firing that waits on its retry is refused while its trigger has no room: with max_active_runs 1, a later firing's run took the place, so the late start is not_due naming the cap and the count never passes 1", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  let api;
+  let first;
+  // The first firing's try is answered 503, so it waits on its retry; every later firing's host starts its run, then answers.
+  const hook = await hookServer(t, async (res, sent) => {
+    first ??= sent.firing_id;
+    if (sent.firing_id === first) return answerJson(res, 503, { error: "deploying" });
+    const started = await hostStart(api, sent.agent_id, sent.trigger_id, sent.firing_id, sent.input);
+    answerJson(res, started.status === 202 ? 200 : 400, {});
+  });
+  // No runner: each run stays queued, so it holds its place.
+  const server = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  ({ api } = server);
+  await made(api, "triage");
+  const created = await api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Triage it." }, max_cost_usd: 0.5 }, max_active_runs: 1 });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { id, signing_secret: hookSecret } = created.body;
+  const deliver = (event) => {
+    const at = String(Math.floor(Date.now() / 1000));
+    const body = JSON.stringify({ event });
+    return fetch(`${server.baseUrl}/hooks/${id}`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": event, "webhook-timestamp": at, "webhook-signature": signatureOf(hookSecret, event, at, body) }, body });
+  };
+  assert.equal((await deliver("evt-a")).status, 202);
+  const waiting = await tried(api, id, 1);
+  assert.deepEqual([waiting.status, waiting.attempts, waiting.error?.code], ["due", 1, "hook_failed"], JSON.stringify(waiting));
+  assert.equal((await deliver("evt-c")).status, 202);
+  const taken = await until(async () => (await api("GET", `/triggers/${id}/firings`)).body.firings.find((f) => f.key !== waiting.key && f.status === "started"));
+  assert.ok(taken, "the next firing had room, and its host started its run");
+
+  const late = await hostStart(api, "triage", id, waiting.key);
+  assert.equal(late.status, 422, JSON.stringify(late.body));
+  assert.deepEqual(late.body.error.fields.map((f) => [f.field, f.reason]), [["trigger_firing.firing_id", "not_due"]], JSON.stringify(late.body));
+  assert.match(late.body.error.fields[0].message, /max_active_runs 1/);
+  const after = (await api("GET", `/triggers/${id}/firings`)).body.firings.find((f) => f.key === waiting.key);
+  assert.deepEqual([after.status, after.run_id], ["due", null], JSON.stringify(after));
+  assert.equal((await runsOf(api, "triage")).length, 1, "one run: the trigger's one place");
+});
+
+test("the host's start for a firing takes no revision, hold or hold_minutes: it runs on its trigger's target, so each is 422 not_allowed by name, no run starts, and the firing still takes a start without them", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const { api, store } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const id = created.body.id;
+  clock.to("2026-06-01T00:10:00Z");
+  const [sent] = await firings(api, id, 1);
+  assert.equal(sent.status, "sent", JSON.stringify(sent));
+  const revision = (await store.agents.get("nightly")).currentRevision;
+  for (const [extra, field] of [[{ revision }, "revision"], [{ hold: true }, "hold"], [{ hold_minutes: 30 }, "hold_minutes"]]) {
+    const refused = await api("POST", "/agents/nightly/runs", { input: { content: "Late." }, max_cost_usd: 0.5, trigger_firing: { trigger_id: id, firing_id: sent.key }, ...extra });
+    assert.equal(refused.status, 422, `${field}: ${JSON.stringify(refused.body)}`);
+    assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [[field, "not_allowed"]], JSON.stringify(refused.body));
+  }
+  assert.deepEqual(await runsOf(api, "nightly"), [], "no run started");
+  const taken = await hostStart(api, "nightly", id, sent.key);
+  assert.equal(taken.status, 202, JSON.stringify(taken.body));
+});
+
 test("a server without the launch hook refuses a run for a trigger firing", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t, {});
   await made(api, "nightly");
@@ -712,7 +776,7 @@ async function tried(api, id, n) {
 /** The hook's POSTs: a firing handed is one each try. */
 const posts = (hook) => hook.got.filter((got) => got.method === "POST");
 
-test("a hook that fails is a failed try under the trigger's retry policy: a 5xx or no answer keeps the firing due with retry_at and hook_failed with its cause, handed again under the same webhook-id; past the backoff table it fails, the streak turns the trigger off, and trigger.failed is sent", { timeout: 120_000 }, async (t) => {
+test("a hook that fails is a failed try under the trigger's retry policy: a 5xx or no answer keeps the firing due with retry_at and hook_failed with its cause, handed again under the same webhook-id; past the backoff table it fails, one failure in the trigger's streak however many tries it took, and trigger.failed is sent", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const clock = fakeClock("2026-06-01T00:00:00Z");
   // The first try is answered 500, the second not within its bound, every other 503.
@@ -728,7 +792,7 @@ test("a hook that fails is a failed try under the trigger's retry policy: a 5xx 
   const first = await tried(api, id, 1);
   assert.deepEqual([first.status, first.run_id, first.attempts, first.retry_at, first.error?.code], ["due", null, 1, "2026-06-01T00:10:05.000Z", "hook_failed"], JSON.stringify(first));
   assert.match(first.reason, /^hook_failed \(500\): the launch hook answered 500/);
-  assert.equal((await api("GET", `/triggers/${id}`)).body.failures_in_a_row, 1, "a failed try counts toward the streak");
+  assert.equal((await api("GET", `/triggers/${id}`)).body.failures_in_a_row, 0, "a try is no failure while its firing has tries left");
 
   let firing = first;
   for (const [i, cause] of [/^hook_failed \(timeout\): the launch hook did not answer in 0\.3 s/, /^hook_failed \(503\)/, /^hook_failed \(503\)/, /^hook_failed \(503\)/].entries()) {
@@ -739,12 +803,12 @@ test("a hook that fails is a failed try under the trigger's retry policy: a 5xx 
     assert.match(firing.reason, cause, JSON.stringify(firing));
   }
   assert.deepEqual([firing.key, firing.status, firing.run_id, firing.error?.code], [first.key, "failed", null, "hook_failed"], "past the backoff table it fails");
-  const off = (await api("GET", `/triggers/${id}`)).body;
-  assert.deepEqual([off.enabled, off.failures_in_a_row, off.disabled?.reason], [false, 5, "auto_paused"], "the streak turned the trigger off");
+  const after = (await api("GET", `/triggers/${id}`)).body;
+  assert.deepEqual([after.enabled, after.failures_in_a_row, after.disabled], [true, 1, null], "its five tries are one failure: the trigger stays on");
   assert.deepEqual(posts(hook).map((got) => got.headers["webhook-id"]), Array(5).fill(first.key), "each try handed under the firing's webhook-id");
   const failed = await until(() => posts(receiver).map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
   assert.ok(failed, "trigger.failed sent");
-  assert.deepEqual([failed.data.firing_key, failed.data.error.code, failed.data.auto_paused], [first.key, "hook_failed", true]);
+  assert.deepEqual([failed.data.firing_key, failed.data.error.code, failed.data.auto_paused], [first.key, "hook_failed", false]);
   assert.match(failed.data.error.message, /^hook_failed \(503\)/);
   assert.deepEqual(await runsOf(api, "nightly"), [], "no run started here");
 });
