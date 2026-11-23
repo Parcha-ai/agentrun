@@ -124,6 +124,44 @@ export function pinnedOf(entry: Pick<ProviderEntry, "label" | "connect" | "local
 export const keptBy = (kept: Pick<Kept, "runner" | "incarnation">, holder: KeptHolder | undefined): boolean =>
   holder !== undefined && kept.runner === holder.runner && kept.incarnation === holder.incarnation;
 
+/** Who holds what, for one janitor pass: the runners there now (Runners.live) and the runner the pass runs in (`self`). */
+export type KeptHolders = {
+  /** Absent: none is read, and no row counts as held elsewhere. */
+  readonly runners?: Pick<Runners, "live">;
+  readonly self?: KeptHolder;
+};
+
+/** The one rule both janitor sweeps leave a kept machine by (sweepKept, and the provider sweep through sparedKept): its
+ *  row is pinned to a runner other than `self` that is still there under the row's incarnation (seen within
+ *  PRESENCE_STALE_MS). Only that runner's engine or hub has the machine, so a delete from here either finds nothing (and
+ *  marks the row ended, leaking it) or, where both runners list it (a dial vendor's account, a shared Docker engine),
+ *  ends a machine its runner still keeps. The runners are read once per maker's call. A read that fails counts every
+ *  pinned row as held elsewhere: ending another runner's machine blind would leak it or take it. */
+export function heldElsewhere(holders: KeptHolders): (kept: Pick<Kept, "runner" | "incarnation">) => Promise<boolean> {
+  let there: Promise<Set<string> | "unknown"> | undefined;
+  return async (kept) => {
+    const { runners } = holders;
+    if (kept.runner === undefined || keptBy(kept, holders.self) || !runners) return false;
+    there ??= runners.live(PRESENCE_STALE_MS).then((live) => new Set(live.map((one) => `${one.runner}\n${one.incarnation}`)), () => "unknown" as const);
+    const live = await there;
+    return live === "unknown" || live.has(`${kept.runner}\n${kept.incarnation}`);
+  };
+}
+
+/** The kept machines a provider sweep leaves this pass, by provider id and computer id: each row not yet ended whose
+ *  machine is held elsewhere (heldElsewhere, the kept pass's own rule). Throws when the rows can't be read: the sweep
+ *  then can't tell which machines are kept, and must not guess. */
+export async function sparedKept(deps: KeptHolders & { readonly settings: Pick<KeptSettings, "all"> }): Promise<(provider: string, id: string) => boolean> {
+  const rows = await deps.settings.all({ prefix: KEPT_PREFIX });
+  const elsewhere = heldElsewhere(deps);
+  const spared = new Set<string>();
+  for (const row of rows) {
+    const kept = keptOf(row.value);
+    if (kept && !kept.ended && (await elsewhere(kept))) spared.add(`${kept.provider}\n${kept.id}`);
+  }
+  return (provider, id) => spared.has(`${provider}\n${id}`);
+}
+
 /** How long one delete of a kept computer may take at the janitor's pass: past it the pass goes on, the row is left
  *  ending, and the next pass deletes it again (a Docker command has no timeout of its own). */
 export const KEPT_DELETE_MS = 60_000;
@@ -221,16 +259,9 @@ export async function sweepKept(deps: {
   } catch (error) {
     return { ended, failed: [`the kept computers could not be read: ${words(error)}`] };
   }
-  // The runners there now, read once for the pass, only where a row is pinned to another runner. A read that fails
-  // leaves every pinned row this pass: ending another runner's machine from here would leak it.
-  let there: Promise<Set<string> | "unknown"> | undefined;
-  const othersThere = async (kept: Kept): Promise<boolean> => {
-    const runners = deps.runners;
-    if (kept.runner === undefined || keptBy(kept, deps.self) || !runners) return false;
-    there ??= runners.live(PRESENCE_STALE_MS).then((live) => new Set(live.map((one) => `${one.runner}\n${one.incarnation}`)), () => "unknown" as const);
-    const live = await there;
-    return live === "unknown" || live.has(`${kept.runner}\n${kept.incarnation}`);
-  };
+  // The runners there now, read once for the pass, only where a row is pinned to another runner (heldElsewhere: the
+  // provider sweep leaves the same machines by the same rule, computer-janitor.ts).
+  const othersThere = heldElsewhere(deps);
   for (const row of rows) {
     const runId = row.key.slice(KEPT_PREFIX.length);
     const kept = keptOf(row.value);
