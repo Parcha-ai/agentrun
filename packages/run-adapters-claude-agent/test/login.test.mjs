@@ -54,7 +54,12 @@ test("a run on a login on macOS runs its CLI in the person's real home, where th
     assert.equal(env.HOME, home, `darwin: a run on ${login.dir} runs in the person's home`);
     assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.home === undefined ? login.dir : '', `darwin: ${login.dir}'s credentials dir`);
     assert.deepEqual([env.CLAUDE_CONFIG_DIR, env.TMPDIR, env.XDG_CACHE_HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME], ['/s/config', '/s/tmp', '/s/cache', '/s/home/.config', '/s/home/.local/share', '/s/home/.local/state'], `darwin: ${login.dir}: the rest is the session's`);
-    assert.equal(durableEnv({ ...dirs, login, platform: 'linux' }).HOME, '/s/home', `linux: a run on ${login.dir} runs in the session's home (its tokens are a file in the credentials dir)`);
+    const linux = durableEnv({ ...dirs, login, platform: 'linux' });
+    assert.equal(linux.HOME, '/s/home', `linux: a run on ${login.dir} runs in the session's home (its tokens are a file in the credentials dir)`);
+    // Only HOME moves to the person's: every other variable is what the same run gets on Linux, but the credentials dir,
+    // which is the platform's own rule (pinned above).
+    const rest = ({ HOME: _home, CLAUDE_SECURESTORAGE_CONFIG_DIR: _secure, ...others }) => others;
+    assert.deepEqual(rest(env), rest(linux), `darwin: a run on ${login.dir} changes HOME and nothing else`);
   }
   assert.equal(durableEnv({ ...dirs, baseUrl: 'http://127.0.0.1:1', token: 'k', platform: 'darwin' }).HOME, '/s/home', 'darwin: a run on a model key runs in the session\'s home');
 });
