@@ -111,8 +111,23 @@ const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").m
 
 /** `store` with its runs' claimMany counted (`calls.n`, each claim by the number of the call that made it in
  *  `calls.claimed`) and, while `gate.shut`, held until the gate opens: how the test makes A's poll wait while B's polls
- *  run, so a B that may claim the run claims it first whatever the timing. */
-function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: [] }) {
+ *  run, so a B that may claim the run claims it first whatever the timing. With `keptReads` ({ fail, failed }), the next
+ *  `fail` reads of run-1's kept row throw as a store that did not answer, each counted in `failed`. */
+function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: [] }, keptReads = undefined) {
+  const settings = keptReads && new Proxy(store.settings, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "get") return typeof value === "function" ? value.bind(target) : value;
+      return async (name, ...rest) => {
+        if (name === keptKeyOf(RUN) && keptReads.fail > 0) {
+          keptReads.fail -= 1;
+          keptReads.failed += 1;
+          throw new Error("the store did not answer");
+        }
+        return value.apply(target, [name, ...rest]);
+      };
+    },
+  });
   const runs = new Proxy(store.runs, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
@@ -130,6 +145,7 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
   return new Proxy(store, {
     get(target, key) {
       if (key === "runs") return runs;
+      if (key === "settings" && settings) return settings;
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
@@ -177,11 +193,11 @@ async function parkedOnA(t) {
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin([{ call: "computer_screenshot", args: {} }, { say: "done" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const hosts = { a: hostVendor("a"), b: hostVendor("b") };
   const claimManyCalls = {};
-  const start = async (name, host, { gate } = {}) => {
+  const start = async (name, host, { gate, keptReads } = {}) => {
     const raw = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(raw);
     claimManyCalls[name] = { n: 0, claimed: [] };
-    const store = watchedStore(raw, gate, claimManyCalls[name]);
+    const store = watchedStore(raw, gate, claimManyCalls[name], keptReads);
     const computerDeps = { kinds: PINNED_KINDS, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => hosts[host].provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf } };
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
     const runner = startRunner({
@@ -322,6 +338,31 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   assert.equal(one.hosts.a.computers.has("a-d1"), false, "gone from A's host");
   assert.equal(await readKept(one.server.settings, RUN), undefined, "and its row with it, the run being over");
   assert.deepEqual(one.hosts.b.calls, [], "B's host was never asked, start to end");
+});
+
+test("a stop of a parked run pinned to a live runner, claimed by another runner whose read of the kept row fails, ends ends-only: no loop starts, and the kept row and machine stay runner-a's", { timeout: 120_000 }, async (t) => {
+  const one = await parkedOnA(t);
+  const [rowA] = (await one.server.runners.list()).filter((row) => row.runner === "runner-a");
+  // B's first read of the kept row fails, as a store that did not answer once; every later read succeeds. A loop
+  // started on that failure would read the row again in its claim's computer, take it and try A's machine on B's host.
+  const keptReads = { fail: 1, failed: 0 };
+  await one.start("runner-b", "b", { keptReads });
+  one.gate.close();
+  await one.server.command(RUN, { kind: "stop" });
+  const ended = await until(async () => {
+    const row = await one.server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(row.state) && row.runner === null && row;
+  }, "B ends the run on the stop, its read of the kept row failed", 10_000);
+  assert.equal(ended.state, "stopped", JSON.stringify(ended));
+  assert.equal(keptReads.failed, 1, "B's read of who holds the kept machine failed");
+  // An unreadable holder counts as held elsewhere: B ends the run with no loop, so its provider is asked nothing.
+  assert.deepEqual(one.hosts.b.calls, [], "B asked its provider nothing: no loop started on the failed read");
+  const kept = await readKept(one.server.settings, RUN);
+  assert.equal(kept?.id, "a-d1", `the kept row is still there: ${JSON.stringify(kept)}`);
+  assert.deepEqual([kept?.runner, kept?.incarnation], ["runner-a", rowA.incarnation], "and still names runner-a");
+  assert.ok(!kept.ending && !kept.ended, "nor ended");
+  assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host, for A's own timer or janitor to end");
+  one.gate.open();
 });
 
 test("a single runner, unchanged: its resume gets the same desktop at once; after its clean restart, the next runner on the same host gets it too", { timeout: 120_000 }, async (t) => {
