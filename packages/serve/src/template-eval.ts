@@ -65,9 +65,9 @@ export const GRADER_CAP_USD = 0.5;
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
-/** How long a run may stay queued, no runner having taken it, before the eval stops waiting on it: it fails by that
- *  name, its state when the wait gave up, never by the run's whole timeout. */
-export const QUEUE_TIMEOUT_MS = 2 * 60_000;
+/** How long a run may stay queued, no runner holding it, before the eval stops waiting on it: it fails by that name,
+ *  never by the run's whole timeout. 5 minutes: a busy machine's runner can be slow to make its first claim. */
+export const QUEUE_TIMEOUT_MS = 5 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
@@ -914,6 +914,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
+/** The least time between two of those reads of one run. */
+export const CLAIM_READ_EVERY_MS = 5_000;
 /** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
  *  CLAIM_READ_TIMEOUT_MS, runs past the run's `deadline` or is stopped by `signal` (the eval's stop): not known, so never
  *  a reason to cancel the run. Its bound ends at the deadline, so a read that stalls never puts the cancel past it. */
@@ -931,11 +933,15 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   const started = Date.now();
   // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
-  // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
-  // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
-  // (failed, stalled past its bound or the deadline, or stopped) says neither: it is asked again at the next page, and
-  // the stop and the deadline still end the wait.
-  let queuedUntil = started + queueTimeoutMs;
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, every queued
+  // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
+  // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
+  // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
+  // that doesn't answer (failed, stalled past its bound or the deadline, or stopped) says neither, and the stop and the
+  // deadline still end the wait.
+  let unheldSince: number | undefined = started;
+  let everHeld = false;
+  let askedAt = -Infinity;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
@@ -954,12 +960,18 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       const waiting = rows.findLast((row) => row.kind === "waiting");
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
-    if (status === "queued" && Date.now() > queuedUntil) {
+    if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+      askedAt = Date.now();
       const held = await heldNow(api, runId, deadline, signal);
-      if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
-      else if (held === false) {
-        await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-        return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+      if (held === true) {
+        everHeld = true;
+        unheldSince = undefined;
+      } else if (held === false) {
+        unheldSince ??= askedAt;
+        if (Date.now() - unheldSince >= queueTimeoutMs) {
+          await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+          return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+        }
       }
     }
     // At the deadline, not only past it: the claim read's bound ends at the deadline, and may end in its very millisecond.
