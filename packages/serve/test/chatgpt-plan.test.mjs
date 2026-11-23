@@ -872,6 +872,41 @@ test("a sign-in saved whose change callback then fails reads signed in, with no 
   assert.equal(logged[1].reason, "SQLITE_BUSY");
 });
 
+const TIMED_OUT = "The sign-in timed out: start it again.";
+
+test("a sign-in that waits out its 10 minutes says it timed out, in the view and the log, whether a read or its timer ends it; a cancel says nothing", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), now: () => clock.now });
+  t.after(() => plan.close());
+  // A read past its end ends it.
+  await plan.startSignIn();
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "timed_out" }], "said once: the aborted login's end adds nothing");
+  // Its timer ends it with no read.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  await plan.startSignIn();
+  assert.equal(plan.view().problem, undefined, "a new start clears it");
+  t.mock.timers.tick(10 * 60_000);
+  t.mock.timers.reset();
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  assert.equal(logged.length, 2);
+  // A newer start, a sign-out and the server's close cancel one: no problem, no line.
+  await plan.startSignIn();
+  await plan.startSignIn();
+  await plan.signOut();
+  assert.equal(plan.view().problem, undefined);
+  await plan.startSignIn();
+  plan.close();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(plan.view().problem, undefined);
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["sign_in_failed", "sign_in_failed", "signed_out"]);
+});
+
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { createConnection } = await import("node:net");

@@ -139,6 +139,7 @@ const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in 
 /** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in has ended in one, and nothing tells it
  *  apart. It never says Free can't be used: OpenAI changes which plans can. */
 const FREE_OR_AGAIN = "a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
+const TIMED_OUT = "The sign-in timed out: start it again.";
 /** The words for OpenAI's refusal `code` at its sign-in page. */
 const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in (${tag(code) || "no reason given"}): ${FREE_OR_AGAIN}`);
 
@@ -204,8 +205,8 @@ export class ChatGPTPlan implements PlanReader {
   /** Set when a sign-in dropped by a sign-out (keep) could not have its revocation confirmed by OpenAI: that sign-out
    *  answers revoked false. Cleared at each sign-out's start. */
   #droppedUnconfirmed = false;
-  /** Why the last sign-in ended past its browser step without signing in (signInFailure's words), until a sign-in starts,
-   *  finishes or a sign-out. A cancelled one leaves none. */
+  /** Why the last sign-in ended without signing in (signInFailure's words past its browser step, or its timeout), until a
+   *  sign-in starts, finishes or a sign-out. A cancelled one leaves none. */
   #problem: string | undefined;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
@@ -294,7 +295,7 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   view(): PlanView {
-    if (this.#pending && this.#pending.expiresAt <= this.now()) this.cancel();
+    if (this.#pending && this.#pending.expiresAt <= this.now()) this.expire();
     const row = this.#snapshot;
     const who = row ? { ...(row.email ? { email: row.email } : {}), ...(row.plan ? { plan: row.plan } : {}) } : {};
     if (this.#pending) return { state: "pending", authorize_url: this.#pending.authorizeUrl, expires_at: new Date(this.#pending.expiresAt).toISOString(), ...who };
@@ -317,6 +318,14 @@ export class ChatGPTPlan implements PlanReader {
     this.#pending = undefined;
     clearTimeout(pending.timer);
     pending.abort.abort();
+  }
+
+  /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out. */
+  private expire(): void {
+    if (!this.#pending) return;
+    this.cancel();
+    this.#problem = TIMED_OUT;
+    this.#deps.log?.({ chatgpt: "sign_in_failed", reason: "timed_out" });
   }
 
   /** Starts a sign-in (one at a time: a new start cancels the one waiting) and gives the address to open. It lasts 10
@@ -365,7 +374,7 @@ export class ChatGPTPlan implements PlanReader {
     })]);
     if (!authorizeUrl) throw new PlanSignInRefused("The sign-in could not start: try again.");
     const expiresAt = this.now() + PENDING_MS;
-    const timer = setTimeout(() => (this.#pending?.abort === abort ? this.cancel() : undefined), PENDING_MS);
+    const timer = setTimeout(() => (this.#pending?.abort === abort ? this.expire() : undefined), PENDING_MS);
     timer.unref();
     this.#pending = { abort, state: new URL(authorizeUrl).searchParams.get("state") ?? "", authorizeUrl, expiresAt, paste, result, timer };
     waiting = true;
