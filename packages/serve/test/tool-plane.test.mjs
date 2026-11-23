@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, claimPlane, recheckPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, claimPlane, DENIED, recheckPlane, SEARCH_OFF, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -112,12 +112,12 @@ test("the server's kernel for web_fetch and native for web_search are a ceiling 
   const kept = (capability, override, extra = {}) => explainCapability(capability, { ...base, harness: "pi", pick: capability === "web_fetch" ? "kernel" : "native", override, ...extra });
   for (const override of ["firecrawl-keyless", "auto"]) {
     const fetch = kept("web_fetch", override);
-    assert.deepEqual(fetch, { resolves: "kernel", why: `kept on the server: the server's setting is kernel, over this agent's pick of ${override}; the guarded direct fetch, picked in settings` }, override);
+    assert.deepEqual(fetch, { resolves: "kernel", why: `the server's setting, kernel, is a ceiling over this agent's pick of ${override}; the guarded direct fetch, picked in settings` }, override);
   }
   for (const override of ["firecrawl-keyless", "exa-keyless", "auto"]) {
     assert.deepEqual(kept("web_search", override, { model: "anthropic/claude-sonnet-5-5" }).resolves, "native", `${override} on a model with its own search`);
     const none = kept("web_search", override, { gateway: true });
-    assert.deepEqual(none, { resolves: "unavailable: no native search for pi behind a gateway", why: `kept on the server: the server's setting is native, over this agent's pick of ${override}; no native search for pi behind a gateway` }, `${override} with no native search: unavailable, never keyless`);
+    assert.deepEqual(none, { resolves: "unavailable: no native search for pi behind a gateway", why: `the server's setting, native, is a ceiling over this agent's pick of ${override}; no native search for pi behind a gateway` }, `${override} with no native search: unavailable, never keyless`);
   }
   assert.equal(kept("web_fetch", "parallel", { parallelKey: true }).resolves, "parallel", "Parallel on the server's key: the agent's pick, as before");
   assert.equal(kept("web_search", "parallel", { parallelKey: true, gateway: true }).resolves, "parallel");
@@ -133,6 +133,33 @@ test("the server's kernel for web_fetch and native for web_search are a ceiling 
   assert.deepEqual(claimPlane(saved, env, tooling, ceilings), { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "a run kept on keyless before the ceiling was set: its claim under it");
   assert.equal(claimPlane(saved, env, tooling, {}), saved, "no ceiling: the kept plane itself");
   assert.deepEqual(claimPlane({ web_fetch: "parallel" }, { ...env, PARALLEL_API_KEY: "not-a-secret" }, { tools: ["web_fetch"], overrides: { web_fetch: { provider: "parallel" } } }, ceilings), { web_fetch: "parallel" }, "Parallel kept: no ceiling over it");
+});
+
+test("under the server's native for web_search, an agent's auto resolves as the server's setting does, never to Parallel on the server's key; with no native search it is unavailable; a run kept on Parallel from auto follows the setting at its next claim", () => {
+  const under = (harness, extra = {}) => explainCapability("web_search", { ...base, harness, pick: "native", override: "auto", parallelKey: true, ...extra });
+  const claude = under("claude-agent", { facts: { label: "Claude", webSearch: "native", wire: "anthropic-messages" } });
+  assert.deepEqual(claude, { resolves: "native", why: "the server's setting, native, is a ceiling over this agent's pick of auto; Claude's own search" }, "claude-agent: auto would be Parallel, the server's native holds");
+  assert.deepEqual(under("pi", { gateway: true }), { resolves: "unavailable: no native search for pi behind a gateway", why: "the server's setting, native, is a ceiling over this agent's pick of auto; no native search for pi behind a gateway" }, "no native search: unavailable, never Parallel");
+  assert.equal(under("pi", { model: "anthropic/claude-sonnet-5-5" }).resolves, "native");
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENT_MODEL_BASE_URL: "https://gateway.example/v1", PARALLEL_API_KEY: "not-a-secret" };
+  const tooling = { tools: ["web_search"], overrides: { web_search: { provider: "auto" } } };
+  const native = { web_search: { provider: "native" } };
+  assert.deepEqual(planeFor(env, tooling, native), { web_search: "unavailable: no native search for pi behind a gateway" }, "the run's plane: never Parallel");
+  assert.deepEqual(claimPlane({ web_search: "parallel" }, env, tooling, native), { web_search: "unavailable: no native search for pi behind a gateway" }, "a run kept on Parallel from auto: its claim under the setting");
+  assert.deepEqual(claimPlane({ web_search: "parallel" }, env, { tools: ["web_search"], overrides: { web_search: { provider: "parallel" } } }, native), { web_search: "parallel" }, "Parallel picked by name stays the agent's pick");
+});
+
+test("the server's off for web_search is a ceiling over an agent's pick of keyless Firecrawl, keyless Exa or auto: each is off, and a run kept on one follows it at its next claim; a server deny is the gate's, refusing every call whatever the agent picks", () => {
+  for (const override of ["firecrawl-keyless", "exa-keyless", "auto"]) {
+    const said = explainCapability("web_search", { ...base, harness: "pi", pick: "off", override, model: "anthropic/claude-sonnet-5-5" });
+    assert.deepEqual(said, { resolves: SEARCH_OFF, why: `the server's setting, off, is a ceiling over this agent's pick of ${override}; turned off in settings` }, override);
+  }
+  const env = { AGENT_MODEL: "anthropic/claude-sonnet-5-5" };
+  const off = { web_search: { provider: "off" } };
+  for (const kept of ["firecrawl-keyless", "exa-keyless", "native"]) {
+    assert.deepEqual(claimPlane({ web_search: kept }, env, { tools: ["web_search"], overrides: { web_search: { provider: "auto" } } }, off), { web_search: SEARCH_OFF }, `kept on ${kept} from auto: off at its next claim`);
+  }
+  assert.equal(explainCapability("web_search", { ...base, harness: "pi", pick: "off", override: "firecrawl-keyless", permission: "deny" }).resolves, DENIED, "a deny: the gate refuses each call");
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {

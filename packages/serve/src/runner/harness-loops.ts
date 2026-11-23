@@ -87,17 +87,21 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
 }
 
 /** `launch` as this claim runs it: its plane, resolved at the run's start, under the server's tool settings now
- *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel or
- *  web_search to native sends nothing to a keyless third party. The settings unread, none apply (the gate then refuses
- *  every tool: storeSettings). It resolves on the run's pinned model (the launch's, chosen at its start), never the host's
- *  default in this environment, which holds no key saved on the server (claim-secrets.ts opens those later), and with
- *  the saved keys' names (savedNamesOver) for the route its model requests take. */
+ *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel, or
+ *  web_search to native or off, sends nothing past that setting. Settings that could not be read fail closed: a
+ *  capability kept on a keyless third party, or on Parallel its agent did not pick by name, runs nothing
+ *  (SETTINGS_NOT_READ), and the gate refuses every tool besides (storeSettings). It resolves on the run's pinned model
+ *  (the launch's, chosen at its start), never the host's default in this environment, which holds no key saved on the
+ *  server (claim-secrets.ts opens those later), and with the saved keys' names (savedNamesOver) for the route its model
+ *  requests take. */
 export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
   if (!launch.plane) return launch;
-  const { settings } = await storeSettings(deps.store);
-  if (!overCeilings(launch.plane, settings)) return launch;
+  const { settings, unreadable } = await storeSettings(deps.store);
+  const tooling = await toolingOf(revision);
+  const unread = unreadable === true;
+  if (!overCeilings(launch.plane, tooling, settings, { unread })) return launch;
   const model = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined;
-  const plane = claimPlane(launch.plane, await savedNamesOver(deps), await toolingOf(revision), settings, { capped: launch.maxCostUsd !== undefined, ...(model ? { model } : {}) });
+  const plane = claimPlane(launch.plane, unread ? deps.env ?? process.env : await savedNamesOver(deps), tooling, settings, { capped: launch.maxCostUsd !== undefined, unread, ...(model ? { model } : {}) });
   return { ...launch, plane };
 }
 

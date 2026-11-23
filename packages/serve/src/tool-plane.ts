@@ -246,25 +246,39 @@ const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa b
 export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
 
 /** The server's settings that are a ceiling an agent's pick cannot raise: web_fetch `kernel` keeps every URL on the
- *  server, web_search `native` every query with the harness's own search. Under one, an agent's pick that would resolve
- *  to a keyless third party (Firecrawl, Exa) resolves as the server's setting does. Parallel, on the server's own key,
- *  is the agent's to pick. */
-const CEILINGS: Partial<Record<Pickable, string>> = { web_fetch: DIRECT_FETCH, web_search: "native" };
+ *  server; web_search `native` keeps every query with the harness's own search, and `off` sends none. Under one, an
+ *  agent's pick that would send to a keyless third party (Firecrawl, Exa), and its `auto` that would send anywhere but
+ *  the ceiling's own (Parallel on the server's key; under `off`, a native search), resolve as the server's setting does.
+ *  Parallel picked by name, on the server's own key, and a native search picked by name are the agent's (ceilingOver). */
+const CEILINGS: Partial<Record<Pickable, readonly string[]>> = { web_fetch: [DIRECT_FETCH], web_search: ["native", "off"] };
+/** The ceiling a claim holds each capability to where the server's tool settings could not be read: the strictest that
+ *  leaves the run a tool (claimPlane). */
+const UNREAD_CEILINGS: Partial<Record<Pickable, string>> = { web_fetch: DIRECT_FETCH, web_search: "native" };
+/** A capability a claim held to UNREAD_CEILINGS: it runs nothing, and says why without the store's words. */
+export const SETTINGS_NOT_READ: Resolution = "unavailable: the server's tool settings could not be read";
 const KEYLESS: readonly string[] = ["firecrawl-keyless", "exa-keyless"];
-/** The server's setting `resolves` is kept under: the ceiling `settings` sets for `capability` when `resolves` is a
- *  keyless third party; else undefined. */
-const ceilingOver = (capability: Pickable, pick: string | undefined, resolves: string | undefined): string | undefined => (pick !== undefined && pick === CEILINGS[capability] && KEYLESS.includes(resolves ?? "") ? pick : undefined);
+/** The ceiling `pick` (the server's setting for `capability`) sets over `resolves`, what the agent's pick `override`
+ *  resolves to (none: the server's own, as a run kept from before the setting has it), where it goes past it; else
+ *  undefined. Past it: a keyless third party, whoever picked it; Parallel, or a native search where the ceiling is not
+ *  native search itself, that the agent did not pick by name. One that sends nothing (unavailable, denied, off), the
+ *  guarded direct fetch and the ceiling's own native search go past none. */
+const ceilingOver = (capability: Pickable, pick: string | undefined, override: string | undefined, resolves: string | undefined): string | undefined => {
+  if (pick === undefined || resolves === undefined || !CEILINGS[capability]?.includes(pick)) return undefined;
+  if (KEYLESS.includes(resolves)) return pick;
+  if (resolves === "parallel" || (resolves === "native" && pick !== "native")) return override === resolves ? undefined : pick;
+  return undefined;
+};
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
- *  the two never disagree. An agent's pick the server's setting is a ceiling over (CEILINGS) is kept on the server, and
- *  the why says so. */
+ *  the two never disagree. An agent's pick the server's setting is a ceiling over (CEILINGS) resolves as the server's
+ *  setting does, and the why says so. */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const said = explained(capability, input);
-  const ceiling = ceilingOver(capability, input.pick, said.resolves);
-  if (input.override === undefined || ceiling === undefined) return said;
+  const ceiling = input.override === undefined ? undefined : ceilingOver(capability, input.pick, input.override, said.resolves);
+  if (ceiling === undefined) return said;
   const { override, ...server } = input;
   const kept = explained(capability, server);
-  return { resolves: kept.resolves, why: `kept on the server: the server's setting is ${ceiling}, over this agent's pick of ${override}; ${kept.why}` };
+  return { resolves: kept.resolves, why: `the server's setting, ${ceiling}, is a ceiling over this agent's pick of ${override}; ${kept.why}` };
 }
 
 function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
@@ -454,23 +468,32 @@ export function keptVendor(plane: Plane): Plane {
  *  it is saved on. */
 export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
 
-/** Whether a capability of `kept` (a launch's Plane) is on a keyless third party the server's `settings` now set a
- *  ceiling over (CEILINGS). */
-export const overCeilings = (kept: Plane, settings: ToolSettingsMap): boolean => PICKABLE.some((name) => ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined);
+/** The ceiling over capability `name` of `kept` (a launch's Plane) under the server's `settings` now, for a run of
+ *  `tooling` (its agent's own picks): ceilingOver, or, where the settings could not be read (`unread`), the strictest
+ *  (UNREAD_CEILINGS). */
+const claimCeiling = (name: Pickable, kept: Plane, tooling: Tooling, settings: ToolSettingsMap, unread: boolean): string | undefined =>
+  ceilingOver(name, unread ? UNREAD_CEILINGS[name] : settings[name]?.provider, tooling.overrides?.[name]?.provider, kept[name]);
+
+/** Whether a capability of `kept` goes past a ceiling of the server's `settings` now (claimCeiling). */
+export const overCeilings = (kept: Plane, tooling: Tooling, settings: ToolSettingsMap, { unread = false }: { unread?: boolean } = {}): boolean =>
+  PICKABLE.some((name) => claimCeiling(name, kept, tooling, settings, unread) !== undefined);
 
 /** The Plane a claim hands its run (runner/harness-loops.ts, before anything binds): `kept`, the launch's (resolved at
- *  the run's start), under the server's `settings` now. A capability kept on a keyless third party (Firecrawl, Exa),
- *  where the server's setting is now a ceiling over it (CEILINGS), takes today's resolution (planeFor in `env` for
- *  `tooling`) on `model`, the run's pinned one (its launch's), so a resume, a follow-up or a reclaim sends nothing the
- *  setting keeps on the server, and its native search asks the model the run sends. Every other value stays as kept;
- *  the same Plane where nothing is over a ceiling. */
-export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model }: { capped?: boolean; model?: string } = {}): Plane {
-  if (!overCeilings(kept, settings)) return kept;
-  const fresh = planeFor(env, model ? { ...tooling, model } : tooling, settings, { capped, run: true });
+ *  the run's start), under the server's `settings` now. A capability kept past a ceiling the server's setting now sets
+ *  (claimCeiling) takes today's resolution (planeFor in `env` for `tooling`) on `model`, the run's pinned one (its
+ *  launch's), so a resume, a follow-up or a reclaim sends nothing the setting keeps from it, and its native search asks
+ *  the model the run sends. Where the settings could not be read (`unread`), one past the strictest ceiling runs nothing
+ *  (SETTINGS_NOT_READ). Every other value stays as kept; the same Plane where nothing is past a ceiling. */
+export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model, unread = false }: { capped?: boolean; model?: string; unread?: boolean } = {}): Plane {
+  const past = PICKABLE.filter((name) => claimCeiling(name, kept, tooling, settings, unread) !== undefined);
+  if (!past.length) return kept;
   const out: Plane = { ...kept };
-  for (const name of PICKABLE) {
-    if (fresh[name] !== undefined && ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined) out[name] = fresh[name];
+  if (unread) {
+    for (const name of past) out[name] = SETTINGS_NOT_READ;
+    return out;
   }
+  const fresh = planeFor(env, model ? { ...tooling, model } : tooling, settings, { capped, run: true });
+  for (const name of past) if (fresh[name] !== undefined) out[name] = fresh[name];
   if (out.web_search === "native" && kept.web_search !== "native" && fresh.model) out.model = fresh.model;
   return out;
 }
