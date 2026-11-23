@@ -260,7 +260,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // Where each revision took over, over every run before the limit cuts the read (the first is the summary's takeover).
   const runs = tookOverOf(rows);
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
-  // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
+  // the runs the run's launch reads (pastRunsOverStore) at the all-in it reads (moneyAllInOf): a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
   const promotions = await promotionsOf(store.settings, agentId);
@@ -519,8 +519,9 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number | n
  *  and the cost page: of its newest PAST_RUNS runs on no named disk (learn/learning-of.ts: one on a named disk learns
  *  nothing), each that ended (ended, stopped or failed) since its learning's reset (learn/compile.ts sinceReset: a
  *  workflow before it is not the one it learned after, whatever its name), is neither imported nor archived nor a
- *  workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id (the cost
- *  page's series), read again for no run; `records`, where any other's rows are read (the store's by default). */
+ *  workflow revision's run, with its all-in cost as the money rule reads it (moneyAllInOf). `known`: all-in costs already
+ *  read (allInOf), by run id (the cost page's series), read again for no served run; `records`, where any other's rows
+ *  are read (the store's by default). */
 export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
@@ -546,9 +547,18 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
   const past: PastRun[] = [];
   for (let at = 0; at < kept.length; at += 16) {
-    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(paged, run)).total_usd })))));
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: await moneyAllInOf(paged, run, known) })))));
   }
   return past;
+}
+
+/** A run's all-in as the money rule reads it (runner/workflow-first.ts PastRun): a run a learned workflow served
+ *  (SERVED_PATHS) at its all-in (allInOf, or `known`'s); any other as the run view reads it (runAllInOverStore's
+ *  allInV2Of), its compile turns its revision's, never the agent's by-hand cost, and no revision's share (only a served
+ *  run carries one). Its recurring learning (a follow-up's rounds, its audit shadow) stays on it. */
+async function moneyAllInOf(records: RunRecords, run: RunRecord, known?: ReadonlyMap<string, number | null>): Promise<number | null> {
+  if (SERVED_PATHS.includes(metricOf(run).path as RunPath)) return known?.has(run.id) ? known.get(run.id)! : (await allInOf(records, run)).total_usd;
+  return allInV2Of({ run_id: run.id, ...(await allInOf(records, run)) }, await compilesOf(records, run.id), new Map());
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads

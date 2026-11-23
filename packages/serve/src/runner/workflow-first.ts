@@ -12,9 +12,10 @@
 // is one sample; a revision is asked only of a workflow its promotion holds), and never keeps the workflow from serving.
 // One money rule does (costLineOf): a workflow
 // serves while its all-in cost a run over its last COST_WINDOW served runs at its digest stays under the agent's by-hand
-// cost (its `agent` runs' mean all-in cost; with none, its runs before the workflow's first). Both sides read one all-in
-// cost a run, the cost page's (store-reads/learning.ts allInOf): its booked cost (the workflow and any handback's agent
-// work together) and every learning round booked for it (its look-backs, its grades, a follow-up's rounds). A run whose
+// cost (its `agent` runs' mean all-in cost; with none, its runs before the workflow's first). Each run is read at its
+// all-in (store-reads/learning.ts moneyAllInOf): its booked cost (the workflow and any handback's agent work together)
+// and every learning round booked for it (its look-backs, its grades, a follow-up's rounds), less, on the by-hand side,
+// its compile turns, which the run view charges to the revision they drafted. A run whose
 // all-in is unknown anywhere is left out of its side's mean and counted, never read as 0. Over that line it stops running
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
@@ -81,8 +82,9 @@ export interface Revise {
 /** How many of the agent's newest runs the money rule reads (store-reads/learning.ts pastRunsOverStore). */
 export const PAST_RUNS = 500;
 
-/** One of the agent's runs as the money rule reads it: its record's path fields, its all-in cost (allInOf: its booked
- *  cost and every learning round booked for it; null when any part is unknown), when it started. */
+/** One of the agent's runs as the money rule reads it: its record's path fields, its all-in cost (store-reads/learning.ts
+ *  moneyAllInOf: its booked cost and every learning round booked for it, a run off the served paths less its compile
+ *  turns; null when any part is unknown), when it started. */
 export type PastRun = { readonly metrics: unknown; readonly allInUsd: number | null; readonly startedAt: number };
 /** A mean over `runs` runs, rounded to 1e-6. */
 type Mean = { readonly runs: number; readonly mean_usd: number };
