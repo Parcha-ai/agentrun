@@ -126,6 +126,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { FAUX_ENV } = await import("./model.js");
           const { factsOf } = await import("./harness-table.js");
           const facts = factsOf(env, offer.id);
+          const { OLLAMA_PROVIDER, ollamaToolsModels } = await import("./ollama-provider.js");
+          const toolsModels = ollamaToolsModels(env);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
@@ -140,7 +142,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
               }
             }
             models.push(id);
-            if (!lacksKey) runsOne = true;
+            // A model of the Ollama here that takes no tools stays pickable, but gives a run no tools: it is no model a
+            // run of this harness has now, as the host's default never is one (model.ts localDefault).
+            if (!lacksKey && (!id.startsWith(`${OLLAMA_PROVIDER}/`) || toolsModels.includes(id))) runsOne = true;
           }
         }
         // One that runs nothing here for want of a key (unavailable with `keys`, or available with no default model for

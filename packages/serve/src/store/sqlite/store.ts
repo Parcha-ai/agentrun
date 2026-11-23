@@ -158,7 +158,7 @@ const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, l
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** Firing `f` (the alias) is one its launch hook's host took with no run yet, inside its start window: its startBy, kept in
  *  retry_at, not passed at the `?` it binds (the triggers' clock). It holds its trigger's room as a run in progress
- *  (activeRuns, waiting's free, held) and stays in the history (prune). */
+ *  (activeKeys, waiting's free, held) and stays in the history (prune). */
 const holdsRoom = (f: string): string => `(${f}.status = 'sent' AND ${f}.run_id IS NULL AND ${f}.retry_at IS NOT NULL AND ${f}.retry_at >= ?)`;
 /** Firing `f` is one of its trigger's runs in progress: started with run `r` (the alias of its LEFT JOINed run) not ended,
  *  or holding the room (holdsRoom, its one `?`). */
@@ -1117,6 +1117,9 @@ class SqliteStore implements Store {
           await d.lockRow(tx, "triggers", "id", triggerId);
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
           if (!was || (change.from !== undefined && was.status !== change.from)) return undefined;
+          // holdsAt: holdsRoom's own predicate, at that time.
+          if (change.holdsAt !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at !== null && was.retry_at >= change.holdsAt)) return undefined;
+          if (change.startByWas !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at === change.startByWas)) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
@@ -1193,18 +1196,18 @@ class SqliteStore implements Store {
       waiting: async (clockNow) =>
         (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
-             (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
-               WHERE s.trigger_id = f.trigger_id AND ${inProgress("s", "r")}) < COALESCE(t.max_active_runs, 1) AS free
+             (t.max_active_runs IS NULL OR (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
+               WHERE s.trigger_id = f.trigger_id AND ${inProgress("s", "r")}) < t.max_active_runs) AS free
            FROM trigger_firings f JOIN triggers t ON t.id = f.trigger_id
            WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.${d.firingOrder}`,
           clockNow,
         // A comparison reads 1 on SQLite and true on Postgres.
         )).map((r) => ({ ...firingOf(r), free: r.free === 1 || r.free === true })),
       soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
-      activeRuns: async (triggerId, clockNow) =>
-        (await db.get<{ n: number }>(
-          `SELECT COUNT(*) AS n FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
-        ))!.n,
+      activeKeys: async (triggerId, clockNow) =>
+        (await db.all<{ key: string }>(
+          `SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
+        )).map((r) => r.key),
       held: async (triggerId, clockNow) =>
         (await db.get<{ key: string }>(
           `SELECT f.key FROM trigger_firings f WHERE f.trigger_id = ? AND ${holdsRoom("f")} ORDER BY f.at DESC, f.${d.firingOrder} DESC LIMIT 1`, triggerId, clockNow,

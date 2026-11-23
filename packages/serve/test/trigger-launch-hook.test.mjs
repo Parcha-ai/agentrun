@@ -718,11 +718,19 @@ test("a host start for a firing that waits on its retry is refused while its tri
  *  `answer`; with no runner unless `runner` (a run stays queued, holding its place). `deliver(event)` posts one signed
  *  event and gives its firing's key; `decided(key)` is the firing's store row once the engine has settled it (waiting on
  *  its trigger's room, or no longer due); `poll()` steps the triggers' clock to the engine's timer and waits for the next,
- *  so a waiting firing has been read again. */
-async function webhookHook(t, answer, extra = {}, { runner = false } = {}) {
+ *  so a waiting firing has been read again. `cut`: each POST's bound is a signal the test holds (`bounds`, in order), cut
+ *  by hand, so a hook that never answers fails its try with no wait on the wall clock; `failedTries(key)` is the firing
+ *  once its try has failed. */
+async function webhookHook(t, answer, extra = {}, { runner = false, cut = false } = {}) {
   const clock = fakeClock("2026-06-01T00:00:00Z");
   const hook = await hookServer(t, answer);
-  const server = await serve(t, { triggerClock: clock, ...(runner ? {} : { runner: false }), launchHook: { url: hook.url, secret: mintSecret() } });
+  const bounds = [];
+  const bound = () => {
+    const signal = new AbortController();
+    bounds.push(signal);
+    return signal.signal;
+  };
+  const server = await serve(t, { triggerClock: clock, ...(runner ? {} : { runner: false }), launchHook: { url: hook.url, secret: mintSecret(), ...(cut ? { timeoutMs: 300, bound } : {}) } });
   await made(server.api, "triage");
   const created = await server.api("POST", "/triggers", { name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: "triage", input: { content: "Triage it." }, max_cost_usd: 0.5 }, ...extra });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -749,8 +757,72 @@ async function webhookHook(t, answer, extra = {}, { runner = false } = {}) {
     assert.ok(await until(() => clock.timer !== null), "its tick armed the next");
   };
   const handed = () => hook.got.map((got) => got.headers["webhook-id"]);
-  return { ...server, clock, hook, id, deliver, firing, decided, poll, handed };
+  const failedTries = async (key, n = 1) => {
+    assert.ok(await until(async () => ((await firing(key))?.attempts ?? 0) >= n), `firing ${key}'s try failed`);
+    return firing(key);
+  };
+  return { ...server, clock, hook, id, deliver, firing, decided, poll, handed, bounds, failedTries };
 }
+
+/** A firing whose hook's bound passed while its host held the POST: `deliver` and the bound cut by hand. Due on its
+ *  retry, and its host has it. */
+async function timedOut(w, event) {
+  const key = await w.deliver(event);
+  assert.ok(await until(() => w.handed().includes(key)), "the host has its POST");
+  w.bounds[w.handed().indexOf(key)].abort();
+  const waiting = await w.failedTries(key);
+  assert.deepEqual([waiting.status, waiting.runId, waiting.error?.code], ["due", null, "hook_failed"], JSON.stringify(waiting));
+  return key;
+}
+
+test("a host start that lands while another firing's hand is still open is refused: with max_active_runs 1, the firing whose hook timed out is not_due naming the cap while the open hand holds the room, and the open hand's start is the trigger's one run", { timeout: 120_000 }, async (t) => {
+  let letGo;
+  const open = new Promise((resolve) => (letGo = resolve));
+  // The first firing's host never answers (its bound is cut by hand); the second's holds its 200 until the test lets it go.
+  const w = await webhookHook(t, async (res, _sent, n) => {
+    if (n === 1) return;
+    await open;
+    answerJson(res, 200, {});
+  }, { max_active_runs: 1 }, { cut: true });
+  const b = await timedOut(w, "evt-b");
+  const a = await w.deliver("evt-a");
+  assert.ok(await until(() => w.handed().includes(a)), "the host has the second POST, and holds its answer");
+  assert.deepEqual([(await w.firing(a)).status, (await w.firing(a)).runId], ["due", null], "mid-hand: no answer yet");
+
+  const late = await hostStart(w.api, "triage", w.id, b);
+  assert.equal(late.status, 422, `the late start lands while the other hand is open: ${JSON.stringify(late.body)}`);
+  assert.deepEqual(late.body.error.fields.map((f) => [f.field, f.reason]), [["trigger_firing.firing_id", "not_due"]], JSON.stringify(late.body));
+  assert.match(late.body.error.fields[0].message, /max_active_runs 1/);
+  assert.equal((await runsOf(w.api, "triage")).length, 0, "no run while the hand is open");
+
+  letGo();
+  const sent = await w.decided(a);
+  assert.deepEqual([sent.status, sent.runId], ["sent", null], JSON.stringify(sent));
+  const started = await hostStart(w.api, "triage", w.id, a);
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1);
+  assert.equal((await runsOf(w.api, "triage")).length, 1, "one run: the trigger's one place");
+  const refused = await w.firing(b);
+  assert.deepEqual([refused.status, refused.runId], ["due", null], "the refused firing waits on its retry, to be handed again");
+});
+
+test("a host start for a firing that waits on its retry is refused while another firing its host took holds the room: with max_active_runs 1, not_due naming the cap before and after that firing's own start, which is the one run", { timeout: 120_000 }, async (t) => {
+  // The first firing's host never answers (its bound is cut by hand); every later one answers 200 with no run.
+  const w = await webhookHook(t, async (res, _sent, n) => (n === 1 ? undefined : answerJson(res, 200, {})), { max_active_runs: 1 }, { cut: true });
+  const b = await timedOut(w, "evt-b");
+  const a = await w.deliver("evt-a");
+  const sent = await w.decided(a);
+  assert.deepEqual([sent.status, sent.runId], ["sent", null], JSON.stringify(sent));
+  for (const when of ["while it is held", "once its run started"]) {
+    if (when === "once its run started") assert.equal((await hostStart(w.api, "triage", w.id, a)).status, 202, "the held firing's start");
+    const late = await hostStart(w.api, "triage", w.id, b);
+    assert.equal(late.status, 422, `${when}: ${JSON.stringify(late.body)}`);
+    assert.deepEqual(late.body.error.fields.map((f) => [f.field, f.reason]), [["trigger_firing.firing_id", "not_due"]], JSON.stringify(late.body));
+    assert.match(late.body.error.fields[0].message, /max_active_runs 1/);
+  }
+  assert.equal((await runsOf(w.api, "triage")).length, 1, "one run: the trigger's one place");
+  assert.deepEqual([(await w.firing(b)).status, (await w.firing(b)).runId], ["due", null]);
+});
 
 test("a firing handed to its host holds its trigger's room until its run starts and ends: with max_active_runs 1 a later firing waits on it, the host's start is taken as the one run, and the later firing is handed once that run ends", { timeout: 120_000 }, async (t) => {
   const gate = join(await scratch(t), "gate");
@@ -773,7 +845,7 @@ test("a firing handed to its host holds its trigger's room until its run starts 
   const waits = await w.decided(c);
   assert.deepEqual([waits.status, waits.waitsOn], ["due", zero.runId], `the later firing waits for the room: ${JSON.stringify(waits)}`);
   assert.match(waits.reason, /max_active_runs 1/);
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1, "the handed firing holds the one place");
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1, "the handed firing holds the one place");
   await w.poll();
   await w.poll();
   assert.deepEqual(w.handed(), [zero.key, a], "nothing is handed while the handed firing holds the room");
@@ -784,7 +856,7 @@ test("a firing handed to its host holds its trigger's room until its run starts 
   const now = await w.firing(a);
   assert.deepEqual([now.status, now.runId], ["started", started.body.run_id]);
   await follow(api, started.body.run_id, ["working"]);
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1, "its run is the one place, counted once");
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1, "its run is the one place, counted once");
   await w.poll();
   assert.deepEqual(w.handed(), [zero.key, a]);
 
@@ -807,8 +879,8 @@ test("a handed firing's hold on its trigger's room ends at its start_by: with ma
   await w.poll();
   await w.poll();
   assert.deepEqual(w.handed(), [a], "not handed while the host may still start the first");
-  assert.equal(await w.store.triggers.activeRuns(w.id, Date.parse("2026-06-01T00:10:00Z")), 1, "held through its start_by");
-  assert.equal(await w.store.triggers.activeRuns(w.id, Date.parse("2026-06-01T00:10:00.001Z")), 0, "and no longer past it");
+  assert.equal((await w.store.triggers.activeKeys(w.id, Date.parse("2026-06-01T00:10:00Z"))).length, 1, "held through its start_by");
+  assert.equal((await w.store.triggers.activeKeys(w.id, Date.parse("2026-06-01T00:10:00.001Z"))).length, 0, "and no longer past it");
 
   assert.ok(await until(() => w.hook.got.length === 2 || void w.clock.to(new Date(w.clock.now() + 500).toISOString())), "handed once start_by has passed");
   assert.deepEqual(w.handed(), [a, c]);
@@ -830,7 +902,7 @@ test("a trigger's first firing, handed with no run yet, holds the room too: with
   assert.deepEqual(w.handed(), [a]);
   const started = await hostStart(w.api, "triage", w.id, a);
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1);
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1);
   assert.equal((await runsOf(w.api, "triage")).length, 1, "one run: the trigger's one place");
 });
 
