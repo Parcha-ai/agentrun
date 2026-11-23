@@ -2,10 +2,14 @@
 // Written for AgentRun.
 //
 // The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. AgentRun
-// never reads, copies, stores or relays it: a session only tells the CLI where its login is (two directories, by
+// never reads, copies, stores or relays its tokens: a session only tells the CLI where its login is (two directories, by
 // environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
+// On a login the person's own CLI uses too, that check runs the CLI on a private copy of the account file
+// (`.claude.json`), which the CLI rewrites on start, so the person's own file is only ever opened to read. The copy
+// leaves out the fields that hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
+// The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
@@ -28,6 +32,9 @@ export interface ClaudeAgentLogin {
   /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
    *  the CLI empty there too. */
   unsuffixed?: boolean;
+  /** Set for this machine's own login, which the person's own CLI uses too (the default folder or their
+   *  `CLAUDE_CONFIG_DIR`): a status check never runs the CLI on its account file, only on a copy (claudeLoginStatus). */
+  shared?: boolean;
 }
 
 /** `login.secure` as the CLI's variable on `platform` (undefined when it is not set apart): empty on macOS where the
@@ -40,21 +47,24 @@ const secureVar = (login: ClaudeAgentLogin, platform: NodeJS.Platform): string |
  *  set and empty; unset, it would hash the session's own config dir. So a login on the CLI's default folder (`home`) gets
  *  an empty one on macOS (the item with no suffix, the person's own CLI's), and its folder elsewhere, where the CLI keeps
  *  `.credentials.json` in that dir. A login whose credentials dir is set apart (`secure`) gets that one, as the person's
- *  own CLI with it does. `platform`: the one the CLI runs on, this host's. */
+ *  own CLI with it does. A status check on a login the person's own CLI uses has a config dir of its own too (a copy of
+ *  the account file), so it takes this rule (claudeLoginStatus). `platform`: the one the CLI runs on, this host's. */
 export function loginEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = process.platform): Record<string, string> {
   const secure = secureVar(login, platform) ?? (login.home !== undefined && platform === "darwin" ? "" : login.dir);
   return { CLAUDE_SECURESTORAGE_CONFIG_DIR: secure, ANTHROPIC_CONFIG_DIR: login.profiles };
 }
 
-/** The variables of the CLI's own sign-in at `login` and of its status check there. The line a person runs
- *  (loginCommand), the sign-in this host starts (startClaudeLogin) and the status check (claudeLoginStatus) all take
- *  these, so they cannot drift apart. Neither is a session, whose config dir stays its own (loginEnv).
+/** The variables of the CLI's own sign-in at `login`. The line a person runs (loginCommand) and the sign-in this host
+ *  starts (startClaudeLogin) both take these, and so does the status check (claudeLoginStatus) on AgentRun's own login,
+ *  both in the person's home (personHome), so they cannot drift apart. Neither is a session, whose config dir stays its own (loginEnv). On a login the person's
+ *  own CLI uses too (`home`, `shared`) the status check runs on a copy of the account file instead.
  *  - On the CLI's default folder (`home`): the person's own CLI as it runs, with no config or credentials dir, in their
  *    home (`HOME`; a terminal of theirs has it already, so the shown line leaves it out, and clears the two folder
- *    variables a terminal may export). It reads and writes the account
- *    in `<home>/.claude.json` and the tokens where that person's CLI keeps them, on every platform.
+ *    variables a terminal may export). It writes the account in `<home>/.claude.json` and the tokens where that person's
+ *    CLI keeps them, on every platform.
  *  - Anywhere else: the login's folder as both the config dir and the credentials dir. `auth login` writes the account it
- *    signed in to its config dir's `.claude.json` and `auth status` reads it from there. For a folder the person's own
+ *    signed in to its config dir's `.claude.json`, where the status check reads it (from a copy, on a folder the person's
+ *    own CLI uses). For a folder the person's own
  *    CLI uses through `CLAUDE_CONFIG_DIR`, the credentials dir set to that folder is where that CLI keeps its tokens too
  *    (Linux: the same file; macOS: the same item, hashed from the same folder).
  *  - A credentials dir set apart (`secure`, from the server's `CLAUDE_SECURESTORAGE_CONFIG_DIR`) is the credentials dir
@@ -125,17 +135,91 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
 
-/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH and the sign-in's
- *  variables (signInEnv) beside it, so it reads the login as the sign-in left it, the account's `.claude.json` included.
- *  It runs in an empty home of its own (removed after), unless the login is the person's own on the CLI's default
- *  folder, which signInEnv runs in their home. A status check is no session: nothing resumes in its config dir, so
- *  loginEnv's rule does not apply to it. Throws when the CLI gives no answer that reads as one. */
-export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string } = {}): Promise<ClaudeLoginStatus> {
+/** The account file (`.claude.json`) the person's own CLI keeps for `login`, when they use it too: in their home on the
+ *  CLI's default folder, in the folder itself for their `CLAUDE_CONFIG_DIR`. Undefined for AgentRun's own login. */
+const sharedAccount = (login: ClaudeAgentLogin): string | undefined => (login.home !== undefined ? join(login.home, ".claude.json") : login.shared ? join(login.dir, ".claude.json") : undefined);
+
+/** The account file's fields that hold secrets, which its copy never gets: the API key an older CLI signed in with
+ *  (`primaryApiKey`, the CLI's key when no other is set), the variables the CLI exports on start (`env`, which can hold
+ *  `ANTHROPIC_API_KEY` or a token), and MCP servers, whose `env` and `headers` hold their tokens (`mcpServers`: the
+ *  user's here, each folder's under `projects`). The rest holds none: `customApiKeyResponses` keeps the last 20
+ *  characters of a key, `oauthAccount` the account's words; the tokens are in the credentials dir. A run's config dir
+ *  has none of these either, so the check answers as a run would. */
+const ACCOUNT_SECRETS = ["primaryApiKey", "env", "mcpServers"] as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The account file `raw` without its secrets (ACCOUNT_SECRETS), or undefined when it is no JSON object: nothing of a
+ *  file that can't be read field by field is copied, as if it were missing. The CLI reads no account from such a file
+ *  either (it calls it corrupted). */
+function withoutSecrets(raw: Buffer): string | undefined {
+  // A UTF-8 byte order mark ahead of the JSON is skipped.
+  const text = raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf ? raw.subarray(3) : raw;
+  let account: unknown;
+  try {
+    account = JSON.parse(text.toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(account)) return undefined;
+  const copy: Record<string, unknown> = { ...account };
+  for (const field of ACCOUNT_SECRETS) delete copy[field];
+  if (isRecord(copy.projects)) {
+    copy.projects = Object.fromEntries(Object.entries(copy.projects).map(([folder, project]) => {
+      if (!isRecord(project)) return [folder, project];
+      const rest: Record<string, unknown> = { ...project };
+      delete rest.mcpServers;
+      return [folder, rest];
+    }));
+  }
+  return `${JSON.stringify(copy, null, 2)}\n`;
+}
+
+/** A new folder `to` (0700) holding a copy (0600) of the account file `from` without its secrets (withoutSecrets), or
+ *  nothing when there is none or it is no JSON object. `from` is only read. */
+function accountCopy(from: string, to: string): string {
+  mkdirSync(to, { mode: 0o700 });
+  let raw: Buffer | undefined;
+  try {
+    raw = readFileSync(from);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const account = raw === undefined ? undefined : withoutSecrets(raw);
+  if (account !== undefined) writeFileSync(join(to, ".claude.json"), account, { mode: 0o600, flag: "wx" });
+  return to;
+}
+
+/** The home of the person whose CLI keeps `login`: the login's own (`home`, the CLI's default folder), else `given`, else
+ *  the server's (`os.homedir()`). On macOS the CLI reads its tokens from the login keychain, which is under that home:
+ *  in any other home (an empty one, a session's) it finds no keychain and reads signed out, whatever the variables. */
+export const personHome = (login: ClaudeAgentLogin, given?: string): string => login.home ?? given ?? homedir();
+
+/** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH and the login's
+ *  variables beside it, in the person's home (personHome; `home` given, else the server's) on every place and platform.
+ *  The CLI rewrites its account file (`.claude.json`, in its config dir) whenever that file's migration number is not its
+ *  own, and adds a settings file, a backup and a lock beside it the first time, all in its config dir, so the check never
+ *  runs it on a file the person's own CLI keeps:
+ *  - AgentRun's own login: the sign-in's variables (signInEnv), so it reads the account `auth login` left in the login's
+ *    folder, which is AgentRun's alone.
+ *  - A login the person's own CLI uses too (the default folder, `home`; their `CLAUDE_CONFIG_DIR`, `shared`): the config
+ *    dir is a copy of their account file in a folder of its own (`scratch`, one per check, removed after it answers or
+ *    throws), less its secrets (accountCopy), and the credentials dir is a run's (loginEnv): on macOS it names the
+ *    Keychain item ahead of the config dir (empty: the item with no suffix, the default folder's; else hashed from the
+ *    folder), so the copy never renames it.
+ *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
+ *  Throws when the CLI gives no answer that reads as one. */
+export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform; home?: string } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-status-"));
   try {
+    const account = sharedAccount(login);
+    const HOME = personHome(login, options.home);
+    const where = account === undefined
+      ? { ...signInEnv(login, options.platform), HOME }
+      : { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: accountCopy(account, join(scratch, "config")) };
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
-        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...(login.home === undefined ? { HOME: scratch, XDG_CONFIG_HOME: join(scratch, ".config") } : {}), ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
         timeout: options.timeoutMs ?? LOGIN_STATUS_MS,
       });
@@ -212,7 +296,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
     startable(cli, path);
     const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch);
     child = spawn(run.command, run.args, {
-      env: { PATH: path, HOME: options.home ?? homedir(), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+      env: { PATH: path, HOME: personHome(login, options.home), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
     });
   } catch (error) {
