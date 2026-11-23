@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -30,7 +30,7 @@ import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type RefusedReason, readWorkBytes, WorkRefused, walkWork } from "./workspace.js";
 import { journalEntries } from "./runner/journal-reader.js";
-import { bodyOf, type NewRevision, openStore, SchemaVersionUnknown, type Store, StoreFromEarlierVersion, StoreOwned, storeTarget } from "./store/index.js";
+import { bodyOf, type ImportSource, type NewRevision, openStore, SchemaVersionUnknown, type Store, StoreFromEarlierVersion, StoreOwned, storeTarget } from "./store/index.js";
 import { STORE_FILE } from "./store/sqlite/store.js";
 import { foundOverStore } from "./store-reads/import-summary.js";
 
@@ -188,10 +188,14 @@ const INSTRUCTIONS: Record<string, string[]> = {
   pi: ["AGENTS.md", "CLAUDE.md"],
 };
 
+/** The sources serve imports runs from: the ones a run's imported_from names. The import package reads more (Copilot
+ *  CLI) for its totals alone. */
+export const IMPORT_SOURCES = ["claude-code", "codex", "pi"] as const satisfies readonly Source[];
+
 export type ImportOptions = {
   /** The home whose sessions are read (the person's own). */
   home: string;
-  sources?: readonly Source[];
+  sources?: readonly ImportSource[];
   /** Keep projects whose directory is gone or under the temp directory, and sessions with no message of the person's. */
   all?: boolean;
   /** Keep projects whose directory is gone (a deleted worktree's, a moved checkout's): each still its own agent, with no
@@ -416,7 +420,7 @@ const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0
 /** What an import would take: the sessions under `home`, by project, with what it leaves out and why. Keeps no turns
  *  (with `measure`, only until each session is measured), and reads no file `store`'s imports already read whole and
  *  that has not changed since. */
-export async function planImport({ home, sources = SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, own = [], signal, keys: scan = true, onKeys, only }: ImportOptions, store?: ImportStore): Promise<Plan> {
+export async function planImport({ home, sources = IMPORT_SOURCES, all = false, deleted = false, now = Date.now(), temp: tempDir = tmpdir(), measure = false, env, stored, own = [], signal, keys: scan = true, onKeys, only }: ImportOptions, store?: ImportStore): Promise<Plan> {
   // A session's id that holds a key (one named after its file can) is kept as a hash of it: every lookup of an earlier
   // import's run then goes by the id as kept.
   const idOf = keptId([env, stored ?? {}], own);
@@ -1262,7 +1266,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         id: randomUUID(),
         agentId: project.agentId,
         revisionId: revisions.get(session.source)!,
-        importedFrom: { source: session.source, session: session.id, file: read },
+        importedFrom: { source: session.source as ImportSource, session: session.id, file: read },
         launch: { body: launchBody({ input: { content: text(session.firstPrompt ?? "") }, title, place: { mode: "runner" } }) },
         // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
         state: session.state === "completed" ? "ended" : session.state,
@@ -1436,10 +1440,10 @@ async function importWith(
       return 2;
     }
     const open = openAt(env, port);
-    const sources = values.from === undefined ? SOURCES : values.from.split(",").map((s) => s.trim());
-    const unknown = sources.filter((s) => !(SOURCES as readonly string[]).includes(s));
+    const sources = values.from === undefined ? IMPORT_SOURCES : values.from.split(",").map((s) => s.trim());
+    const unknown = sources.filter((s) => !(IMPORT_SOURCES as readonly string[]).includes(s));
     if (unknown.length) {
-      console.error(`--from takes ${SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
+      console.error(`--from takes ${IMPORT_SOURCES.join(", ")}: not ${unknown.join(", ")}\n\n${usage}`);
       return 2;
     }
     dir = values.data ?? defaultData({ ...env, HOME: home });
@@ -1459,7 +1463,7 @@ async function importWith(
       }
       const options: ImportOptions = {
         home,
-        sources: sources as Source[],
+        sources: sources as ImportSource[],
         all: values.all === true,
         deleted: values["include-deleted"] === true,
         temp,

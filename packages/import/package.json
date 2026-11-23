@@ -1,11 +1,12 @@
 {
   "name": "@parcha/agentrun-import",
   "version": "0.1.0-beta.54",
-  "description": "Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape, with normalized token usage, subagents under their parent, byte-offset cursors for re-reads, and per-session totals.",
+  "description": "Reads the coding-agent sessions under a home (Claude Code, Codex, pi, GitHub Copilot CLI) into one Session shape, with normalized token usage, subagents under their parent, byte-offset cursors for re-reads, and per-session totals.",
   "keywords": [
     "agentrun",
     "claude-code",
     "codex",
+    "copilot",
     "pi",
     "sessions",
     "usage"

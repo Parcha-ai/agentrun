@@ -4,16 +4,20 @@
 //   openai     input_tokens holds cached_input_tokens (and a cache write where one is counted): subtracted. output_tokens
 //              holds reasoning_output_tokens, kept as `reasoning` beside it. Codex writes OpenAI's counts.
 //   pi         already split as Usage is, cacheWrite1h included.
+//   copilot    GitHub Copilot CLI's {inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens}:
+//              inputTokens holds the cache read and write (github/copilot-sdk docs/features/usage-and-billing.md),
+//              subtracted; reasoningTokens is part of outputTokens, kept as `reasoning` beside it.
 import { isObject } from "./text.js";
 import type { Usage } from "./types.js";
 
-export type UsageFormat = "anthropic" | "openai" | "pi";
+export type UsageFormat = "anthropic" | "openai" | "pi" | "copilot";
 
 /** Each format's names for input, cache read, cache write and output, and whether its input holds its cache counts. */
 const NAMES: Record<UsageFormat, { input: string; cacheRead: string; cacheWrite: string; output: string; cachedIn: boolean }> = {
   anthropic: { input: "input_tokens", cacheRead: "cache_read_input_tokens", cacheWrite: "cache_creation_input_tokens", output: "output_tokens", cachedIn: false },
   openai: { input: "input_tokens", cacheRead: "cached_input_tokens", cacheWrite: "cache_write_input_tokens", output: "output_tokens", cachedIn: true },
   pi: { input: "input", cacheRead: "cacheRead", cacheWrite: "cacheWrite", output: "output", cachedIn: false },
+  copilot: { input: "inputTokens", cacheRead: "cacheReadTokens", cacheWrite: "cacheWriteTokens", output: "outputTokens", cachedIn: true },
 };
 
 const count = (value: unknown): number | undefined => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined);
@@ -31,7 +35,7 @@ export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undef
   const out: Usage = usage as Usage;
   const long = count(format === "anthropic" ? (isObject(raw.cache_creation) ? raw.cache_creation.ephemeral_1h_input_tokens : undefined) : format === "pi" ? raw.cacheWrite1h : undefined);
   if (long !== undefined && long <= out.cacheWrite) out.cacheWrite1h = long;
-  const reasoning = format === "openai" ? count(raw.reasoning_output_tokens) : undefined;
+  const reasoning = format === "openai" ? count(raw.reasoning_output_tokens) : format === "copilot" ? count(raw.reasoningTokens) : undefined;
   if (reasoning !== undefined && reasoning <= out.output) out.reasoning = reasoning;
   return out;
 }

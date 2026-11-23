@@ -5,12 +5,12 @@ import { transcriptOf, LIVE_MS } from '../import.js';
 import type { Session, Turn } from '@parcha/agentrun-import';
 import { launchBody } from '../run-launch.js';
 import { runMetricsOf } from '../timeline/index.js';
-import type { Store, ImportRunInput } from '../store/store.js';
+import type { Store, ImportRunInput, ImportSource } from '../store/store.js';
 import type { NativeRuntime } from './types.js';
 import {secretCut,secretsIn} from '../secret-cut.js';
 import {SECRET_NAMES} from '../secrets.js';
 
-export type RemoteHistorySession = Pick<Session,'source'|'id'|'startedAt'|'endedAt'|'state'|'model'|'costUsd'|'firstPrompt'|'activeMs'|'turns'>;
+export type RemoteHistorySession = Pick<Session,'id'|'startedAt'|'endedAt'|'state'|'model'|'costUsd'|'firstPrompt'|'activeMs'|'turns'> & {source:ImportSource};
 export const REMOTE_HISTORY_SESSION_BYTES=1_000_000;
 export const REMOTE_HISTORY_BODY_BYTES=2_000_000;
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');

@@ -1,6 +1,6 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, GitHub Copilot CLI) into one Session shape: normalized token usage,
 subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
 server imports past sessions through it.
 
@@ -26,12 +26,13 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   answer; a file that fails to read gives up what it held and is read from its start next time.
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
   totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
-- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
+- `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`); without it the
+  home's.
 
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,copilot] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -44,19 +45,43 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"` or `"pi"` writes it:
+`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"` or `"copilot"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
 | Anthropic | `input_tokens` (already excludes the cache) | `cache_creation.ephemeral_1h_input_tokens` | |
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
 | pi | `input` | `cacheWrite1h` | |
+| Copilot CLI | `inputTokens - cacheReadTokens - cacheWriteTokens` | | `reasoningTokens` (part of `output`) |
 
 A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
 record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.
+
+### GitHub Copilot CLI
+
+Sessions are `$COPILOT_HOME/session-state/<id>/events.jsonl` (`~/.copilot` without `COPILOT_HOME`), and an older CLI's
+`session-state/<id>.jsonl`. Each persisted `assistant.message` is one request (a response split into chunks is one),
+keyed by its `messageId`; each event counts once by its `id`, and a rotated journal's `checkpoint: true` records are
+copies. A user message is the person's unless a subagent, autopilot, a skill or another agent wrote it.
+
+Copilot writes no request's tokens to disk: `assistant.usage` is ephemeral. Its tokens are the `modelMetrics` of the
+`session.shutdown` each CLI process writes as it exits, per model, subagents included. A CLI that keeps its accounting
+across processes (`session.usage_checkpoint`, a shutdown with `usageAccountingWatermarks`) writes the session's whole
+total there, so a shutdown counts only what it adds to the ones before it; an older CLI's counts its own process. A
+model's tokens go on the last request of that model since the process started or resumed the session, or on a request
+of their own when there is none (a compaction's model). So:
+
+- A session with no shutdown (still running, killed, or left with `/new`) has tokens 0 and cost `null`.
+- Copilot bills premium requests and AI credits and writes no dollar cost. `cost` is the catalog's list price only when
+  each request's tokens are known, which for Copilot means each model ran one request in its process; else `null`.
+- `events.N.jsonl` archives (written only with `COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES`) and the pre-0.0.342
+  `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
+  the requests in its archives are not counted.
+- serve's import does not bring Copilot sessions in as runs (its `IMPORT_SOURCES` are Claude Code, Codex and pi);
+  they count in `parseHome` and the CLI.
 
 ## Readers
 

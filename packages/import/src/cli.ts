@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The known answer for a home: one JSONL line per session, sorted by key, numbers only (no content, title, directory or
 // path), so two readers of the same home can be compared line for line.
-//   node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+//   node dist/cli.js <home> [--sources claude-code,codex,pi,copilot] --known-answer
 // A line: {key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h}, cost, turns, calls}. key is the
 // sha256 of the session file's path relative to <home>; turns, the person's user messages; calls, model requests (its
 // subagents' with them); cost, USD, null when unknown. --help (-h) prints the usage and exits 0; a usage error exits 2.
