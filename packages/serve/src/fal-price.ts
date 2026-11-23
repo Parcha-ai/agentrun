@@ -132,13 +132,34 @@ const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, 
  *  The voice is read once here and fetched again by fal, so a host that served this read a short voice and fal a long
  *  one would pass the cap: only a voice on fal's own media (fal.media and its subdomains, where fal puts what it makes
  *  and what is uploaded to it, a new URL for each file) is priced. Any other is unpriceable.
- *  Each value is why a job's input can't be priced, or undefined when it can. Fabric's rate depends on its resolution
- *  (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the 480p one, and its OpenAPI gives
- *  resolution no default, so only a job that sends "480p" is priced. OmniHuman v1.5 has one rate: fal's model page
- *  (read 2026-11-23) bills it per second at $0.16, with no rate by resolution or turbo_mode. */
-const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => string | undefined> = new Map<string, (input: Record<string, unknown>) => string | undefined>([
-  ["veed/fabric-1.0", (input) => (input.resolution === "480p" ? undefined : `fal bills veed/fabric-1.0 per second at the rate get_pricing states only for resolution "480p" (720p costs more), and this job's resolution is ${input.resolution === undefined ? "not set" : JSON.stringify(input.resolution)}`)],
-  ["fal-ai/bytedance/omnihuman/v1.5", () => undefined],
+ *  Fabric's rate depends on its resolution (RATE_SETTINGS). OmniHuman v1.5 has one rate: fal's model page (read
+ *  2026-11-23) bills it per second at $0.16, with no rate by resolution or turbo_mode. */
+const TALKING_HEADS: ReadonlySet<string> = new Set(["veed/fabric-1.0", "fal-ai/bytedance/omnihuman/v1.5"]);
+
+/** A setting `field` priced only at `allowed` (undefined: the field left out), described in `words`. */
+const only = (field: string, allowed: readonly unknown[], words: string) => (input: Record<string, unknown>): string | undefined =>
+  allowed.includes(input[field]) ? undefined : `at the rate get_pricing states only for ${words}, and this job's ${field} is ${input[field] === undefined ? "not set" : JSON.stringify(input[field])}`;
+/** The endpoints whose rate depends on a setting, and the settings get_pricing's one rate is for. fal bills each setting
+ *  at its own rate but get_pricing states one, so a job at a setting that costs more, or one that leaves out a setting
+ *  whose default costs more, would be held under what fal bills: it is unpriceable. Each value is why a job's input
+ *  can't be priced at get_pricing's rate, or undefined when it can. The rates are fal's model pages, read 2026-11-23:
+ *  - Ideogram v3 (and its edit, remix, reframe and replace-background): $0.03 an image at TURBO, get_pricing's rate;
+ *    $0.06 at BALANCED, the default; $0.09 at QUALITY.
+ *  - Veo 3.1 (and its fast and image-to-video): get_pricing's rate is 720p or 1080p with audio (audio off costs less);
+ *    4k costs more. Veo 3 fast has no 4k.
+ *  - Kling v3 pro image-to-video: get_pricing's $0.14 a second is above audio off ($0.112) and below audio on, the
+ *    default ($0.168), and voice control ($0.196).
+ *  - sync-lipsync v2: $3 a minute for lipsync-2, the default; $5 for lipsync-2-pro.
+ *  - Nano Banana Pro: $0.15 an image at 1K, the default, or 2K; 4K costs double, and a web search costs more.
+ *  - Fabric: $0.08 a second at 480p, get_pricing's rate; $0.15 at 720p. Its resolution has no default (its OpenAPI), so
+ *    only a job that sends "480p" is priced. */
+const RATE_SETTINGS: ReadonlyMap<string, (input: Record<string, unknown>) => string | undefined> = new Map([
+  ...["fal-ai/ideogram/v3", "fal-ai/ideogram/v3/edit", "fal-ai/ideogram/v3/remix", "fal-ai/ideogram/v3/reframe", "fal-ai/ideogram/v3/replace-background"].map((endpoint) => [endpoint, only("rendering_speed", ["TURBO"], `rendering_speed "TURBO" (BALANCED, the default, and QUALITY cost more)`)] as const),
+  ...["fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video"].map((endpoint) => [endpoint, only("resolution", [undefined, "720p", "1080p"], `resolution "720p", the default, or "1080p" (4k costs more)`)] as const),
+  ["fal-ai/kling-video/v3/pro/image-to-video", only("generate_audio", [false], "generate_audio false (audio on, the default, and voice control cost more)")],
+  ["fal-ai/sync-lipsync/v2", only("model", [undefined, "lipsync-2"], `model "lipsync-2", the default (lipsync-2-pro costs more)`)],
+  ["fal-ai/nano-banana-pro", (input) => only("resolution", [undefined, "1K", "2K"], `resolution "1K", the default, or "2K" (4K costs double)`)(input) ?? only("enable_web_search", [undefined, false], "enable_web_search false, the default (a web search costs more)")(input)],
+  ["veed/fabric-1.0", only("resolution", ["480p"], `resolution "480p" (720p costs more)`)],
 ]);
 /** A talking head's voice: its input's audio_url when that is an https URL on fal's own media, written as it parses
  *  (TALKING_HEADS). */
@@ -167,6 +188,8 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
   const bills = `fal bills ${endpoint} per ${oneOf(unit)}`;
   if (AFTER_ONLY.has(unit)) return { unknown: `${bills}, which can't be known before the job runs` };
   if (!isObject(input)) return { unknown: `${bills}, and this job has no input to count them from` };
+  const setting = RATE_SETTINGS.get(endpoint)?.(input);
+  if (setting) return { unknown: `${bills} ${setting}` };
   if (unit === "images" || unit === "audios") {
     const count = countOf(input, unit);
     return count ? { units: count.n, from: count.from } : { unknown: `${bills}, and this job's input does not say how many as a whole number above 0` };
@@ -190,10 +213,7 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
       const end = composeSeconds(input);
       return end ? { units: end / per, from: "its timeline's end" } : { unknown: `${bills}, and this job's tracks have no keyframes with a timestamp and a duration to read its length from` };
     }
-    const head = TALKING_HEADS.get(endpoint);
-    if (head) {
-      const why = head(input);
-      if (why) return { unknown: why };
+    if (TALKING_HEADS.has(endpoint)) {
       const voice = voiceOf(input);
       return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media, written as fal answered it (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times` };
     }

@@ -28,7 +28,7 @@ test("a run's fal job: a Tool cost row, tools_usd and a /usage tools line at fal
   const made = await api("POST", "/agents", agent("card", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   // The run has a cap, so the job is held under it before it is sent.
-  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a share card","num_images":2},"submission_key":"card-20261120-1"}' }, max_cost_usd: 1 });
+  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"rendering_speed":"TURBO","prompt":"a share card","num_images":2},"submission_key":"card-20261120-1"}' }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
@@ -153,7 +153,7 @@ async function twoAtOnce(t, secondImages, { heldFirst = false } = {}) {
   const SCHEMA = "mcp:fal/get_model_schema";
   const made = await api("POST", "/agents", agent("two", { tools: [RUN_MODEL, SCHEMA], tool_settings: { [RUN_MODEL]: { permission: "allow" }, [SCHEMA]: { permission: "allow" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const job = (prompt) => ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt, num_images: 4 } }];
+  const job = (prompt) => ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt, num_images: 4 } }];
   const content = `At once: ${JSON.stringify([job("first"), job("second")])}\nAt once: ${JSON.stringify([["mcp__fal__get_model_schema", { endpoint_id: "fal-ai/ideogram/v3" }]])}`;
   const run = await api("POST", "/agents/two/runs", { input: { content }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -244,7 +244,7 @@ async function admittedAfterStop(t) {
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const script = "await tools.mcp__fal__get_model_schema({ endpoint_id: 'wait' }); await tools.mcp__fal__get_model_schema({ endpoint_id: 'last' }).catch(() => 'refused'); return 'end';";
   const calls = [
-    ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a lighthouse", num_images: 4 } }],
+    ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "a lighthouse", num_images: 4 } }],
     ["mcp__fal__run_model", { endpoint_id: "fal-ai/flux/schnell", input: { prompt: "a harbour", image_size: { width: 1000, height: 1000 }, num_images: 1 } }],
     ["codemode", { script }],
   ];

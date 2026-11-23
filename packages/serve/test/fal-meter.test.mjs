@@ -106,7 +106,7 @@ const textOf = (result) => result.content.map((block) => block.text).join("");
 
 test("a fal image job is held before it is sent and booked at fal's price per image times its images", async (t) => {
   const run = await setup(t);
-  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a share card", image_size: "landscape_16_9", num_images: 2 }, submission_key: "card-1" });
+  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "a share card", image_size: "landscape_16_9", num_images: 2 }, submission_key: "card-1" });
   assert.equal(result.isError, undefined, textOf(result));
   assert.equal(JSON.parse(textOf(result)).status, "completed", "the model reads fal's reply");
   near(run.spent(), 0.06, "$0.03 an image, 2 images");
@@ -122,7 +122,7 @@ test("a fal image job is held before it is sent and booked at fal's price per im
 
 test("a job that returns fewer images than it asked for is booked at the images it returned", async (t) => {
   const run = await setup(t, { run: (args) => reply(args, { result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }, { url: "https://v3.fal.media/3.png" }] } }) });
-  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 4 } });
+  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 4 } });
   near(run.admits[0].holdUsd, 0.12, "held at 4 images");
   near(run.spent(), 0.09, "booked at the 3 it returned");
 });
@@ -142,6 +142,15 @@ test("a voiceover is booked per 1000 characters of its text", async (t) => {
   await run.call("run_model", { endpoint_id: TTS, input: { text: "a".repeat(1500), voice: "Aria", stability: 0.4 } });
   near(run.spent(), 0.15, "1500 characters at $0.10 per 1000");
   assert.equal(run.admits[0].basis, `fal's price for ${TTS}: $0.1 per 1000 characters × 1.5 (the 1500 characters of its text), from get_pricing at 2026-11-20T12:00:00.000Z`);
+});
+
+test("a job at a setting that costs more than get_pricing's one rate is refused unsent under a cap", async (t) => {
+  const capped = await setup(t, { capUsd: 5 });
+  const refused = await capped.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "QUALITY" } });
+  assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/ideogram/v3 per image at the rate get_pricing states only for rendering_speed "TURBO" (BALANCED, the default, and QUALITY cost more), and this job's rendering_speed is "QUALITY", so a run with a spend cap can't send it. Nothing was sent.`);
+  assert.equal(capped.received("run_model"), 0, "fal never received the job");
+  await capped.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "TURBO" } });
+  near(capped.spent(), 0.03, "TURBO: get_pricing's rate");
 });
 
 test("a video job is held at its input's duration; still processing, it is booked at that hold", async (t) => {
@@ -165,7 +174,7 @@ test("a job whose hold passes the run's cap is refused before it is submitted", 
 test("a replayed submission is booked $0: the job was booked when it was first sent", async (t) => {
   const seen = new Set();
   const run = await setup(t, { run: (args) => { const replayed = seen.has(args.submission_key); seen.add(args.submission_key); return reply(args, { replayed, result: { images: [{ url: "https://v3.fal.media/1.png" }] } }); } });
-  const job = { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 }, submission_key: "card-go122-1" };
+  const job = { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 }, submission_key: "card-go122-1" };
   await run.call("run_model", job);
   await run.call("run_model", job);
   assert.equal(run.received("run_model"), 2, "both calls reached fal");
@@ -176,30 +185,30 @@ test("a replayed submission is booked $0: the job was booked when it was first s
 test("a reply that carries no job was never billed: booked $0; a job that failed after it was accepted is booked at its hold", async (t) => {
   // fal validates the input before any charge: its refusal is an error with no request_id.
   const refused = await setup(t, { run: () => ({ content: [{ type: "text", text: JSON.stringify({ status: "error", error: { type: "validation_error", message: "Input validation failed", field_errors: [{ field: "image_size", message: "expected one of square_hd, square" }] } }) }], isError: true }) });
-  const result = await refused.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", image_size: "poster", num_images: 1 } });
+  const result = await refused.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", image_size: "poster", num_images: 1 } });
   assert.equal(result.isError, true);
   assert.match(textOf(result), /validation_error/, "the model reads fal's refusal");
   assert.equal(refused.received("run_model"), 1, "it reached fal");
   assert.deepEqual(await refused.turns(), [0], "booked $0");
   // An error that names the job it accepted: fal may have billed it.
   const failed = await setup(t, { run: (args) => ({ ...reply(args, { status: "failed" }), isError: true }) });
-  await failed.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  await failed.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   assert.deepEqual(await failed.turns(), [0.03], "booked at its hold");
   // An error in words alone says nothing a program can read: at its hold, never $0.
   const prose = await setup(t, { run: () => ({ content: [{ type: "text", text: "Something went wrong." }], isError: true }) });
-  await prose.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  await prose.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   assert.deepEqual(await prose.turns(), [0.03], "booked at its hold");
   // A structured error with no request_id that is not a refusal of the input (a timeout after the request left): the
   // job may exist, so at its hold, never $0.
   const timedOut = await setup(t, { run: () => ({ content: [{ type: "text", text: JSON.stringify({ status: "error", error: { type: "upstream_timeout", message: "the queue closed before its reply arrived" } }) }], isError: true }) });
-  await timedOut.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  await timedOut.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   assert.deepEqual(await timedOut.turns(), [0.03], "a timeout is booked at its hold");
 });
 
 test("a reply lost after the job left is booked at its hold, the price it was sent at; unknown only for a job that had none", async (t) => {
   const lost = (_url, message) => (message?.method === "tools/call" && message.params?.name === "run_model" ? { status: 500, body: { error: "upstream" } } : undefined);
   const run = await setup(t, { gate: lost });
-  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   assert.equal(result.isError, true);
   assert.deepEqual(await run.turns(), [0.03], "$0.03 an image, 1 image: its hold, never $0");
   const cost = await run.cost();
@@ -232,7 +241,7 @@ test("a unit that can't be known before the job runs: refused unsent under a cap
 
 test("a price that can't be read makes the job unpriceable: get_pricing failing, or listing no price for the endpoint", async (t) => {
   const failing = await setup(t, { pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
-  const refused = await failing.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
+  const refused = await failing.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
   assert.equal(textOf(refused), "mcp:fal/run_model was not sent: fal's price for fal-ai/ideogram/v3 could not be read (its get_pricing answered an error), so a run with a spend cap can't send it. Nothing was sent.");
   assert.equal(failing.received("run_model"), 0);
 
@@ -246,7 +255,7 @@ test("a price that can't be read makes the job unpriceable: get_pricing failing,
   assert.equal(noEndpoint.received("get_pricing"), 0);
 
   const open = await setup(t, { capUsd: null, pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
-  await open.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
+  await open.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
   assert.deepEqual(await open.turns(), [null], "an unknown charge");
 });
@@ -402,10 +411,10 @@ test("a talking head whose voice can't be read, or whose rate get_pricing doesn'
 test("submit_jobs is held at the sum of its jobs; one job that can't be priced refuses the whole call under a cap", async (t) => {
   const run = await setup(t, { run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ results: args.requests.map((one) => ({ index: one.index, endpoint_id: one.endpoint_id, status: "submitted", request_id: `r${one.index}`, submission_replayed: false })) }) }] }) });
   const requests = [
-    { index: 0, endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } },
+    { index: 0, endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } },
     { index: 1, endpoint_id: TTS, input: { text: "a".repeat(1000), voice: "Aria" } },
     { index: 2, endpoint_id: KLING, input: { prompt: "a wave", duration: "10" } },
-    { index: 3, endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "y", num_images: 2 } },
+    { index: 3, endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "y", num_images: 2 } },
   ];
   await run.call("submit_jobs", { requests });
   near(run.admits[0].holdUsd, 0.03 + 0.1 + 0.7 + 0.06, "the sum of its four jobs");
@@ -420,14 +429,14 @@ test("submit_jobs is held at the sum of its jobs; one job that can't be priced r
 
 test("submit_jobs books each job by its own outcome: a replayed or rejected one $0", async (t) => {
   const run = await setup(t, { run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ results: [{ index: 0, endpoint_id: "fal-ai/ideogram/v3", status: "submitted", request_id: "r0", submission_replayed: false }, { index: 1, endpoint_id: TTS, status: "submitted", request_id: "r1", submission_replayed: true }, { index: 2, endpoint_id: KLING, status: "rejected", error: { type: "validation_error" } }] }) }] }) });
-  await run.call("submit_jobs", { requests: [{ index: 0, endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } }, { index: 1, endpoint_id: TTS, input: { text: "a".repeat(1000) } }, { index: 2, endpoint_id: KLING, input: { prompt: "w", duration: "10" } }] });
+  await run.call("submit_jobs", { requests: [{ index: 0, endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } }, { index: 1, endpoint_id: TTS, input: { text: "a".repeat(1000) } }, { index: 2, endpoint_id: KLING, input: { prompt: "w", duration: "10" } }] });
   near(run.admits[0].holdUsd, 0.03 + 0.1 + 0.7, "held at the sum");
   assert.deepEqual(await run.turns(), [0.03], "only the job fal accepted anew");
 });
 
 test("a price its owner saved for a tool wins over fal's metering for that tool", async (t) => {
   const run = await setup(t, { entry: { meter: "fal", prices: { run_model: 0.5 } } });
-  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 2 } });
+  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 2 } });
   near(run.spent(), 0.5, "its owner's price");
   assert.equal(run.admits[0].basis, "the price its owner set for mcp:fal/run_model");
   assert.equal(run.received("get_pricing"), 0, "fal's price is never read");
@@ -435,12 +444,12 @@ test("a price its owner saved for a tool wins over fal's metering for that tool"
 
 test("a revision pinned before servers were marked is metered by its server's host; another host's run_model is not fal's", async (t) => {
   const old = await setup(t, { entry: {}, url: "https://mcp.fal.ai/mcp" });
-  await old.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  await old.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   near(old.spent(), 0.03, "metered: its pinned URL is fal's");
   assert.equal(old.admits[0].chargedBy, "fal");
 
   const other = await setup(t, { entry: {} });
-  await other.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  await other.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } });
   assert.equal(other.received("get_pricing"), 0, "no price is read of a server that is not fal's");
   assert.deepEqual(other.admits, [], "nothing booked");
   assert.deepEqual(other.root.map((entry) => entry.data), [{ tool: "mcp:fal/run_model", charged_by: "fal", call: "c1" }], "not metered, as any unpriced MCP tool");
@@ -456,7 +465,7 @@ test("a fal tool that submits no job is not held or booked", async (t) => {
 test("fal's price is read once per endpoint and kept 5 minutes", async (t) => {
   let at = T0;
   const run = await setup(t, { now: () => at });
-  const job = { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } };
+  const job = { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 1 } };
   await run.call("run_model", job);
   at = T0 + 299_000;
   await run.call("run_model", job);
@@ -470,7 +479,7 @@ test("fal's price is read once per endpoint and kept 5 minutes", async (t) => {
 
 test("a fal job with no run to book it under is never sent", async (t) => {
   const run = await setup(t, { ledger: false });
-  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
+  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
   assert.equal(textOf(result), "mcp:fal/run_model was not sent: this call has no run to book its price under.");
   assert.equal(run.received("run_model"), 0);
 });
