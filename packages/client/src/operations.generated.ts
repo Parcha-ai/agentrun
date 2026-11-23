@@ -7054,6 +7054,7 @@ export type GetWrappedResponse = {
     source: string;
     runs: number;
   }>;
+  unread_files: number;
 };
 
 /** Each operation as the runtime sends it, by operationId. */

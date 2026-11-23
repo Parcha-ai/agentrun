@@ -4157,6 +4157,7 @@ export interface operations {
         source: string;
         runs: number;
       }[];
+      unread_files: number;
     };
   };
   gitHubCallback: {

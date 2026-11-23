@@ -1,7 +1,7 @@
 // GET /v2/wrapped: a year of the work under this machine's home, as numbers (wrapped.ts over the import package's
 // wrappedHome), answered only by a server on loopback with no public URL. It holds no prompt, path or project.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -62,7 +62,7 @@ test("GET /wrapped reads the year under the home: tokens, days, hours, models, h
 test("a year that is not four digits is 400; no year is the current one", { timeout: 120_000 }, async (t) => {
   await homeWith(t);
   const { api } = await serve(t);
-  for (const year of ["26", "2026x", "-2026", "20260", ""]) {
+  for (const year of ["26", "2026x", "-2026", "20260", "", "0050", "0000"]) {
     const refused = await api("GET", `/wrapped?year=${year}`);
     assert.deepEqual([refused.status, refused.body.error?.code], [400, "bad_request"], `${year}: ${JSON.stringify(refused.body)}`);
   }
@@ -105,4 +105,28 @@ test("a Host that is not a loopback name is 403 here even where the server's own
   const other = await asked(`127.0.0.1:${port}`);
   assert.equal(other.status, 200, JSON.stringify(other.body));
   assert.equal((await api("GET", "/wrapped")).status, 200);
+});
+
+test("the API-only profile refuses it in its own words: 403, not an unknown address", { timeout: 120_000 }, async (t) => {
+  await homeWith(t);
+  const { api } = await serve(t, { apiOnly: true, runner: false });
+  const refused = await api("GET", "/wrapped");
+  assert.deepEqual([refused.status, refused.body.error?.code], [403, "forbidden"], JSON.stringify(refused.body));
+});
+
+test("a session file that cannot be read is counted, as a number and no path, not dropped silently and not a failure of the year", { timeout: 120_000, skip: process.getuid?.() === 0 ? "root reads any file" : false }, async (t) => {
+  const home = await homeWith(t);
+  // A different year for the baseline: readWrapped keeps a result per home and year for a minute.
+  const clean = (await (await serve(t)).api("GET", "/wrapped?year=2025")).body;
+  assert.equal(clean.unread_files, 0);
+  const locked = join(home, ".claude", "projects", "-work-wrapped-fixture", "00000000-0000-4000-8000-000000000002.jsonl");
+  await writeFile(locked, `${JSON.stringify({ type: "user", uuid: "x", timestamp: "2026-03-02T09:00:00.000Z", sessionId: "00000000-0000-4000-8000-000000000002", cwd: "/work/wrapped-fixture", message: { role: "user", content: "hi" } })}\n`);
+  await chmod(locked, 0);
+  t.after(() => chmod(locked, 0o600).catch(() => {}));
+  const { api } = await serve(t);
+  const { status, body } = await api("GET", "/wrapped?year=2026");
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(body.unread_files, 1);
+  assert.equal(body.requests, 2, "the rest of the year is read");
+  assert.equal(JSON.stringify(body).includes("00000000-0000-4000-8000-000000000002"), false, "no path or id");
 });

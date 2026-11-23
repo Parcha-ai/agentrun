@@ -49,6 +49,8 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
   "saveComposioServer", "deleteMcpServer",
+  // Refused in its own words (403): it reads the machine's session files, which a server behind a backend does not have to give.
+  "getWrapped",
 ]);
 
 /** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on
