@@ -240,8 +240,24 @@ export interface AdapterSpecDeps {
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
  *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
- *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). */
-export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake };
+ *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). `files`:
+ *  the case's files, by their path in the run's work folder, written there at its claim (seedEvalFiles). */
+export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake; readonly files?: Readonly<Record<string, string>> };
+
+/** A template eval case's files (EvalFakes.files) written into the run's work folder at its claim, after its inputs and
+ *  before its computer and its first turn, so they reach a computer's /workspace as its uploads do. Each one the folder
+ *  does not hold yet: a claim that resumes the run keeps what the run made of it. A write that fails ends the run failed,
+ *  saying which file. */
+export async function seedEvalFiles(workspace: Workspace, files: Readonly<Record<string, string>> | undefined): Promise<void> {
+  for (const [path, text] of Object.entries(files ?? {})) {
+    if (await workspace.stat(path)) continue;
+    try {
+      await workspace.write(path, text);
+    } catch (error) {
+      throw new Error(`The eval case's file ${path} could not be written in the run's work folder: ${(error as Error).message}`, { cause: error });
+    }
+  }
+}
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
@@ -499,6 +515,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // a copy that fails ends the run failed, saying why. A run's own process copies nothing: its runner placed them before
   // the process started (run-child-host.ts), as the server's held uploads are never the run's to read.
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
+  await seedEvalFiles(ws.workspace, deps.evalFakes?.(runRow.agentId)?.files);
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why

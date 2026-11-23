@@ -106,7 +106,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search`, `web_fetch` and `web_save` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
   for the case's runs), `calendar` (a fake calendar for the case's runs), `feed` (fake feeds for the case's runs),
-  `previous` (the earlier results the schedule's run is handed).
+  `previous` (the earlier results the schedule's run is handed), `files` (the files each run's work folder starts with).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
   `web_fetch` and `web_save` fails as a host that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
@@ -226,6 +226,20 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   its report as `handed_previous` (`kind`: `whole`, `carried`, `too_large` or `none`; `text`, as handed; `run_id`; and
   for carried fields, `fields` and `dropped`, the count each carried array gave up, 0 for none). Only the eval's own server honours
   `previous`, so a case with it refuses `--server`.
+- `files`, a mapping of a path in the run's work folder to the text that file starts with: each run's folder holds them
+  before its first turn, so a case can start where an earlier run left off (a run that resumes on the keys an earlier
+  one made, say):
+  ```yaml
+  files:
+    media/run-keys.json: |
+      {"stem": "k7m2p9qa"}
+  ```
+  A path is relative, with no empty, `.` or `..` segment, and outside `inputs/`, where the server puts the run's
+  uploads and its message; a file's text is a string, written as UTF-8. The eval's runner writes them at the run's
+  claim, before its computer starts, so a computer's `/workspace` holds them as it holds the run's uploads; a file the
+  folder already holds (a claim that resumes the run) is left as the run made it. They are the run's files like any
+  other, so `file_exists` finds them. Only the eval's own server honours
+  `files`, so a case with it refuses `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
@@ -235,7 +249,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   ```
   An answer is taken when every argument its `when` lists equals the call's, the first that does; else `default`. A
   `when` may be a list of such mappings, taken when any one matches (one answer for each spelling of a call: a file by
-  `sha` or by `ref`). Each `result` is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
+  `sha` or by `ref`). An argument's value may instead be `{"$pattern": "<regex>"}`, nothing else in it: the call's
+  argument must be a string the JavaScript regular expression matches whole, as if it began with `^` and ended with
+  `$` (`{"submission_key": {"$pattern": "ns-[a-z0-9]{8}-voice-cold-open"}}` answers whatever random stem a run made,
+  and never `ns-k7m2p9qa-voice-cold-open-2`). A `$pattern` that is no string or does not compile, or one beside another
+  key, fails the case when it is read. Any other value, a string or a mapping, is compared by equality. Each `result`
+  is an MCP tool result. A tool may also hold `search`, `{query, files: [{path,
   text}], limit?, note?}`: a call no answer matches is answered by searching its `query` argument over those files
   (GitHub code search's syntax, read loosely: terms every one of which a file holds, `NOT` before a term or a
   qualifier, and `path:`, `filename:`, `extension:`, `language:`; a `/.../` term is read as literal text, never as a
@@ -273,7 +292,7 @@ case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50
 | `--case NAME` | A case to run; repeat it. Without one, every case. |
 | `--runs N` | Runs of each case, in place of each case's `runs`. |
 | `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. An eval's runs carry no `keys`, so on a server started with `AGENTRUN_RUN_KEYS=1` that lacks a tool key the package declares, the eval stops at the first case's apply, before any run, names the key and exits 2. |
-| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
+| `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`, `files`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
 | `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
 | `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
 | `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
@@ -308,7 +327,8 @@ and runs on the eval's own server.
    permission; with `--server` it writes nothing.
 3. The `learning` file is written as the agent's corrections (`PUT .../learning/corrections`), checked as that route
    checks them.
-4. A run starts with the prompt's body as its input's `content` and its `input` front matter as its typed fields, and
+4. The case's `files` are written into the run's work folder at its claim, before its first turn. A run starts with the
+   prompt's body as its input's `content` and its `input` front matter as its typed fields, and
    `max_cost_usd` as its cap, and is waited for (30 minutes at
    most, then cancelled and failed). A run that ends waiting on its person's answer (an `ask_person` question, a tool
    call's approval) is graded as it stands, then cancelled. One paused at its cap, stopped, failed or cancelled fails,

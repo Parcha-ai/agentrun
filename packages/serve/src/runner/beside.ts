@@ -69,8 +69,8 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // `mcpLoopback`: the server beside it is a local install (Serve.localInstall), so its runs may reach an MCP server on
   // loopback; a runner in its own process does only as its own environment says (main.ts runnerLoopback). `mcpOwn`: that server's own addresses (Serve.own), whose ports a run's
   // loopback read never goes to. A run's log lines (a sweep that failed) go to
-  // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid and
-  // email), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
+  // stderr with the runner's other lines. `evalFakes`: the template eval's fakes (EvalFakes: a case's web, now, monid,
+  // email and files), by the agent each of its runs is of; only the eval, in its own process, hands them. `harnessInstall`: what a
   // claim's first-use install installs with (the eval's sharedInstaller, which the server beside it takes too).
   const { installForClaim } = await import("../harness-install.js");
   const deps = { env: runs, data: dataDir, journal: (claim: Parameters<typeof store.journal>[0]) => store.journal(claim), store, sealKey: seal.key, routeOf, computerForClaim: computers.computerForClaim, computerDeps: computers.computerDeps, ...(mcpLoopback ? { mcpLoopback: true } : {}), ...(mcpOwn ? { mcpOwn } : {}), ...(evalFakes ? { evalFakes } : {}), ...(harnessInstall ? { installForClaim: ((entry, dir, pins, given) => installForClaim(entry, dir, pins, { ...given, install: harnessInstall })) satisfies typeof installForClaim } : {}), log: (line: string) => console.error(`agentrun-serve runner: ${line}`) };
