@@ -345,6 +345,15 @@ test("compact JSON past a piece with no whitespace is read in pieces cut at its 
     assert.equal(refusal.redactedCall(ftp, secrets, 120_000), `${"y ".repeat(59_000)}[redacted] end`);
     assert.equal(redactedAnswer(ftp, secrets), `${"y ".repeat(59_000)}[redacted] end`);
   }
+  // A URL whose authority ends at the next URL's "://" (no "/" between them) leaves that URL's user and password kept
+  // whole too.
+  const user = ["user", ""].join(":");
+  const chained = `${"y ".repeat(59_000)}socks5://h:1080,https://${user}${"P".repeat(3000)}",${"s".repeat(9000)}@host.com/x end`;
+  for (const secrets of [[], [CUT_KEY]]) {
+    for (const shown of [cut(refusal.redactedCall(chained, secrets, 120_000, scrubUrls), 120_000), redactedAnswer(chained, secrets)]) {
+      assert.ok(!shown.includes("PPPPPPPP"), shown.slice(-80));
+    }
+  }
   // A URL with no path, then more JSON with no "/", "?", "#" or "@" after it: no "@" ends its authority, so it holds no
   // password, and the quotes after it are cut as anywhere else.
   const linked = JSON.stringify({ url: "https://example.com", ids });

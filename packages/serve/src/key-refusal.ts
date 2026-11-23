@@ -288,7 +288,8 @@ function authorities(text: string, from: number, head: string): [number, number]
     const end = (hit?.index ?? text.length) - from;
     if (hit?.[0] === "@") found.push([at, end]);
     if (end >= head.length) break;
-    at = end;
+    // Past an "@", on; past any other stop, from the character before it: a "/" may be the first of the next "://".
+    at = hit?.[0] === "@" ? end : end - 1;
   }
   return found;
 }
