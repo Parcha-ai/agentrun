@@ -916,8 +916,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
-  // A run nobody takes stays queued: given up on after queueTimeoutMs, by name, never left to the whole deadline.
-  const queuedUntil = Date.now() + queueTimeoutMs;
+  const started = Date.now();
+  // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
+  // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
+  // starts again from now, so a run a runner keeps holding is waited for to its own deadline.
+  let queuedUntil = started + queueTimeoutMs;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
@@ -937,12 +941,16 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
     if (status === "queued" && Date.now() > queuedUntil) {
-      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-      return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s: no runner took it (state ${String(page.state)}), and it was cancelled` };
+      const run = expectOk(`reading run ${runId}`, await api("GET", `/runs/${runId}`));
+      if (isObject(run.claim)) queuedUntil = Date.now() + queueTimeoutMs;
+      else {
+        await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+        return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+      }
     }
     if (Date.now() > deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - (queuedUntil - queueTimeoutMs)) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }
     if (page.has_more !== true && page.unchanged === true) await sleep(250);
   }
