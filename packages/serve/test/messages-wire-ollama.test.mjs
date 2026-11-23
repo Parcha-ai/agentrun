@@ -135,6 +135,27 @@ test("a request with no `stream: true` gets its answer whole, one JSON message a
   assert.equal(ollama.got.chat.length, 2);
 });
 
+// The whole answer is read from the route's own stream; a part of it that does not read (a data line that is not JSON, a
+// tool call's input cut short) is a Messages error with words, as an error event is, never a throw out of the fetch.
+test("an answer asked whole whose stream does not read (a data line not JSON, a tool input cut short) is a Messages error, 500 with words", async () => {
+  const { forMessagesClients } = await import("../dist/runner/model-route.js");
+  const sse = (...events) => events.map(([event, data]) => `event: ${event}\ndata: ${data}\n\n`).join("");
+  const start = ["message_start", JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: TOOLS, content: [], usage: { input_tokens: 3, output_tokens: 0 } } })];
+  const streams = {
+    "a data line not JSON": sse(start, ["content_block_start", "{not json"]),
+    "a tool input cut short": sse(start, ["content_block_start", JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "read", input: {} } })], ["content_block_delta", JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path": "a' } })], ["message_stop", JSON.stringify({ type: "message_stop" })]),
+  };
+  for (const [what, body] of Object.entries(streams)) {
+    const send = forMessagesClients(async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const answer = await send(`${ROUTE_ORIGIN}/v1/messages`, { method: "POST", body: JSON.stringify(request({ stream: false })) });
+    assert.equal(answer.status, 500, what);
+    const said = await answer.json();
+    assert.equal(said.type, "error", what);
+    assert.equal(said.error?.type, "api_error", what);
+    assert.match(said.error?.message ?? "", /could not be read whole/, what);
+  }
+});
+
 test("every model id a Messages client sends (its default, its small model's, any other) lands on the one Ollama route: the request runs the route's tag", async (t) => {
   const { ollama, env } = await onOllama(t);
   const { fetch: send } = await moduleLaunch(env, TOOLS);

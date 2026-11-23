@@ -1616,8 +1616,8 @@ seconds), and a run on any other model, a key's default included, never asks Oll
   Goose, a harness module on it) and OpenAI's Responses (codex, opencode, a harness module on it). Their requests go
   through the same translation as pi's: the same `/api/chat`, `num_ctx`, tools and cost. A Messages client's token
   count (`/v1/messages/count_tokens`) is answered there without asking the model, an answer it asks for unstreamed
-  comes back whole, and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns
-  its own tool search off on these models.
+  comes back whole (or as a 500 error with words when part of the stream doesn't read), and every model id it sends
+  (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models.
 - On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
   refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
   grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
