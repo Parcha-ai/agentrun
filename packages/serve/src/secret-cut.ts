@@ -87,7 +87,10 @@ export function secretlintConfig<R extends { meta: { id: string } }>(rules: read
   if (kept.length === 0) throw new Error("no secretlint rule to scan with: @secretlint/core/builtin's recommendedRules left none");
   return { rules: kept };
 }
-export const SECRETLINT = secretlintConfig(recommended);
+const SECRETLINT = secretlintConfig(recommended);
+/** The ids of the rules the scan runs, in order. Only the ids are exported: the rules' own types come from a secretlint
+ *  types package that serve doesn't depend on. */
+export const SECRETLINT_RULE_IDS: readonly string[] = SECRETLINT.rules.map((rule) => rule.id);
 /** How many passes `secretsIn` has made in this process: for a test that a path makes none. */
 export const secretlintCalls = { count: 0 };
 

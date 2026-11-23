@@ -37,8 +37,8 @@ test("the scan finds a key of a known format and leaves plain text alone", async
 const LOADED = ["aws", "gcp", "privatekey", "npm", "basicauth", "slack", "sendgrid", "shopify", "stripe", "github", "gitlab", "grafana", "openai", "anthropic", "groq", "huggingface", "linear", "notion", "1password", "database-connection-string", "hashicorp-vault", "vercel", "databricks", "docker", "figma", "cloudflare", "tailscale"].map((name) => `@secretlint/secretlint-rule-${name}`);
 
 test("the scan loads exactly the 27 recommended rules but the comment filter, in secretlint's order", async () => {
-  const { SECRETLINT } = await import("../dist/secret-cut.js");
-  assert.deepEqual(SECRETLINT.rules.map((rule) => rule.id), LOADED);
+  const { SECRETLINT_RULE_IDS } = await import("../dist/secret-cut.js");
+  assert.deepEqual(SECRETLINT_RULE_IDS, LOADED);
 });
 
 test("a set of rules that leaves nothing to load is refused when the module loads, never a scan that finds nothing", async () => {
