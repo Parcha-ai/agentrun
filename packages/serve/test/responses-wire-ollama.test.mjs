@@ -358,10 +358,10 @@ test("tool_choice \"required\", or one naming a function, is refused with a 400,
 });
 
 // Codex writes its window as model_context_window and opencode as the model's limit.context; each adapter's default is
-// 272,000. On the route the model runs at the window every request asks Ollama for (options.num_ctx: the model's trained
-// context, at most 64k, at most the host's OLLAMA_CONTEXT_LENGTH), so each harness is given that one figure: the run's
-// pi-ai entry for the model, which the route's own model is (ollama-provider.ts contextOf).
-test("codex and opencode on an Ollama model are given the window the route runs it at, the num_ctx it asks Ollama for, never their adapters' 272,000 default", { timeout: 60_000 }, async (t) => {
+// 272,000, and its output ceiling 32,000 (each proxy clamps max_output_tokens to it). On the route the model runs at the window every request asks Ollama for (options.num_ctx: the model's trained
+// context, at most 64k, at most the host's OLLAMA_CONTEXT_LENGTH), so each harness is given that one figure, and the
+// output ceiling beside it: the run's pi-ai entry for the model, which the route's own model is (ollama-provider.ts).
+test("codex and opencode on an Ollama model are given the window the route runs it at, the num_ctx it asks Ollama for, and its output ceiling, never their adapters' 272,000 and 32,000 defaults", { timeout: 60_000 }, async (t) => {
   const { ollama, env } = await onOllama(t);
   const { providerModels, ollamaTagsOf } = await import("../dist/model.js");
   const codex = await import("@parcha/agentrun-harness-codex");
@@ -381,16 +381,17 @@ test("codex and opencode on an Ollama model are given the window the route runs 
     // One request through codex's own fetch: the num_ctx the route asks Ollama for.
     const asked = ollama.got.chat.length;
     assert.equal((await answerOf(seen.fetch, { ...ASK, model: tag })).status, 200);
-    return { codex: seen.contextWindow, opencode: opened.contextWindow, numCtx: ollama.got.chat[asked].options?.num_ctx };
+    return { codex: seen.contextWindow, opencode: opened.contextWindow, numCtx: ollama.got.chat[asked].options?.num_ctx, codexOut: seen.maxOutputTokens, opencodeOut: opened.maxOutputTokens };
   };
-  // A qwen3:8b-shaped model, trained on 40,960, under the route's 64k bound.
-  assert.deepEqual(await windows({}, PLAIN), { codex: 40_960, opencode: 40_960, numCtx: 40_960 });
+  // A qwen3:8b-shaped model, trained on 40,960, under the route's 64k bound; its output ceiling min(16,384, 40,960 / 2).
+  assert.deepEqual(await windows({}, PLAIN), { codex: 40_960, opencode: 40_960, numCtx: 40_960, codexOut: 16_384, opencodeOut: 16_384 });
   // One trained on 131,072: the route's 64k bound.
-  assert.deepEqual(await windows({}, TOOLS), { codex: 65_536, opencode: 65_536, numCtx: 65_536 });
-  // A host that set OLLAMA_CONTEXT_LENGTH lower: that.
-  assert.deepEqual(await windows({ OLLAMA_CONTEXT_LENGTH: "8192" }, TOOLS), { codex: 8_192, opencode: 8_192, numCtx: 8_192 });
+  assert.deepEqual(await windows({}, TOOLS), { codex: 65_536, opencode: 65_536, numCtx: 65_536, codexOut: 16_384, opencodeOut: 16_384 });
+  // A host that set OLLAMA_CONTEXT_LENGTH lower: that, and half of it out.
+  assert.deepEqual(await windows({ OLLAMA_CONTEXT_LENGTH: "8192" }, TOOLS), { codex: 8_192, opencode: 8_192, numCtx: 8_192, codexOut: 4_096, opencodeOut: 4_096 });
   // OpenAI's own model, not routed: its adapter's own window, as before.
   const keyed = { ...env, OPENAI_API_KEY: "fake-test-key", AGENTRUN_SERVE_DATA: await harnessData(t), [adapters.CODEX_STANDIN_ENV]: JSON.stringify({ command: "true" }) };
   await adapters.codexOf(keyed, { model: { provider: "openai", modelId: "gpt-6.1-sol" }, models: await providerModels(keyed) }, loadCodex);
   assert.equal(seen.contextWindow, undefined);
+  assert.equal(seen.maxOutputTokens, undefined);
 });

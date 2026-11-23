@@ -1626,7 +1626,7 @@ seconds), and a run on any other model, a key's default included, never asks Oll
   included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
   is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
   request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
-  at most 64k), so they compact before Ollama would cut the prompt.
+  at most 64k), so they compact before Ollama would cut the prompt, and its output ceiling (half that, at most 16,384).
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the

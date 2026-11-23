@@ -8,5 +8,6 @@ The models of this machine's Ollama run on codex and opencode too, and on a harn
 - Function tools only. A custom (freeform) tool, `local_shell` and `web_search` are refused with a 400 naming the tool, never dropped. codex offers no live web search on these models.
 - A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused with a 400: Ollama can't be made to call a tool. `"auto"` and `"none"` are taken.
 - codex and opencode are told the model's window as the route runs it (its `num_ctx`: the model's trained context, at most 64k, at most `OLLAMA_CONTEXT_LENGTH`), not their 272,000 default, so they compact before Ollama would cut the prompt.
+- Their output ceiling is the route's too (half the window, at most 16,384), not their 32,000 default.
 - An answer cut at its output limit ends `response.incomplete` (`max_output_tokens`) with its usage: it is booked, and codex ends the turn instead of asking again.
 - Every model id a client sends (codex's title and compaction requests, opencode's small model) runs the one tag.
