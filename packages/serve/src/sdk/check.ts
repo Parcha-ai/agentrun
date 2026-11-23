@@ -1,8 +1,9 @@
-// Connected agents keep their tools. Their caller checks one compiled candidate after an independent native turn; the
-// server owns the reservation (runner/promotion.ts reserveSdkCheck) and compares that result with the native answer
-// through the shared promotion gate.
+// Connected agents keep their tools. Their caller checks one compiled candidate after each independent native turn the
+// server reserves for it (runner/promotion.ts reserveSdkCheck); the server compares that result with the native answer
+// and collects the turns until it holds compile_after of them, then decides once on all of them through the shared
+// promotion gate, the evidence bar a managed check's compile_after inputs set (runner/promotion.ts sdkCheckTurn).
 import type { Shown } from "../learning.js";
-import { decideCheck, releaseSdkCheck, sdkCheckDeadline, sdkInputText } from "../runner/promotion.js";
+import { type PromotionDeps, releaseSdkCheck, sdkCheckDeadline, sdkCheckTurn, sdkInputText } from "../runner/promotion.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -35,12 +36,14 @@ function notBaseline(inbox: SdkInbox & { completion: NonNullable<SdkInbox["compl
   return undefined;
 }
 
-/** Settles a connected agent's check at its run's end. The client reports execution, never its own verdict, and the
- *  immutable completion is the baseline. A shadow that answered or handed back on a valid native turn is one row of the
- *  check (decideCheck); any other turn is given back (releaseSdkCheck) and the check waits for the next turn; a turn the
- *  backend never completed before its inbox expired is one failed row (sdkCheckDeadline). Exact retries and reclaims
- *  compete on the reservation. */
-export async function settleSdkCheck(deps: { store: Store; agentId: string; launch: RunLaunch; inbox: SdkInbox; shown: () => Promise<Shown>; log: (line: string) => void }) {
+/** Settles a connected agent's reserved turn at its run's end. The client reports execution, never its own verdict, and
+ *  the immutable completion is the baseline. A shadow that answered or handed back on a valid native turn is one row of
+ *  the check (sdkCheckTurn: kept until the check holds compile_after rows, the one that makes compile_after deciding on
+ *  them all); any other turn is given back (releaseSdkCheck) and the check waits for the next turn; a turn the backend
+ *  never completed before its inbox expired is one failed row (sdkCheckDeadline). Exact retries and reclaims compete on
+ *  the reservation. `refused`: what the purge gate refuses of the records, so the promotions trim keeps the champion its
+ *  readers serve (purged-workflow.ts refusedIn). */
+export async function settleSdkCheck(deps: { store: Store; agentId: string; launch: RunLaunch; inbox: SdkInbox; shown: () => Promise<Shown>; log: (line: string) => void; refused?: PromotionDeps["refused"] }) {
   const { inbox } = deps;
   const check = inbox.learning_check;
   if (!check) return;
@@ -49,21 +52,20 @@ export async function settleSdkCheck(deps: { store: Store; agentId: string; laun
   const completion = inbox.completion;
   if (!completion) {
     if (inbox.closed === "expired") return sdkCheckDeadline(deps, record);
-    if (inbox.closed) return releaseSdkCheck(deps, record, inbox.closed === "cancelled" ? "its native turn was stopped before the backend completed it" : "its native turn ended before the backend completed it");
+    // A cancel is a person's choice, not the integration failing to give a baseline: given back uncounted.
+    if (inbox.closed) return releaseSdkCheck(deps, record, inbox.closed === "cancelled" ? "its native turn was stopped before the backend completed it" : "its native turn ended before the backend completed it", inbox.closed !== "cancelled");
     return;
   }
   const reported = inbox.batches.flatMap((batch) => batch.events)
     .find((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check" && event.id === check.id && event.digest === check.digest);
   const cause = notBaseline({ ...inbox, completion }, reported);
-  if (cause !== undefined || !reported) return releaseSdkCheck(deps, record, cause ?? "the connected agent reported no shadow check");
-  const outcomes = { answered: 0, handed_back: 0, failed: 0, skipped_write: 0 };
-  outcomes[reported.outcome]++;
-  return decideCheck(deps, check.workflow.name, check.digest, record.check, {
-    rows: [{ of: inbox.run_id, input: sdkInputText(deps.launch), agent: completion.answer, outcome: reported.outcome,
-      answer: reported.outcome === "answered" ? reported.answer ?? null : null,
-      ...(reported.outcome === "handed_back" ? { escalated: reported.reason ?? "The shadow workflow handed the task back." } : {}),
-    }], cost: null, outcomes, unstarted: 0, ...(reported.fresh_reads ? { fresh_reads: reported.fresh_reads } : {}),
+  if (cause !== undefined || !reported) return releaseSdkCheck(deps, record, cause ?? "the connected agent reported no shadow check", completion.status !== "cancelled");
+  return sdkCheckTurn(deps, { ...record, check: record.check }, {
+    of: inbox.run_id, input: sdkInputText(deps.launch), agent: completion.answer, outcome: reported.outcome,
+    answer: reported.outcome === "answered" ? reported.answer ?? null : null,
+    ...(reported.outcome === "handed_back" ? { escalated: reported.reason ?? "The shadow workflow handed the task back." } : {}),
+  }, (was) => was?.decided === "replaying" && was.replay_id === check.id, {
+    ...(reported.fresh_reads ? { fresh_reads: reported.fresh_reads } : {}),
     exactMismatchReason: "its answer did not match the native answer exactly; connected SDK checks do not use a semantic grader, so name the fields that carry the decision (learning.agree_on) when whole-answer equality is not the intended check",
-  }, (was) => was?.decided === "replaying" && was.replay_id === check.id,
-  { via: "sdk", runs: record.runs, replay_id: check.id, commit: check.revision });
+  });
 }

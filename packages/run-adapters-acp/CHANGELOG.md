@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.53 (2026-11-22)
+
+- A harness recipe now covers an outside agent's release as its vendor ships it (Google's agy CLI among them), and the owner's own sign-in, made by the agent itself: <!-- changes/recipes-outside-harness.md -->
+  - `.zip` releases install, unpacked in Node with no `unzip` on the host. An entry that leaves the folder (`..`, an absolute path, a backslash), a symbolic link, a device, an encrypted entry or a duplicate refuses the whole archive before anything lands.
+  - An archive is pinned by one digest, its `sha256` or, where the vendor's manifest lists that, its `sha512` (Google's agy CLI manifests). `release.registry` is optional, for a release that is the vendor's own rather than the ACP registry's.
+  - Every file the archive unpacks to is pinned, not the binary alone: the tree's sha256 is recorded at the first install (or given as the release's `treeSha256`), and a check or a sign-in refuses a sidecar that changed since.
+  - A release may give its own `args` per platform, over the recipe's.
+  - `model.id` picks a plan-billed agent's model among those its `session/new` lists (`session/set_model`); one it does not list is refused before a prompt.
+  - A key may be handed under the name the agent reads: `keys: [{ "name": "ANTIGRAVITY_GEMINI_API_KEY", "env": "GEMINI_API_KEY" }]`. It is read by its saved name, so the server's own `GEMINI_API_KEY` never reaches the agent. `keyMethod` is the method the agent's ACP `authenticate` signs in with on it (`gemini-api-key`).
+  - One list in the kernel, `launchEnv` (`LAUNCH_ENV`, `LAUNCH_ENV_PREFIXES`), names the variables that change what a process loads or runs before its own code: `PATH`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `NODE_PATH`, `PYTHON*`, `BASH_*`, `ENV`, `GIT_*` and a few shells' and interpreters' start-up variables. A key is never handed under one of them, nor a recipe's `env` or `model.env` named one. The recipe loader and the ACP adapter both refuse them.
+  - A key's saved and handed names follow the kernel's `KEY_NAME` (capitals, digits and `_`, at most 64) in the recipe loader as in the ACP adapter, so `harness-check` no longer refuses a lowercase key name the loader took. Other variable names keep `ENV_NAME`.
+  - `signIn: { "args": [...], "homeArg": FLAG }` names the agent's own sign-in, as T3 Code runs agy: `agentrun harness sign-in --recipe FILE` starts the installed, unmodified agent on your terminal with its arguments, `args` (`--login`) and `homeArg` naming its own folder (`--gemini-dir DIR`). The agent prints the address, reads the code you paste and keeps its sign-in in that folder; exit 0 is signed in (`HARNESS_SIGN_IN_FAILED` otherwise).
+  - harness-check runs on the recipe's keys alone, never the sign-in, so a plan-billed recipe names a key beside any `signIn`. A run on the sign-in hands the agent `homeArg` and its folder, no key, nothing it prints kept.
+  - AgentRun never reads, refreshes or sends the sign-in's token, and has no usage reader: it never opens the folder, and a test keeps every credential file and Google account or quota endpoint out of the harness sources.
+  - The ACP adapter's `stderr: "none"` (`AcpRecipe`) keeps nothing an agent prints, for a run on a sign-in: a failure says its exit status and AgentRun's own code, and an error the agent answers says its JSON-RPC code alone.
+- An ACP run (Cursor, Goose, or a harness recipe) no longer stalls after many turns. Before, the adapter copied the agent's whole session store into the run's records at every turn, so the records grew with the square of the turn count. After about 20 Cursor turns they no longer fit the 32 MiB channel to the run's process: an approval answered 204, and the run then waited for good. Now the mirror stores each file as 64 KiB pieces, each written once per session, so a store that grows by appending costs only its new bytes. It never copies SQLite's `-shm` file, and holds at most 8 MiB per session. Past that, the run's timeline says "The agent's session state passed 8 MiB, so a resume starts it fresh with the conversation so far." and the mirror stops. A run whose records no longer cross to its process now fails at once, naming the size and the limit, and the approval that woke it is answered that the run failed. Adapters get a `notice` event, which serve shows as a step on the run's timeline. A session store mirrored before this version is not restored: such a run resumes fresh with the conversation so far. <!-- changes/acp-state-mirror-bounded.md -->
+
+## 0.1.0-beta.52 (2026-11-21)
+
+- An ACP agent's failure words no longer keep a piece of a recipe key when the agent is still writing that key at the end of its stderr tail, or when two keys overlap: every place a key or its start appears is found in the text as written, then all of them are cut at once. <!-- changes/acp-key-cut-tail-end.md -->
+
+## 0.1.0-beta.51 (2026-11-21)
+
+- An ACP agent's own tool call (Cursor's shell) that parked on a person no longer loops once answered: the resume takes the answer before the agent starts, and the recovery note says what the person decided. Before, restarted Cursor asked for a different command, the answer was never taken, and the run restarted every few seconds until the plan's turn limit. An agent that keeps asking the person about other commands instead of the one they allowed ends its turn with `ACP_REASK_LIMIT`. <!-- changes/acp-parked-permission-settled.md -->
+- An ACP agent (Cursor) that skipped a command the person allowed no longer has its turn cut after three more commands its tool setting allows: only commands that wait for the person count toward `REASK_LIMIT`. An allow-once is now used once: if a later agent process in the same turn asks for the same command again, the person is asked again instead of the old allow running it a second time. <!-- changes/acp-reask-parks-only.md -->
+
+## 0.1.0-beta.48 (2026-11-20)
+
+- A harness module builds its harness the way the built-in harnesses are built: `entries(builtins, kit)` now gets a kit with `kit.adapterEntry(facts, adapter)` and `kit.acpEntry({ facts, recipe, proxy })`, so the harness is offered its wire's vendor's models, named on that vendor's and OpenRouter's key rows, and gated and named by its own facts. [HARNESS.md](../../HARNESS.md) is the guide, and `examples/harness-module` is a whole module (Goose under an id of its own). <!-- changes/harness-modules-kit.md -->
+  - The built-in harnesses read the same facts as before, with or without a module loaded.
+  - An adapter harness that loads skills itself gives `kit.adapterEntry` a `skillCheck`: the run's skills it accepts are taken out of the prompt and handed to its adapter as `launch.skills`.
+  - `kit.acpEntry`'s offer promises resume `"restart"` unless given `resume: "load"`, which its recipe must declare (`declares.load`); otherwise its first launch is refused (`HARNESS_RESUME_UNDECLARED`).
+  - `missing(env)`, on either builder, says what no model key fixes (a binary, say). It is asked before the key, so the harness's offer says it and names no key. An error it or the adapter throws with a `code` refuses the harness with its facts' install fix for that code, as the built-in Goose's are.
+  - `@parcha/agentrun-serve/conformance` adds `suiteHostTools`, and `@parcha/agentrun-harness-acp/testing` exports the fake ACP agent (`FAKE_ACP_AGENT`, `fakeAgentRecipe`), so a module's author runs the conformance suite with no binary, model or key. The run spec a subject hands `createAdapterLoop` names its harness's `facts`.
+- An ACP agent's failure words cut the recipe's keys before they are shortened, so a cut that lands inside a key (the last 300 characters, or the start of the stderr tail the adapter keeps) leaves no piece of it. <!-- changes/acp-cut-keys-before-tail.md -->
+
 ## 0.1.0-beta.47 (2026-11-19)
 
 **Breaking:**

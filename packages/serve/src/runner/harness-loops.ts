@@ -13,13 +13,16 @@ import { createNativeLoop } from "./native-loop.js";
 //     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
 //   - anything else fails the run in words (the dispatch's UnknownHarness).
-import { harnessOf } from "../harness-table.js";
+import { harnessOf, recipeKeysOf } from "../harness-table.js";
+import { harnessKeysSaved, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
+import type { SealedKeys } from "../store/index.js";
 import { hostMemory, neverFits } from "../host.js";
-import type { RunLaunch } from "../run-launch.js";
+import { personStarted, type RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
 import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
+import { withRequestMetadata } from "../request-metadata.js";
 import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
@@ -34,10 +37,27 @@ export class NeverFits extends ClaimRefused {
   override name = "NeverFits";
 }
 
+export { RECIPE_SIGN_IN_PERSON_ONLY };
+
+/** Refuses at its claim a run no person started (a schedule's, a trigger's, a learned workflow's audit shadow or replay:
+ *  personStarted) on a plan-billed recipe's harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved for that harness (harness-keys.ts), on
+ *  every path a claim takes (run-child-host.ts staysInRunner, and here): the early word, before a process is made. Rows
+ *  are counted, never opened; the claim's spec opens them and refuses it again if not every one opened, since a row
+ *  counted here can be gone or not open by then (cli-run-spec.ts). */
+export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): Promise<void> {
+  if (personStarted(launch)) return;
+  const keys = recipeKeysOf(deps.env ?? {}, harness);
+  if (keys !== undefined && !(await harnessKeysSaved(deps.store, harness, keys))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+}
+
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
- *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
-export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
+ *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words).
+ *  `keysCounted`: a run's own process (run-child.ts), whose runner counted its harness's key rows before it made the
+ *  process (run-child-host.ts staysInRunner). The process's store lists no rows (STORE_CALLS has no sealedKeys.all), so
+ *  it never counts them again; its claim's spec opens the claim's own keys and refuses the run if not every one opened. */
+export function resolveRunnerLoop(given: AdapterSpecDeps, options: { readonly keysCounted?: boolean } = {}): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
+    if (!options.keysCounted) await refuseRecipeTriggerRun(given, harness, launch);
     // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
     // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
     // gateway the runner's environment names wins, and nothing saved is read over it.
@@ -75,9 +95,12 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
   }
   // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
-  if (launch.sdk) return createSdkLoop(launch, deps, async () => {
+  if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async (claim) => {
+    if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
     const base = deps.env ?? process.env;
-    const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+    // Its requests on serve's gateway name the claim's run, turn and attempt, as every other request of a claim does
+    // (request-metadata.ts): withModelKeys makes the env this ask's own.
+    const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
     // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
     // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
     const off = noServerKeyFor(env, "An SDK run's compile turn");

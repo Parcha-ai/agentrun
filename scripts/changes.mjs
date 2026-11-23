@@ -518,6 +518,25 @@ async function lastReleaseTag(root) {
   }
 }
 
+/** The commit `--check` compares against. CI gives a pull request the base its event recorded, which stays where the pull
+ *  request opened, and checks the pull request merged onto the branch's tip; a release merged in between would read, from that
+ *  base, as the pull request's own version bump. When the newest release tag reachable from HEAD comes after the base's
+ *  merge base, the tag is the base instead. The release pull request itself (its tag not made yet) and the release commit
+ *  checked at its tag keep the base given. */
+export async function checkBase(root, base) {
+  const tag = await lastReleaseTag(root);
+  if (tag === null) return base;
+  const tagged = (await git(root, ['rev-parse', `${tag}^{commit}`])).trim();
+  const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
+  if (tagged === mergeBase || tagged === (await git(root, ['rev-parse', 'HEAD'])).trim()) return base;
+  try {
+    await git(root, ['merge-base', '--is-ancestor', mergeBase, tagged]);
+    return tagged;
+  } catch {
+    return base;
+  }
+}
+
 /** Whether the Python client's published files differ from the last release's (the newest v* tag reachable from HEAD) while
  *  its version does not: the release would find that version on PyPI already and publish nothing. Against the last release,
  *  not the pull request's base, so a client change merged in an earlier pull request still needs the release to bump it.
@@ -553,8 +572,9 @@ async function main() {
   const root = defaultRoot;
   if (args[0] === '--check') {
     const fragments = await loadFragments(root);
-    const base = option('--base');
-    if (!base || /^0+$/.test(base)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
+    const given = option('--base');
+    if (!given || /^0+$/.test(given)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
+    const base = await checkBase(root, given);
     const { fold: isFold, edited } = await unreleasedEdits(root, base);
     assert.deepEqual(edited, [], `An Unreleased section is edited in ${edited.join(', ')}. Add a fragment in changes/ instead (see CONTRIBUTING.md); only the release fold edits it.`);
     const { release } = await releaseCommit(root, base);

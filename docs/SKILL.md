@@ -190,6 +190,14 @@ while you can open it, and never a command that prints or fetches the code.
 2. Open it in a browser they are looking at: `open "<link>"` (macOS), `xdg-open "<link>"` (Linux) or `start ""
    "<link>"` (Windows) when this session runs on their computer, where the installer has already opened it; else your
    client's browser or preview tool. Only when you have neither, send the link itself as the first line.
+   When **This computer** is a remote machine (step 1's `SSH_CONNECTION`, Codespaces, Ona), AgentRun is on its
+   loopback and their browser reaches it only through a port forward. Codespaces and Ona forward the port themselves.
+   Over SSH, send the one command for their own computer, `ssh -o ExitOnForwardFailure=yes -L
+   <local>:127.0.0.1:<port> <user>@<host>`, with this machine's port and a `<local>` port free on their computer (7340,
+   unless an AgentRun of their own has it), then open the link there with `http://127.0.0.1:<local>/` in place of its
+   address, keeping any `#code=...`. An always-on machine's tailnet or HTTPS address needs no forward. Never expose
+   AgentRun any other way: no change to the machine's web server or reverse proxy (Traefik, nginx, Caddy; other apps
+   share it), no new route, DNS name or firewall rule, and no `sudo`.
 3. Say it is open and sets the owner password. A link with a code works **once** and **expires 30 minutes** after it
    was printed: give that clock time with its time zone when you can tell.
 
@@ -357,4 +365,6 @@ Report the console address, the run's link and cost, the data folder, `server.ve
 On this computer, say how it runs: as a service that starts again at login (`~/.agentrun/bin/agentrun service
 uninstall` removes it and keeps the data), or in the background until the machine stops. Offer **Learning** (off by
 default; turned on in the agent's **Learning** tab; reflection and grading add model usage). Don't turn on learning or
-import more history unasked.
+import more history unasked. Tell them AgentRun counts itself anonymously (a random id, version and platform; never
+prompts, files or keys), and that https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md says how to turn
+it off.

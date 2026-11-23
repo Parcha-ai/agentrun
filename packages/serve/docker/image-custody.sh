@@ -8,6 +8,7 @@
 # container is read. The container is given a group (CUSTODY_SOCKET_GID, 4242 by default) as compose gives the server's
 # user the Docker socket's. It fails, one line for each, when:
 #   - the capabilities do not say run_isolation "uid";
+#   - the server's user is in more than 4 groups, or in any slot's group;
 #   - the run's process holds any secret but its model's (OpenAI's: the agent is on an OpenAI model), as its own secrets
 #     module answers secret(name), or has one in its environment;
 #   - the run's process, or a program it starts, runs as the uid that owns the data directory (the server's) or one
@@ -99,6 +100,9 @@ for n in $names; do
     AGENTRUN_TOKENS) value="custody:$canary-tokens-0123456789abcdef0123456789" ;;
     AGENTRUN_SEAL_KEY) [ -n "$seal" ] || continue; value=$seal ;;
     AGENTRUN_STORE_URL) [ -n "$store" ] || continue; value=$store ;;
+    # A whsec_ secret the server takes (a 32-byte key: 43 base64url characters) that still holds its canary, and the hook's
+    # URL it needs beside it (a port nothing answers: no trigger fires here).
+    AGENTRUN_LAUNCH_HOOK_SECRET) value="whsec_$(printf '%-43s' "$canary-$i" | tr ' ' k)"; secrets="$secrets -e AGENTRUN_LAUNCH_HOOK_URL=http://127.0.0.1:9/firings" ;; # key-gate: loopback-rule the hook URL the server needs beside its secret, a port nothing answers inside its container
     *) value="$canary-$i" ;;
   esac
   secrets="$secrets -e $n=$value"

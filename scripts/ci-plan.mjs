@@ -11,10 +11,10 @@
 // scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
 //   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
-import { spawnSync } from 'node:child_process';
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isMain } from './is-main.mjs';
+import { npmSpawnSync } from './npm-command.mjs';
 
 /** scripts/ci-shards.json (pools, shard counts, root suites, whole suites) and scripts/ci-timings.json under `root`. */
 export function readConfig(root) {
@@ -29,7 +29,7 @@ const nodeTest = /^node --test((?: --test-(?:concurrency|timeout)=\d+)*)((?: (?:
 const VITEST = 'vitest --run';
 
 function listed(command, cwd, what) {
-  const done = spawnSync('npm', ['exec', '-c', command], { cwd, encoding: 'utf8' });
+  const done = npmSpawnSync(['exec', '-c', command], { cwd, encoding: 'utf8' });
   if (done.status !== 0) throw new Error(`${what}: \`${command}\` exited ${done.status ?? done.signal}: ${(done.stderr || '').trim().split('\n').slice(-3).join(' / ')}`);
   const files = done.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
   for (const file of files) if (!FILE.test(file)) throw new Error(`${what}: \`${command}\` printed "${file}", not a plain path`);
@@ -207,8 +207,17 @@ export function pools(suites, config) {
   return Object.fromEntries(entries.map(([pool, { shards, suites: names }]) => [pool, { shards, suites: suites.filter((suite) => (names ? names.includes(suite.name) : !named.has(suite.name))) }]));
 }
 
-/** The test shards: `{ '<pool>-<k>': { pool, suites, units, seconds } }`, every pool planned, the cover checked. */
-export function testShards(root, { config, timings } = readConfig(root)) {
+/**
+ * The test shards: `{ '<pool>-<k>': { pool, suites, units, seconds, affected } }`, every pool planned, the cover checked.
+ * With `affected` (scripts/ci-affected.mjs: `{ files, suites }`, the test files a pull request reaches and the suites they
+ * are in), a pool ci-shards.json marks `"affected": true` keeps only those units (a whole suite when it has a picked file)
+ * before it is planned, so its shards share them by time; every other pool keeps all of its own.
+ */
+export function testShards(root, { config, timings, affected } = {}) {
+  if (!config || !timings) { const read = readConfig(root); config ??= read.config; timings ??= read.timings; }
+  for (const [pool, { affected: flag }] of Object.entries(config.pools ?? {})) {
+    if (flag !== undefined && typeof flag !== 'boolean') throw new Error(`the pool ${pool}'s "affected" is true or false, not ${JSON.stringify(flag)}`);
+  }
   const byPool = pools(readSuites(root, { config }), config);
   // A file a named pool's suite lists (a root suite pins serve's workflow tests to lean) is that pool's alone: the pool that
   // takes the rest drops it from its own suite, so the shards run it once.
@@ -221,10 +230,11 @@ export function testShards(root, { config, timings } = readConfig(root)) {
   }
   const shards = {};
   for (const [pool, { shards: n, suites }] of Object.entries(byPool)) {
-    const units = unitsOf(suites, timings);
+    const only = Boolean(affected && config.pools[pool].affected);
+    const units = unitsOf(suites, timings).filter((unit) => !only || (unit.kind === 'whole' ? affected.suites.has(unit.suite) : affected.files.has(unit.path)));
     const planned = plan(units, n);
     checkCover(units, planned);
-    planned.forEach((shard, index) => { shards[`${pool}-${index + 1}`] = { pool, suites, ...shard }; });
+    planned.forEach((shard, index) => { shards[`${pool}-${index + 1}`] = { pool, suites, affected: only, ...shard }; });
   }
   return shards;
 }

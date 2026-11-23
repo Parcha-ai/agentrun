@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveDependency } from './pi-family-pins.mjs';
 import { isMain } from './is-main.mjs';
+import { npmExecFile } from './npm-command.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -85,7 +86,7 @@ export function runCommand(command, args, { cwd, env, timeoutMs }) {
 async function pack(directories, destination) {
   const tarballs = [];
   for (const directory of directories) {
-    const [packed] = JSON.parse((await exec('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: join(root, 'packages', directory) })).stdout);
+    const [packed] = JSON.parse((await npmExecFile(['pack', '--ignore-scripts', '--json', '--pack-destination', destination], { cwd: join(root, 'packages', directory) })).stdout);
     tarballs.push(join(destination, packed.filename));
   }
   return tarballs;

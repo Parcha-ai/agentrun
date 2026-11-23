@@ -21,6 +21,8 @@ type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; h
 
 /** The session a run's workflow decisions book under. */
 export const DECISION_SESSION = "decisions";
+/** The prefix of the model key a decision books under (`decision:<id>`). */
+const DECISION_KEY = "decision:";
 
 export interface RunCapOptions {
   /** The run's sessions: every key it has and each one's records (the journal's). */
@@ -87,8 +89,9 @@ export interface RunTools {
    *  reserved, not spent; given back on a lost claim, never booked as cut. `ref`: the one booking it names: a ref already
    *  booked (on the run's records, or on this claim) books nothing again, and the answer says `booked`. `under`: the key
    *  of the model session whose tool call it runs in (ModelRequest.paid.under): it is judged beside that session's
-   *  requests in flight and never waits on them, since one of them may be the request that asked for it. */
-  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true; readonly hold?: true; readonly ref?: string; readonly under?: string }): Promise<Admission & { readonly booked?: true }>;
+   *  requests in flight and never waits on them, since one of them may be the request that asked for it. `reported`: it is
+   *  settled at the provider's own figure for the call (ModelRequest.paid.reported). */
+  admit(request: { readonly id: string; readonly name: string; readonly holdUsd: number; readonly basis: string; readonly call?: string; readonly chargedBy?: string; readonly tool?: string; readonly tag?: string; readonly owed?: true; readonly hold?: true; readonly ref?: string; readonly under?: string; readonly reported?: true }): Promise<Admission & { readonly booked?: true }>;
   /** Settles it at what it charged (null: at its hold; 0: nothing was billed). `givenBack`: its hold let go unused,
    *  nothing sent (at 0), its record marked so (ModelUsage.givenBack): never read as a $0 charge or an unpriced one. */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<number | null>;
@@ -111,7 +114,11 @@ export function overCapOf(records: readonly SessionRecord[], othersUsd: number, 
 export function runCap(options: RunCapOptions): RunCap {
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
-  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route) };
+  // A decision's model key is never read by the run's model reader: a decision goes to its own provider, priced by the
+  // model it is admitted at (`deciding`) or, with no cap, by none. The run's reader may answer the run's model for any
+  // id (a CLI session's one model), which would mark an uncapped decision the plan's or a free model's: $0 to the run
+  // whatever its provider charged, or a known $0 for one whose charge was lost.
+  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? (id.startsWith(DECISION_KEY) ? undefined : options.modelOf(id, route)) };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
     ...pricing,
@@ -175,7 +182,7 @@ export function runCap(options: RunCapOptions): RunCap {
           // Under no cap a decision is not priced: nothing is read, nothing refused (its model may be "unreadable").
           if (capUsd !== undefined && request.model === "unreadable") throw new DecisionPriceUnreadable();
           const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request);
-          const key = `decision:${request.id}`;
+          const key = `${DECISION_KEY}${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
           return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
         },
@@ -199,7 +206,7 @@ export async function paidCalls(writer: SessionWriter, before: BeforeRequest, op
   const refsOf = () => (refs ??= writer.read().then((records) => new Set(records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data as { ref?: unknown } | undefined)?.ref).filter((ref): ref is string => typeof ref === "string"))));
   const book = (request: Parameters<RunTools["admit"]>[0]) =>
     // A hold that is no figure (an unpriced browser provider's) goes to the rule as given, which refuses it for good.
-    steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}), ...(request.hold ? { hold: true as const } : {}), ...(request.ref === undefined ? {} : { ref: request.ref }), ...(request.under === undefined ? {} : { under: request.under }) } });
+    steps.book(request.id, { model: `paid:${request.name}`, inputTokensMax: 0, ...(request.holdUsd !== 0 ? { feeUsd: request.holdUsd } : {}), paid: { name: request.name, basis: request.basis, ...(request.call === undefined ? {} : { call: request.call }), ...(request.chargedBy === undefined ? {} : { charged_by: request.chargedBy }), ...(request.tool === undefined ? {} : { tool: request.tool }), ...(request.tag === undefined ? {} : { tag: request.tag }), ...(request.owed ? { owed: true as const } : {}), ...(request.hold ? { hold: true as const } : {}), ...(request.ref === undefined ? {} : { ref: request.ref }), ...(request.under === undefined ? {} : { under: request.under }), ...(request.reported ? { reported: true as const } : {}) } });
   return {
     admit: async (request) => {
       if (request.ref === undefined) return book(request);

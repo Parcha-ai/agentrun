@@ -15,12 +15,14 @@ import { pastRunsOverStore } from "../store-reads/learning.js";
 import { learnsWorkflows } from "./adapter-run-spec.js";
 import { settleAudits } from "./audit.js";
 import { held } from "./held.js";
+import type { AuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { claimPromotion, promotionGate, replayClaimed, replayLaid, replayRecordedFor, toolFlowsFor } from "./promotion.js";
 import { type FirstChoice, workflowFirstOf } from "./workflow-first.js";
 
 /** The claim, as the runner read it, for learnedFirst. */
 export interface LearnedFirstDeps {
   readonly store: Store;
+  readonly admitAuxiliary?: AuxiliaryAdmitter;
   readonly sealKey?: Buffer;
   readonly agentId: string;
   readonly runId: string;
@@ -48,7 +50,7 @@ export interface LearnedFirst {
  *  claim that is refused throws ClaimRefused, as replayClaimed does. */
 export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly LearnedWorkflow[]): Promise<LearnedFirst> {
   const { store, agentId, runId, revisionId, launch, context, log, folder, shown } = deps;
-  const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}) };
+  const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}), ...(deps.admitAuxiliary ? { admitAuxiliary: deps.admitAuxiliary } : {}) };
   // A replay run lays only the workflow it replays (promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, laid);
   if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, folder, shown, ...own });

@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { connect, createServer } from "node:net";
@@ -13,8 +14,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { MACHINE_TOKEN_SOURCE, newMachineToken } from "@parcha/agentrun-computer";
-import { driftedVersion, fixtureFor, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
+import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
+import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
+import { driftedVersion, fixtureFor, frameLines, listenConformance, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -43,7 +45,7 @@ async function freePort() {
  * child.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
-  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, AGENTRUN_BIND_HOST: "127.0.0.1", ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   let partial = "";
@@ -66,6 +68,22 @@ function reportOf(stdout) {
   assert.ok(begin >= 0 && end > begin, `the markers, in order: ${stdout.slice(0, 500)}`);
   return JSON.parse(lines.slice(begin + 1, end).join("\n"));
 }
+
+test("the conformance listener binds an explicitly local interface while preserving the unset public default", async () => {
+  const local = createHttpServer();
+  try {
+    await listenConformance(local, 0, "127.0.0.1");
+    assert.equal(local.address().address, "127.0.0.1", "the actual socket is not a wildcard listener");
+  } finally {
+    await new Promise((done) => local.close(done));
+  }
+  // Observe Node's listen boundary for the public default without publishing a test listener on the host.
+  const listener = new EventEmitter();
+  let supplied;
+  listener.listen = (options) => { supplied = options; listener.emit("listening"); };
+  await listenConformance(listener, 7340);
+  assert.deepEqual(supplied, { port: 7340 }, "unset host leaves Node's existing wildcard default intact");
+});
 
 test(
   "the script stands up serve's attach routes on $PORT and runs Core with --long over a dial host whose machines dial it: every case it runs passes, provider.deadline, drift.arch and drift.version among them, the report lands between the markers, and no token is written",
@@ -118,6 +136,46 @@ test("every machine token in what the script writes is redacted by its shape, on
 test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none", () => {
 	assert.equal(fixtureFor("desktop", "/fixture"), "/fixture");
 	assert.equal(fixtureFor("linux", "/fixture"), undefined);
+});
+
+test("the screen case hands the run's onScreenshot its last whole shot once, a PNG that decodes, and frameLines prints it between its markers with its sha256; a desktop case that ends before its fixture's shot still hands its first", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-frame-"));
+	try {
+		// The fake knows the fixture by where the case puts it, not by what it is.
+		const fixture = join(dir, "fixture.bin");
+		writeFileSync(fixture, Buffer.alloc(16, 7));
+		const screen = async (given) => {
+			const shots = [];
+			const report = await runConformance(fakeDevices({ kind: "desktop" }).provider, {
+				image: "fixture:image",
+				cases: conformanceCases.filter(({ id }) => id === "screen.screenshot-size"),
+				...(given ? { fixture: given } : {}),
+				fetch: fakeFetch,
+				clock: testClock,
+				patience: 1000,
+				onScreenshot: (png) => shots.push(png),
+			});
+			return { status: report.results.map(({ id, status }) => [id, status]), shots };
+		};
+		const early = await screen(undefined);
+		assert.notDeepEqual(early.status, [["screen.screenshot-size", "pass"]], "no fixture: the desktop case ends before the painted shot");
+		assert.equal(early.shots.length, 1, "its first whole shot, handed over all the same");
+		assert.deepEqual((({ width, height }) => [width, height])(readPng(Buffer.from(early.shots[0]))), [320, 240]);
+		const { status, shots } = await screen(fixture);
+		assert.deepEqual(status, [["screen.screenshot-size", "pass"]]);
+		assert.equal(shots.length, 1);
+		const png = Buffer.from(shots[0]);
+		const image = readPng(png);
+		assert.deepEqual([image.width, image.height], [320, 240], "the fake desktop's whole screen");
+		const lines = frameLines(shots[0], 8);
+		const sha256 = createHash("sha256").update(png).digest("hex");
+		assert.equal(lines[0], `DIAL-CONFORMANCE-FRAME-BEGIN ${sha256} ${png.length}`);
+		assert.equal(lines.at(-1), "DIAL-CONFORMANCE-FRAME-END");
+		assert.ok(lines.slice(1, -1).every((line) => line.length <= 8));
+		assert.deepEqual(Buffer.from(lines.slice(1, -1).join(""), "base64"), png);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {

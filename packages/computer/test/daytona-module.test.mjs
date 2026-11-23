@@ -58,7 +58,9 @@ test("createProvider() names the variable it needs, and makes no request without
 		snapshot: "COMPUTER_DAYTONA_SNAPSHOT",
 		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 		archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
+		attachEgress: "COMPUTER_DAYTONA_ATTACH_EGRESS",
 		connect: "COMPUTER_DAYTONA_CONNECT",
+		kind: "COMPUTER_DAYTONA_KIND",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
@@ -132,12 +134,27 @@ test("COMPUTER_DAYTONA_CONNECT is the provider's connect, and createProvider() p
 	const made = await provider.create({ image: "agentrun-archil-0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: "r-module-dial" });
 	assert.equal(made.error?.code, "invalid", "the test's Daytona refuses the create: what was asked is in its body");
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
-	assert.equal(post.body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the dial given reached the provider");
+	assert.equal(post.body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64", "the dial given reached the provider");
+	assert.equal("AGENTRUN_ATTACH_URL" in post.body.env, false, "agentrun-dial's start gives the URL, never the sandbox's env");
 	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.connect]: "ssh" } }), /connect is how Daytona reaches its machines/);
 	assert.throws(
 		() => daytonaModule.dialKit(),
 		/Daytona's machines dial the server that minted their tokens, and this run has no public server: run its Core with packages\/serve\/scripts\/dial-conformance\.mjs --provider daytona with COMPUTER_DAYTONA_CONNECT=dial/,
 	);
+});
+
+test("COMPUTER_DAYTONA_ATTACH_EGRESS is the provider's attachEgress: a dial machine's boot env carries it; a bare DAYTONA_ATTACH_EGRESS is never read; a malformed one is refused at createProvider()", async () => {
+	const { AttachHub, MemoryMachineTokens } = await import("../dist/index.js");
+	const created = async (env, requestId) => {
+		const dial = { url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) };
+		const fake = recorder();
+		const provider = createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.url]: API, [DAYTONA_ENV.daemon]: DAEMON, [DAYTONA_ENV.connect]: "dial", ...env }, fetch: fake.fetch, dial });
+		await provider.create({ image: "agentrun-box-0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId });
+		return fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox").body.env;
+	};
+	assert.equal((await created({ [DAYTONA_ENV.attachEgress]: "192.0.2.40:18443" }, "r-module-egress")).AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+	assert.equal((await created({ DAYTONA_ATTACH_EGRESS: "192.0.2.40:18443" }, "r-module-bare")).AGENTRUN_ATTACH_EGRESS, undefined, "the bare name is not the module's");
+	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.attachEgress]: "relay.example:18443" } }), /the attach egress is <IPv4 relay>:<port>/);
 });
 
 test("createProvider() takes daemonPath, as dial-conformance.mjs gives drift.version's daemon: a dial machine is told that file's sha256, not the environment's daemon's", async () => {

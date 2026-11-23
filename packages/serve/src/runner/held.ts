@@ -14,12 +14,14 @@ import type { ApprovalPrice, ToolEffect } from "../tool-gate.js";
 import type { OpenedAccount } from "../email/account.js";
 import type { SavedCalendar } from "../calendar/address.js";
 import type { Workspace } from "../workspace/workspace.js";
+import type { Pieces } from "../workspace/pieced.js";
 import type { GithubAppAccessAt } from "./github-app.js";
 import type { HarnessInstallEntry, HarnessPins } from "../harness-install.js";
 import type { AlsoRow } from "../store/store.js";
 import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
+import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -60,6 +62,9 @@ export interface HeldComputerAsk {
 }
 
 export interface Held {
+  /** The host captures this claim's placed project once after draining its exported capabilities. No child-selected
+   * identifiers, paths, callbacks, workspace or secret values cross this boundary. */
+  projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
@@ -88,6 +93,9 @@ export interface Held {
   /** The zone the claim's run's day is told in (environment.ts runZone): its trigger's, read by the runner from the
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
+  /** The keys saved for the claim's own harness alone (harness-keys.ts openHarnessKeys), by name, opened by the runner:
+   *  none unless that harness is a plan-billed recipe. The process lays them on its adapter's environment alone. */
+  harnessKeys(): Promise<Record<string, string>>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
    *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;
@@ -115,8 +123,9 @@ export interface Held {
   install(name: string, signal?: AbortSignal): Promise<void>;
   /** The claim's computer (workspace/computer-for-claim.ts), made and held by the runner. */
   computer(ask: HeldComputerAsk): Promise<unknown>;
-  /** A Mode 2 claim: the run's folder on its Archil disk, as the runner opens it; its mount credential's revoke. */
-  archil(): Promise<{ readonly workspace: Workspace; revoke(): Promise<void>; inherit(): Promise<void>; release(): Promise<void> } | undefined>;
+  /** A Mode 2 claim: the run's folder on its Archil disk, as the runner opens it; its mount credential's revoke. `pieces`:
+   *  the runner's pieced write on that Workspace (big-writes.ts), what a write bigger than a piece goes through. */
+  archil(): Promise<{ readonly workspace: Workspace; readonly pieces?: Pieces; revoke(): Promise<void>; inherit(): Promise<void>; release(): Promise<void> } | undefined>;
   /** The claim's end-of-run step (learning-end.ts learningEndOfRun), run by the runner over its own reads of the claim:
    *  what the run's learning must never keep is every secret the runner holds, which no run's process is given. Its
    *  turns are asked through `input.ask`, the run's own session; `input.keptOf` is read once, for the round the runner

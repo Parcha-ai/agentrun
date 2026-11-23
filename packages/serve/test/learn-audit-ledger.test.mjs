@@ -534,6 +534,28 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   assert.equal((await lastRunsOf(store, "agent-1", 2_000, servedAt)).length, 1_100, "the served count's read");
 });
 
+test("a run before the agent's learning reset, or on a named disk, starts no audit at its end (a reopened one included): drawn at 1 in 1, no shadow is made", async (t) => {
+  const { startAudit } = await import("../dist/runner/audit.js");
+  const learning = { audit_every: 1 };
+  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
+  const serve = { name: "answer", digest: DIGEST };
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-reset-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const servedRow = (id, startedAt, disk = null) => ({ id, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt, disk, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
+  const endOf = async (row, resetAt) => {
+    const { store, made, rows } = servedStore(3, learning, DIGEST);
+    rows.unshift(row);
+    store.settings.get = async (key) => (resetAt !== undefined && key === "learning.reset-at.agent-1" ? { at: resetAt } : undefined);
+    store.runs.seededBefore = async () => [];
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId: row.id, launch }, serve);
+    return made;
+  };
+  // The reset at 10,000 leaves no served run before it counted, so the rate is 1 in 1.
+  assert.deepEqual(await endOf(servedRow("after", 20_000), 10_000), ["audit.after"], "a run after the reset is drawn and its shadow made");
+  assert.deepEqual(await endOf(servedRow("before", 5_000), 10_000), [], "a run before the reset starts none");
+  assert.deepEqual(await endOf(servedRow("named", 20_000, "disk-b")), [], "a run on a named disk starts none");
+});
+
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBm): the shadow's cap is what its served run's cap left, read at the served
 // run's end, so the two never spend past it; less than a run's smallest cap left starts no shadow.
 test("(r4) a shadow's cap is the served run's cap less what it spent: served cap $1.00, spent $0.30, the shadow's cap is $0.70", { timeout: 240_000 }, async (t) => {
@@ -779,4 +801,14 @@ test("(r4) a served run's all-in is unknown while its shadow is queued or runnin
   }
   assert.deepEqual(await allInOf(storeWith({ id: "audit.served-1", state: "ended", costUsd: 0.25 }), served), { cost_usd: 0.2, learning_usd: 0.25, total_usd: 0.45 });
   assert.deepEqual(await allInOf(storeWith(undefined), served), { cost_usd: 0.2, learning_usd: 0, total_usd: 0.2 }, "never drawn: nothing beside it");
+});
+
+test('a moved project refuses an auxiliary audit before starting a shadow and preserves its learning configuration', async t => {
+  const { startAudit } = await import('../dist/runner/audit.js');
+  const learning = { audit_every: 1 }, f = servedStore(0, learning, DIGEST), logs = [];
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'moved-audit-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const launch = { input: { content: 'Work.' }, title: 'Work', place: { mode: 'runner' }, learning: startAt('0'.repeat(40)), sourceProject: { version: 1, sourceId: 'a'.repeat(64), baselineRevision: 'rev-1', digest: 'b'.repeat(64), receipt: 'c'.repeat(64) } };
+  await startAudit({ store: f.store, agentId: 'agent-1', revisionId: 'rev-1', context: {}, folder: () => learningWorkspace({ mode: 'local', data: dir, agentId: 'agent-1' }), shown: async () => ({ text: text => text }), log: line => logs.push(line), runId: 'source-run', launch }, { name: 'answer', digest: DIGEST });
+  assert.deepEqual(f.made, []); assert.match(logs.join('\n'), /project placement/i);
+  assert.deepEqual((await f.store.agents.revision('rev-1')).body.learning, learning);
 });

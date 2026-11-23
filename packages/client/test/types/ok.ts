@@ -1,5 +1,16 @@
 // A consumer of the client as its README shows it: this file must typecheck.
 import { AgentRun, AgentRunRefused, AgentRunTimeout, type Run, type TimelinePage } from "@parcha/agentrun-client";
+import { BackendLearningClient, type BackendLearningStart, type ExternalLearningStart } from "@parcha/agentrun-client/learning";
+
+interface JobStart extends BackendLearningStart { jobId: string }
+export async function backendSource(): Promise<void> {
+  const sdk = new BackendLearningClient({ agentId: "sdk" });
+  const job: JobStart = { runtime: "codex-sdk", input: "Report status", instructions: "Be accurate", jobId: "job-1" };
+  await sdk.begin(job);
+  const external = new BackendLearningClient({ agentId: "platform" });
+  const task: ExternalLearningStart = { runtime: "external", platform: "Capy", input: "Report status", instructions: "Be accurate" };
+  await external.begin(task);
+}
 
 export async function consumer(): Promise<void> {
   const client = new AgentRun({ baseUrl: "https://agentrun.example.com/v2", apiKey: "key" });

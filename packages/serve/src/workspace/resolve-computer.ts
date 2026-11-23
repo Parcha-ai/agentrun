@@ -20,7 +20,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSessionUsage, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
@@ -40,7 +40,7 @@ export type { ComputerSettingKind, KindCapabilities, ProviderEntry, ShellPlace }
  *  desktop's or a phone's `surface` and `exec` go to the run's tools on the RunComputer (run-tools.ts); `exec: false`
  *  also mounts no folder in it and gives the run no shell. A desktop's, a phone's or a browser's `record`: the claim
  *  records its screen (computer-for-claim.ts, computer-record.ts). */
-export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean; readonly record?: boolean };
+export type ComputerSetting = { readonly kind: string; readonly provider?: string | null; readonly image?: string; readonly gpu?: GpuSpec; readonly persistent?: boolean; readonly surface?: "code" | "tools"; readonly exec?: boolean; readonly record?: boolean; readonly needs?: readonly string[] };
 
 /** Whether a computer (or its setting) takes its agent's programs away: `exec: false`. Only a desktop or a phone takes
  *  `exec` (computer-setting.ts refuses it on any other kind at save), so a computer without programs is one of those. */
@@ -100,6 +100,10 @@ export type ClaimBrowser = {
    *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
    *  stops it. Absent: nothing is recorded. */
   readonly record?: (id: string, watch: RecordWatch) => Recording;
+  /** The provider's own record of session `id` (BrowserComputerProvider.sessionUsage), read once as it is let go: when it
+   *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
+   *  does not know. Absent where the provider keeps no such record. A failed read throws. */
+  readonly usage?: (id: string, signal?: AbortSignal) => Promise<BrowserSessionUsage | undefined>;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;
@@ -333,11 +337,30 @@ function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: read
 /** The configurations of `entry` that serve `kind`. */
 const servingOf = (registry: Pick<KindRegistry, "servingRefusals">, entry: ProviderEntry, kind: ComputerSettingKind): KindCapabilities[] => entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
 
-/** The one configuration of `serving` the setting selects (configurationOf), as a list: [] when its image names none. */
-const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetting, entry: ProviderEntry, kind: ComputerSettingKind): readonly KindCapabilities[] => {
-  const one = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
-  return one ? [one] : [];
-};
+/** What computer `setting` selects before anything starts, as the claim picks it (resolveComputer): its kind, its
+ *  provider's entry, and the configuration serving the kind that its image names (configurationOf). Undefined for kind
+ *  none, an unknown kind or provider, or no such configuration. `registry` is as this server has it (registryHere). */
+function selectedFor(setting: ComputerSetting, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { kind: ComputerSettingKind; entry: ProviderEntry; configuration: KindCapabilities } | undefined {
+  const kind = setting.kind as ComputerSettingKind;
+  if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
+  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
+  const configuration = entry && configurationOf(servingOf(registry, entry, kind), setting.image, entry.defaultImage?.[kind]);
+  return entry && configuration ? { kind, entry, configuration } : undefined;
+}
+
+/** The kind of the run's folder a computer of `setting` on `entry`'s `configuration` holds in `mode` (folderOf), or
+ *  undefined for none: none where the agent runs no programs of its own; of the kinds its GPU computers take, where a
+ *  sandbox's setting asks for GPUs. resolveComputer's folder, and runFolderOf's. */
+const settingFolderOf = (setting: ComputerSetting, kind: ComputerSettingKind, entry: ProviderEntry, configuration: KindCapabilities, mode: 1 | 2): MountKind | undefined =>
+  noPrograms(setting) ? undefined : folderOf(kind, entry, [configuration], mode, kind === "sandbox" && setting.gpu ? configuration.gpu?.mounts : undefined);
+
+/** The kind of the run's folder a run of an agent with computer `setting` holds in `mode`, read off the setting and the
+ *  kind registry before anything starts (selectedFor, settingFolderOf): a bind, an Archil mount or a synced folder, or
+ *  undefined for none (kind none, a computer that holds no folder, or a setting the claim refuses). */
+export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): MountKind | undefined {
+  const selected = selectedFor(setting, registry);
+  return selected && settingFolderOf(setting, selected.kind, selected.entry, selected.configuration, mode);
+}
 
 /**
  * Where a run of an agent with computer `setting` has its shell in `mode` (shellPlaceOf), read off the setting and the
@@ -348,18 +371,12 @@ const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetti
  * runs nothing: "none". The setting is the agent's as saved; where it has none, the caller gives the server's default.
  */
 export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): ShellPlace {
-  const kind = setting.kind as ComputerSettingKind;
-  if (!Object.hasOwn(registry.SETTING_KINDS, kind)) return "none";
-  if (kind === "none") return shellPlaceOf(false, mode);
-  if (!registry.PROVIDERS.some((one) => one.kinds.includes(kind))) return "none";
-  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
-  if (!entry) return "none";
-  const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
-  if (serving.length === 0) return "none";
+  if (setting.kind === "none") return shellPlaceOf(false, mode);
+  const selected = selectedFor(setting, registry);
   // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
-  if (noPrograms(setting)) return "none";
-  const mounts = folderOf(kind, entry, serving, mode) !== undefined;
-  if (kind === "sandbox" && !mounts) return "none";
+  if (!selected || noPrograms(setting)) return "none";
+  const mounts = folderOf(selected.kind, selected.entry, [selected.configuration], mode) !== undefined;
+  if (selected.kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
 }
 
@@ -421,7 +438,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
   // it does.
-  const [configuration] = selectedOf(serving, setting, entry, kind);
+  const configuration = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
   if (!configuration) {
     const images = imagesOf(serving, entry.defaultImage?.[kind]);
     const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;
@@ -435,7 +452,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // (of the kinds its GPU computers take, where the setting asks for GPUs), and the agent may run programs there (a
   // folder is mounted for its shell).
   const gpu = kind === "sandbox" && setting.gpu ? setting.gpu : undefined;
-  const folder = noPrograms(setting) ? undefined : folderOf(kind, entry, [configuration], mode, gpu ? configuration.gpu?.mounts : undefined);
+  const folder = settingFolderOf(setting, kind, entry, configuration, mode);
   const mounts = folder !== undefined;
   if (kind === "sandbox" && folder === undefined) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: ${aLabel(entry.label)} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };

@@ -17,6 +17,7 @@ import { routeOf } from "./model-route.js";
 import { heldRedactor, processSecretRedactor } from "./redact.js";
 import { Channel } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
+import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { carriedLedger } from "../paid-calls.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
@@ -40,6 +41,7 @@ interface ChildInit {
   readonly githubApi?: string;
   readonly githubWeb?: string;
   readonly githubMcpOrigin?: string;
+  readonly composioMcpOrigin?: string;
 }
 
 registerRunErrors();
@@ -201,9 +203,12 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     computerForClaim,
     computerDeps: {} as AdapterSpecDeps["computerDeps"],
     installForClaim: heldInstall as AdapterSpecDeps["installForClaim"],
+    // web_save's download slots are the runner's, shared by all its runs (save-slots.ts).
+    saveSlots: remoteSaveSlots(channel),
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
+    ...(init.composioMcpOrigin ? { composioMcpOrigin: init.composioMcpOrigin } : {}),
     ...(init.mcpLoopback ? { mcpLoopback: true, mcpOwn: init.mcpOwn ?? [] } : {}),
   };
 }
@@ -235,7 +240,8 @@ channel.expose("loop", async (method, args) => {
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
       };
-      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) })(loopDeps);
+      // Its runner counted the harness's key rows before it made this process (staysInRunner): never again here.
+      loop = createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps, { keysCounted: true }) })(loopDeps);
       made(loop);
       // The loop's held state and whether a plain stop keeps its computer, posted when either moved.
       let last = "";

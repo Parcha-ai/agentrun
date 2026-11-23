@@ -15,6 +15,8 @@ const PINNED = {
   read: [["allow", "ask", "deny"], ["allow", "allow"], "read", "safe"],
   bash: [["allow", "ask", "deny"], ["allow", "ask"], "bash", "never"],
   ask_person: [["allow", "deny"], ["allow", "allow"], "ask_person", "safe"],
+  // It writes a file: a repeat of a save that finished finds its path taken and would answer it failed.
+  web_save: [["allow", "ask", "deny"], ["allow", "allow"], "web_save", "never"],
   browser: [["allow", "deny"], ["allow", "allow"], "browser", undefined],
   bash_background: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "never"],
   bash_output: [["allow", "ask", "deny"], ["allow", "deny"], "bash", "safe"],
@@ -36,7 +38,7 @@ test("each pinned name is permitted, defaulted, keyed and replayed as written", 
 });
 
 test("the table's names are these, in this order", () => {
-  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "browser", "subagent", "pdf_pages", "llm"]);
+  assert.deepEqual(tableTools(), ["read", "write", "edit", "bash", "ask_person", "web_fetch", "web_search", "web_save", "email_search", "email_read", "email_draft", "email_send", "email_file", "calendar_events", "browser", "subagent", "pdf_pages", "llm"]);
   assert.equal(blurbOf("web_search"), "Search the web");
   assert.equal(isHostTool("web_search") && !isHostTool("monid:faux/person/enrich") && !isHostTool("browser"), true);
 });

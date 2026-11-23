@@ -14,6 +14,7 @@ import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -44,8 +45,12 @@ export const DAYTONA_ENV = {
 	 * provider takes an Archil mount; unset, it refuses one (Archil's client hangs on Daytona's hosted cloud).
 	 */
 	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
+	/** attachEgress: a self-hosted Daytona target's attach relay, <IPv4 relay>:<port>, which its machines that dial go through. */
+	attachEgress: "COMPUTER_DAYTONA_ATTACH_EGRESS",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_DAYTONA_CONNECT",
+	/** kind: linux (default) or desktop, which create() takes on dial alone. */
+	kind: "COMPUTER_DAYTONA_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -67,6 +72,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const user = named(DAYTONA_ENV.user);
 	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
 	const archilEgress = named(DAYTONA_ENV.archilEgress);
+	const attachEgress = named(DAYTONA_ENV.attachEgress);
 	const connect = named(DAYTONA_ENV.connect);
 	return {
 		apiKey,
@@ -82,6 +88,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
 		// create() refuses one of another shape in words.
 		...(archilEgress ? { archilEgress: archilEgress.value } : {}),
+		// create() refuses one of another shape in words.
+		...(attachEgress ? { attachEgress: attachEgress.value } : {}),
 		// create() refuses any other value in words.
 		...(connect ? { connect: connect.value as "exec" | "dial" } : {}),
 	};
@@ -116,6 +124,8 @@ export interface DaytonaModuleOptions {
 function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial, daemonPath }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return {
 		...settingsFromEnv(env),
+		// create() refuses any other kind, and desktop without dial, in words.
+		...kindFrom(env, DAYTONA_ENV.kind),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,

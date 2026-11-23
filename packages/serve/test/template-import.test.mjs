@@ -163,6 +163,12 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   assert.equal(new URL(imported.body.console_url).hash, `#/templates/${enc(ID)}`, "an import links to its apply page");
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.filter((one) => one.name === "kyb").map((one) => [one.id, one.bundled]), [["kyb", true], [ID, false]], "the bundled kyb and the imported one are two packages");
+  // Read again by its id, URL-encoded (it has slashes in it): the package as it was stored, whole, at its SHA.
+  const read = await api("GET", `/templates/${enc(ID)}`);
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.deepEqual([read.body.template.id, read.body.template.bundled, read.body.template.sha, read.body.template.publisher], [ID, false, SHA_A, "acme"]);
+  assert.deepEqual([read.body.instructions, read.body.skill_files], [preview.body.instructions, preview.body.skill_files], "what the preview showed before it was stored");
+  assert.equal(new URL(read.body.console_url).hash, `#/templates/${enc(ID)}`);
 
   const applied = await api("POST", `/templates/${enc(ID)}/apply`, { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -199,6 +205,7 @@ test("an import from GitHub: a dry run shows the package whole and stores nothin
   assert.equal((await restarted.api("DELETE", "/templates/kyb")).status, 403, "a bundled package can't be removed");
   assert.equal((await restarted.api("DELETE", `/templates/${enc(ID)}`)).status, 204);
   assert.equal((await restarted.api("DELETE", `/templates/${enc(ID)}`)).status, 404);
+  assert.equal((await restarted.api("GET", `/templates/${enc(ID)}`)).status, 404, "a removed package is no longer read");
   assert.equal((await restarted.api("POST", `/templates/${enc(ID)}/apply`, { parameters: {} })).status, 404);
   assert.deepEqual((await restarted.api("GET", `/agents/${applied.body.agent_id}`)).body.template, { id: ID, version: "0.1.0", sha: SHA_A }, "an agent applied from it stays as it is");
 });

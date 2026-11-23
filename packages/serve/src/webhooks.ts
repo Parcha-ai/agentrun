@@ -18,7 +18,7 @@ import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
 import { ApiError, type ErrorCode, invalid } from "./errors.js";
 import { SERVER_SCOPE, sealedSettingsOverStore, type SealedSettingsOverStore, type SettingsSpec } from "./sealed-settings-store.js";
-import { signatureOf } from "./standard-webhooks.js";
+import { answerOf, signedRequest } from "./standard-webhooks.js";
 import type { ChannelAttemptRow, ChannelPostRow, Store } from "./store/index.js";
 import { webhookSecretMeta } from "./trigger-secrets-shown.js";
 import type { TriggerFailed } from "./triggers.js";
@@ -726,15 +726,14 @@ export class Webhooks {
   /** What a try sends to (`url`) and with which headers, for the outbox's credential: the webhook's URL, signed with its
    *  secret. Slack's outbox sends to its sealed URL (slack.ts). */
   protected request(config: Config, credential: string, id: string, timestamp: string, body: string): { url: URL; headers: Record<string, string> } {
-    return { url: new URL(config.url), headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(credential, id, timestamp, body) } };
+    return { url: new URL(config.url), headers: signedRequest(credential, id, timestamp, body, "agentrun-serve-webhook/1") };
   }
 
   /** What a receiver's answer says: why the try failed (none when it landed), and whether the receiver is gone, which
    *  turns the outbox off. The webhook's: 2xx lands; a redirect is not followed; a 410 is gone. */
   protected async judged(res: Awaited<ReturnType<typeof undiciFetch>>): Promise<{ failure?: string; gone?: Gone }> {
-    await res.body?.cancel().catch(() => undefined);
-    if (res.status >= 200 && res.status <= 299) return {};
-    const failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
+    const failure = await answerOf(res);
+    if (failure === undefined) return {};
     return res.status === 410 ? { failure, gone: { reason: "the receiver answered 410 Gone", drop: "the webhook is off: its receiver answered 410" } } : { failure };
   }
 

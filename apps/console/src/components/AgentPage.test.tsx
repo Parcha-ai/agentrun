@@ -19,7 +19,7 @@ type Page = { runs: Run[]; next_cursor: string | null };
 type Opts = {
   runs?: Run[]; next?: string | null; read?: (cursor: string | null) => Promise<Page>; agentRead?: () => Promise<Agent>; reads?: (n: number) => Promise<Agent>;
   tab?: string; stats?: () => Promise<unknown>; models?: { default: string; source: string; route_prefix?: string | null };
-  harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string }[];
+  harnesses?: { id: string; default_model?: string | null; available?: boolean; reason?: string; needs?: ("key" | "chatgpt")[] }[];
   places?: Places | null; learning?: "on" | "off" | null; strict?: boolean; agentError?: unknown;
 };
 async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = null, read, agentRead, reads, tab, stats = async () => statsWith(ANALYTICS), models, harnesses, places, learning, strict, agentError }: Opts = {}) {
@@ -203,12 +203,16 @@ describe("AgentPage overview and run workspace", () => {
     const base = runsOf("invoice-checker")[0];
     const page = await open(agentFixture("invoice-checker"), { runs: [{ ...base, title: "Invoice one" }, { ...base, run_id: "two", title: "Customer two" }] });
     const input = page.host.querySelector('input[aria-label="Search this agent\'s runs"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "customer");
+    const search = (q: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, q);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    await search("customer");
     expect(page.rows()).toHaveLength(1);
     expect(page.rows()[0].textContent).toContain("Customer two");
+    // Each word typed, in any order, as the console's other filters match.
+    await search("two customer");
+    expect(page.rows().map((r) => r.textContent)).toEqual([expect.stringContaining("Customer two")]);
     expect(page.asked).toHaveLength(2);
   });
 
@@ -521,6 +525,29 @@ describe("AgentPage model, capabilities and supported tabs", () => {
     const page = await open({ ...base, definition: { ...base.definition, harness: "codex" } }, { harnesses: [{ id: "codex", available: false, reason: "codex is not installed." }] });
     expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe("codex doesn't run on this server: codex is not installed.");
     expect(page.rows().length).toBeGreaterThan(0);
+  });
+
+  it("says once what a harness that needs a key lacks: its banner, never the model blocker in the same words again", async () => {
+    const base = agentFixture("invoice-checker");
+    const reason = "No model yet: add a model key in Settings → Model keys.";
+    const page = await open(
+      { ...base, definition: { ...base.definition, harness: "pi", model: undefined }, run_blockers: { message: reason, fields: [{ field: "definition.model", reason: "not_set_up_here", message: reason }] } },
+      { harnesses: [{ id: "pi", available: false, default_model: null, reason, needs: ["key"] }] },
+    );
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`pi doesn't run on this server: ${reason}`);
+    expect(page.host.querySelector('[aria-label="Runs refused"]')).toBeNull();
+  });
+
+  it("a model blocker in other words than the harness's banner is still said: only the banner's own words are not said twice", async () => {
+    const base = agentFixture("invoice-checker");
+    const reason = "No model yet: add a model key in Settings → Model keys.";
+    const own = "anthropic/claude-sonnet-5-5 needs ANTHROPIC_API_KEY: add it in Settings → Model keys.";
+    const page = await open(
+      { ...base, definition: { ...base.definition, harness: "pi", model: "anthropic/claude-sonnet-5-5" }, run_blockers: { message: own, fields: [{ field: "definition.model", reason: "not_set_up_here", message: own }] } },
+      { harnesses: [{ id: "pi", available: false, default_model: null, reason, needs: ["key"] }] },
+    );
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`pi doesn't run on this server: ${reason}`);
+    expect(page.host.querySelector('[aria-label="Runs refused"]')?.textContent).toContain(own);
   });
 
   it("shows a workflow's read-only graph and no fictional per-agent model", async () => {

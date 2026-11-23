@@ -53,9 +53,9 @@ export type InputIssue = components["InputIssue"];
 export type TemplateView = Answer<"listTemplates">["templates"][number];
 /** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
 export type TemplateApply = Body<"applyTemplate">;
-/** What an apply made: the agent, its triggers, and its warnings. */
-export type TemplateApplied = Answer<"applyTemplate">;
-/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+/** What an apply made: the agent, its triggers, and its warnings. The console sends no dry_run, so never the plan answer. */
+export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
+/** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
@@ -139,6 +139,10 @@ export type TimelinePage = components["TimelinePage"];
 /** GET /v2/runs/{id}/trace's answer: each model request and tool call of a run as a span (the Dev tools tab). */
 export type RunTrace = Answer<"getRunTrace">;
 export type TraceSpan = RunTrace["spans"][number];
+/** GET /v2/runs/{id}/usage's answer: the run's cost line by line, from the server's booking (a line for each model, each
+ *  vendor that charged for a tool, each browser provider), or none and why (`reason`). */
+export type RunUsage = Answer<"getRunUsage">;
+export type UsageLine = NonNullable<RunUsage["lines"]>[number];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];
@@ -168,6 +172,9 @@ type ServedToolKeys = Answer<"listToolKeys">;
 /** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
 export type ToolKey = ServedToolKeys["keys"][number];
 export type ToolKeys = ServedToolKeys;
+/** Settings → Harness keys: each plan-billed recipe's harness, its keys as SecretMeta ("harness:<id>:<KEY>"), never a value. */
+export type HarnessKeys = Answer<"listHarnessKeys">;
+export type HarnessKeysEntry = HarnessKeys["harnesses"][number];
 export type ToolKeyField = ToolKey["fields"][number];
 
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
@@ -232,6 +239,23 @@ export type GitHubConnection = Extract<GitHubStatus, { connected: true }>;
 export type GitHubConnectStart = Answer<"connectGitHub">;
 /** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
 export type GitHubDisconnected = Answer<"disconnectGitHub">;
+
+/** GET /v2/integrations/github/repositories: the repositories the App's installations cover. */
+export type GitHubRepositories = Answer<"listGitHubRepositories">;
+export type GitHubRepository = GitHubRepositories["repositories"][number];
+/** GET /v2/suggestions: GitHub's state, each scanned repository (its newest scan) and the suggested agents. */
+export type SuggestionsList = Answer<"listSuggestions">;
+export type ScannedRepository = SuggestionsList["repositories"][number];
+/** One suggested agent, as the list shows it (no instructions). */
+export type Suggestion = SuggestionsList["suggestions"][number];
+/** GET /v2/suggestions/{id}: the suggestion whole, the files a create adds, and whether GitHub lets it now. */
+export type SuggestionDetail = Answer<"getSuggestion">;
+/** Whether this server's GitHub App can open the pull request, and what to fix where it can't. */
+export type SuggestionReadiness = SuggestionDetail["github"];
+/** POST /v2/suggestions/{id}/create's answer: the suggestion with its agent, branch and pull request. */
+export type SuggestionCreated = Answer<"createSuggestedAgent">;
+/** POST /v2/suggestions/scans's answer: the scan's run. */
+export type ScanStarted = Answer<"scanForSuggestions">;
 
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;

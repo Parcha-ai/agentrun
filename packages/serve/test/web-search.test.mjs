@@ -190,7 +190,7 @@ test("a request to Parallel with no run's ledger to book it on is never sent, no
   assert.deepEqual(await webSearch({ query: "widgets" }, client), { error: "Parallel's search was not sent: this call has no run to book its price under." });
   const page = await webFetch("http://public.example/", { ...network(), parallel: client });
   assert.deepEqual([page.via, page.title, page.parallel], ["direct", "Public page", "Parallel's extract was not sent: this call has no run to book its price under."]);
-  await assert.rejects(client.post(PARALLEL_SEARCH_URL, { search_queries: ["widgets"] }), (error) => error.name === "PaidRefused" && /no run to book its price under/.test(error.message));
+  await assert.rejects(client.post(PARALLEL_SEARCH_URL, { search_queries: ["widgets"], mode: "fast" }), (error) => error.name === "PaidRefused" && /no run to book its price under/.test(error.message));
   // Inside one, an endpoint the web tools have no price for is not sent either.
   await inCall(async () => assert.rejects(client.post("https://api.parallel.ai/v1/tasks/runs", { input: "widgets" }), (error) => error.name === "PaidRefused" && /no price here/.test(error.message)))();
   assert.deepEqual(sent, [], "nothing reached Parallel");
@@ -555,7 +555,7 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   const { fakedPlane, fakeFetch, fakeSearch } = await import("../dist/web-fake.js");
   // Claude's and Codex's own search answer in place of the run's web_search where the plane says native (adapters.ts
   // nativeOptions): a faked run's plane never does, and leaves every other tool's pick as it was.
-  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "exa-keyless", web_fetch: "parallel" });
+  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "firecrawl-keyless", web_fetch: "parallel" });
   assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
   assert.equal(fakedPlane(undefined), undefined);
   assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });

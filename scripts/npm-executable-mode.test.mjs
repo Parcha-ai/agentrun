@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { npmCommand } from './npm-command.mjs';
 import { npmExecutableMode } from './npm-executable-mode.mjs';
 
 const exec = promisify(execFile);
@@ -33,18 +34,16 @@ test('a real offline npm install of a 0755 embedded executable follows the two m
   await writeFile(userconfig, ''); await writeFile(globalconfig, '');
   const config = ['--offline', '--ignore-scripts', '--no-audit', '--no-fund',
     `--userconfig=${userconfig}`, `--globalconfig=${globalconfig}`, `--cache=${join(root, 'cache')}`];
-  const npmCommand = process.env.npm_execpath ? process.execPath : 'npm';
-  const prefix = process.env.npm_execpath ? [process.env.npm_execpath] : [];
   const env = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
-  const runNpm = async (args, cwd, systemMask) => exec(process.execPath, ['--input-type=module', '-e', `
+  const runNpm = async (args, cwd, systemMask, npm = npmCommand([...args, ...config])) => exec(process.execPath, ['--input-type=module', '-e', `
     import { spawnSync } from 'node:child_process';
     process.umask(Number(process.env.AGENTRUN_MODE_TEST_MASK));
     const child = spawnSync(process.env.AGENTRUN_MODE_TEST_COMMAND, JSON.parse(process.env.AGENTRUN_MODE_TEST_ARGS), { stdio: 'inherit' });
     if (child.error) throw child.error;
     process.exit(child.status ?? 1);
   `], { cwd, env: { ...env, AGENTRUN_MODE_TEST_MASK: String(systemMask),
-    AGENTRUN_MODE_TEST_COMMAND: npmCommand, AGENTRUN_MODE_TEST_ARGS: JSON.stringify([...prefix, ...args, ...config]) },
+    AGENTRUN_MODE_TEST_COMMAND: npm.command, AGENTRUN_MODE_TEST_ARGS: JSON.stringify(npm.args) },
     timeout: 30_000, maxBuffer: 1024 * 1024 });
   const [packed] = JSON.parse((await runNpm(['pack', '--json', '--pack-destination', root], source, 0o022)).stdout);
   const tarball = join(root, packed.filename);

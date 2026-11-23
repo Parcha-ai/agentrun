@@ -19,6 +19,7 @@ import setupPublic from "./setup-public.mjs";
 import setupLinkFollow from "./setup-link-follow.mjs";
 import setupRender from "./setup-render.mjs";
 import signIn from "./sign-in.mjs";
+import demoMode from "./demo-mode.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import reportJson from "./report-json.mjs";
@@ -30,6 +31,7 @@ import templateApply from "./template-apply.mjs";
 import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
 import watchLive from "./watch-live.mjs";
+import screenSteps from "./screen-steps.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
@@ -48,6 +50,7 @@ import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
+import suggestAgents from "./suggest-agents.mjs";
 
 export const flows = [
   setupOpen,
@@ -56,6 +59,7 @@ export const flows = [
   setupRender,
   signIn,
   signOutScope,
+  demoMode,
   connectGitHub,
   githubTrigger,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
@@ -65,6 +69,7 @@ export const flows = [
   runToEnd,
   reportJson,
   watchLive,
+  screenSteps,
   screenUnopened,
   takeOver,
   askDone,
@@ -87,4 +92,5 @@ export const flows = [
   playgroundOperationWidth,
   devToolsPanelWidth,
   playgroundPaneLines,
+  ...suggestAgents,
 ];

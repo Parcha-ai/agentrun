@@ -435,10 +435,7 @@ jobs:
         env:
           BOX_IMAGE: ${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}
         run: |
-          repo="${BOX_IMAGE#ghcr.io/}"; repo="${repo%:*}"
-          token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log(JSON.parse(s).token))')" || token=''
-          code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' "https://ghcr.io/v2/$repo/manifests/${BOX_IMAGE##*:}")"
-          [ "$code" = 200 ] || { echo "::error::$BOX_IMAGE can't be pulled with no credentials (HTTP $code): the package is private. An org admin makes ghcr.io/$repo public once, in the package's settings, then re-runs this job" >&2; exit 1; }
+          node scripts/ghcr-published.mjs "$BOX_IMAGE" || { echo "::error::$BOX_IMAGE can't be pulled with no credentials (GHCR's answer is the line above): the package is private. An org admin makes ${BOX_IMAGE%:*} public once, in the package's settings, then re-runs this job" >&2; exit 1; }
       - run: npm ci --ignore-scripts
       - name: Build the template from the image and make it public
         env:

@@ -153,8 +153,7 @@ test("a template that makes a webhook trigger says so in its apply answer: the c
   const { api } = await owned(t);
   const applied = await api("POST", "/templates/inbound-lead/apply", { parameters: { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const hooks = [];
-  for (const [i, id] of applied.body.trigger_ids.entries()) if ((await api("GET", `/triggers/${id}`)).body.source.kind === "webhook") hooks.push(i);
+  const hooks = applied.body.triggers.flatMap((one, i) => (one.kind === "webhook" ? [i] : []));
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
   const said = applied.body.warnings.filter((w) => /^triggers\.\d+\.secret$/.test(w.field));
   assert.deepEqual(said.map((w) => [w.field, w.reason]), hooks.map((i) => [`triggers.${i}.secret`, "not_allowed"]));
@@ -197,7 +196,7 @@ test("a template applied from the owner's session shows each webhook trigger it 
   assert.equal(applied.status, 201, applied.text);
   const hooks = applied.body.webhook_secrets ?? [];
   assert.ok(hooks.length > 0, "inbound-lead makes a webhook trigger");
-  assert.ok(hooks.every((made) => applied.body.trigger_ids.includes(made.trigger_id)), "each a trigger it made");
+  assert.ok(hooks.every((made) => applied.body.triggers.some((one) => one.trigger_id === made.trigger_id)), "each a trigger it made");
   for (const made of hooks) {
     assert.match(made.signing_secret, /^whsec_/, JSON.stringify(made));
     assert.deepEqual([made.secret.name, made.secret.set, made.secret.source], [`trigger:${made.trigger_id}`, true, "console"]);
@@ -205,7 +204,7 @@ test("a template applied from the owner's session shows each webhook trigger it 
   }
   const again = await page("POST", "/templates/inbound-lead/apply", LEAD, { "idempotency-key": "lead-1" });
   assert.equal(again.status, 201, again.text);
-  assert.deepEqual(again.body.trigger_ids, applied.body.trigger_ids, "the same apply, made once");
+  assert.deepEqual(again.body.triggers, applied.body.triggers, "the same apply, made once");
   assert.ok(!again.text.includes("whsec_"), "a replay shows no secret");
   assert.equal(again.body.webhook_secrets.length, hooks.length);
   for (const made of again.body.webhook_secrets) {

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { triggerTargets } = await import("../dist/trigger-targets.js");
+const { triggerTargets, previousCarriedWords, previousResultTooLarge, RECIPE_MESSAGE_PERSON_ONLY } = await import("../dist/trigger-targets.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { runnersRefused } = await import("../dist/runner/presence.js");
 const { carriesPrevious } = await import("../dist/trigger-adapter.js");
@@ -60,6 +60,8 @@ const deps = (over = {}) => {
     getAgent: async () => entryOf(),
     needAgent: async () => entryOf(),
     momentOf: async () => moment(),
+    // The server's delete turn: here the write alone.
+    runWrite: (_agentId, _runId, work) => work(),
     runStatus: async () => "working",
     ...rest,
   };
@@ -103,6 +105,20 @@ test("a message_run target to a workflow run is not_allowed", async () => {
   assert.match(issues[0].message, /A workflow run takes no messages here\./);
 });
 
+test("a message_run target to a run on a plan-billed harness recipe is not_allowed: its turn would run on its owner's own sign-in; a run on any other harness is allowed", async () => {
+  const store = await freshStore();
+  const planRecipe = (harness) => harness === "model-agent";
+  const refused = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent" }), planRecipe }));
+  const issues = await refused.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } });
+  assert.deepEqual(issues, [{ field: "target.run_id", reason: "not_allowed", message: RECIPE_MESSAGE_PERSON_ONLY }]);
+  assert.match(RECIPE_MESSAGE_PERSON_ONLY, /owner's own sign-in only for what a person starts.*not every one is saved\. Save them in Settings → Harness keys/);
+  // Before the cap words: an uncapped run on one is refused for the sign-in, the rule a cap does not change.
+  const uncapped = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent", maxCostUsd: undefined }), planRecipe }));
+  assert.equal((await uncapped.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }))[0].message, RECIPE_MESSAGE_PERSON_ONLY);
+  const allowed = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "pi" }), planRecipe }));
+  assert.deepEqual(await allowed.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }), []);
+});
+
 test("a start_run target for an unknown agent is not_found", async () => {
   const store = await freshStore();
   const t = triggerTargets(store, deps({ getAgent: async () => undefined }));
@@ -142,25 +158,29 @@ test("a source that says nothing about the previous result hands none", () => {
 });
 
 // A previous result over the limit (32 KiB as JSON.stringify(x, null, 2) lays it out, in UTF-8 bytes) whose run's output
-// schema names x-carried: its carried arrays give up their oldest entries (the front: a template keeps them oldest first)
-// until the carried fields fit, from the array largest in bytes right then, a tie to the first in x-carried order. The
-// expected counts below were worked out apart from the source, by laying the picked JSON out again after every drop.
+// schema names x-carried: only those fields, the ones the output holds; its carried arrays give up entries from the front
+// (a template keeps them oldest first) until the carried fields fit, from the array largest in bytes right then, a tie to
+// the first in x-carried order. The expected texts are the source's own words (previousCarriedWords,
+// previousResultTooLarge): a test pins the fields, the whole result's bytes and the counts dropped. The expected counts
+// were worked out apart from the source, by laying the picked JSON out again after every drop.
 const entry = (list, i, words = 20) => `https://jobs.example.com/${list}/${String(i).padStart(3, "0")} ${"word ".repeat(words).trim()}`;
 const entries = (list, n) => Array.from({ length: n }, (_, i) => entry(list, i));
 const NOISE = "word ".repeat(7 * 1024).trim();
 const PREVIOUS_RUN = "run-prev";
-const OVER = /This trigger's last completed run \(run-prev\) has a result over 32768 bytes, so it is not handed to you here\./;
-const blockOf = (handed) => JSON.parse(/```json\n([\s\S]*?)\n```$/.exec(handed)?.[1] ?? "null");
-const droppedOf = (handed) => /dropped to fit \(([^)]*)\)/.exec(handed)?.[1];
+const ENDED = "2026-11-19T09:00:00.000Z";
+const OVER = previousResultTooLarge(PREVIOUS_RUN);
+/** The words a run is handed `picked` in, the carried fields of `output` (its whole bytes), `dropped` from the front. */
+const carriedText = (output, picked, dropped) =>
+  previousCarriedWords(PREVIOUS_RUN, ENDED, Object.keys(picked), Buffer.byteLength(JSON.stringify(output, null, 2)), JSON.stringify(picked, null, 2), dropped);
 
 /** What a schedule's run is handed when its trigger's last completed run (run-prev) ended with `output`, its pinned
- *  schema naming `carried` in x-carried: the text after the run's message. */
+ *  schema naming `carried` in x-carried (none when undefined): the text after the run's message. */
 async function handedAfter(output, carried) {
   const store = await freshStore();
   await store.runs.create({ id: PREVIOUS_RUN, agentId: "a1", revisionId: "r1" });
   await dueFirings(store, ["f0"]);
   await store.triggers.settle("t1", "f0", { status: "started", runId: PREVIOUS_RUN });
-  const completedOutput = async (runId) => (runId === PREVIOUS_RUN ? { output, endedAt: "2026-11-19T09:00:00.000Z", ...(carried ? { carried } : {}) } : undefined);
+  const completedOutput = async (runId) => (runId === PREVIOUS_RUN ? { output, endedAt: ENDED, ...(carried ? { carried } : {}) } : undefined);
   const t = triggerTargets(store, deps({ completedOutput }));
   const { run_id } = await t.start({ kind: "start_run", agent_id: "a1", input: { content: "Go." }, max_cost_usd: 1 }, { content: "Go." }, { id: "t1", firing_key: "f1" }, from, undefined, true);
   const content = readLaunchBody((await store.runs.launch(run_id)).body).input.content;
@@ -168,13 +188,30 @@ async function handedAfter(output, carried) {
   return content.slice("Go.".length);
 }
 
-test("carried fields over the limit: the oldest entries of a carried array are dropped until they fit, the rest handed in order, said per field", async () => {
+test("the run is told how many entries each carried array lost from its front, never that they were its oldest: the engine reads no dates", () => {
+  const words = previousCarriedWords("run-x", null, ["b", "a"], 40000, "{}", [["b", 2], ["a", 1]]);
+  assert.ok(words.includes("dropped to fit (b: the first 2 entries dropped; a: the first entry dropped)"), `per field, the first N entries: ${words}`);
+  assert.ok(words.includes("(the template keeps the array oldest first)"), `the order is the template's: ${words}`);
+  assert.doesNotMatch(words, /oldest entr/, "never that the engine knows which entries are the oldest");
+});
+
+test("over the limit with no x-carried: the too-large line, never every field read as carried; beside it, the same result carrying seen", async () => {
+  // Over the limit by an array alone: read as carried, its first entries would go and the rest would fit.
+  const output = { seen: entries("seen", 300), tag: "newer" };
+  assert.equal(await handedAfter(output, ["seen"]), carriedText(output, { seen: output.seen.slice(68) }, [["seen", 68]]), "the control is handed its carried field, trimmed to fit");
+  assert.equal(await handedAfter(output, undefined), OVER, "no x-carried, the too-large line and nothing of the result");
+});
+
+test("a carried field absent from the output is left out, never a null in its place; a pick with none of them present is the too-large line", async () => {
+  const output = { seen: entries("seen", 2), noise: NOISE };
+  assert.equal(await handedAfter(output, ["seen", "tag"]), carriedText(output, { seen: output.seen }, []), "x-carried [seen, tag], no tag: seen alone, named alone");
+  assert.equal(await handedAfter(output, ["tag"]), OVER, "x-carried [tag], no tag: nothing to pick, the too-large line, never {}");
+});
+
+test("carried fields over the limit: the first entries of a carried array are dropped until they fit, the rest handed in order, said per field", async () => {
   const seen = entries("seen", 300);
   const output = { seen, tag: "newer" };
-  const handed = await handedAfter(output, ["seen"]);
-  assert.ok(!OVER.test(handed), `carried fields that fit once old entries go are not refused: ${handed.slice(0, 300)}`);
-  assert.deepEqual(blockOf(handed), { seen: seen.slice(68) }, "the 68 oldest (the front) are dropped, the newest 232 kept in their order");
-  assert.equal(droppedOf(handed), "seen: 68 oldest entries dropped");
+  assert.equal(await handedAfter(output, ["seen"]), carriedText(output, { seen: seen.slice(68) }, [["seen", 68]]), "the first 68 are dropped, the last 232 kept in their order");
   assert.ok(Buffer.byteLength(JSON.stringify({ seen: seen.slice(68) }, null, 2)) <= 32768 && Buffer.byteLength(JSON.stringify({ seen: seen.slice(67) }, null, 2)) > 32768, "no more dropped than it takes");
   assert.equal(output.seen.length, 300, "the run's output itself is left whole");
 });
@@ -182,50 +219,41 @@ test("carried fields over the limit: the oldest entries of a carried array are d
 test("the largest carried array gives up its entries: a small ranked array beside it is handed whole", async () => {
   const ranked = ["theme one: 12", "theme two: 7", "theme three: 3"];
   const seen = entries("seen", 300);
-  const handed = await handedAfter({ ranked, seen, tag: "newer" }, ["ranked", "seen"]);
-  assert.deepEqual(blockOf(handed), { ranked, seen: seen.slice(69) }, `only the largest array is trimmed: ${handed.slice(0, 300)}`);
-  assert.equal(droppedOf(handed), "seen: 69 oldest entries dropped", "and only it is named");
+  const output = { ranked, seen, tag: "newer" };
+  assert.equal(await handedAfter(output, ["ranked", "seen"]), carriedText(output, { ranked, seen: seen.slice(69) }, [["seen", 69]]), "only the largest array is trimmed, and only it is named");
 });
 
 test("two carried arrays the same size: the first in x-carried order gives up an entry, then the larger one, measured again after each drop", async () => {
   const a = entries("a", 120);
   const b = entries("b", 120);
-  const handed = await handedAfter({ a, b }, ["b", "a"]);
+  const output = { a, b };
   // b first (the tie, by x-carried order, never the output's key order), then a (now larger), then b (the tie again).
-  assert.deepEqual(blockOf(handed), { b: b.slice(2), a: a.slice(1) }, `the tie goes to b, then each drop to the larger: ${handed.slice(0, 300)}`);
-  assert.equal(droppedOf(handed), "b: 2 oldest entries dropped; a: 1 oldest entry dropped", "in x-carried order");
+  assert.equal(await handedAfter(output, ["b", "a"]), carriedText(output, { b: b.slice(2), a: a.slice(1) }, [["b", 2], ["a", 1]]), "the tie goes to b, then each drop to the larger, named in x-carried order");
 });
 
-test("carried fields are measured in UTF-8 bytes: non-ASCII entries a character count says fit still give up their oldest", async () => {
+test("carried fields are measured in UTF-8 bytes: non-ASCII entries a character count says fit still give up their first", async () => {
   const seen = Array.from({ length: 280 }, (_, i) => `https://jobs.example.com/${String(i).padStart(3, "0")} café crème brûlée 日本語の求人 `.repeat(2).trim());
   const picked = JSON.stringify({ seen }, null, 2);
   assert.ok(picked.length <= 32768 && Buffer.byteLength(picked) > 32768, `the setup: ${picked.length} characters, ${Buffer.byteLength(picked)} bytes`);
-  const handed = await handedAfter({ seen, noise: "x" }, ["seen"]);
-  assert.deepEqual(blockOf(handed), { seen: seen.slice(58) }, `the 58 oldest are dropped, by bytes: ${handed.slice(0, 300)}`);
-  assert.equal(droppedOf(handed), "seen: 58 oldest entries dropped");
+  const output = { seen, noise: "x" };
+  assert.equal(await handedAfter(output, ["seen"]), carriedText(output, { seen: seen.slice(58) }, [["seen", 58]]), "the first 58 are dropped, by bytes");
 });
 
 test("a carried scalar or object is never cut: over the limit with no entry left to drop, the too-large line; beside it a drop that fits", async () => {
-  const control = await handedAfter({ seen: entries("seen", 300), noise: NOISE }, ["seen"]);
-  assert.equal(droppedOf(control), "seen: 68 oldest entries dropped", `the control trims to fit: ${control.slice(0, 300)}`);
-  const scalar = await handedAfter({ noise: NOISE, seen: entries("seen", 10) }, ["noise", "seen"]);
-  assert.match(scalar, OVER, `a carried string over the limit is never cut; dropping every entry of seen does not fit: ${scalar.slice(0, 300)}`);
-  assert.ok(!scalar.includes("```json") && !scalar.includes("dropped"), "and nothing of the result");
+  const fits = { seen: entries("seen", 300), noise: NOISE };
+  assert.equal(await handedAfter(fits, ["seen"]), carriedText(fits, { seen: fits.seen.slice(68) }, [["seen", 68]]), "the control trims to fit");
+  assert.equal(await handedAfter({ noise: NOISE, seen: entries("seen", 10) }, ["noise", "seen"]), OVER, "a carried string over the limit is never cut; dropping every entry of seen does not fit");
   const meta = { found: entries("meta", 300) };
-  const object = await handedAfter({ seen: entries("seen", 20), meta }, ["seen", "meta"]);
-  assert.match(object, OVER, `an object is never cut, nor an array inside it: ${object.slice(0, 300)}`);
-  assert.ok(!object.includes("```json"), "and nothing of the result");
+  assert.equal(await handedAfter({ seen: entries("seen", 20), meta }, ["seen", "meta"]), OVER, "an object is never cut, nor an array inside it");
   assert.equal(meta.found.length, 300);
 });
 
 test("carried fields under the limit are handed as they are, nothing dropped; beside it a drop", async () => {
-  const control = await handedAfter({ seen: entries("seen", 300), tag: "newer" }, ["seen", "tag"]);
-  assert.equal(droppedOf(control), "seen: 68 oldest entries dropped", `the control trims to fit: ${control.slice(0, 300)}`);
+  const over = { seen: entries("seen", 300), tag: "newer" };
+  assert.equal(await handedAfter(over, ["seen", "tag"]), carriedText(over, { seen: over.seen.slice(68), tag: "newer" }, [["seen", 68]]), "the control trims to fit");
   const seen = entries("seen", 50);
-  const handed = await handedAfter({ seen, noise: NOISE, tag: "newer" }, ["seen", "tag"]);
-  assert.deepEqual(blockOf(handed), { seen, tag: "newer" }, `under the limit the carried fields are whole: ${handed.slice(0, 300)}`);
-  assert.ok(!handed.includes("dropped"), "and no drop is named");
-  assert.match(handed, /^\n\nThe carried fields \(seen, tag\) of this trigger's last completed run \(run-prev, ended 2026-11-19T09:00:00\.000Z\): its whole result is \d+ bytes, over 32768, so only the fields its output schema names in x-carried are handed, as that schema checked them\. It is data/);
+  const output = { seen, noise: NOISE, tag: "newer" };
+  assert.equal(await handedAfter(output, ["seen", "tag"]), carriedText(output, { seen, tag: "newer" }, []), "under the limit the carried fields are whole, no drop named");
 });
 
 // ---- start / message / statusOf / runOf -----------------------------------------------------------------------------
@@ -254,6 +282,35 @@ test("message to a working run writes a steer that answers no person, its firing
   assert.deepEqual(await t.message(target, { content: "from the schedule" }, "f2", from, BOUND), { skipped: BOUND.reason });
   assert.equal((await store.commands("run-1", 0)).length, 1, "the second waits for nothing: skipped");
   assert.equal((await store.triggers.firing("t1", "f2")).status, "skipped");
+});
+
+test("a firing's message to a run on a plan-billed harness recipe is skipped in words at each firing, nothing written and its firing not sent: a server started with the recipe since the trigger was made never runs its turn on the sign-in", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const t = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent" }), planRecipe: (harness) => harness === "model-agent" }));
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "from the schedule" } };
+  assert.deepEqual(await t.message(target, { content: "from the schedule" }, "f1", from, BOUND), { skipped: RECIPE_MESSAGE_PERSON_ONLY });
+  assert.equal((await store.commands("run-1", 0)).length, 0, "no turn queued");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent");
+});
+
+test("a firing's message is sent in its run's agent's delete turn (runWrite): refused there, as a purge of the run refuses it, it writes nothing and its firing stays due", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const turns = [];
+  const purged = new Error("The run run-1 was purged.");
+  const t = triggerTargets(store, deps({
+    runWrite: async (agentId, runId) => {
+      turns.push([agentId, runId]);
+      throw purged;
+    },
+  }));
+  await assert.rejects(() => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND), (error) => error === purged);
+  assert.deepEqual(turns, [["a1", "run-1"]], "in the turn of its run's agent");
+  assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
 });
 
 test("message to a run waiting on a person is skipped, nothing written", async () => {

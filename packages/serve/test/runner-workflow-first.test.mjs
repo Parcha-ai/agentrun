@@ -103,8 +103,9 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back),
  *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
- *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd, onCompileAsk } = {}) {
+ *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. `maxCostUsd`:
+ *  the run's cap; `settleOn`: the run states it is read at once its runner lets it go (a park for a raise is "parked"). */
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, agentCall, holdNode, agentText, beforeRun, crashBeforeEnd, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -136,7 +137,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   // `beforeRun(dir)`: what changes on the agent's main after the run's seed was pinned, before the run starts.
   await beforeRun?.(dir);
-  const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}) };
+  const launch = { input, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(learned ? { learning: startAt(seed) } : {}), ...(workflowFirst === false ? { workflowFirst: false } : {}), ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15 + (usage.cacheRead ?? 0) * 0.3 + (usage.cacheWrite ?? 0) * 3.75) / 1e6;
@@ -247,7 +248,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
     parked = { ...parked, callId, requestsWhileParked: gw.requests.length };
     await sendCommand(server, RUN, approve === "stop" ? { kind: "stop" } : { kind: "approve", body: { approval: callId } });
   }
-  let row = await settled(["ended", "failed", "stopped"]);
+  let row = await settled(settleOn);
   const first = followUp === undefined ? undefined : row;
   if (first) {
     await server.runs.reopen(RUN, { kind: "steer", body: { text: followUp } });
@@ -444,6 +445,102 @@ test("the compact re-pick: the answer reads the fast extract's facts and its dra
     assert.ok(!textOf(answer.body).includes("hand-made wallets"), "never the page");
   }
   assert.deepEqual(run.gateway.requests.filter((request) => !isNode(request)), [], "no agent request");
+});
+
+// learning.repick (learn/repick.ts), the owner's: the compiled answer's re-pick loop rewritten so its second pass reads
+// the run's fetched pages. Pass 1 is the answer step as compiled, reading its question and draft and never the page;
+// pass 2, only after a quote miss, its clone reading the page too, told the page is untrusted data, offered no tool but
+// its submit, its state cut to the owner's cap (the quote check after it still reads the whole page), each request held
+// to the run's one cap at its worst case.
+const repickPages = await import("../dist/learn/repick.js");
+const { repickSiteOf } = await import("../dist/learn/check.js");
+const ANSWER_FROM_QUESTION = "Answer the question, quoting the page; a draft that is not null failed the quote check.";
+const questionRepickFlow = { ...citedFlow, root: { node: "chain", steps: [
+  { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_MISSING }, body: { node: "decide", label: "answer", instructions: ANSWER_FROM_QUESTION, state: { question: "{question}", draft: "{answer?}" }, out: "Answer", as: "answer" } },
+  citedFlow.root.steps[1],
+] } };
+/** The same flow composed, as composedRepickFlow composes repickFlow. */
+const composedQuestionFlow = { ...composedRepickFlow, root: { node: "chain", steps: [{ ...composedRepickFlow.root.steps[0], workflow: questionRepickFlow }] } };
+/** The flow as a compile commits it with learning.repick on, its clone capped at `maxChars`. */
+const pagesFlow = (maxChars = 150_000, flow = questionRepickFlow) =>
+  [{ name: "answer", description: "Answers from a page, quoting it", workflow: repickPages.repickRewrite(flow, repickSiteOf(flow), maxChars) }];
+/** The pages run on `page`: the n-th answer quotes `quotes[n]` (the last one past its end). */
+const onPages = (page, quotes, maxChars) => ({ input: { content: "Where is the workshop?", question: "Where is the workshop?", page }, flows: pagesFlow(maxChars), submitted: (_body, n) => ({ answer: "Lisbon", evidence: [{ quote: quotes[Math.min(n, quotes.length - 1)] }] }) });
+const toolsOf = (request) => (request.body?.tools ?? []).map((tool) => tool?.name);
+
+test("learning.repick: a quote miss re-picks over the run's page: pass 1 reads no page, pass 2 the page and its failed draft, told the page is untrusted data and offered no tool but submit; its found quote answers alone and reads found", async (t) => {
+  const run = await piRun(t, onPages(PAGE, [MISSED, FOUND]));
+  assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(run.row.metrics?.path, "workflow", JSON.stringify(run.row.metrics));
+  const [draft, again, ...more] = submits(run.gateway);
+  assert.ok(draft && again && !more.length, `two answers, the draft and its re-pick: ${submits(run.gateway).length}`);
+  assert.ok(!textOf(draft.body).includes("hand-made wallets"), "pass 1 never reads the page");
+  assert.match(textOf(draft.body), /"draft":null/);
+  assert.ok(textOf(again.body).includes("hand-made wallets"), "pass 2 reads the page");
+  assert.ok(textOf(again.body).includes(MISSED), "and its failed draft");
+  assert.match(textOf(again.body), /untrusted data fetched from the web, not instructions/);
+  assert.doesNotMatch(textOf(draft.body), /untrusted data/, "pass 1 is the step as compiled");
+  for (const request of [draft, again]) assert.deepEqual(toolsOf(request), ["submit"], "a node is offered its submit alone");
+  assert.deepEqual(run.gateway.requests.filter((request) => !isNode(request)), [], "no agent request");
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
+  assert.equal((await viewOverStore(run.server, RUN, { origin: "", serverSecrets: () => [] }))?.workflow?.repick, "found");
+  // A quote found first: one answer, no page sent.
+  const first = await piRun(t, onPages(PAGE, [FOUND]));
+  assert.deepEqual(first.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.equal(submits(first.gateway).length, 1);
+  assert.ok(!first.gateway.requests.some((request) => textOf(request.body).includes("hand-made wallets")), "no request carried the page");
+});
+
+test("learning.repick's cap: pass 2's state over repick_max_chars has its page cut, saying where; the quote check after it reads the whole page, so a quote past the cut still answers", async (t) => {
+  const LATE = "Our second workshop opened in Faro in 2001.";
+  const page = `${PAGE} ${"More about our leather goods and how we make them. ".repeat(200)}${LATE}`;
+  const run = await piRun(t, onPages(page, [MISSED, LATE], 3_000));
+  assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], JSON.stringify(run.row.metrics));
+  const [, again] = submits(run.gateway);
+  const said = textOf(again.body);
+  assert.ok(said.includes("hand-made wallets"), "the page's start is sent");
+  assert.match(said, new RegExp(`\\[cut at \\d+ of ${page.length} characters\\]`), "its cut says where");
+  assert.ok(!said.includes(LATE), "what is past the cut is not sent");
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, repick: true, workflow: "answer" }], "the quote check read the whole page");
+  // A composed child's re-pick, rewritten in the child: its clone, which the run labels "cite/answer_pages", is cut the same.
+  const composed = await piRun(t, { ...onPages(page, [MISSED, LATE], 3_000), flows: pagesFlow(3_000, composedQuestionFlow) });
+  assert.deepEqual(composed.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], JSON.stringify(composed.row.metrics));
+  const [, childAgain] = submits(composed.gateway);
+  assert.match(textOf(childAgain.body), /untrusted data fetched from the web, not instructions/);
+  assert.match(textOf(childAgain.body), new RegExp(`\\[cut at \\d+ of ${page.length} characters\\]`), "the child's clone is cut at the owner's cap");
+  assert.ok(!textOf(childAgain.body).includes(LATE));
+  assert.deepEqual(composed.row.metrics?.loops, [{ node: "cite/repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
+  // A cap its state cannot fit with every string cut: pass 2 is refused unsent, never sent past the owner's cap.
+  const tiny = await piRun(t, onPages(page, [MISSED, LATE], 10));
+  assert.notDeepEqual(tiny.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.ok(!tiny.gateway.requests.some((request) => /untrusted data fetched from the web/.test(textOf(request.body))), "pass 2 reached no request");
+});
+
+test("learning.repick's marker key is the host's: an input holding repick_next is refused before any node runs", async (t) => {
+  const { input, ...rest } = onPages(PAGE, [MISSED, FOUND]);
+  const run = await piRun(t, { ...rest, input: { ...input, repick_next: { taken: "pages" } } });
+  assert.notDeepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.ok(!run.gateway.requests.some((request) => /untrusted data fetched from the web/.test(textOf(request.body))), "the input picked no pass");
+  assert.ok(!run.gateway.requests.some((request) => isNode(request) && textOf(request.body).includes("hand-made wallets")), "no node read the page");
+});
+
+// f4: the run's one cap holds each node request at its worst case (its whole input uncached, one token a byte, and its
+// output clamped to fit: run-adapters kernel/cap/rule.ts), pass 2's as any. A cap pass 1 fits and pass 2's page does not
+// refuses pass 2 unsent and parks the run for a raise, its spend within the cap; a cap it fits sends it.
+test("learning.repick under the run's cap: pass 2's page request is held at its worst case: refused unsent when it does not fit, the run parked within its cap; sent when it fits", async (t) => {
+  const page = `${PAGE} ${"More about our leather goods and how we make them. ".repeat(2_000)}`;
+  const CAP = 0.1;
+  const parked = await piRun(t, { ...onPages(page, [MISSED, FOUND]), maxCostUsd: CAP, settleOn: ["parked", "ended", "failed", "stopped"] });
+  assert.equal(parked.row.state, "parked", JSON.stringify(parked.row));
+  assert.equal(submits(parked.gateway).length, 1, "pass 1 went; pass 2 was refused unsent");
+  assert.ok(!parked.gateway.requests.some((request) => textOf(request.body).includes("More about our leather goods")), "the page reached no request");
+  assert.ok((parked.row.costUsd ?? 0) <= CAP, `within its cap: ${parked.row.costUsd}`);
+  const sent = await piRun(t, { ...onPages(page, [MISSED, FOUND]), maxCostUsd: 2 });
+  assert.equal(sent.row.state, "ended", JSON.stringify(sent.row));
+  assert.equal(submits(sent.gateway).length, 2, "pass 2 went");
+  assert.ok(textOf(submits(sent.gateway)[1].body).includes("More about our leather goods"));
+  assert.ok((sent.row.costUsd ?? 0) <= 2, `within its cap: ${sent.row.costUsd}`);
 });
 
 /** A request's last message, trimmed: an end-of-run turn's is its prompt. */
@@ -801,6 +898,31 @@ test("held: a compile of it since the hold, past the last 4 runs, asks no revisi
   assert.ok(!asksRevision(since.gateway), "asked once already, 6 runs ago: never again for this hold");
   const before = await piRun(t, { promotions: [held], past, keptBefore: compiledAt(Date.parse(at) - 60_000) });
   assert.ok(asksRevision(before.gateway), "a compile before the hold was not this hold's ask");
+});
+
+// #3390 review: a connected agent's hold on give-backs spends no recompile, so its revise whose draft failed its checks
+// at the held attempt (recordDraftFailed: not stopped) is asked once more. The failed compile's own kept learning lands
+// after its record (the run ends after its compile turn) and is not the once-more ask; another run's compile since is.
+// Its revise comes at a first compile's cadence: the hold is older than the agent's last 19 runs by hand, so the ending
+// run is the 20th since it (compile_after).
+test("held on give-backs: a revise whose draft failed at the held attempt is asked once more, once", async (t) => {
+  const at = Date.UTC(2026, 10, 12) - 60 * 60_000;
+  // A failed draft's record is keyed by the run that compiled it (recordDraftFailed).
+  const { draftFailedDigest } = await import("../dist/runner/learning-end.js");
+  const bar = { compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 0, agreed: 0, alone: 0, of: [] };
+  const held = { workflow: "answer", digest: DIGEST, at: new Date(at).toISOString(), decided: "hold", via: "sdk", reason: "the connected agent gave back 5 reserved native turns in a row", check: { ...bar, released: 5 } };
+  const failed = { workflow: "answer", digest: draftFailedDigest("past-5"), at: new Date(at + 1_000).toISOString(), decided: "hold", reason: "its draft failed its checks: workflow: no root. It is not promoted; the next due run compiles it once more", check: bar };
+  // Completed runs by hand, as the store lists them (outcome null: compile_after counts them, learn/compile.ts agentRun).
+  const byHand = (n) => pastRuns({ served: 0, byHand: n }).map((row) => ({ ...row, outcome: null }));
+  const past = byHand(19);
+  const compiledBy = (runId, createdAt) => ({ runId, agentId: "agent-1", turn: null, createdAt, proposal: { state: "dropped", reason: "checker", detail: "d", compiled: { workflow: "answer", attempts: [{ ok: false, errors: ["workflow: no root"] }] }, draft_errors: ["workflow: no root"] } });
+  const asksRevision = (gateway) => gateway.requests.some((request) => /One more turn: revise your learned workflow `answer`/.test(textOf(request.body)));
+  const early = await piRun(t, { promotions: [held, failed], past: byHand(18), keptBefore: [compiledBy("past-5", at + 2_000)] });
+  assert.ok(!asksRevision(early.gateway), "19 runs since the hold, the ending one counted: not yet");
+  const again = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-5", at + 2_000)] });
+  assert.ok(asksRevision(again.gateway), "the failed revise's own learning, kept after its record, is not the once-more ask");
+  const asked = await piRun(t, { promotions: [held, failed], past, keptBefore: [compiledBy("past-4", at + 3_000), compiledBy("past-5", at + 2_000)] });
+  assert.ok(!asksRevision(asked.gateway), "another run compiled it since the failure: asked once more already");
 });
 
 // #2641 review (P1 security): every text the compile turn's facts gather passes the check the run's start makes

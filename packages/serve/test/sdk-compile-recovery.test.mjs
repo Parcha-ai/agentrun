@@ -131,9 +131,10 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       const { promotions } = (await server.api("GET", `/agents/${agentId}/learning/promotions`)).body;
       assert.deepEqual(promotions.map(({ decided, check }) => [decided, check?.attempt, check?.n, check?.stopped ?? false]), [["hold", 1, 0, false], ["hold", 2, 0, true]], JSON.stringify(promotions));
     }
-    if (corrected) {
+    // Checked on compile_after (5) independent native turns, as a managed draft is on that many inputs.
+    if (corrected) for (let turn = 1; turn <= 5; turn++) {
       const shadow = await completeRun([], true);
-      assert.equal(shadow.learning.compiled, null, "the independent check does not compile another draft");
+      assert.equal(shadow.learning.compiled, null, `check turn ${turn} does not compile another draft`);
     }
     const next = await completeRun(corrected ? ["release-status"] : []);
     assert.equal(next.learning.compiled, null, corrected ? "a committed workflow is not compiled again" : "a recompile that failed its checks stops: nothing compiles again");

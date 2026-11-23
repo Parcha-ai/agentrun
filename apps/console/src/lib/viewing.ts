@@ -7,14 +7,27 @@ export function pendingQuestion(status: RunStatus, state: RunState, rows: Timeli
   return rows.findLast((r) => r.kind === "waiting") ?? null;
 }
 
-/** How the viewer shows a file: Markdown rendered, text as text, anything else (an unknown type included: the server
- *  sends `content_type: null` for an extension it does not know) as a download only. */
-export function viewKind(file: RunFile): "markdown" | "text" | "download" {
+/** The image types the viewer shows: the ones the server serves inline (file-types.ts). An SVG is never one: it can carry
+ *  script, and the server does not serve it as an image. */
+const IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+export type ViewKind = "markdown" | "text" | "image" | "video" | "audio" | "download";
+
+/** How the viewer shows a file: Markdown rendered, text as text, an image, a video or a sound from the run's file route,
+ *  anything else (an unknown type included: the server sends `content_type: null` for an extension it does not know) as
+ *  a download only. */
+export function viewKind(file: RunFile): ViewKind {
   const type = file.content_type ?? "";
   if (type.startsWith("text/markdown") || file.path.toLowerCase().endsWith(".md")) return "markdown";
   if (type.startsWith("text/") || type.includes("json")) return "text";
+  if (IMAGES.has(type)) return "image";
+  if (type.startsWith("video/")) return "video";
+  if (type.startsWith("audio/")) return "audio";
   return "download";
 }
+
+/** Whether the viewer shows a file of this kind from its URL, never reading it as text. */
+export const isMedia = (kind: ViewKind): kind is "image" | "video" | "audio" => kind === "image" || kind === "video" || kind === "audio";
 
 /** A file in a folder a person rarely means to look at: a dot folder (.git, .pytest_cache, .venv…), Python's
  *  __pycache__, or node_modules. The Files tab keeps these behind "Show hidden"; a dot FILE the run wrote (.env.example)

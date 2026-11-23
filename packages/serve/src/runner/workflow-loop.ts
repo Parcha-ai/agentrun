@@ -26,6 +26,7 @@ import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
+import type { HeldRedact } from "./redact.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 import { END_PATCH_MS, END_PATCH_UNKNOWN, readAgain } from "./loop.js";
 
@@ -121,7 +122,7 @@ export const isWorkflowRevision = (revision: { readonly kind: string }): boolean
 /** What a claim's spec is built from beside the claim: the runner's one redactor (LoopDeps.redact), which holds the keys
  *  the claim opens from the store (redact.ts holdClaimed). */
 export interface WorkflowSpecRun {
-  readonly redact?: (text: string) => string;
+  readonly redact: HeldRedact;
   /** A fresh journal of the claim, for what the spec reads from the run's records at its end (its decisions' booked
    *  cost): a fresh one, since the Harness closes its own before the end is written. */
   readonly journal?: () => Journal;
@@ -311,7 +312,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, { ...(deps.redact ? { redact: deps.redact } : {}), journal: () => deps.journal(claim) });
+    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };

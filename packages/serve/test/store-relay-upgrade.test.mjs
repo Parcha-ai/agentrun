@@ -22,7 +22,8 @@ const FAR = T + 365 * 24 * 3_600_000;
 const SHA = "a".repeat(64);
 const WORDS = "AGENTRUN_RUN_USER=bogus is not a setting this runner knows: set AGENTRUN_RUN_USER=same.";
 /** Which of runners' columns are NOT NULL, on either store. */
-const NOT_NULL = { runner: true, incarnation: true, host: false, port: false, seen_at: true, refused: false };
+// version and slots: what each runner says of itself for the capacity read (0024_runner_capacity.sql; schema.ts RUNNERS_ADDED).
+const NOT_NULL = { runner: true, incarnation: true, host: false, port: false, seen_at: true, refused: false, version: false, slots: false };
 
 /** A store on this run's database, with `now` as its clock, closed (and its schema dropped) at the test's end. */
 async function storeOf(t, now) {
@@ -132,7 +133,7 @@ test("SQLite: a fresh store keeps runners and no runner_relays", sqliteOnly("the
   }
 });
 
-test("SQLite: a version 12 store comes to 13 at its server's open, never at a runner's, its minted rows the server's own", sqliteOnly("the SQLite upgrade"), async (t) => {
+test("SQLite: a version 12 store comes to this version at its server's open (13 on the way), never at a runner's, its minted rows the server's own", sqliteOnly("the SQLite upgrade"), async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-relay-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -163,7 +164,7 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   };
   const before = read();
   assert.deepEqual([before.version, before.relays, before.minted.includes("runner")], [12, 0, false]);
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 12 to 13 before opening a runner/);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), new RegExp(`Start the AgentRun server to bring this store from version 12 to ${SCHEMA_VERSION} before opening a runner`));
   assert.deepEqual(read(), before, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ file });
   try {
@@ -243,8 +244,8 @@ test("Postgres: a store at 0019 holding runner_relays rows takes 0020 in place: 
   assert.deepEqual(await pgRelayTables(sql, schema), ["runners"], "runner_relays is runners now, and no other table is left");
   assert.deepEqual(await pgRunnersShape(sql, schema), { notNull: NOT_NULL, constraints: ["runners_pkey"] });
   assert.deepEqual(await store.runners.list(), [
-    { runner: "runner-live", incarnation: "inc-live", refused: null, host: "127.0.0.1", port: 40_000, seenAt: T - 5_000 },
-    { runner: "runner-stale", incarnation: "inc-stale", refused: null, host: "runner-stale.example", port: 40_001, seenAt: T - 60_000 },
+    { runner: "runner-live", incarnation: "inc-live", refused: null, host: "127.0.0.1", port: 40_000, seenAt: T - 5_000, version: null, slots: null },
+    { runner: "runner-stale", incarnation: "inc-stale", refused: null, host: "runner-stale.example", port: 40_001, seenAt: T - 60_000, version: null, slots: null },
   ], "every relay's row kept, with no refusal");
   assert.deepEqual((await liveRelays(store.runners)).map((row) => [row.runner, row.host, row.port]), [["runner-live", "127.0.0.1", 40_000]], "the relay reads the live row, and not the stale one");
   assert.equal(await runnersRefused(store.runners), undefined, "a relay's row refuses nothing");
