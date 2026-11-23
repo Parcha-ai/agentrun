@@ -469,12 +469,9 @@ machine with `req.boot.env`. Its descriptor declares the option as a setting wit
 Modal's create gives the sandbox `agentrun-dial` as its command and the env as `env`. The other two start
 `agentrun-dial` themselves, once. A template's start command runs once at the template's build and never sees a
 create's env, so E2B's create starts it through envd, with the env as that one process's
-([README](README.md#e2b-on-dial)). Daytona runs a snapshot's entrypoint, never the image's CMD, and a snapshot
-registered without the box CMD as its entrypoint has none, so Daytona's create sends the env as `env` with
-`AGENTRUN_ATTACH_URL` left out, waits for the sandbox to read `started`, and starts `agentrun-dial` in a toolbox session
-of its own, the URL on its command's line ([README](README.md#daytona-on-dial)): the snapshot's entrypoint is not
-relied on, and one that runs the box CMD sleeps without the URL. A host that starts `agentrun-dial` itself can give
-`dialLog(id)`, what it wrote, and a machine that never dials then fails with its last lines. Their conformance
+([README](README.md#e2b-on-dial)). Daytona's create starts it in a toolbox session once the sandbox reads `started`,
+the URL on its line ([README](README.md#daytona-on-dial)). A host that starts it can give `dialLog(id)`, and a machine
+that never dials then fails with its last lines. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 

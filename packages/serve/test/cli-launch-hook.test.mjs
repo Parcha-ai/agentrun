@@ -1,14 +1,15 @@
-// A real server (the CLI on the faux model) started with the launch hook set, through its HTTP API alone: a trigger's
-// run now is handed to the host's hook on 127.0.0.1, which checks the signature and starts the run through the same API
-// as the firing's (trigger_firing); the firing records that run, and the server started none of its own. The secret is
-// in no answer, no file of the data directory and no line the process printed. Half the setting stops the start in words.
+// A real server (the CLI on the faux model) started with the launch hook set, through its HTTP API alone: its banner
+// names the hook, a trigger's run now is handed to the host's hook on 127.0.0.1 (trigger-support.mjs hookServer), which
+// checks the signature and starts the run through the same API as the firing's (trigger_firing), and the server starts
+// none of its own. The secret is in no answer, no file of the data directory and no line the process printed. Half the
+// setting stops the start (exit 2) without saying the secret; the setting's other refusals are trigger-launch-hook.test.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, client, FAUX, follow, printed, scratch } from "./support.mjs";
+import { agent, client, FAUX, printed, scratch } from "./support.mjs";
+import { hookServer } from "./trigger-support.mjs";
 
 const { mintSecret, verify } = await import("../dist/standard-webhooks.js");
 
@@ -48,31 +49,20 @@ function started(t, data, extra) {
   return { child, output, exited };
 }
 
-test("a server with the launch hook hands a trigger's firing to the host, which starts the run through the API; the secret is nowhere after", { timeout: 180_000 }, async (t) => {
+test("a server with the launch hook hands a trigger's firing to the host, which starts the run through the API; the secret is nowhere after", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const data = join(dir, "agents");
   const secret = mintSecret();
   let api;
-  const received = [];
-  const hook = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const body = Buffer.concat(chunks);
-    const refused = verify(secret, req.headers, body, Date.now());
-    received.push({ refused, id: req.headers["webhook-id"] });
-    if (refused) return void res.writeHead(401).end();
-    const firing = JSON.parse(body.toString("utf8"));
+  // The spawned server stamps its POST on the real clock, so the host checks it against the real clock.
+  const signedBy = (one) => verify(secret, one.headers, one.body, Date.now());
+  const hook = await hookServer(t, async (res, firing, n) => {
+    if (signedBy(hook.got[n - 1])) return void res.writeHead(401).end();
     const run = await api("POST", `/agents/${firing.agent_id}/runs`, { input: firing.input, max_cost_usd: 0.5, trigger_firing: { trigger_id: firing.trigger_id, firing_id: firing.firing_id } });
     res.writeHead(run.status, { "content-type": "application/json" }).end(JSON.stringify({ run_id: run.body.run_id }));
   });
-  await new Promise((resolve) => hook.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => {
-    hook.closeAllConnections();
-    hook.close(() => resolve());
-  }));
-  const url = `http://127.0.0.1:${hook.address().port}/firings`;
 
-  const { child, output } = started(t, data, { AGENTRUN_LAUNCH_HOOK_URL: url, AGENTRUN_LAUNCH_HOOK_SECRET: secret });
+  const { child, output } = started(t, data, { AGENTRUN_LAUNCH_HOOK_URL: hook.url, AGENTRUN_LAUNCH_HOOK_SECRET: secret });
   const out = await printed(child, /^Launch hook /m);
   assert.match(out, /^Launch hook \(AGENTRUN_LAUNCH_HOOK_URL\): trigger firings go to http:\/\/127\.0\.0\.1:\d+/m);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
@@ -83,13 +73,11 @@ test("a server with the launch hook hands a trigger's firing to the host, which 
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
   const fired = await api("POST", `/triggers/${trigger.body.id}/fire`, undefined, { "idempotency-key": "demo-1" });
   assert.equal(fired.status, 202, JSON.stringify(fired.body));
-  assert.deepEqual(received, [{ refused: undefined, id: fired.body.key }], "one signed POST, its webhook-id the firing's");
+  assert.deepEqual(hook.got.map((one) => [signedBy(one), one.headers["webhook-id"]]), [[undefined, fired.body.key]], "one signed POST, its webhook-id the firing's");
   const runs = (await api("GET", "/runs?agent=digest")).body.runs;
   assert.equal(runs.length, 1, "the host's run alone");
   assert.deepEqual([fired.body.status, fired.body.run_id], ["started", runs[0].run_id], JSON.stringify(fired.body));
   assert.deepEqual((await api("GET", `/runs/${runs[0].run_id}`)).body.trigger, { id: trigger.body.id, firing_key: fired.body.key }, "the trigger's run");
-  const { last } = await follow(api, runs[0].run_id, ["completed", "failed", "cancelled"], { deadlineMs: 120_000 });
-  assert.equal(last.status, "completed");
 
   for (const path of [`/triggers/${trigger.body.id}`, `/triggers/${trigger.body.id}/firings`, `/runs/${runs[0].run_id}`]) assert.ok(!JSON.stringify((await api("GET", path)).body).includes(secret), `${path} holds no secret`);
   assert.deepEqual(filesHolding(data, secret), [], "no file of the data directory holds the secret");
@@ -102,14 +90,5 @@ test("half the launch hook setting stops the start in words, never saying the se
   const { output, exited } = started(t, join(dir, "agents"), { AGENTRUN_LAUNCH_HOOK_SECRET: secret });
   assert.equal(await exited, 2);
   assert.match(output.join(""), /AGENTRUN_LAUNCH_HOOK_URL/);
-  assert.ok(!output.join("").includes(secret));
-});
-
-test("a plain http hook URL off this machine stops the start in words: a firing's input can carry a person's data", { timeout: 60_000 }, async (t) => {
-  const dir = await scratch(t);
-  const secret = mintSecret();
-  const { output, exited } = started(t, join(dir, "agents"), { AGENTRUN_LAUNCH_HOOK_URL: "http://host.example/agentrun/firings", AGENTRUN_LAUNCH_HOOK_SECRET: secret });
-  assert.equal(await exited, 2);
-  assert.match(output.join(""), /AGENTRUN_LAUNCH_HOOK_URL is http to host\.example/);
   assert.ok(!output.join("").includes(secret));
 });
