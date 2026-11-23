@@ -136,9 +136,10 @@ async function holdsAgainst(deps: RouteDeps, route: Route, want: RouteWant, name
   if (route.runner === null || route.run === want.run) return undefined;
   const at = (await liveRelays(deps.runners)).find((row) => row.runner === route.runner);
   if (at === undefined || at.incarnation !== route.incarnation) return undefined;
-  // A run that ended, stopped or failed holds nothing: its runner's release dropped the route, or that write failed. A
-  // run the store has no row of is not final: its route stands.
-  const run = deps.runs === undefined ? undefined : await deps.runs.get(route.run!);
+  // A run that ended, stopped or failed holds nothing: its runner's release dropped the route, or that write failed. It
+  // fails closed: a run the store has no row of (purged included), or a read that throws, is not final, so the route
+  // stands. One read per refusal, no retry.
+  const run = deps.runs === undefined ? undefined : await deps.runs.get(route.run!).catch(() => undefined);
   if (run !== undefined && FINAL_STATES.includes(run.state)) return undefined;
   return heldWords(name, route.run!, route.runner);
 }

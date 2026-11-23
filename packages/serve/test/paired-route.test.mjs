@@ -50,7 +50,7 @@ test("a route goes stale when its runner has no live relay or names another inca
   assert.equal((await takeRoute(deps, BOX, { runner: "runner-a", incarnation: "inc-a2", run: "run-3", until: UNTIL })).taken, true, "runner-b is not running: its route is stale");
 });
 
-test("a route whose run is final is taken by a new run, a completed one and a cancelled one each; a route whose run the store has no row of stands", async (t) => {
+test("a route whose run is final is taken by a new run, a completed, a cancelled and a failed one each; a route whose run the store has no row of stands, and so does one whose run's read throws, each after one read", async (t) => {
   const { store, deps, want } = await routed(t);
   await queued(store, "run-done");
   const done = await store.claim("run-done", "runner-a", { leaseMs: 60_000 });
@@ -65,6 +65,13 @@ test("a route whose run is final is taken by a new run, a completed one and a ca
   await takeRoute(deps, BOX, want("runner-b", "run-cancelled"));
   assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-next"))).taken, true, "a route a cancelled run left is taken");
 
+  await queued(store, "run-failed");
+  const failed = await store.claim("run-failed", "runner-b", { leaseMs: 60_000 });
+  await store.runs.update(failed, { state: "failed", summary: "failed", endedAt: T0 + 10 });
+  assert.equal(await dropRoute(store.settings, BOX, { runner: "runner-a", incarnation: "inc-a" }), true);
+  await takeRoute(deps, BOX, want("runner-b", "run-failed"));
+  assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-after"))).taken, true, "a route a failed run left is taken");
+
   await queued(store, "run-live");
   await store.claim("run-live", "runner-b", { leaseMs: 60_000 });
   assert.equal(await dropRoute(store.settings, BOX, { runner: "runner-a", incarnation: "inc-a" }), true);
@@ -72,7 +79,20 @@ test("a route whose run is final is taken by a new run, a completed one and a ca
   assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-other"))).taken, false, "a running run's route on a live runner refuses");
   assert.equal(await dropRoute(store.settings, BOX, { runner: "runner-b", incarnation: "inc-b" }), true);
   await takeRoute(deps, BOX, want("runner-b", "run-unknown"));
-  assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-other"))).taken, false, "a run the store has no row of is not final");
+  let reads = 0;
+  const counted = { ...deps, runs: { get: async (id) => (reads++, store.runs.get(id)) } };
+  const missing = await takeRoute(counted, BOX, want("runner-a", "run-other"), { name: "desk-1" });
+  assert.equal(missing.taken, false, "a run the store has no row of is not final");
+  assert.equal(missing.why, "desk-1 is held by run run-unknown on runner runner-b: one run at a time");
+  assert.equal(reads, 1, "one read of the route's run");
+
+  reads = 0;
+  const blind = { ...deps, runs: { get: async () => { reads++; throw new Error("the store is away"); } } };
+  const threw = await takeRoute(blind, BOX, want("runner-a", "run-other"), { name: "desk-1" });
+  assert.equal(threw.taken, false, "a read of the route's run that throws refuses, never takes over");
+  assert.equal(threw.why, "desk-1 is held by run run-unknown on runner runner-b: one run at a time", "in the same words");
+  assert.equal(reads, 1, "one read, no retry");
+  assert.equal((await readRoute(store.settings, BOX)).run, "run-unknown", "the route left as it was");
 });
 
 test("a drop goes only for the route's own runner and incarnation (and run, where given); a note is kept on the row and goes with the next empty write", async (t) => {
@@ -98,6 +118,8 @@ test("a take under a claim another runner superseded throws Fenced and writes no
   const second = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
   assert.ok(second, "runner-b takes the run over once runner-a's lease ran out");
   await assert.rejects(takeRoute(deps, BOX, want("runner-a", "run-1"), { claim: first }), (error) => error instanceof Fenced);
-  assert.equal((await readRoute(store.settings, BOX)).runner, null, "nothing routed");
+  // The take put an empty row before its compare-and-set threw: harmless, it reads as no route and no note (the
+  // server's tick removes it), and the next take goes over it.
+  assert.deepEqual(await readRoute(store.settings, BOX), EMPTY_ROUTE, "nothing routed and nothing noted");
   assert.equal((await takeRoute(deps, BOX, want("runner-b", "run-1"), { claim: second })).taken, true, "the claim that holds the run takes it");
 });

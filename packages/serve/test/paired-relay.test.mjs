@@ -213,15 +213,17 @@ async function pairedBox(api, address) {
 }
 
 /** The routes of paired computers, kept in the store's settings (workspace/paired-route.js): absent before this work,
- *  which is the relay this file asks for. `route` takes it (true when taken), `unroute` drops a runner's own, `get` reads
- *  it (runner null when none). */
-async function routing(store) {
+ *  which is the relay this file asks for. `route` takes it (true when taken), `took` says what a take came to (its words
+ *  when refused), `unroute` drops a runner's own, `get` reads it (runner null when none). `runs` is what a take reads the
+ *  route's run from (the store's runs unless a test gives its own). */
+async function routing(store, { runs = store.runs } = {}) {
   const module = await import(at("dist/workspace/paired-route.js").href).catch(() => undefined);
   assert.equal(typeof module?.takeRoute, "function", "the server routes a paired computer to the runner that holds its run, in its settings row paired_route:<id> (workspace/paired-route.js takeRoute)");
   assert.equal(typeof module.dropRoute, "function", "a runner drops its own route of a paired computer (paired-route.js dropRoute)");
-  const deps = { settings: store.settings, runners: store.runners, runs: store.runs };
+  const deps = { settings: store.settings, runners: store.runners, runs };
   return {
     route: async (id, want) => (await module.takeRoute(deps, id, want)).taken,
+    took: (id, want) => module.takeRoute(deps, id, want, { name: NAME }),
     unroute: (id, mine) => module.dropRoute(store.settings, id, mine),
     get: (id) => module.readRoute(store.settings, id),
   };
@@ -380,8 +382,9 @@ test("a paired box's hold holds across the relay: the runner lets the box go onl
   answer();
   await letting;
   assert.equal((await paired.get(computer)).runner, null, "its route goes once the answer came");
-  await until(async () => pairedRow((await api("GET", "/computers")).body, computer), (row) => row?.online === true && row.held_on === null, "the box comes back to the server, idle");
-  assert.equal(hub.online(computer), false, "and is off the runner's hub");
+  // The row reads idle at once (no route), while the box is still relayed until the server's next tick moves it.
+  await until(async () => hub.online(computer), (online) => online === false, "the server's tick takes the box off the runner's hub once its route went");
+  await until(async () => pairedRow((await api("GET", "/computers")).body, computer), (row) => row?.online === true && row.held_on === null && row.held_by_run === null, "the box comes back to the server, idle");
 });
 
 test("a run that moves runners takes its box along: a route moved to runner B for the same run moves the box's socket there by the same relay (the server's 1001 and the box's redial), runner A lets the run's hold go, and no other run's runner takes the route while B holds it", { timeout: 60_000 }, async (t) => {
@@ -439,7 +442,7 @@ test("a run past its route's first until keeps its box: until is the hold's end,
   assert.equal(row?.held_on, "runner-a");
 });
 
-test("a route left by a run that is over is taken by a new run, its runner still live: one left by a completed run and one left by a cancelled run; a route held by a live run on a live runner still refuses", { timeout: 60_000 }, async (t) => {
+test("a route left by a run that is over is taken by a new run, its runner still live: one left by a completed run, one by a cancelled run and one by a failed run; a route held by a live run on a live runner still refuses, and so does one whose run has no row or whose read throws, each after one read of the run", { timeout: 60_000 }, async (t) => {
   const { data, api, address } = await relayServer(t);
   const side = await runnerSide(t, data);
   const { relay: a } = await relayOf(t, side, address, "runner-a");
@@ -473,9 +476,41 @@ test("a route left by a run that is over is taken by a new run, its runner still
   assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-a", "run-next-a"]);
   assert.equal(await paired.unroute(computer, { runner: "runner-a", incarnation: a.incarnation }), true);
 
+  // Failed: A's run failed, its route left; A is still live.
+  const failed = await runOf("run-failed", "runner-a");
+  assert.equal(await paired.route(computer, { runner: "runner-a", incarnation: a.incarnation, run: "run-failed", until: UNTIL() }), true);
+  await side.store.runs.update(failed, { state: "failed", summary: "failed", endedAt: Date.now() });
+  assert.equal(await paired.route(computer, { runner: "runner-b", incarnation: b.incarnation, run: "run-next-f", until: UNTIL() }), true, "a new run takes a route its failed run left, A live");
+  assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-b", "run-next-f"]);
+  assert.equal(await paired.unroute(computer, { runner: "runner-b", incarnation: b.incarnation }), true);
+
   // Live: A's run still going, A live: a new run on B is refused, and the route stays A's.
   await runOf("run-live", "runner-a");
   assert.equal(await paired.route(computer, { runner: "runner-a", incarnation: a.incarnation, run: "run-live", until: UNTIL() }), true);
-  assert.equal(await paired.route(computer, { runner: "runner-b", incarnation: b.incarnation, run: "run-next-live", until: UNTIL() }), false, "a route held by a live run on a live runner refuses");
+  const live = await paired.took(computer, { runner: "runner-b", incarnation: b.incarnation, run: "run-next-live", until: UNTIL() });
+  assert.equal(live.taken, false, "a route held by a live run on a live runner refuses");
+  assert.equal(live.why, `${NAME} is held by run run-live on runner runner-a: one run at a time`);
   assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-a", "run-live"]);
+  assert.equal(await paired.unroute(computer, { runner: "runner-a", incarnation: a.incarnation }), true);
+
+  // Missing: A's route names a run the store has no row of (never made, or purged since); A is live. The take reads
+  // that run once, finds nothing, and refuses as for a live run: a route is never taken on what the store can't say.
+  assert.equal(await paired.route(computer, { runner: "runner-a", incarnation: a.incarnation, run: "run-gone", until: UNTIL() }), true);
+  let reads = 0;
+  const counted = await routing(side.store, { runs: { get: async (id) => (reads++, side.store.runs.get(id)) } });
+  const missing = await counted.took(computer, { runner: "runner-b", incarnation: b.incarnation, run: "run-next-m", until: UNTIL() });
+  assert.equal(missing.taken, false, "a route whose run has no row refuses");
+  assert.equal(missing.why, `${NAME} is held by run run-gone on runner runner-a: one run at a time`);
+  assert.equal(reads, 1, "one read of the route's run per refusal");
+  assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-a", "run-gone"]);
+
+  // Throws: the read of the route's run fails (the store away); the take refuses in the same words, never takes over,
+  // and reads once, no retry.
+  reads = 0;
+  const blind = await routing(side.store, { runs: { get: async () => { reads++; throw new Error("the store is away"); } } });
+  const threw = await blind.took(computer, { runner: "runner-b", incarnation: b.incarnation, run: "run-next-t", until: UNTIL() });
+  assert.equal(threw.taken, false, "a route whose run's read throws refuses");
+  assert.equal(threw.why, `${NAME} is held by run run-gone on runner runner-a: one run at a time`);
+  assert.equal(reads, 1, "one read of the route's run, no retry");
+  assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-a", "run-gone"]);
 });
