@@ -97,8 +97,9 @@ export async function readRunFile(store: RunReadsStore, runId: string, rawPath: 
  *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values and the sign-in
  *  refs the run was handed), through redactSecrets over the whole text, each value and secret shape replaced by
  *  "[redacted]" in place, and the text "[redacted]" whole when a value still shows in another form. A long run with no
- *  whitespace (compact JSON) is never blanked for its length. The cut is read again after the text is cut (underCut), so
- *  a value saved meanwhile is cut too. An unreadable cut (the run withheld) is 403; a type that isn't text, or bytes that
+ *  whitespace (compact JSON) is never blanked for its length. The cut holds this server's values, not every secret: a
+ *  value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it. The cut is
+ *  read again after the text is cut (underCut), so a value saved meanwhile is cut too. An unreadable cut (the run withheld) is 403; a type that isn't text, or bytes that
  *  aren't UTF-8 or hold a NUL, 415; a file over RUN_FILE_CUT_MAX, 413. A Range header is not read: the answer is the
  *  whole file. */
 async function cutRunFile(store: RunReadsStore, runId: string, workspace: Workspace, rel: string, req: IncomingMessage, res: ServerResponse, deps: RunReadsDeps): Promise<void> {

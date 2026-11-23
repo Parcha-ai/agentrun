@@ -14,9 +14,9 @@ const SEND_CHUNK = 4 * 1024 * 1024;
 /** The CSP a served HTML file runs under: an opaque origin, no scripts, no network. */
 export const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
-/** The largest file a cut read (`?cut=run`) answers, in bytes: 256 KiB. redactSecrets reads the whole text for every
- *  form of every held value and every secret shape; over 262,144 bytes of prose, hex or base64 with 100 held values it
- *  took at most 162 ms here, so one read's cut stays bounded. A bigger file is 413. */
+/** The largest file a cut read (`?cut=run`) answers, in bytes: 256 KiB. redactSecrets runs synchronously over the whole
+ *  text, on the server's event loop. At this size each shape's adversarial input (its prefix repeated with no end, in
+ *  secrets-linear.test.mjs) takes under 100 ms here, and prose with 100 held values at most 162 ms. A bigger file is 413. */
 export const RUN_FILE_CUT_MAX = 256 * 1024;
 
 export type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
