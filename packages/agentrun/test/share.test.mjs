@@ -6,13 +6,14 @@
 // nothing opens. Synthetic data only.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { main, runLocal } from "../lib/cli.mjs";
 import { shareOf } from "../lib/share.mjs";
+import { START_LOG } from "../lib/start.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const CANARY = "share-canary-token-5b1e9d3f7a2c4e6081a3c5e7f9b1d3f5";
@@ -153,6 +154,68 @@ test("share --dry-run with no display, or with --no-open, opens nothing and prin
   assert.equal(JSON.parse(quiet.out).opened, false);
   assert.ok(quiet.err.includes(fake.page));
   assert.equal(fake.got.length, 2);
+});
+
+/** The start log `agentrun start` keeps in the data folder (start.mjs START_LOG): the server's banner up to its "Open "
+ *  line, `open` here. Its API key line stands in for the token the banner names. */
+const startLog = (data, open, mode = 0o600) => {
+  const file = join(data, START_LOG);
+  writeFileSync(file, `agentrun-serve on http://${HOST}:1/v2 (agent store in a folder)\nAGENTRUN_BASE_URL=http://${HOST}:1/v2\nAGENTRUN_API_KEY=${CANARY}\n${open}\nBoxes: none\n`, { mode });
+  chmodSync(file, mode);
+};
+const SIGN_IN_HINT = "Open the console's link from `agentrun start` first if the page asks you to sign in.";
+
+test("share --dry-run hands the opener alone the start's launch code for the same server, and prints neither the code nor a link with it", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const { body } = bundleOf(run, "synthetic");
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const code = `launchcode${nonce()}${nonce()}`;
+  startLog(fake.data, `Open http://${HOST}:${fake.port}/?launch=${code}`);
+
+  const opened = await share([run, "--dry-run"], { data: fake.data });
+  assert.equal(opened.code, 0, opened.err);
+  assert.deepEqual(opened.opened, [["xdg-open", `${fake.page}?launch=${code}`]], "the opener gets the code, so the browser gets a session");
+  assert.equal(JSON.parse(opened.out).page, fake.page, "the printed page has no code");
+  assert.ok(opened.err.includes(`If no browser opened, open ${fake.page}\n`), opened.err);
+  assert.ok(opened.err.includes(SIGN_IN_HINT), opened.err);
+  silent(opened, code);
+
+  // Where no browser opens, or with --no-open: the link printed has no code, and the hint says where a session comes from.
+  for (const [argv, env] of [[[run, "--dry-run", "--no-open"], { DISPLAY: ":0" }], [[run, "--dry-run"], {}]]) {
+    const printed = await share(argv, { data: fake.data, env });
+    assert.equal(printed.code, 0, printed.err);
+    assert.deepEqual(printed.opened, []);
+    assert.ok(printed.err.includes(`The share preview: ${fake.page}\n`), printed.err);
+    assert.ok(printed.err.includes(SIGN_IN_HINT), printed.err);
+    silent(printed, code);
+  }
+
+  // A refusal says nothing of it either.
+  const refused = await share([run, "--dry-run", "--expect", sha256Of("another")], { data: fake.data });
+  assert.equal(refused.code, 1, refused.err);
+  silent(refused, code);
+});
+
+test("share --dry-run opens /share/RUN with no code when the start's link is another server's, carries none, or is not a private file", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const { body } = bundleOf(run, "synthetic");
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const code = `launchcode${nonce()}${nonce()}`;
+  const cases = [
+    ["no start log", () => {}],
+    ["another server's origin", () => startLog(fake.data, `Open http://${HOST}:${fake.port === 65535 ? 65534 : fake.port + 1}/?launch=${code}`)],
+    ["another host on the same port", () => startLog(fake.data, `Open http://localhost:${fake.port}/?launch=${code}`)],
+    ["a link with no launch code (a server with accounts)", () => startLog(fake.data, `Open http://${HOST}:${fake.port}/`)],
+    ["a start log others may read", () => startLog(fake.data, `Open http://${HOST}:${fake.port}/?launch=${code}`, 0o644)],
+  ];
+  for (const [name, plant] of cases) {
+    plant();
+    const result = await share([run, "--dry-run"], { data: fake.data });
+    assert.equal(result.code, 0, `${name}: ${result.err}`);
+    assert.deepEqual(result.opened, [["xdg-open", fake.page]], name);
+    assert.ok(!result.err.includes(SIGN_IN_HINT), `${name}: no start link, so no hint`);
+    silent(result, code);
+  }
 });
 
 test("share --out writes the bundle's bytes as served (0600), refuses a file that exists, and opens nothing without --dry-run", async (t) => {

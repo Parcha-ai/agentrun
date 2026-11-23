@@ -2,16 +2,23 @@
 // /runs/{run_id}/export: one agentrun.share/1 document, every string of it cut by the server's scrubber) is fetched from
 // the server this CLI talks to, checked against the sha256 it names, summed up (its cuts by kind, how many a preview may
 // restore, its sha256 and size, what it left out), and the server's preview page, <origin>/share/RUN, is opened in this
-// machine's browser as `agentrun open` opens the console (or its link printed where none opens). Nothing of the run's
-// words is printed: counts, kinds and the paths the bundle already cut, no more.
+// machine's browser as `agentrun open` opens the console (or its link printed where none opens). On the server
+// `agentrun start` started with no accounts, the opener alone gets the start's launch code with it, so the browser has the
+// console session the page asks for. Nothing of the run's words is printed, nor the code: counts, kinds and the paths
+// the bundle already cut, no more.
 // `--out FILE` writes the bundle's bytes as the server sent them (0600, never over a file); `--restore` asks the server to
 // keep restorable cuts in place (a stateless re-export); `--expect SHA` refuses a bundle whose sha256 is another, the
 // guard the page's publish command carries. Publishing itself comes with a share host: until then, share without
 // --dry-run or --out exits 2 and sends nothing.
 import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { canOpen, launchOpener } from "./service.mjs";
+
+/** start.mjs START_LOG, named again here: start.mjs imports cli.mjs, which imports this module (share.test.mjs writes
+ *  the start log at start.mjs's name, so the two can't part). */
+const START_LOG = "start.log";
 
 /** Exits: 0 shown (or written); 1 the server failed the export, refused it as withheld, or sent a bundle that is not
  *  what it names (or not the one --expect names); 2 bad usage, a run the server does not have or that has not ended, a
@@ -46,6 +53,27 @@ const REFUSALS = {
   403: (said) => [1, `The run is withheld: ${said ?? "this server can't read what the run was handed"}`],
   500: () => [1, "The export failed closed on the server: nothing of the run was shown. The server's log names why (export_failed)."],
 };
+
+const SIGN_IN_HINT = "Open the console's link from `agentrun start` first if the page asks you to sign in.";
+
+/** The launch code of the console's link `agentrun start` saved for the server in `data` (its start log, START_LOG: the
+ *  server's output up to its "Open " line, `Open <origin>/?launch=<code>` on a server with no accounts), when that link is
+ *  at `origin`, the target's; else undefined: no start log (or one that is not a private file of this user's), a link
+ *  with no code (a server with accounts), or another server's. The code gives a browser the console's session the share
+ *  page asks for; it goes only to the opener, as the start's own link does, and is never printed. */
+function launchCodeOf(cli, data, origin) {
+  let text;
+  try {
+    text = cli.privateFile(join(data, START_LOG));
+  } catch {
+    return undefined;
+  }
+  const word = text?.split("\n").map((line) => /^Open (\S+)/.exec(line.replace(/\r$/, ""))?.[1]).find((found) => found !== undefined && URL.canParse(found));
+  if (word === undefined) return undefined;
+  const url = new URL(word);
+  const code = url.searchParams.get("launch");
+  return url.origin === origin && code ? code : undefined;
+}
 
 /** The summary of a bundle: counts and kinds, the paths it left out (already cut), never a word of the run. */
 function summaryOf(run, bundle, bytes) {
@@ -129,7 +157,8 @@ export function shareOf({ launch = launchOpener, platform = process.platform } =
       }
 
       const summary = summaryOf(run, bundle, bytes);
-      const page = `${new URL(target.base).origin}/share/${encodeURIComponent(run)}`;
+      const origin = new URL(target.base).origin;
+      const page = `${origin}/share/${encodeURIComponent(run)}`;
       if (out !== undefined) {
         try {
           writeFileSync(out, bytes, { flag: "wx", mode: 0o600 });
@@ -142,8 +171,13 @@ export function shareOf({ launch = launchOpener, platform = process.platform } =
       if (out !== undefined) lines.push(`Wrote ${out}.`);
       let opened = false;
       if (values["dry-run"]) {
-        opened = values.open !== false && canOpen(env, platform) && (await launch(platform === "darwin" ? "open" : "xdg-open", [page], env));
+        // On the server `agentrun start` started with no accounts, the browser opens the page with the start's launch
+        // code, which signs it in to the console as the start's link does; the link printed never carries it.
+        const code = launchCodeOf(cli, resolve(values.data ?? join(homedir(), ".agentrun")), origin);
+        const link = code === undefined ? page : `${page}?${new URLSearchParams({ launch: code })}`;
+        opened = values.open !== false && canOpen(env, platform) && (await launch(platform === "darwin" ? "open" : "xdg-open", [link], env));
         lines.push(opened ? `Opened the share preview in your browser. Nothing was sent anywhere.\nIf no browser opened, open ${page}` : `The share preview: ${page}\nNothing was sent anywhere.`);
+        if (code !== undefined) lines.push(SIGN_IN_HINT);
       }
       io.stderr.write(`${lines.join("\n")}\n`);
       client.print({ ...summary, page, out: out ?? null, opened });
