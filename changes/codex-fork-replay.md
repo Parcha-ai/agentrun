@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-import, @parcha/agentrun-serve
+kind: fix
+---
+Codex forks no longer count their parent's history twice. A forked rollout written by Codex 0.130 or 0.145 (a `/fork`, or a spawned subagent) begins with a copy of its parent's turns, token counts included, stamped with the fork's time. The import counted those requests again in the fork, and on the fork's day, so the tokens, cost and requests of every such fork were too high. The copy is now read as a copy, counted once in the parent. The rule is ccusage's: the fork's leading usage is matched against the parent's usage from before the fork, and the longest run equal to its start or its end is the copy. A fork whose parent's rollout is not under the home has nothing to match, so its usage still counts. Re-import a home to correct the runs imported before.
+- A fork's session keeps its own id. A forked rollout from Codex 0.154 on writes its parent's `session_meta` after its own, and the import took the last one: the fork took its parent's id and working directory. Only the rollout's first `session_meta` counts now.

@@ -1,8 +1,11 @@
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. A subagent's thread names its parent in its session_meta.
-import { basename, join } from "node:path";
-import { type LineSource, lineReader, type ReadContext } from "../lines.js";
-import { entries, rememberUser } from "../reader.js";
-import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { createInterface } from "node:readline";
+import { type FileCursor, type LineSource, lineReader, type ReadContext } from "../lines.js";
+import { entries, type Reader, rememberUser } from "../reader.js";
+import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -11,8 +14,11 @@ import { normalizeUsage } from "../usage.js";
  *  latest request whose usage has not come (written after its calls' results at times); `records`, whether the file has
  *  token_usage_records, with the responses they counted, and `total`, the last token_count's total; `items`, whether
  *  each completed item failed, and `results`, each tool result by call id, with whether its output said; `provider`, the
- *  model provider its session_meta names. */
+ *  model provider its session_meta names; `meta`, whether the rollout's own session_meta (its first) was read; `replay`,
+ *  the parent's history a fork copied in (forkReplay), null when there is none. */
 type Own = {
+  meta?: boolean;
+  replay?: Replay | null;
   events: boolean;
   held: { index: number; turn: Turn }[];
   open?: Answer;
@@ -64,7 +70,7 @@ function codexFailed(output: unknown): boolean | undefined {
   return undefined;
 }
 
-function record(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
+function readRecord(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
   const { session, names, turns, own: codex } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
@@ -84,6 +90,10 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     codex.open = codex.unpaid = undefined;
   };
   if (value.type === "session_meta") {
+    // The rollout's own session_meta is its first: a fork writes its parent's after it (Codex 0.154), which names
+    // neither this thread nor its parent.
+    if (codex.meta) return;
+    codex.meta = true;
     if (str(payload.id)) session.id = payload.id as string;
     if (str(payload.cwd)) session.cwd = payload.cwd as string;
     if (str(payload.model_provider)) codex.provider = payload.model_provider as string;
@@ -178,6 +188,233 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   }
 }
 
+// A forked rollout (session_meta's forked_from_id, or a spawned subagent's thread_spawn parent) can begin with a copy of
+// its parent's history, token_counts and all, written at the fork's time: Codex 0.130 and 0.145 do. Those requests are
+// the parent's, counted where the parent's rollout is read; read again here they would count twice. Which of the fork's
+// leading usages are copies is ccusage's rule (MIT; ryoppippi/ccusage rust/adapters/codex/src/parser/replay_filter.rs,
+// replay.rs, README.md "Forked rollouts"), ported here, its code not copied:
+// - The window: the fork's usages up to its own boundary, the first token_usage_record or thread_settings_applied that
+//   names the fork's own thread (Codex 0.152 stamps them); a spawned subagent's first record naming no thread ends it
+//   too, as spawned subagents never copy the parent's records. No boundary: the whole rollout.
+// - The window's leading usages are matched against the parent's usages from before the fork's time: the longest run
+//   equal to that stream's start, or to its end (the history a parent kept after it compacted), is copied.
+// - Usage between the first marker naming another thread and the boundary is copied as well.
+// - A parent whose rollout is not under the home has nothing to match: the usages count (ccusage warns and counts).
+// A usage is a token_count whose total moved, by its last_token_usage; records with a response id are never copies here.
+
+/** A fork's copied usages, by ordinal among its usages (usageOf): the ranges [from, to) copied, `until` the last of
+ *  them; `seen`, the usages read so far, `total` the last one's total. */
+type Replay = { skip: [number, number][]; until: number; seen: number; total?: string };
+
+const usageFields = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"] as const;
+
+/** A token_count's usage as a key, when the count is a usage (its total moved from `last.total`, which it moves on), else
+ *  undefined. Two requests with the same counts are the same key: as ccusage compares them. */
+function usageOf(value: Record<string, unknown>, last: { total?: string }): string | undefined {
+  const payload = isObject(value.payload) ? value.payload : undefined;
+  if (value.type !== "event_msg" || payload?.type !== "token_count" || !isObject(payload.info)) return undefined;
+  const { info } = payload;
+  const total = isObject(info.total_token_usage) ? JSON.stringify(info.total_token_usage) : undefined;
+  if (total !== undefined && total === last.total) return undefined;
+  last.total = total;
+  const use = isObject(info.last_token_usage) ? info.last_token_usage : undefined;
+  const counts = usageFields.map((field) => {
+    const n = use?.[field];
+    return typeof n === "number" ? n : 0;
+  });
+  // No usage when every count but the total is 0, as ccusage's CodexRawUsage::is_empty has it: a fork's first
+  // token_count can carry only a total_tokens, and that is no request of the parent's to match.
+  return counts.slice(0, -1).some((n) => n > 0) ? counts.join(",") : undefined;
+}
+
+/** The longest run at the start of `child` equal to the start of `parent`, or to its end. */
+function copiedLength(parent: string[], child: string[]): number {
+  const pattern = child.slice(0, parent.length);
+  let prefix = 0;
+  while (prefix < pattern.length && pattern[prefix] === parent[prefix]) prefix += 1;
+  if (!pattern.length) return 0;
+  // The longest start of `pattern` that `parent` ends with: a prefix function over it, run along the parent's end.
+  const fail = new Array<number>(pattern.length).fill(0);
+  for (let i = 1, k = 0; i < pattern.length; i += 1) {
+    while (k > 0 && pattern[i] !== pattern[k]) k = fail[k - 1]!;
+    if (pattern[i] === pattern[k]) k += 1;
+    fail[i] = k;
+  }
+  let matched = 0;
+  for (const use of parent.slice(parent.length - pattern.length)) {
+    while (matched > 0 && use !== pattern[matched]) matched = fail[matched - 1]!;
+    if (use === pattern[matched]) matched += 1;
+    if (matched === pattern.length) break;
+  }
+  return Math.max(prefix, matched);
+}
+
+/** A rollout's lines, parsed, each record that is a JSON object. */
+async function* recordsOf(file: string): AsyncGenerator<Record<string, unknown>> {
+  const lines = createInterface({ input: createReadStream(file, { highWaterMark: 1 << 20 }), crlfDelay: Number.POSITIVE_INFINITY });
+  try {
+    for await (const line of lines) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (isObject(value)) yield value;
+    }
+  } finally {
+    lines.close();
+  }
+}
+
+/** The parent's usages, each with its time, as its rollout holds them: the last few read kept, as a parent's forks are
+ *  read one after another. */
+const parentUsages = new Map<string, { mark: string; uses: string[]; ats: (number | undefined)[] }>();
+async function usagesOf(file: string): Promise<{ uses: string[]; ats: (number | undefined)[] }> {
+  const stats = await stat(file);
+  const mark = `${stats.size}:${stats.mtimeMs}`;
+  const kept = parentUsages.get(file);
+  if (kept?.mark === mark) return kept;
+  const out = { mark, uses: [] as string[], ats: [] as (number | undefined)[] };
+  const last: { total?: string } = {};
+  for await (const value of recordsOf(file)) {
+    const use = usageOf(value, last);
+    if (use === undefined) continue;
+    out.uses.push(use);
+    out.ats.push(timeOf(value.timestamp));
+  }
+  parentUsages.delete(file);
+  parentUsages.set(file, out);
+  if (parentUsages.size > 4) parentUsages.delete(parentUsages.keys().next().value!);
+  return out;
+}
+
+/** The parent's rollout: in the sessions directory `file` is under, named by the parent's id, on its UUIDv7 date (a
+ *  day either side, as the directories are local dates) else anywhere there; then archived_sessions. */
+async function parentFile(file: string, parent: string): Promise<string | undefined> {
+  const sessions = dirname(dirname(dirname(dirname(file))));
+  const named = (dir: string) => async () => (await entries(dir)).find((entry) => entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(`-${parent}.jsonl`) && join(dir, entry.name) !== file)?.name;
+  const days: string[] = [];
+  const ms = /^[0-9a-f]{8}-[0-9a-f]{4}-7/i.test(parent) ? Number.parseInt(parent.replace(/-/g, "").slice(0, 12), 16) : Number.NaN;
+  if (Number.isFinite(ms)) for (const shift of [0, -1, 1]) days.push(join(sessions, ...new Date(ms + shift * 86_400_000).toISOString().slice(0, 10).split("-")));
+  for (const dir of days) {
+    const name = await named(dir)();
+    if (name) return join(dir, name);
+  }
+  for (const year of await entries(sessions)) {
+    if (!year.isDirectory()) continue;
+    for (const month of await entries(join(sessions, year.name))) {
+      if (!month.isDirectory()) continue;
+      for (const day of await entries(join(sessions, year.name, month.name))) {
+        const dir = join(sessions, year.name, month.name, day.name);
+        if (!day.isDirectory() || days.includes(dir)) continue;
+        const name = await named(dir)();
+        if (name) return join(dir, name);
+      }
+    }
+  }
+  const archived = join(dirname(sessions), "archived_sessions");
+  const name = await named(archived)();
+  return name ? join(archived, name) : undefined;
+}
+
+/** The parent's history `file` copied in, when it is a fork that did: read before the fork's own lines, so its records
+ *  read as copies (record). */
+async function forkReplay(file: string): Promise<Replay | null> {
+  const records = recordsOf(file);
+  try {
+    const first = (await records.next()).value as Record<string, unknown> | undefined;
+    const payload = isObject(first?.payload) ? first.payload : undefined;
+    if (first?.type !== "session_meta" || !payload) return null;
+    const own = str(payload.id)?.trim() || undefined;
+    const spawn = isObject(payload.source) && isObject(payload.source.subagent) && isObject(payload.source.subagent.thread_spawn) ? payload.source.subagent.thread_spawn : undefined;
+    const spawnedBy = str(spawn?.parent_thread_id);
+    const parent = str(payload.forked_from_id) ?? spawnedBy;
+    // A rollout that names its history's base reads it by reference, copying none; one named <thread>_<rollout> whose
+    // id is the thread goes on with that thread, as no fork.
+    if (!parent || payload.history_base !== undefined) return null;
+    const named = /-([0-9a-f-]{36})_([0-9a-f-]{36})\.jsonl$/i.exec(basename(file));
+    if (named && named[1] !== named[2] && own === named[1]) return null;
+    const forkedAt = timeOf(first.timestamp);
+    let stream: string[] | undefined;
+    const parentStream = async () => {
+      if (stream) return stream;
+      const path = await parentFile(file, parent);
+      if (!path) return (stream = []);
+      const { uses, ats } = await usagesOf(path);
+      const cut = forkedAt === undefined ? -1 : ats.findIndex((t) => t !== undefined && t > forkedAt);
+      return (stream = cut === -1 ? uses : uses.slice(0, cut));
+    };
+    const uses: string[] = [];
+    const last: { total?: string } = {};
+    let foreign: number | undefined;
+    let boundary: number | undefined;
+    let marked = false;
+    // Whether the usages so far are the parent's first ones, and where in the parent's they could start a run that ends
+    // at its end: while either holds the copied run can grow, so the read goes on.
+    let prefix = true;
+    let starts: number[] = [];
+    const grows = (parentUses: string[], use: string): boolean => {
+      const i = uses.length - 1;
+      prefix &&= parentUses[i] === use;
+      starts = i === 0 ? parentUses.flatMap((u, j) => (u === use ? [j] : [])) : starts.filter((j) => j + i < parentUses.length && parentUses[j + i] === use);
+      return uses.length < parentUses.length && (prefix || starts.length > 0);
+    };
+    for await (const value of records) {
+      const p = isObject(value.payload) ? value.payload : undefined;
+      const marker = value.type === "token_usage_record" ? "record" : value.type === "event_msg" && p?.type === "thread_settings_applied" ? "settings" : undefined;
+      if (marker) {
+        const thread = str(p?.thread_id)?.trim() || undefined;
+        if (thread) marked = true;
+        if (thread && thread === own) {
+          boundary = uses.length;
+          break;
+        }
+        if (marker === "record" && !thread && spawnedBy) break;
+        if (thread && own) foreign ??= uses.length;
+        continue;
+      }
+      const use = usageOf(value, last);
+      if (use === undefined) continue;
+      uses.push(use);
+      // Read on only while the copied run can still grow, or while a thread's marker may yet bound one.
+      if (!grows(await parentStream(), use) && !marked) break;
+    }
+    const window = uses.slice(0, boundary ?? uses.length);
+    const skip: [number, number][] = [];
+    if (window.length) {
+      const copied = copiedLength(await parentStream(), window);
+      if (copied) skip.push([0, copied]);
+    }
+    if (foreign !== undefined && boundary !== undefined && boundary > foreign) skip.push([foreign, boundary]);
+    if (!skip.length) return null;
+    return { skip, until: Math.max(...skip.map(([, to]) => to)) - 1, seen: 0 };
+  } finally {
+    await records.return(undefined);
+  }
+}
+
+/** One record: a fork's copy of its parent's history is read as a copy (forkReplay); a turn_context in it still sets
+ *  the model and effort, and a usage in it that is no copy counts. */
+function record(value: Record<string, unknown>, at: number, context: ReadContext<Own>): boolean | void {
+  const { own } = context.state;
+  const replay = own.replay;
+  if (!replay || replay.seen > replay.until || value.type === "session_meta") return readRecord(value, at, context);
+  const use = usageOf(value, replay);
+  if (use !== undefined) {
+    const ordinal = replay.seen;
+    replay.seen += 1;
+    if (!replay.skip.some(([from, to]) => ordinal >= from && ordinal < to)) return readRecord(value, at, context);
+    own.total = replay.total;
+    own.open = own.unpaid = undefined;
+    return false;
+  }
+  if (value.type === "turn_context") readRecord(value, at, context);
+  else if (value.type === "token_usage_record") own.records = true;
+  own.open = own.unpaid = undefined;
+  return false;
+}
+
 const spec: LineSource<"codex", Own> = {
   source: "codex",
   name: "Codex",
@@ -220,4 +457,17 @@ const spec: LineSource<"codex", Own> = {
   forget: (own) => ({ ...own, held: own.held.map(({ index, turn }) => ({ index, turn: { ...turn, text: "" } as Turn })) }),
 };
 
-export const codex = lineReader(spec);
+const lines = lineReader(spec);
+
+/** Codex's reader: a read from a rollout's start first finds the parent's history a fork copied in (forkReplay); a read
+ *  going on from a cursor has it in the cursor's state. (A rollout rewritten in place, which Codex does not do, is read
+ *  again from its start without it.) */
+export const codex: Reader<"codex", FileCursor> = {
+  ...lines,
+  async read(locator, cursor, options) {
+    if (cursor) return lines.read(locator, cursor, options);
+    const replay = await forkReplay(locator.file);
+    if (!replay) return lines.read(locator, cursor, options);
+    return lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, cursor, options);
+  },
+};
