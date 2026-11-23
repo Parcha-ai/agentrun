@@ -7,3 +7,5 @@ Launch hook: a firing the server is still handing over, or whose run the host is
 A host start for a firing its host took with no run now holds the room until its run is written, however long the write takes. When `start_by` is less than a minute away, the server also moves it to a minute after the start began, before it writes the run, so a later firing can no longer be handed while that run is being written. A start that fails without writing its run moves `start_by` back.
 
 Two host starts of the same firing at once now start one run: the second answers the first's run with 202 and `idempotent-replayed: true`, and a firing whose host's start is still writing its run is not handed to the hook again. The room check reads the trigger as it is at the check, so a start whose earlier read predates another firing's run no longer takes that run's place.
+
+Clearing `max_active_runs` (PATCH with null) no longer leaves a firing that was waiting on the cap held behind one active run: it is checked again at the next wait poll, as a trigger with no cap checks it.

@@ -1091,11 +1091,12 @@ export class Triggers {
       if (archived) return void (await this.store.triggers.settle(triggerId, key, { status: "skipped", reason: archived }));
       if (trigger.target.kind === "message_run") return void (await this.send(trigger, firing));
       // Room found is held (handing) until what came of it is written: a host start meanwhile counts this firing. The
-      // firing is read again in the check: a host start may have started it since, or be writing its run.
+      // firing is read again in the check: a host start may have started it since, or be writing its run. One being
+      // written is left as it is (its retry kept, no wait written): that start starts it, or, writing no run, arms the
+      // timer again for its retry (startHold).
       const claimed = await this.checked(triggerId, async () => {
         const now = await this.store.triggers.firing(triggerId, key);
-        if (!now || now.status !== "due") return { gone: true as const };
-        if (this.starting.has(key)) return { waitsOn: key, reason: "Its host's start of it is being written." };
+        if (!now || now.status !== "due" || this.starting.has(key)) return { gone: true as const };
         return (await this.busy(trigger, now)) ?? this.hold(triggerId, key);
       });
       if (typeof claimed !== "function") {
@@ -1350,18 +1351,25 @@ export class Triggers {
   }
 
   /** Firing `key` of `triggerId` held mid-hand (hold) by a host start writing its run, and in starting until `release`:
-   *  `ran` gives another start of the firing meanwhile the run written. */
+   *  `ran` gives another start of the firing meanwhile the run written. A start that wrote none arms the timer again on
+   *  release, so a retry that came due while it wrote (left to it by drive and arm) is driven at once, and a later one at
+   *  its time. */
   private startHold(triggerId: string, key: string): { ran: (run: { run_id: string }) => void; release: () => void } {
     const release = this.hold(triggerId, key);
     let answer!: (run: { run_id: string } | undefined) => void;
     const run = new Promise<{ run_id: string } | undefined>((resolve) => (answer = resolve));
+    let written = false;
     this.starting.set(key, run);
     return {
-      ran: (written) => answer(written),
+      ran: (done) => {
+        written = true;
+        answer(done);
+      },
       release: () => {
         answer(undefined);
         if (this.starting.get(key) === run) this.starting.delete(key);
         release();
+        if (!written && !this.closed) void this.arm();
       },
     };
   }
@@ -1523,7 +1531,8 @@ export class Triggers {
         if (f.status === "failed") soonest = Math.min(soonest, this.clock.now() + BACKOFF_MS[0]);
         // A due firing not being driven: at its next try; one with none (its last write did not land, so it holds no retry
         // time) after the table's first wait, never left with no time to drive it. A waiting one is the poll's.
-        else if (!this.driving.has(f.key) && f.waitsOn === null) soonest = Math.min(soonest, f.retryAt ?? this.clock.now() + BACKOFF_MS[0]);
+        // One its host's start is writing is that start's until it ends (startHold arms again then).
+        else if (!this.driving.has(f.key) && !this.starting.has(f.key) && f.waitsOn === null) soonest = Math.min(soonest, f.retryAt ?? this.clock.now() + BACKOFF_MS[0]);
       }
     } catch {
       soonest = this.clock.now() + BACKOFF_MS[0];
