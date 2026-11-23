@@ -1456,8 +1456,13 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     else made.triggers.add(one.trigger_id);
   }
   await deleteTriggers(api, made, true);
-  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   if (kept) made.triggers.add(kept);
+  // A server under AGENTRUN_RUN_KEYS=1 takes a key it lacks from each run, and says so in the apply's warning at
+  // secrets.<NAME>; an eval's runs carry no keys, so each would be refused. The eval stops before any, as for a case that
+  // does not check (its agent removed with the case).
+  const owed = (Array.isArray(applied.warnings) ? applied.warnings : []).flatMap((warning) => (isObject(warning) && warning.reason === "not_set_up_here" && typeof warning.field === "string" && warning.field.startsWith("secrets.") ? [warning.field.slice("secrets.".length)] : []));
+  if (owed.length) throw new CaseError(ctx.options.dir, [`the server takes ${owed.join(" and ")} from each run (AGENTRUN_RUN_KEYS=1), and an eval's runs carry no keys: run it without --server, or on a server that holds ${owed.length > 1 ? "them" : "it"}`]);
+  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
   // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
   const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
