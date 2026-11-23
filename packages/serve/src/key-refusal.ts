@@ -115,21 +115,24 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
   return heldIn(seen, secrets) ? "[redacted]" : out;
 }
 
-/** Whether the joined pieces still hold a held value or a secret shape: one a cut split, each piece's own redacted. */
-function heldIn(seen: string, secrets: readonly string[]): boolean {
-  return valueMatcher(secrets)(seen) || secretShapes(seen).length > 0;
+/** Whether the joined pieces still hold a held value or a secret shape: one a cut split, each piece's own redacted. Each
+ *  unread run's head is read raw for a value (a shorter held value redacted there would hide the rest of a longer one
+ *  split before it) and redacted for a shape (a shape whole in it is no shape a cut split). */
+function heldIn(seen: { values: string; shapes: string }, secrets: readonly string[]): boolean {
+  return valueMatcher(secrets)(seen.values) || secretShapes(seen.shapes).length > 0;
 }
 
 /** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
- *  what the pass after them reads (heldIn), the same with the head of each unread run, redacted by itself, put back
- *  before its "[redacted]". A run runCut cut that then goes on past a piece with no place to cut is unread from its
+ *  what the pass after them reads (heldIn), the same with the head of each unread run put back before its "[redacted]"
+ *  (raw for the held values, redacted by itself for the shapes). A run runCut cut that then goes on past a piece with no place to cut is unread from its
  *  start, the pieces of it already read taken back, so no piece shows the head of a value or a shape the cut split. With
  *  `enough`, no piece is read once the pieces show more than `enough` characters and `hold` characters other than
  *  whitespace are read past those. */
-function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): { out: string; seen: string } {
+function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): { out: string; seen: { values: string; shapes: string } } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
   const out: string[] = [];
-  const seen: string[] = [];
+  const values: string[] = [];
+  const shapes: string[] = [];
   let shown = 0;
   let past = 0;
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
@@ -142,11 +145,13 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       const start = run?.from ?? from;
       if (run) {
         for (const part of out.splice(run.at)) shown -= part.length;
-        seen.splice(run.at);
+        values.splice(run.at);
+        shapes.splice(run.at);
       }
       const head = text.slice(start, start + hold);
       out.push("[redacted]");
-      seen.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
+      values.push(`${head}[redacted]`);
+      shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
       shown += "[redacted]".length;
       run = undefined;
     } else {
@@ -155,12 +160,13 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       if (to < text.length && /\S/.test(text[to - 1] ?? "") && /\S/.test(text[to] ?? "")) run ??= { from, at: out.length };
       else run = undefined;
       out.push(part);
-      seen.push(part);
+      values.push(part);
+      shapes.push(part);
       shown += part.length;
     }
     from = to;
   }
-  return { out: out.join(""), seen: seen.join("") };
+  return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join("") } };
 }
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at

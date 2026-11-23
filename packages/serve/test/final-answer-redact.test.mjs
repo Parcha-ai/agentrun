@@ -199,6 +199,12 @@ test("a held value split by a line break before a run too long to read withholds
   const text = `the key: ${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)}${"z".repeat(9000)} end`;
   assert.equal(redactedAnswer(text, [CUT_KEY]), "[redacted]");
   assert.equal(refusal.redactedCall(text, [CUT_KEY], 120_000), "[redacted]");
+  // A shorter held value at the head of that run is still read raw there, so the longer one it ends stays whole.
+  const shorter = ["other", "held", "value", "abcdefgh"].join("-");
+  const longer = `${["not", "a", "secret", "prefix"].join("-")}-${shorter}`;
+  const both = `the key: ${longer.slice(0, 20)}\n${longer.slice(20)}${"z".repeat(9000)} end`;
+  assert.equal(redactedAnswer(both, [longer, shorter]), "[redacted]");
+  assert.equal(refusal.redactedCall(both, [longer, shorter], 120_000), "[redacted]");
 });
 
 test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {
@@ -213,14 +219,16 @@ test("compact JSON past a piece with no whitespace is read in pieces cut at its 
     }
   }
   // A URL's password may hold a quote and a comma, where a run is cut: the joined pieces are read for every secret shape,
-  // so one cut there withholds the text whole.
-  const url = `"${"x".repeat(8100)}https://alice:prefix",rest@host.example/${"z".repeat(3000)}`;
+  // so one cut there withholds the text whole. (The user and password are joined here so no URL with a password is
+  // written in this file.)
+  const login = ["alice", "prefix"].join(":");
+  const url = `"${"x".repeat(8100)}https://${login}",rest@host.example/${"z".repeat(3000)}`;
   assert.ok(!/\s/.test(url) && url.indexOf('",rest') < 8192 && url.length > 8192);
   assert.equal(redactedAnswer(url, []), "[redacted]");
   assert.equal(refusal.redactedCall(url, [], 120_000), "[redacted]");
   // A run cut at a quote that goes on past a piece with no place to cut is unread from its start: no piece of it shows,
   // so neither does the head of a password the cut split.
-  const unread = `say "${"x".repeat(8100)}https://alice:prefix",${"r".repeat(9000)}@host end`;
+  const unread = `say "${"x".repeat(8100)}https://${login}",${"r".repeat(9000)}@host end`;
   assert.equal(redactedAnswer(unread, []), "say [redacted] end");
   assert.equal(refusal.redactedCall(unread, [], 120_000), "say [redacted] end");
   const holding = JSON.stringify({ ids: [...ids.slice(0, 1000), CUT_KEY, ...ids.slice(1000)] });
