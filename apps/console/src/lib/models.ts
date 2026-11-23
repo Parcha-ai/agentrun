@@ -4,12 +4,19 @@ import { isPlanModel, PLAN_PROVIDER } from "@/lib/chatgpt";
  *  exactly the one the server names (`models.route_prefix`, null with no gateway), never one read off an id, so a gateway
  *  id with no routing prefix (`anthropic/claude-x`) keeps its provider. Any other id (a provider's own, `openai/gpt-5`)
  *  is shown whole. A ChatGPT plan's model (`chatgpt/<id>`) says its id and who pays: "gpt-6.1-sol · on your ChatGPT
- *  plan", so a plan model and the same model on a key never read alike. The one wording for a plan model, in the Model
+ *  plan", so a plan model and the same model on a key never read alike. A model on this machine's Ollama (`ollama/<tag>`)
+ *  says its tag and where it runs: "qwen3:8b · local (Ollama)". The one wording for a plan or local model, in the Model
  *  picker, on an agent's page and on what a run's node ran on. */
 export function modelLabel(id: string, routePrefix: string | null | undefined): { text: string; title?: string } {
   if (isPlanModel(id)) return { text: `${id.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
+  if (isLocalModel(id)) return { text: `${id.slice(LOCAL_PROVIDER.length + 1)} · local (Ollama)`, title: id };
   return routePrefix && id.startsWith(`${routePrefix}/`) && id.length > routePrefix.length + 1 ? { text: id.slice(routePrefix.length + 1), title: id } : { text: id };
 }
+
+/** The provider of the models on this machine's Ollama, which the server lists itself (`ollama/<tag>`). */
+const LOCAL_PROVIDER = "ollama";
+/** Whether `id` names a model on this machine's Ollama: $0, with no limit on its requests. */
+const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
 
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
  *  the server's `reason`, when it doesn't). `needs`, on one that runs nothing here for want of a key: what would give it a
@@ -26,10 +33,10 @@ export function harnessFree(harness: string, harnesses: readonly HarnessInfo[] |
 
 /** Said beside the spend cap for a model the cap cannot stop: a free one (`harnesses[].free_models`), each request $0 in
  *  the catalog. The server ends such a run at its limit of these requests (capabilities' `limits.free_model_requests`),
- *  so the cap box says it: "free model: up to 60 requests". Null for a paid model, a ChatGPT plan's (its requests don't
- *  count), no model, or a server that names no limit. */
+ *  so the cap box says it: "free model: up to 60 requests". Null for a paid model, a ChatGPT plan's or a local Ollama
+ *  model's (their requests don't count), no model, or a server that names no limit. */
 export function freeRequestsNote(model: string | null | undefined, harness: string, harnesses: readonly HarnessInfo[] | undefined, limit: number | null | undefined): string | null {
-  if (!model || typeof limit !== "number" || isPlanModel(model)) return null;
+  if (!model || typeof limit !== "number" || isPlanModel(model) || isLocalModel(model)) return null;
   return harnessFree(harness, harnesses).has(model) ? `free model: up to ${limit} requests` : null;
 }
 

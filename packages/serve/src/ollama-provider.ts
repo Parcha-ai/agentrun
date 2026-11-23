@@ -1,0 +1,346 @@
+// Ollama as a model provider: the models the Ollama on this machine (or the one OLLAMA_HOST names) has pulled, listed live
+// from its own API, run by pi alone, at $0, on Ollama's native chat API. No key: Ollama has none.
+//   Where: OLLAMA_HOST, Ollama's own variable, read as the ollama CLI reads it (ollamaBase), from the server's environment,
+//     never from a provider's auth context, so it is never a held secret. Plain http only to this machine (provider.ts
+//     gatewayBase, the one base rule); anything else needs https.
+//   Which models: GET /api/tags, then POST /api/show for each, whose `capabilities` say whether it chats (`completion`),
+//     takes tools (`tools`) and thinks (`thinking`), and whose model_info's `<family>.context_length` is the context it was
+//     trained on. Nothing is hardcoded. A model with no `tools` capability takes its tools as text (local-models.ts ToolsAs,
+//     on the runner's translated route).
+//   Wire: POST /api/chat, streamed as NDJSON. Its OpenAI-compatible API cannot set the context size, and Ollama's own
+//     default context is small, so every request names it: options.num_ctx, the model's trained context up to 64k
+//     (OLLAMA_NUM_CTX), and the model's window here is that same number.
+// Listing never stalls a caller: one short deadline for the whole listing, no redirects, and a down, hung or refused Ollama
+// lists no models and throws nothing. Each address's answer is kept (TTL_MS) and refreshed behind the caller.
+import { calculateCost, collapseSystemMessages, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
+import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
+import { createProvider } from "@earendil-works/pi-ai/models";
+import type { ToolsAs } from "./local-models.js";
+import { gatewayBase } from "./provider.js";
+
+/** The provider's id, the prefix of its models' refs (`ollama/<tag>`). */
+export const OLLAMA_PROVIDER = "ollama";
+/** The api its models name: Ollama's own chat API, neither Responses nor Messages, so the runner's route translates it. */
+export const OLLAMA_API = "ollama-chat";
+/** The most context a request asks Ollama for (options.num_ctx), and so the most window a model has here: 64k. */
+export const OLLAMA_NUM_CTX = 65_536;
+/** How long a listing may take, all of it: a stuck Ollama costs a caller this once per TTL_MS at most. */
+export const OLLAMA_LIST_TIMEOUT_MS = 2_000;
+/** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). */
+const TTL_MS = 30_000;
+/** Ollama's port, where OLLAMA_HOST names none and no scheme. */
+const OLLAMA_PORT = "11434";
+const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+
+/** A model as Ollama lists it: its tag, its capabilities, and the context it was trained on (undefined: /api/show says none). */
+export type OllamaListed = { readonly name: string; readonly capabilities: readonly string[]; readonly trained: number | undefined };
+
+/**
+ * The base URL OLLAMA_HOST names, as the ollama CLI reads it (envconfig.Host): unset, this machine on 11434; with no
+ * scheme, http; with no port, 11434 with no scheme and the scheme's own with one (https: 443); a path kept. `0.0.0.0` and
+ * `::`, where `ollama serve` listens on every address, connect to this machine. Then the one base rule (provider.ts
+ * gatewayBase): plain http only to this machine, no user, query or fragment. Throws, naming OLLAMA_HOST, when refused.
+ */
+export function ollamaBase(env: NodeJS.ProcessEnv): string {
+  const given = (env.OLLAMA_HOST ?? "").trim();
+  const cut = given.indexOf("://");
+  const scheme = cut < 0 ? "http" : given.slice(0, cut).toLowerCase();
+  const rest = cut < 0 ? given : given.slice(cut + 3);
+  const slash = rest.indexOf("/");
+  const hostport = slash < 0 ? rest : rest.slice(0, slash);
+  const path = slash < 0 ? "" : rest.slice(slash);
+  // A user before the host: the base rule refuses it, in its words.
+  if (hostport.includes("@")) return gatewayBase("OLLAMA_HOST", `${scheme}://${rest}`);
+  const defaultPort = cut < 0 ? OLLAMA_PORT : scheme === "https" ? "443" : scheme === "http" ? "80" : OLLAMA_PORT;
+  let [host, port] = splitHostPort(hostport);
+  if (!/^\d{1,5}$/.test(port ?? "") || Number(port) > 65_535) port = defaultPort;
+  if (host === "" || host === "0.0.0.0") host = "127.0.0.1";
+  if (host === "::") host = "::1";
+  return gatewayBase("OLLAMA_HOST", `${scheme}://${host.includes(":") ? `[${host}]` : host}:${port}${path}`);
+}
+
+/** `host:port`, `[v6]:port`, `[v6]`, a bare IPv6 address or a host alone, as Go's net.SplitHostPort and the CLI's fallback
+ *  read them: the host (brackets off) and the port, undefined where none is named. */
+function splitHostPort(hostport: string): [string, string | undefined] {
+  const bracketed = /^\[([^\]]*)\](?::(.*))?$/.exec(hostport);
+  if (bracketed) return [bracketed[1]!, bracketed[2]];
+  const colons = hostport.split(":").length - 1;
+  if (colons === 1) {
+    const [host, port] = hostport.split(":") as [string, string];
+    return [host, port];
+  }
+  return [hostport, undefined];
+}
+
+/** Each address's last listing, by base URL, and the listing under way for it. */
+const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
+const asking = new Map<string, Promise<readonly OllamaListed[]>>();
+
+/** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase). */
+const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
+  try {
+    return ollamaBase(env);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
+ * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
+ * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
+ * does not answer for is left out. The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ */
+export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
+  const base = baseOf(env);
+  if (base === undefined) return [];
+  const signal = AbortSignal.timeout(timeoutMs);
+  const ask = async (path: string, body?: unknown): Promise<unknown> => {
+    const response = await send(`${base}${path}`, { method: body === undefined ? "GET" : "POST", redirect: "error", signal, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+    if (!response.ok) throw new Error(`${path}: ${response.status}`);
+    return response.json();
+  };
+  let models: readonly OllamaListed[] = [];
+  try {
+    const tags = (await ask("/api/tags")) as { models?: { name?: unknown; model?: unknown }[] } | null;
+    const names = (Array.isArray(tags?.models) ? tags.models : []).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
+    const shown = await Promise.all(names.map(async (name): Promise<OllamaListed | undefined> => {
+      try {
+        const show = (await ask("/api/show", { model: name })) as { capabilities?: unknown; model_info?: Record<string, unknown> } | null;
+        // An Ollama from before /api/show said capabilities chats, with its tools as text.
+        const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
+        const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];
+        return { name, capabilities, trained: typeof length === "number" && Number.isSafeInteger(length) && length > 0 ? length : undefined };
+      } catch {
+        if (signal.aborted) throw signal.reason;
+        return undefined;
+      }
+    }));
+    models = shown.filter((model): model is OllamaListed => model !== undefined);
+  } catch {
+    models = [];
+  }
+  kept.set(base, { at: Date.now(), models });
+  return models;
+}
+
+/** The models the Ollama `env` names has: its address's kept listing while fresh; a stale one at once, asked again behind
+ *  the caller; none kept, asked now (listOllama). One listing per address at a time. */
+export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly OllamaListed[]> {
+  const base = baseOf(env);
+  if (base === undefined) return [];
+  const known = kept.get(base);
+  if (known && Date.now() - known.at < TTL_MS) return known.models;
+  let listing = asking.get(base);
+  if (!listing) {
+    listing = listOllama(env).finally(() => asking.delete(base));
+    asking.set(base, listing);
+  }
+  return known ? known.models : listing;
+}
+
+/** The models the Ollama `env` names had when last asked (ollamaModels): none where it was never asked. Synchronous, for
+ *  the host's default model (model.ts hostModel), which a listing primes before it is read. */
+export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
+  const base = baseOf(env);
+  return base === undefined ? [] : (kept.get(base)?.models ?? []);
+}
+
+/** `env`'s Ollama listing as last kept (ollamaKept), in one string: each model's tag, capabilities and trained context.
+ *  A server compares it to see a model pulled, removed or an Ollama started since it made its offers (server.ts). */
+export const ollamaListing = (env: NodeJS.ProcessEnv): string => ollamaKept(env).map((model) => `${model.name}=${model.capabilities.join(",")}@${model.trained ?? ""}`).join(" ");
+
+/** The context a request on `model` asks for, and its window here: its trained context up to OLLAMA_NUM_CTX, which a model
+ *  /api/show names none for gets. */
+export const contextOf = (model: Pick<OllamaListed, "trained">): number => Math.min(OLLAMA_NUM_CTX, model.trained ?? OLLAMA_NUM_CTX);
+
+/** Whether `model` chats (an embedding model does not). */
+const chats = (model: OllamaListed): boolean => model.capabilities.includes("completion");
+
+/** The first model of `env`'s Ollama that chats and calls tools, as a ref (`ollama/<tag>`), from its kept listing
+ *  (ollamaKept); undefined where none does. */
+export function ollamaToolsModel(env: NodeJS.ProcessEnv): string | undefined {
+  const model = ollamaKept(env).find((each) => chats(each) && each.capabilities.includes("tools"));
+  return model ? `${OLLAMA_PROVIDER}/${model.name}` : undefined;
+}
+
+type OllamaModel = Model<typeof OLLAMA_API> & { toolsAs?: ToolsAs };
+
+/** The provider of `listed` (its chat models) at `base`: keyless, $0, each model's window its context (contextOf). */
+export function ollamaProvider(base: string, listed: readonly OllamaListed[]) {
+  const models: OllamaModel[] = listed.filter(chats).map((model) => {
+    const window = contextOf(model);
+    return {
+      id: model.name,
+      name: `${model.name} (Ollama)`,
+      api: OLLAMA_API,
+      provider: OLLAMA_PROVIDER,
+      baseUrl: base,
+      reasoning: model.capabilities.includes("thinking"),
+      input: model.capabilities.includes("vision") ? ["text", "image"] : ["text"],
+      cost: { ...ZERO },
+      contextWindow: window,
+      maxTokens: Math.min(16_384, Math.floor(window / 2)),
+      ...(model.capabilities.includes("tools") ? {} : { toolsAs: "text" as const }),
+    };
+  });
+  return createProvider({
+    id: OLLAMA_PROVIDER,
+    name: "Ollama",
+    baseUrl: base,
+    // No key: Ollama takes none, so its auth resolves to none, as the faux provider's does (model.ts runModels).
+    auth: { apiKey: { name: "Ollama", resolve: async () => ({ auth: {} }) } },
+    models,
+    api: { stream: streamChat, streamSimple: streamChat },
+  });
+}
+
+/** A line of /api/chat's stream: a part of the answer, its last with `done` and the counts; or an error. */
+type ChatLine = {
+  message?: { content?: string; thinking?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] };
+  done?: boolean;
+  done_reason?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+  error?: string;
+};
+
+/** `context` as /api/chat's body for `model`: the current system prompt first, each message in Ollama's shape (a call's
+ *  arguments an object, a result `tool` with the tool's name, images as base64), and the current tools in its `tools`. */
+export function chatBody(model: Model<string>, context: TranscriptContext, options: SimpleStreamOptions | undefined): Record<string, unknown> {
+  const collapsed = collapseSystemMessages(context);
+  const system = getCurrentSystemPrompt(collapsed.messages);
+  const tools = getCurrentTools(collapsed.messages);
+  const messages: Record<string, unknown>[] = system ? [{ role: "system", content: system }] : [];
+  const textOf = (parts: readonly { type: string; text?: string }[]) => parts.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n");
+  const imagesOf = (parts: readonly { type: string; data?: string }[]) => parts.flatMap((part) => (part.type === "image" && part.data ? [part.data] : []));
+  for (const message of transformMessages(collapsed.messages, model as Model<never>)) {
+    if (message.role === "system") continue;
+    if (message.role === "user") {
+      const parts = typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
+      const images = imagesOf(parts);
+      messages.push({ role: "user", content: textOf(parts), ...(images.length ? { images } : {}) });
+    } else if (message.role === "assistant") {
+      const thinking = message.content.flatMap((part) => (part.type === "thinking" && !part.redacted ? [part.thinking] : [])).join("");
+      const calls = message.content.flatMap((part) => (part.type === "toolCall" ? [{ function: { name: part.name, arguments: part.arguments } }] : []));
+      messages.push({ role: "assistant", content: textOf(message.content), ...(thinking ? { thinking } : {}), ...(calls.length ? { tool_calls: calls } : {}) });
+    } else {
+      const images = imagesOf(message.content);
+      messages.push({ role: "tool", tool_name: message.toolName, content: textOf(message.content), ...(images.length ? { images } : {}) });
+    }
+  }
+  const window = Math.min(model.contextWindow, OLLAMA_NUM_CTX);
+  return {
+    model: model.id,
+    messages,
+    ...(tools.length ? { tools: tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
+    stream: true,
+    // A thinking model asked to reason thinks; asked nothing, Ollama's default.
+    ...(model.reasoning && options?.reasoning ? { think: true } : {}),
+    options: { num_ctx: window, ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature === undefined ? {} : { temperature: options.temperature }) },
+  };
+}
+
+/** One request on /api/chat, its NDJSON read into pi-ai's events: text and thinking as they stream, each tool call whole,
+ *  and the end with Ollama's counts as its usage (prompt_eval_count in, eval_count out), at the model's price ($0). An
+ *  error line, a refused status or a broken stream ends in an error event; a stopped one in an aborted one. */
+function streamChat(model: Model<string>, context: TranscriptContext, options?: StreamOptions & SimpleStreamOptions): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { ...ZERO, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
+  void (async () => {
+    const send = options?.fetch ?? globalThis.fetch;
+    const body = chatBody(model, context, options);
+    const response = await send(`${model.baseUrl}/api/chat`, { method: "POST", redirect: "error", headers: { "content-type": "application/json", ...headersOf(options) }, body: JSON.stringify(body), ...(options?.signal ? { signal: options.signal } : {}) });
+    await options?.onResponse?.({ status: response.status, headers: Object.fromEntries(response.headers) }, model as Model<never>);
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      let said = text;
+      try {
+        said = (JSON.parse(text) as { error?: string }).error ?? text;
+      } catch {}
+      throw new Error(`${response.status} ${said}`.trim());
+    }
+    stream.push({ type: "start", partial: output });
+    // The block open now (text or thinking), by its index in the answer's content.
+    let open: { kind: "text" | "thinking"; index: number } | undefined;
+    const close = () => {
+      if (!open) return;
+      const block = output.content[open.index]!;
+      if (open.kind === "text") stream.push({ type: "text_end", contentIndex: open.index, content: (block as { text: string }).text, partial: output });
+      else stream.push({ type: "thinking_end", contentIndex: open.index, content: (block as { thinking: string }).thinking, partial: output });
+      open = undefined;
+    };
+    const add = (kind: "text" | "thinking", delta: string) => {
+      if (!delta) return;
+      if (open?.kind !== kind) {
+        close();
+        output.content.push(kind === "text" ? { type: "text", text: "" } : { type: "thinking", thinking: "" });
+        open = { kind, index: output.content.length - 1 };
+        stream.push({ type: kind === "text" ? "text_start" : "thinking_start", contentIndex: open.index, partial: output });
+      }
+      const block = output.content[open.index] as { text?: string; thinking?: string };
+      if (kind === "text") block.text += delta;
+      else block.thinking += delta;
+      stream.push({ type: kind === "text" ? "text_delta" : "thinking_delta", contentIndex: open.index, delta, partial: output });
+    };
+    let calls = 0;
+    let ended: ChatLine | undefined;
+    const read = (line: ChatLine) => {
+      if (line.error) throw new Error(line.error);
+      add("thinking", line.message?.thinking ?? "");
+      add("text", line.message?.content ?? "");
+      for (const call of line.message?.tool_calls ?? []) {
+        close();
+        const args = call.function?.arguments;
+        const parsed = typeof args === "string" ? safeJson(args) : args;
+        const toolCall = { type: "toolCall" as const, id: call.id || `call_${calls}_${Math.random().toString(36).slice(2, 10)}`, name: call.function?.name ?? "", arguments: (parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}) as Record<string, never> };
+        calls += 1;
+        output.content.push(toolCall);
+        const index = output.content.length - 1;
+        stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+        stream.push({ type: "toolcall_delta", contentIndex: index, delta: JSON.stringify(toolCall.arguments), partial: output });
+        stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: output });
+      }
+      if (line.done) ended = line;
+    };
+    const decoder = new TextDecoder();
+    let rest = "";
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      rest += decoder.decode(chunk, { stream: true });
+      const lines = rest.split("\n");
+      rest = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) read(JSON.parse(line) as ChatLine);
+    }
+    if ((rest + decoder.decode()).trim()) read(JSON.parse(rest) as ChatLine);
+    close();
+    if (!ended) throw new Error("Ollama's answer ended before it was done");
+    const input = count(ended.prompt_eval_count);
+    const out = count(ended.eval_count);
+    output.usage = { input, output: out, cacheRead: 0, cacheWrite: 0, totalTokens: input + out, cost: { ...ZERO, total: 0 } };
+    output.usage.cost = calculateCost(model as Model<never>, output.usage);
+    output.stopReason = calls > 0 ? "toolUse" : ended.done_reason === "length" ? "length" : "stop";
+    if (ended.done_reason) output.rawStopReason = ended.done_reason;
+    stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
+    stream.end(output);
+  })().catch((error: unknown) => {
+    output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+    output.errorMessage = error instanceof Error ? error.message : String(error);
+    stream.push({ type: "error", reason: output.stopReason, error: output });
+    stream.end(output);
+  });
+  return stream;
+}
+
+/** A count Ollama reports, or 0 where it reports none (a cached prompt reports no prompt_eval_count). */
+const count = (value: unknown): number => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0);
+
+/** The request's own headers, a null one left out. */
+const headersOf = (options: StreamOptions | undefined): Record<string, string> => Object.fromEntries(Object.entries(options?.headers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}

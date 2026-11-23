@@ -133,6 +133,7 @@ import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, ty
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
+import { ollamaListing, ollamaModels } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -908,9 +909,14 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG"] as const;
 
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
- *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
- *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
+ *  saved key is one of those; the rest of the environment is the server's start's), and the models the Ollama here
+ *  listed when last asked (ollamaListing). Held to tell whether a write, or a new listing, needs the offers probed again,
+ *  never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir, ollamaListing(env)];
+
+/** Whether the Ollama here is asked for its models under `env`: not under --faux or a model gateway, which take every
+ *  model (model.ts chooseModel, localDefault). */
+const asksOllama = (env: NodeJS.ProcessEnv): boolean => !env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL;
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -1453,6 +1459,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let probes = 0;
   const probe = async (why: string) => {
     const mine = ++probes;
+    // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
+    if (asksOllama(env)) await ollamaModels(env);
     const from = offersInputs(env);
     const started = performance.now();
     const next = await harnessOffers(offersEnvOf(env));
@@ -1473,6 +1481,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     log: (what, error) => log?.(logLine(what, { error: error.message })),
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
+  /** Whether the offers held now were made from `inputs` (offersInputs). */
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i]);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1482,9 +1492,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    const inputs = offersInputs(env);
-    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    if (offersMadeFrom(offersInputs(env))) recompose();
     else await probe("key");
+  };
+  /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
+   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
+  const ollamaNow = async () => {
+    if (!asksOllama(env)) return;
+    void ollamaModels(env);
+    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
   };
   /** After the model gateway is saved or removed in the console: the saved gateway read again, then env, as a key's save. */
   const gatewayChanged = async () => {
@@ -4371,6 +4388,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
       await planNow();
+      await ollamaNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim

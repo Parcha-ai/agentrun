@@ -3,7 +3,8 @@
 // So such requests are counted across the run, and once it has made the server's limit of them (FREE_MODEL_REQUESTS,
 // else the operator's), its next one is refused for good and the run ends as the dollar cap ends one it can never fit:
 // failed, in the cap's code and these words. A paid request never counts toward it, and is never refused by it; nor is a
-// ChatGPT plan's request (ChatGPT-plan requests don't count).
+// ChatGPT plan's request (ChatGPT-plan requests don't count), nor a local model's (CapModel.local: free, with no shared
+// quota to burn, so a run on it is limited by its own turns alone).
 import { type BeforeRequest, RUNNER_RECORDS } from "../../runner.js";
 import type { SessionRecord } from "../../types.js";
 import { SPEND_CAP_REACHED } from "./words.js";
@@ -32,11 +33,17 @@ export function freeModel(model: CapModel | undefined): boolean {
 }
 
 /** Whether `request` is on a free model (freeModel, as `modelOf` prices it): never one with a fee beside it (a native
- *  web search's) or a paid step's charge, which cost dollars, nor one named by a router. The one rule for both what the
- *  runner books at a known $0 (Admitted.free) and what the run's limit counts. */
+ *  web search's) or a paid step's charge, which cost dollars, nor one named by a router. What the runner books at a known
+ *  $0 (Admitted.free); the run's limit counts those of them that limitedFree says. */
 export function freeRequest(request: Parameters<BeforeRequest>[0], modelOf: (id: string, route?: string) => CapModel | undefined): boolean {
   if (request.paid || (request.feeUsd ?? 0) !== 0 || ROUTERS.has(request.model)) return false;
   return freeModel(modelOf(request.model, request.route));
+}
+
+/** Whether a free request on `model` counts toward the run's free-model limit: a free model's (freeModel), but a local
+ *  one's (CapModel.local) never. The one rule for the limit's count and its wrap-up note. */
+export function limitedFree(model: CapModel | undefined): boolean {
+  return freeModel(model) && !model?.local;
 }
 
 /** A ChatGPT plan's model as the cap prices it, on every harness alike (pi's route and a CLI's model proxy): billed to the

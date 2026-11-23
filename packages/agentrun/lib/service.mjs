@@ -3,7 +3,7 @@
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
-// (tailscale.mjs); with --env, on a local model or with a start-time switch on (SERVICE_ENV). `agentrun stop` stops the AgentRun the installer starts in the
+// (tailscale.mjs); with --env, on a model gateway, an Ollama off its default address or with a start-time switch on (SERVICE_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -114,8 +114,8 @@ export const unitEnv = (text) =>
 /** The variables `service install --env` sets, and an installed service keeps through a re-install: each name, with the
  *  values it takes alone, or null for any value. `KEY=` removes one. Never a model key: a unit file is plain text, and keys
  *  are sealed in the console.
- *  - A local model's (AGENT_MODEL_BASE_URL in front of a gateway such as Ollama's), and its key at `none`: a server that
- *    holds no key for its gateway refuses each run that brings none (run-model-key.ts, model_key_required).
+ *  - A model gateway's (AGENT_MODEL_BASE_URL and the models it names; its key is saved in the console), and where Ollama
+ *    listens (OLLAMA_HOST, read as the ollama CLI reads it), for an Ollama off its default address.
  *  - The start-time switches (the server's start-switches.ts), on at `1` alone, for a machine its owner alone uses. A
  *    server reads them at its start, so the service restarts.
  *  - The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so install writes
@@ -125,7 +125,7 @@ export const SERVICE_ENV = {
   AGENT_MODEL_GATEWAY_IDS: null,
   AGENT_MODEL: null,
   AGENT_MODEL_PRICE: null,
-  AGENT_MODEL_API_KEY: ["none"],
+  OLLAMA_HOST: null,
   AGENTRUN_MCP_ALLOW_LOOPBACK: ["1"],
   AGENTRUN_WEBHOOK_PRIVATE_TARGETS: ["1"],
   AGENTRUN_TELEMETRY: null,
@@ -445,7 +445,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // An installed service keeps its local model's variables, its start-time switches and its usage counts' switches; the switches set in this
+      // An installed service keeps its model variables, its start-time switches and its usage counts' switches; the switches set in this
       // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
       const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => Object.hasOwn(SERVICE_ENV, key))) : {};
       for (const key of TELEMETRY_NAMES) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
@@ -636,7 +636,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server, a start-time switch or the usage counts' switch: ${Object.entries(SERVICE_ENV).map(([name, takes]) => (takes ? `${name} (${takes.join(" or ")})` : name)).join(", ")}; kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a model gateway's variable or where Ollama listens, a start-time switch or the usage counts' switch: ${Object.entries(SERVICE_ENV).map(([name, takes]) => (takes ? `${name} (${takes.join(" or ")})` : name)).join(", ")}; kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],

@@ -61,15 +61,18 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
 export type FreeModel = { id: string; context_window: number };
 
 /** The free models offered for `harness` on this server, besides pickerCandidates' (harness.ts harnessOffers drops those
- *  it does not run): OpenRouter's chat models whose catalog price is all zeros (pi-ai's own and serve's ADDED_MODELS), on
- *  pi with OpenRouter's key, by id. None for an adapter harness (each runs its own wire's vendor), behind a gateway (its
+ *  it does not run), on pi: the models of the Ollama here (ollama-provider.ts, `ollama/<tag>`, each at $0 on this machine,
+ *  in Ollama's order), then, with OpenRouter's key, OpenRouter's chat models whose catalog price is all zeros (pi-ai's own
+ *  and serve's ADDED_MODELS), by id. None for an adapter harness (each runs its own wire's vendor), behind a gateway (its
  *  ids are its own) or with the faux model. */
 export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): Promise<FreeModel[]> {
-  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !env.OPENROUTER_API_KEY || factsOf(env, harness)) return [];
-  const [{ builtinModels }, { withLocalModels, isFree }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js")]);
-  return withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
+  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || factsOf(env, harness)) return [];
+  const [{ builtinModels }, { withLocalModels, isFree }, { contextOf, OLLAMA_PROVIDER, ollamaModels }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js"), import("./ollama-provider.js")]);
+  const local = (await ollamaModels(env)).filter((model) => model.capabilities.includes("completion")).map((model) => ({ id: `${OLLAMA_PROVIDER}/${model.name}`, context_window: contextOf(model) }));
+  if (!env.OPENROUTER_API_KEY) return local;
+  return [...local, ...withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
     .map((model) => ({ id: `openrouter/${model.id}`, context_window: model.contextWindow }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => a.id.localeCompare(b.id))];
 }
 
 /** A model id with its spelling taken out (case, spaces, dots, dashes), and the provider's segments off. */

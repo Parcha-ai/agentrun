@@ -21,6 +21,7 @@ import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
 import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
+import { ollamaBase, ollamaModels, ollamaProvider, ollamaToolsModel } from "./ollama-provider.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
@@ -137,8 +138,8 @@ export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string)
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
  *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
- *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV). Undefined when none is:
- *  the harness has no default here. */
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, on pi, the first
+ *  model of the Ollama here that calls tools (localDefault). Undefined when none is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   for (const id of [env[TIER_ENV[tier]], env.AGENT_MODEL]) if (id && harnessRuns(env, id, harness)) return id;
   // Signed in to a ChatGPT plan, codex and pi run on it by default: a key's model is then named (`openai/<id>`).
@@ -146,7 +147,15 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
   // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
   if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
   const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses.includes(harness) || keyHarnesses(row, env).includes(harness)));
-  return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || undefined;
+  return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || localDefault(env, harness);
+}
+
+/** The default with no key held: on pi, the first model of the Ollama here that calls tools (ollama-provider.ts
+ *  ollamaToolsModel, from its last listing, which chooseModel asks for first); none behind a gateway, under the faux
+ *  model, or on any other harness. A model that takes no tools is never a default: a run on it would have none. */
+function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
+  if (harness !== DEFAULT_HARNESS || env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL) return undefined;
+  return ollamaToolsModel(env);
 }
 /** The plan's model a run that names none takes: GPT-6.1 Sol where the plan lists it, else the plan's first. */
 const planModel = (env: NodeJS.ProcessEnv): string => {
@@ -228,6 +237,8 @@ type Choice = { model: ModelRef; namedProvider?: string } | { why: string; host:
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<Choice> {
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
+  // The Ollama here listed first, so a host with no key reads its default from it (hostModel's localDefault).
+  if (ref === undefined && !env.AGENT_MODEL_BASE_URL) await ollamaModels(env);
   const named = ref ?? hostModel(env, tier, harness);
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
@@ -640,7 +651,7 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
 export async function providerModels(env: NodeJS.ProcessEnv) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
-  const models = await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env);
+  const models = await withOllamaModels(await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env), env);
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const own = models.getProvider("anthropic")!;
@@ -686,6 +697,15 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
     models: listed,
     api: unpricedApi(openAIResponsesApi(), new Set(plan.models), ai),
   } as never));
+  return models;
+}
+
+/** `models` with the Ollama `env` names (OLLAMA_HOST, read from `env` itself, never through the auth context: it is no
+ *  secret), its chat models listed live (ollama-provider.ts ollamaModels): provider `ollama`, keyless, at $0. None where
+ *  it is down, hung or refused, and nothing thrown. */
+async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv): Promise<M> {
+  const listed = await ollamaModels(env);
+  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed) as never);
   return models;
 }
 

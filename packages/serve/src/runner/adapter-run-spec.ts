@@ -258,7 +258,7 @@ export function capModelOf(route: ModelRoute): CapModel {
       }
     : null;
   // The cap reads a request's provider overhead by the route's own wire (providerInputOverhead).
-  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null };
+  return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
 }
 
 /** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,

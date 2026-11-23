@@ -10,7 +10,7 @@ import { type BeforeRequest, modelPortFor, RUNNER_RECORDS, sessionSpendOf } from
 import type { ModelRequest, ModelTicket, SessionRecord, SessionWriter } from "../../types.js";
 import type { Refusal } from "../../runner.js";
 import { aloneRefusal, overCapEnd, SPEND_CAP_REACHED } from "./words.js";
-import { freeCeilingEnd, freeRequest } from "./free.js";
+import { freeCeilingEnd, freeRequest, limitedFree } from "./free.js";
 import { decisionAsk } from "./admit.js";
 import { CapRefused, DecisionPriceUnreadable } from "./errors.js";
 import { beforeRequestOf, capRequestOf, type PricedRequest } from "./port.js";
@@ -132,7 +132,8 @@ export function runCap(options: RunCapOptions): RunCap {
   const limit = options.freeRequests;
   const judge: BeforeRequest = async (request) => {
     const free = freeRequest(request, pricing.modelOf);
-    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
+    // A local model's request (CapModel.local) is free and never counted (limitedFree).
+    const counted = free && limitedFree(pricing.modelOf(request.model, request.route)) && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return await roomOf(request, answer);
