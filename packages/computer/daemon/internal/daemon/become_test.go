@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -346,11 +347,116 @@ func needsRootWithCapabilities(t *testing.T) {
 	}
 }
 
+// becomeChildBinary is the test binary runBecomeChild runs: a copy every user may run. After Become the child is
+// another uid, and it runs its own binary again (StatusChildArg); go test's binary sits in a 0700 directory ($WORK, or
+// nocgo's rebuild), which that uid may not search.
+func becomeChildBinary(t *testing.T) string {
+	t.Helper()
+	path, err := copyForEveryUser(os.Args[0], os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(path)) })
+	return path
+}
+
+// copyForEveryUser copies the file at from into a new 0755 directory under base, as a 0755 file, and gives its path.
+// It refuses, making nothing, when base sits below a directory not every user may search.
+func copyForEveryUser(from, base string) (string, error) {
+	base, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
+	if dir := unsearchable(base); dir != "" {
+		return "", fmt.Errorf("%s is below %s, which not every user may search: give TMPDIR a directory every user may search", base, dir)
+	}
+	body, err := os.ReadFile(from)
+	if err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(base, "become-child-")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, filepath.Base(from))
+	if err := os.Chmod(dir, 0o755); err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+	if err == nil {
+		_, err = file.Write(body)
+		if closed := file.Close(); err == nil {
+			err = closed
+		}
+	}
+	if err == nil {
+		err = os.Chmod(path, 0o755) // the umask may have taken bits from OpenFile's mode
+	}
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return path, nil
+}
+
+func TestCopyForEveryUserRefusesUnderADirectoryOthersCannotSearch(t *testing.T) {
+	locked := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, err := copyForEveryUser(os.Args[0], locked)
+	if err == nil || !strings.Contains(err.Error(), locked+", which not every user may search") {
+		t.Fatalf("copyForEveryUser under %s: %q, %v; want a refusal that names %s", locked, path, err, locked)
+	}
+	if entries, err := os.ReadDir(locked); err != nil || len(entries) != 0 {
+		t.Fatalf("%s holds %v (%v); want nothing made", locked, entries, err)
+	}
+}
+
+// The binary runBecomeChild runs is one every user may run: a 0755 file of the same bytes as this test binary, in
+// directories every user may search, so the child runs it again (StatusChildArg) after Become made it another uid.
+func TestBecomeChildBinaryIsOneEveryUserMayRun(t *testing.T) {
+	path := becomeChildBinary(t)
+	if dir := unsearchable(filepath.Dir(path)); dir != "" {
+		t.Fatalf("%s sits below %s, which not every user may search", path, dir)
+	}
+	_, _, mode := ownerAndMode(t, path)
+	if mode != 0o755 {
+		t.Errorf("%s is mode %v; want 0755", path, mode)
+	}
+	want, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("%s does not hold this test binary's bytes (%d bytes, %v; want %d)", path, len(got), err, len(want))
+	}
+	if out, err := exec.Command(path, StatusChildArg).Output(); err != nil || !strings.Contains(string(out), "Uid=") {
+		t.Fatalf("%s %s: %q, %v; want this test binary's status line", path, StatusChildArg, out, err)
+	}
+}
+
+// unsearchable is the first directory from dir up to the root that not every user may search (no o+x), or "".
+func unsearchable(dir string) string {
+	for at := dir; ; at = filepath.Dir(at) {
+		if info, err := os.Stat(at); err != nil || info.Mode().Perm()&0o001 == 0 {
+			return at
+		}
+		if filepath.Dir(at) == at {
+			return ""
+		}
+	}
+}
+
 func runBecomeChild(t *testing.T, user, how string) (string, int) {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "work")
 	socket := filepath.Join(t.TempDir(), "run", "computerd.sock")
-	cmd := exec.Command(os.Args[0], BecomeChildArg, user, home, socket, how)
+	cmd := exec.Command(becomeChildBinary(t), BecomeChildArg, user, home, socket, how)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
