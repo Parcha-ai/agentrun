@@ -1812,19 +1812,29 @@ keys (or set `PARALLEL_API_KEY`): `auto` then searches through Parallel and bill
 
 Keyless Firecrawl is one MCP exchange with Firecrawl's public endpoint (`https://mcp.firecrawl.dev/v2/mcp`), with no key,
 no Authorization header and no header of our own: `firecrawl_search` with the query and the number of results asked for,
-or `firecrawl_scrape` with the URL, for its markdown. A call ends at 60 s and is not retried: the backend behind Firecrawl
-answers it in its place. Firecrawl refuses a keyless call it will not serve with a code, and only the code is read, never
-its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
+or `firecrawl_scrape` with the URL, for its markdown. A call ends at 30 s and is not retried: the backend behind Firecrawl
+answers it in its place. A search's 60 s are one deadline for both keyless backends: Firecrawl's 30 s leave Exa the rest,
+and no backend starts once the deadline is spent. A page Firecrawl read with a status that is not 2xx, or an answer past
+the bound (1 MiB for a search, the guarded fetch's 5 MiB for a page), is no read: the call goes to the backend behind
+Firecrawl, and where the guarded direct fetch then reads the page, the server logs why Firecrawl gave none
+(`event=web_fetch_firecrawl_failed`, never the URL). Firecrawl refuses a keyless call it will not serve with a code, and
+only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAUSTED` (its free daily limit spent), `KEYLESS_ACCESS_NOT_AVAILABLE` or
 `KEYLESS_TOOL_NOT_AVAILABLE` turn Firecrawl off for the rest of the run, and the same call goes to the backend behind it
 (keyless Exa for `web_search`, the guarded direct fetch for `web_fetch`); `KEYLESS_LIMIT_REACHED` or a `429` is a rate
 limit, and Firecrawl is held for the wait it names (60 s where it names none), with no cutoff. With Firecrawl and Exa both
 off for a run, `web_search` answers `search is unavailable for the rest of this run; answer from what you have`.
 
 `web_fetch` through keyless Firecrawl sends Firecrawl each URL it reads: Firecrawl, a third party, fetches the page and
-sees the URL. A URL first passes the guard's own check, and one it refuses (a private, loopback, link-local or intranet
-address, or a name that resolves to one) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl
-or to Exa. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where `auto` is the
-guarded direct fetch.
+sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
+guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
+or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
+`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
+agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
+Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+
+A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
+Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
 
 Keyless Exa is one exchange with Exa's public MCP endpoint (`https://mcp.exa.ai/mcp`, its `web_search_exa` tool, at most
 8 results, no key), dialled over IPv4 alone: the server looks Exa's name up for IPv4 and connects to that address, since

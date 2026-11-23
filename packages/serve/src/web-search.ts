@@ -223,14 +223,18 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
  *  caller's signal and their own bounds. */
 type Backend = { name: string; ask(deadline: AbortSignal): Promise<Searched> };
 /** The most one call of web_search spends across its keyless backends together: Firecrawl's failing or timing out
- *  leaves Exa what is left of it, never a fresh bound. */
+ *  leaves Exa what is left of it, never a fresh bound. Firecrawl's own bound inside it (FIRECRAWL_MS, 30 s) leaves Exa
+ *  at least the rest. */
 export const KEYLESS_SEARCH_MS = 60_000;
+/** A call's bounds, a test's: `searchMs`, its one deadline (KEYLESS_SEARCH_MS); `firecrawlMs`, Firecrawl's own inside it
+ *  (FIRECRAWL_MS). */
+export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 
 /** The backends a call searching `query` asks in turn, by the provider the run's plane resolves web_search to (with
  *  keyless Firecrawl, keyless Exa behind it), or why it asks none. Under --faux, Firecrawl is the fake's URL
  *  (FAUX_FIRECRAWL_ENV) and Exa the faux module's: one the server names none of is not asked, so a test never reaches
  *  the network. */
-async function backendsOf(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal, models?: SearchOn): Promise<Backend[] | string> {
+async function backendsOf(env: NodeJS.ProcessEnv, args: Record<string, unknown>, signal?: AbortSignal, models?: SearchOn, firecrawlMs?: number): Promise<Backend[] | string> {
   const plane = planeOf(env);
   const resolved = plane.web_search;
   if (resolved === "parallel") return [{ name: "parallel", ask: () => parallelSearched(args, parallelOf(env), signal) }];
@@ -243,7 +247,7 @@ async function backendsOf(env: NodeJS.ProcessEnv, args: Record<string, unknown>,
   const fakeFirecrawl = faux ? env[FAUX_FIRECRAWL_ENV] : undefined;
   if (resolved === "firecrawl-keyless" && (!faux || fakeFirecrawl)) {
     backends.push({ name: "firecrawl-keyless", ask: async (deadline) => {
-      const found = await firecrawlSearch(query, n, { ...(fakeFirecrawl ? { endpoint: fakeFirecrawl } : {}), signal: deadline });
+      const found = await firecrawlSearch(query, n, { ...(fakeFirecrawl ? { endpoint: fakeFirecrawl } : {}), signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
       // Which limit Firecrawl met is the server's to read, never the model's: it reads the error alone.
       if (!("error" in found)) return { answer: found };
       return { answer: { error: found.error }, ...("limit" in found && found.limit ? { limit: found.limit } : {}) };
@@ -263,7 +267,8 @@ async function backendsOf(env: NodeJS.ProcessEnv, args: Record<string, unknown>,
 
 /** A call's search through `backends` in turn, each through its breaker (`breakerOf`, by its name) and all under one
  *  deadline, `boundMs` from the call's start or the caller's `signal`: the first that answers results is the answer,
- *  and one that fails or that its breaker holds passes the call to the next. None left:
+ *  and one that fails or that its breaker holds passes the call to the next, unless the deadline is spent: no backend
+ *  starts on a spent one. None left:
  *  SEARCH_UNAVAILABLE where every backend is off (a lone backend's own answer where it was asked, as its breaker reads
  *  it), else the last failure, else searchBusy for the shortest wait. */
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS): Promise<Search> {
@@ -272,6 +277,7 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
   for (const backend of backends) {
     const breaker = breakerOf(backend.name);
     if (breaker.held()) continue;
+    if (last && deadline.aborted) break;
     const answer = breaker.read(await backend.ask(deadline));
     if (!("error" in answer)) return answer;
     last = answer;
@@ -294,9 +300,9 @@ const breakers = (now: () => number = Date.now) => {
 };
 
 /** searchFor through `breakerOf`: an error with no backend to ask, else searchInTurn. */
-async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn, boundMs?: number): Promise<Search> {
-  const backends = await backendsOf(env, args, signal, models);
-  return typeof backends === "string" ? { error: backends } : searchInTurn(backends, breakerOf, signal, boundMs);
+async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn, bounds: SearchBounds = {}): Promise<Search> {
+  const backends = await backendsOf(env, args, signal, models, bounds.firecrawlMs);
+  return typeof backends === "string" ? { error: backends } : searchInTurn(backends, breakerOf, signal, bounds.searchMs);
 }
 
 /** Keyless Exa's refusal as the run's breaker reads it: a rate limit, with the wait it named. One naming no wait (its MCP
@@ -310,9 +316,9 @@ export function exaLimitOf(found: ExaLimited): Limit | undefined {
 /** The agent's tool: the Search as JSON text. A run whose web_search resolves to Parallel reads its key as the tool is
  *  made, when the run opens; one that resolves native searches through `models`, the run's own (ToolHost.search).
  *  `fake`: what answers each search in the provider's place (a template eval's web fake, web-fake.ts), the provider
- *  the run's plane names given it, the tool otherwise the same. `now`: the breakers' clock (a test's); `boundMs`: a call's
- *  one deadline across its keyless backends (a test's; KEYLESS_SEARCH_MS). */
-export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: (args: Record<string, unknown>, provider: Exclude<Search, { error: string }>["provider"]) => Search, now: () => number = Date.now, boundMs?: number): ToolRegistration<TSchema, JsonValue> {
+ *  the run's plane names given it, the tool otherwise the same. `now`: the breakers' clock (a test's); `bounds`: a call's
+ *  deadline across its keyless backends and Firecrawl's own inside it (a test's; SearchBounds). */
+export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: (args: Record<string, unknown>, provider: Exclude<Search, { error: string }>["provider"]) => Search, now: () => number = Date.now, bounds?: SearchBounds): ToolRegistration<TSchema, JsonValue> {
   const provider = planeOf(env).web_search;
   const parallel = provider === "parallel";
   if (parallel && !fake) parallelOf(env);
@@ -334,7 +340,7 @@ export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: 
     } as unknown as TSchema,
     replay: "safe",
     execute: async (args, _api, context) => {
-      const answer = fitSearch(fake ? fake(args as Record<string, unknown>, named) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models, boundMs));
+      const answer = fitSearch(fake ? fake(args as Record<string, unknown>, named) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models, bounds));
       return forModel(searchText(answer), { details: answer });
     },
   });

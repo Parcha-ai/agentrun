@@ -15,7 +15,8 @@
 // answer: the run's breaker turns Firecrawl off for the rest of the run. KEYLESS_LIMIT_REACHED and an HTTP 429 are a
 // rate limit, with the wait it names (retry_after_seconds, Retry-After), which the breaker holds Firecrawl for. Firecrawl's
 // own words (a link to sign up) are never passed on: a call answers ours. A call is not retried here (the backend behind
-// Firecrawl answers it in its place), and ends at 60 s.
+// Firecrawl answers it in its place), and ends at FIRECRAWL_MS (30 s), inside any deadline its caller holds, so a
+// Firecrawl that hangs leaves the backend behind it the rest of a search's 60 s, or a fetch's direct read its own time.
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks } from "./keyless-mcp.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "./web-fetch-direct.js";
 import { type Hit, type Limit, type Search, snippetOf, waitOf } from "./web-search.js";
@@ -26,7 +27,8 @@ export const FIRECRAWL_SCRAPE_TOOL = "firecrawl_scrape";
 /** Under `--faux` only: the URL of a fake MCP server (a test's, on loopback) asked in place of Firecrawl's endpoint.
  *  Under --faux with none named, Firecrawl is never asked. */
 export const FAUX_FIRECRAWL_ENV = "AGENTRUN_SERVE_FAUX_FIRECRAWL";
-const TIMEOUT_MS = 60_000;
+/** The most one call to Firecrawl takes: half a search's one deadline (web-search.ts KEYLESS_SEARCH_MS). */
+export const FIRECRAWL_MS = 30_000;
 /** Firecrawl's keyless refusal codes, by what the run's breaker makes of each. */
 const QUOTA_CODES: ReadonlySet<string> = new Set(["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE", "KEYLESS_TOOL_NOT_AVAILABLE"]);
 const RATE_CODES: ReadonlySet<string> = new Set(["KEYLESS_LIMIT_REACHED"]);
@@ -34,8 +36,9 @@ const RATE_CODES: ReadonlySet<string> = new Set(["KEYLESS_LIMIT_REACHED"]);
 /** A call Firecrawl refused or failed, in our words, and the limit it met, if any (for the run's breaker). */
 export type FirecrawlFailed = { error: string; limit?: Limit };
 
-/** Where a call goes: `endpoint` (default Firecrawl's), through `send` (default fetch), ended by `signal` too. */
-export type FirecrawlOptions = { endpoint?: string; send?: typeof fetch; signal?: AbortSignal };
+/** Where a call goes: `endpoint` (default Firecrawl's), through `send` (default fetch), ended at `timeoutMs` (default
+ *  FIRECRAWL_MS) or by `signal`, whichever is first. */
+export type FirecrawlOptions = { endpoint?: string; send?: typeof fetch; signal?: AbortSignal; timeoutMs?: number };
 
 /** A refusal's payload: the result's structuredContent, else its text read as JSON; undefined when neither is an object. */
 function payloadOf(result: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -91,13 +94,16 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
 }
 
 /** The tool `name` with `args` on Firecrawl's keyless endpoint, its answer bounded at `maxBytes`, read by `read`: once. */
-async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", maxBytes: number, read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
-  const deadline = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]);
+async function firecrawlCall<T>(name: string, args: Record<string, unknown>, what: "search" | "fetch", maxBytes: number, read: (json: Record<string, unknown>) => T | FirecrawlFailed, { endpoint = FIRECRAWL_MCP_URL, send = fetch, signal, timeoutMs = FIRECRAWL_MS }: FirecrawlOptions): Promise<T | FirecrawlFailed> {
+  const own = AbortSignal.timeout(timeoutMs);
+  const deadline = AbortSignal.any([own, ...(signal ? [signal] : [])]);
   try {
     return readCalled(await callTool(endpoint, send, deadline, name, args, maxBytes), what, read);
   } catch (error) {
-    const reason = (error as Error)?.name;
-    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer within 60 s` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    // Firecrawl's own bound, or the caller's: its deadline (a search's, spent) or its stop.
+    if (own.aborted) return { error: `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s` };
+    const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
+    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
   }
 }
 

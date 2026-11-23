@@ -34,6 +34,7 @@ import { clip, fetchOptions, HTML_READ_CHARS, linksOf, linksWithin, MAX_CHARS_MI
 import type { KeylessFetch } from "./firecrawl-keyless.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
+import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
 
@@ -107,12 +108,16 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Ext
   };
 }
 
-/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check, then
- *  publicFetch's own checks of the first hop (scheme, name, every address it resolves to), stopped before it dials. A
+/** The server's log, where a web_fetch notes what the model is not told (browser-cost.ts' lines go there too). */
+const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);
+
+/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check and its
+ *  refusal of a user name or password in the URL (readDirect's), then publicFetch's own checks of the first hop (scheme,
+ *  name, every address it resolves to), stopped before it dials. A
  *  check that runs out of time (a resolver that does not answer) does not pass; publicFetch ends a lookup at the abort. */
 async function passes(url: string, options: GuardOptions, ms: number): Promise<boolean> {
   const target = URL.parse(url);
-  if (!target || !PORTS.has(target.port) || url.length > URL_MAX) return false;
+  if (!target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return false;
   const { publicFetch } = await import("@parcha/pi-browser");
   const checked = new Error("checked, not dialled");
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
@@ -123,10 +128,12 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
  *  within `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A
  *  page fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that
  *  fails is never a silent fallback. Keyless Firecrawl is a free service with the direct fetch behind it, by design. */
-async function readOnce(url: unknown, parallel: Extract | null | undefined, firecrawl: KeylessFetch | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
+async function readOnce(url: unknown, parallel: Extract | null | undefined, firecrawl: KeylessFetch | null | undefined, checkMs: number, options: GuardOptions, log: (line: string) => void): Promise<WebRead | WebUnread> {
+  let firecrawlSaid: string | undefined;
   if (firecrawl?.live() && typeof url === "string" && (await passes(url, options, checkMs))) {
     const read = await firecrawl.read(url, options.signal);
     if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
+    firecrawlSaid = read;
   }
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
@@ -136,7 +143,10 @@ async function readOnce(url: unknown, parallel: Extract | null | undefined, fire
     if (typeof read !== "string") return { ...read, via: "parallel" };
     why = read;
   }
-  return { ...(await readDirect(url, options)), via: "direct", ...(why ? { parallel: why } : {}) };
+  const direct = await readDirect(url, options);
+  // Why Firecrawl gave no page goes to the server's log, never to the model (the page is the direct fetch's); never the URL.
+  if (firecrawlSaid !== undefined) log(logLine("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" }));
+  return { ...direct, via: "direct", ...(why ? { parallel: why } : {}) };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -173,11 +183,11 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
  *  that fails leaves `pages`, so a later call reads again. The read is the run's, not a caller's: no caller's signal
  *  reaches it (it keeps Parallel's and the fetch's own time limits), so one caller's stop never fails another's; each
  *  caller stops waiting at its own signal (untilStopped). */
-export async function webFetch(url: unknown, { parallel, firecrawl, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; firecrawl?: KeylessFetch | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
+export async function webFetch(url: unknown, { parallel, firecrawl, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, log = serverLog, ...options }: GuardOptions & Part & { parallel?: Extract | null; firecrawl?: KeylessFetch | null; pages?: Pages; checkMs?: number; log?: (line: string) => void } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
   if (!reading) {
-    const started = readOnce(url, parallel, firecrawl, checkMs, options);
+    const started = readOnce(url, parallel, firecrawl, checkMs, options, log);
     if (pages && named !== undefined) {
       // Ahead of any caller's await, so no call sees a failed read kept.
       const drop = () => void (pages.get(named) === started && pages.delete(named));

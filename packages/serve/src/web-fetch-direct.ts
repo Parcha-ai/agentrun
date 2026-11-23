@@ -168,8 +168,10 @@ export async function readDirect(url: unknown, options: Omit<PublicFetchOptions,
   const failed = (fields: Partial<Omit<Page, "ok">> & ({ refused: string } | { error: string })): Unread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], ...fields });
   if (typeof url !== "string" || !URL.canParse(url)) return failed({ error: "url is not an absolute URL" });
   if (url.length > URL_MAX) return failed({ error: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` });
-  const { port } = new URL(url);
+  const { port, username, password } = new URL(url);
   if (port && port !== "80" && port !== "443") return failed({ refused: `refused: port ${port} is not 80 or 443` });
+  // A URL's user name and password are never sent anywhere: a fetch refuses them, never a third party's read of them.
+  if (username || password) return failed({ refused: "refused: the URL holds a user name or password" });
   const { BrowserFailureError, publicFetch, readPage } = await import("@parcha/pi-browser");
   try {
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
