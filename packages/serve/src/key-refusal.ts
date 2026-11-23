@@ -89,70 +89,93 @@ export const answerPasses = { count: 0 };
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
  *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
- *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run of more
- *  than ANSWER_PIECE characters with no whitespace is no person's text and is shown as "[redacted]", unread. A value split
- *  by whitespace across a cut, or a form only found across pieces, still shows to one valueMatcher pass over the joined
- *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run with no
+ *  whitespace past a piece is cut at the end of a JSON string in it, or, a run of a JSON array's numbers only, after a
+ *  comma (runCut), so compact JSON reads in pieces too. A run of more than ANSWER_PIECE characters with neither is no
+ *  person's text and is shown as "[redacted]", unread. A value split across a cut, or a form only found across pieces,
+ *  still shows to one valueMatcher pass over the joined output (with the head of each run left unread, where the rest of
+ *  a value split before it would be), and then the whole answer is "[redacted]", as redactSecrets does with a text that
+ *  still holds a value. */
 export function redactedAnswer(text: string, secrets: readonly string[]): string {
   if (!text) return text;
   answerPasses.count++;
-  const out = inPieces(text, secrets);
-  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+  const { out, seen } = inPieces(text, secrets);
+  return valueMatcher(secrets)(seen) ? "[redacted]" : out;
 }
 
 /** `text`, a call's result as a grader's read shows it (timeline calls, tool_result_text), with no held secret in it:
- *  read as redactedAnswer reads an answer, in pieces of about ANSWER_PIECE characters cut at whitespace (a run of more
- *  than ANSWER_PIECE characters with no whitespace "[redacted]", unread), then one valueMatcher pass over what the pieces
- *  show. Only the head the reader is shown is read: pieces stop once they show more than `shown` characters, and the
- *  caller cuts to `shown`. So no redaction pass reads more than a piece, however long the result or its head. */
+ *  read in pieces as redactedAnswer reads an answer, then one valueMatcher pass over what the pieces show. Only the head
+ *  the reader is shown is read: pieces stop once they show more than `shown` characters and the longest held value's
+ *  widest form (6 times it, plus 16) in characters other than whitespace is read past them, so a value whose start they
+ *  show ends inside what was read, split by whitespace or not; the caller cuts to `shown`. So no redaction pass reads
+ *  more than a piece, however long the result or its head. */
 export function redactedCall(text: string, secrets: readonly string[], shown: number): string {
   if (!text) return text;
-  const out = inPieces(text, secrets, shown);
-  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+  const { out, seen } = inPieces(text, secrets, shown);
+  return valueMatcher(secrets)(seen) ? "[redacted]" : out;
 }
 
-/** `text` read in pieces as redactedAnswer says, each redacted by itself, joined; with `enough`, no piece is read once
- *  the pieces read show more than `enough` characters. */
-function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): string {
-  const parts: string[] = [];
+/** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
+ *  what the valueMatcher pass after them reads, the same with the head of each run left unread put back before its
+ *  "[redacted]". With `enough`, no piece is read once the pieces show more than `enough` characters and `hold`
+ *  characters other than whitespace are read past those. */
+function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): { out: string; seen: string } {
+  const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
+  const out: string[] = [];
+  const seen: string[] = [];
   let shown = 0;
-  const push = (part: string) => {
-    parts.push(part);
+  let past = 0;
+  for (let from = 0; from < text.length && (shown <= enough || past < hold); ) {
+    const to = pieceEnd(text, from);
+    const raw = text.slice(from, to);
+    const unread = raw.length > ANSWER_PIECE;
+    const part = unread ? "[redacted]" : redactSecrets(raw, secrets, Buffer.byteLength(raw));
+    if (shown > enough) past += raw.replace(/\s+/g, "").length;
+    out.push(part);
+    seen.push(unread ? `${raw.slice(0, hold)}${part}` : part);
     shown += part.length;
-  };
-  for (let from = 0; from < text.length && shown <= enough; ) {
-    let to = Math.min(text.length, from + ANSWER_PIECE);
-    if (to < text.length) {
-      const space = text.slice(from, to).search(/\s[^\s]*$/);
-      if (space <= 0) {
-        // No whitespace in this piece: the run of text with none goes on to the next whitespace, read as one.
-        const next = text.slice(to).search(/\s/);
-        to = next < 0 ? text.length : to + next;
-        push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
-        from = to;
-        continue;
-      }
-      to = from + space + 1;
-      // A cut after a Bearer scheme would leave its token at the head of the next piece, where no shape reads it (the
-      // shape is the scheme, then the token). The cut moves back to the whitespace before the scheme; with none in this
-      // piece, the scheme and its token are read as one run, to the next whitespace, as a run with no whitespace is.
-      if (endsInScheme(text.slice(from, to))) {
-        const before = text.slice(from, to).trimEnd().search(/\s[^\s]*$/);
-        if (before > 0) to = from + before + 1;
-        else {
-          const next = text.slice(to).search(/\s/);
-          to = next < 0 ? text.length : to + next;
-          push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
-          from = to;
-          continue;
-        }
-      }
-    }
-    const piece = text.slice(from, to);
-    push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));
     from = to;
   }
-  return parts.join("");
+  return { out: out.join(""), seen: seen.join("") };
+}
+
+/** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
+ *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
+function pieceEnd(text: string, from: number): number {
+  const to = Math.min(text.length, from + ANSWER_PIECE);
+  if (to === text.length) return to;
+  const head = text.slice(from, to);
+  const space = head.search(/\s[^\s]*$/);
+  if (space <= 0) {
+    const cut = runCut(text, from, to);
+    return cut > from ? cut : runEnd(text, to);
+  }
+  const end = from + space + 1;
+  // A cut after a Bearer scheme would leave its token at the head of the next piece, where no shape reads it (the shape
+  // is the scheme, then the token). The cut moves back to the whitespace before the scheme; with none in this piece, the
+  // scheme and its token are read as one run, to the next whitespace, as a run with no whitespace is.
+  if (!endsInScheme(text.slice(from, end))) return end;
+  const before = text.slice(from, end).trimEnd().search(/\s[^\s]*$/);
+  return before > 0 ? from + before + 1 : runEnd(text, end);
+}
+
+/** The next whitespace in `text` at or after `at`, or its end. */
+function runEnd(text: string, at: number): number {
+  const next = text.slice(at).search(/\s/);
+  return next < 0 ? text.length : at + next;
+}
+
+/** Where a run with no whitespace in text[from, to) may be cut, or -1: after the last quote in it that ends a JSON
+ *  string (no backslash before it; a comma, colon or closing bracket after it), as no secret shape holds a quote there;
+ *  or, a run of a JSON array's numbers only, after its last comma, as no shape is digits alone. A held value cut there
+ *  still shows to the valueMatcher pass over the joined pieces, and withholds the text whole. */
+function runCut(text: string, from: number, to: number): number {
+  for (let at = text.lastIndexOf('"', to - 1); at >= from; at = at > 0 ? text.lastIndexOf('"', at - 1) : -1) {
+    if (text[at - 1] !== "\\" && /[,:\]}]/.test(text[at + 1] ?? "")) return at + 1;
+  }
+  const head = text.slice(from, to);
+  const comma = head.lastIndexOf(",");
+  return comma > 0 && /^\s?[-+.\deE,[\]{}:]+$/.test(head) ? from + comma + 1 : -1;
 }
 
 /** Whether a number shows a held value. A held value can be all digits (a gateway's key), and a record or a call's

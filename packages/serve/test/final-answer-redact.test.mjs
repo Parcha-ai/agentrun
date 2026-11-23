@@ -189,6 +189,34 @@ test("a held value split by whitespace across the edge of a call's result's piec
   assert.equal(whole, `${before}[redacted]${after}`);
 });
 
+test("a held value split by a line break just past the head a grader is shown withholds the call's result whole: no prefix of it shows", () => {
+  // The last piece read ends at the line break, 120,005 characters in: the value's rest is past it.
+  const text = `${"y ".repeat(59_994)}${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)}${"z".repeat(5000)}`;
+  assert.equal(refusal.redactedCall(text, [CUT_KEY], 120_000), "[redacted]");
+});
+
+test("a held value split by a line break before a run too long to read withholds the text whole: its head never shows", () => {
+  const text = `the key: ${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)}${"z".repeat(9000)} end`;
+  assert.equal(redactedAnswer(text, [CUT_KEY]), "[redacted]");
+  assert.equal(refusal.redactedCall(text, [CUT_KEY], 120_000), "[redacted]");
+});
+
+test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {
+  const ids = Array.from({ length: 2000 }, (_, i) => `id-${i}`);
+  const json = JSON.stringify({ ids });
+  const numbers = JSON.stringify(Array.from({ length: 3000 }, (_, i) => i * 7919));
+  for (const text of [json, numbers]) assert.ok(text.length > 8192 && !/\s/.test(text), "one run past a piece");
+  for (const secrets of [[], [CUT_KEY]]) {
+    for (const text of [json, numbers]) {
+      assert.equal(refusal.redactedCall(text, secrets, 120_000), text);
+      assert.equal(redactedAnswer(text, secrets), text);
+    }
+  }
+  const holding = JSON.stringify({ ids: [...ids.slice(0, 1000), CUT_KEY, ...ids.slice(1000)] });
+  assert.equal(refusal.redactedCall(holding, [CUT_KEY], 120_000), holding.replace(CUT_KEY, "[redacted]"));
+  assert.equal(redactedAnswer(holding, [CUT_KEY]), holding.replace(CUT_KEY, "[redacted]"));
+});
+
 test("an sk- run, a key after a dash inside it, and a held value inside one are redacted as before", () => {
   const tail = "A".repeat(24);
   assert.equal(redactedAnswer(`pre sk-sk-sk-${tail} post`, []), "pre [redacted] post");
