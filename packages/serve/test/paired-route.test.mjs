@@ -41,7 +41,25 @@ test("a take routes a box with no route; the same run takes it again from anothe
   assert.equal((await readRoute(store.settings, BOX)).runner, "runner-b");
 });
 
-test("a route goes stale when its runner has no live relay or names another incarnation: a take of another run succeeds over it", async (t) => {
+test("a route of a live runner with no relay (a server's runner beside it) refuses another run's take in the same words; it goes stale once that runner's row is gone or names another incarnation", async (t) => {
+  const { store, deps, want } = await routed(t);
+  await store.runners.put({ runner: "runner-s", incarnation: "inc-s", refused: null, host: null, port: null });
+  const beside = { runner: "runner-s", incarnation: "inc-s", run: "run-1", until: UNTIL };
+  assert.equal((await takeRoute(deps, BOX, beside, { name: "desk-1" })).taken, true);
+  const apart = await takeRoute(deps, BOX, want("runner-a", "run-2"), { name: "desk-1" });
+  assert.equal(apart.taken, false, "the beside runner is live though it has no relay: its route holds");
+  assert.equal(apart.why, "desk-1 is held by run run-1 on runner runner-s: one run at a time");
+  assert.equal((await readRoute(store.settings, BOX)).runner, "runner-s", "the refused take wrote nothing");
+
+  await store.runners.put({ runner: "runner-s", incarnation: "inc-s2", refused: null, host: null, port: null });
+  assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-2"))).taken, true, "the server restarted since: the beside route is stale");
+  await dropRoute(store.settings, BOX, { runner: "runner-a", incarnation: "inc-a", run: "run-2" });
+  assert.equal((await takeRoute(deps, BOX, { ...beside, incarnation: "inc-s2", run: "run-3" })).taken, true);
+  await store.runners.remove("runner-s", "inc-s2");
+  assert.equal((await takeRoute(deps, BOX, want("runner-a", "run-4"))).taken, true, "the beside runner's row is gone: its route is stale");
+});
+
+test("a route goes stale when its runner is not live or names another incarnation: a take of another run succeeds over it", async (t) => {
   const { store, deps, want } = await routed(t);
   await takeRoute(deps, BOX, want("runner-a", "run-1"));
   await store.runners.put({ runner: "runner-a", incarnation: "inc-a2", refused: null, host: "127.0.0.1", port: 40_003 });

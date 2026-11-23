@@ -12,13 +12,17 @@
 // once its hold ended (dropRoute), and the server notes and drops a stale one (replaceRoute). A row exists only while it
 // holds a route or a note, so the server's tick reads only rows that matter (one indexed read of the prefix).
 //
-// A route is stale only when its runner has no live relay (runner/presence.ts liveRelays: no word of it for
-// PRESENCE_STALE_MS) or names another incarnation (that runner restarted since); or when its run is final, so a runner's
-// release that never dropped its route (its write failed) keeps the box from no other run. A route of another run, on
-// a live runner, refuses the take: one run at a time.
+// The runner beside the server, in its process, takes a route the same way for a box its run holds in the server's own
+// hub (runner/beside.ts, under the name and incarnation Serve.beside gives it): the box stays where it is, and a runner
+// apart's take for another run is refused while that hold lasts.
+//
+// A route is stale only when its runner is not live (runner/presence.ts: no word of it for PRESENCE_STALE_MS; a runner
+// beside its server says it is there with no relay) or names another incarnation (that runner restarted since, or the
+// server it ran beside did); or when its run is final, so a runner's release that never dropped its route (its write
+// failed) keeps the box from no other run. A route of another run, on a live runner, refuses the take: one run at a time.
 import { ATTACH_HELLO_MS, ATTACH_REDIAL_MAX_MS } from "@parcha/agentrun-computer";
 import { RELAY_CONNECT_MS } from "../live-reach.js";
-import { liveRelays } from "../runner/presence.js";
+import { PRESENCE_STALE_MS } from "../runner/presence.js";
 import { type Claim, FINAL_STATES, type Runners, type Runs, type Settings } from "../store/index.js";
 
 /** The settings key prefix of the paired computers' routes, one row per computer. */
@@ -135,10 +139,12 @@ const changedWords = (name: string): string => `${name}'s route changed while th
 export type Took = { readonly taken: true; readonly route: Route } | { readonly taken: false; readonly why: string; readonly route: Route };
 
 /** Why `route` keeps computer `name` from `want`'s run, or undefined where the run may take it: no route, the run's own
- *  (a resume on another runner), a route whose runner is not live or restarted since, or one whose run is final. */
+ *  (a resume on another runner), a route whose runner is not live or restarted since, or one whose run is final. A
+ *  live runner is any runner's row seen within PRESENCE_STALE_MS, with a relay or without one: the runner beside its
+ *  server keeps none, and its route holds the same. */
 async function holdsAgainst(deps: RouteDeps, route: Route, want: RouteWant, name: string): Promise<string | undefined> {
   if (route.runner === null || route.run === want.run) return undefined;
-  const at = (await liveRelays(deps.runners)).find((row) => row.runner === route.runner);
+  const at = (await deps.runners.live(PRESENCE_STALE_MS)).find((row) => row.runner === route.runner);
   if (at === undefined || at.incarnation !== route.incarnation) return undefined;
   // A run that ended, stopped or failed holds nothing: its runner's release dropped the route, or that write failed. It
   // fails closed: a run the store has no row of (purged included), or a read that throws, is not final, so the route

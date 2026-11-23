@@ -32,7 +32,7 @@ const { LIVE_PROOF_HEADER, relayKeyOf, relayProof } = await import(at("dist/live
 const { openRunnerStore } = await import(at("dist/runner/main.js").href);
 const { keepPresence } = await import(at("dist/runner/presence.js").href);
 const { bootSealKey } = await import(at("dist/seal-key.js").href);
-const { startRunnerRelay } = await import(at("dist/dial-relay.js").href);
+const { pairedRelayOn, startRunnerRelay } = await import(at("dist/dial-relay.js").href);
 const { pairedProvider } = await import(at("dist/workspace/attached-computers.js").href);
 
 const CLI = fileURLToPath(at("dist/cli.js"));
@@ -203,6 +203,21 @@ async function relayOf(t, side, address, runner = "runner-a") {
   assert.ok(relay, "a runner with the server's public address has a relay");
   t.after(() => relay.close());
   return { relay, lines, presence };
+}
+
+/** The runner beside a server in this process, as runner/beside.ts starts it: a presence under the name and incarnation
+ *  the server made for it (Serve.beside), with no relay, and the paired computers' bring and let-go over the server's own
+ *  hub (dial-relay.js pairedRelayOn). Absent before this work, which is the beside route this file asks for. */
+function besideOf(t, side, server) {
+  assert.equal(typeof server.beside?.runner, "string", "the server names the runner beside it (Serve.beside.runner), the name its routes carry");
+  assert.equal(typeof server.beside.incarnation, "string", "and that runner's incarnation (Serve.beside.incarnation), new at each start");
+  assert.equal(typeof pairedRelayOn, "function", "the runner beside the server brings a paired box over the server's own hub (dial-relay.js pairedRelayOn)");
+  const { runner, incarnation } = server.beside;
+  const presence = keepPresence(side.store.runners, runner, null, { incarnation });
+  t.after(() => presence.close());
+  const relayed = pairedRelayOn({ store: side.store, hub: server.attachHub, runner, incarnation });
+  t.after(() => relayed.stop());
+  return { runner, incarnation, paired: relayed.paired, stopSweep: () => relayed.stop() };
 }
 
 /** A box paired with the server in this process: its id and token. */
@@ -568,4 +583,97 @@ test("a run's claim cancelled while its box is on its way ends the bring at once
   const made = await within(pairedProvider(desk, undefined, relay.paired).create({ lifetimeMs: 3_600_000, labels: { [RUN_LABEL]: "run-e" } },{ requestId: "req-e", signal: AbortSignal.abort() }));
   assert.deepEqual(made, { ok: false, error: { code: "aborted", message: cancelledWords } }, "a create under a cancelled claim answers aborted");
   assert.deepEqual(await paired.get(desk.id), noRoute);
+});
+
+/** A server with its runner beside it, that runner's bring over the server's hub, a runner apart with a relay, and a
+ *  paired box attached to the server: the provider of each runner for the box, and the box's driver. */
+async function besideAndApart(t) {
+  const { data, api, address, server } = await relayServer(t, { runnerApart: false });
+  const side = await runnerSide(t, data);
+  const beside = besideOf(t, side, server);
+  const { relay } = await relayOf(t, side, address, "runner-a");
+  const { computer, token } = await pairedBox(api, address);
+  const paired = await routing(side.store);
+  const driver = attachDriver({ address, token, scale: 0.05 });
+  t.after(() => driver.stop());
+  driver.start();
+  await until(async () => server.attachHub.online(computer), Boolean, "the box attaches to the server's hub");
+  const desk = { id: computer, name: NAME, hello: DRIVER_HELLO, labels: {} };
+  return { api, server, beside, relay, computer, paired, driver, here: pairedProvider(desk, undefined, beside.paired), apart: pairedProvider(desk, undefined, relay.paired) };
+}
+
+/** A create's spec for run `run` on a paired box, an hour long, on its own network (the only one a paired box takes). */
+const specOf = (run) => ({ lifetimeMs: 3_600_000, network: "open", labels: { [RUN_LABEL]: run } });
+
+test("a run of the runner beside the server holds a paired box by a route of its own: a runner apart's take for another run is refused in words, and the box stays in the server's hub for the whole hold, no tick moving it; once that run releases it the route goes and the run apart takes the box; a beside take is then refused in the same words", { timeout: 60_000 }, async (t) => {
+  const { api, server, beside, relay, computer, paired, driver, here, apart } = await besideAndApart(t);
+
+  const made = await here.create(specOf("run-beside"), { requestId: "req-beside" });
+  assert.equal(made.ok, true, `the beside run's create holds the box: ${JSON.stringify(made)}`);
+  const hold = server.attachHub.hold(computer);
+  assert.ok(hold, "the beside run holds the box on the server's hub");
+  const route = await paired.get(computer);
+  assert.deepEqual([route.runner, route.incarnation, route.run, route.refused], [beside.runner, beside.incarnation, "run-beside", null], "the beside run's hold takes a route naming the runner beside the server, as a runner apart's does");
+
+  const refused = await apart.create(specOf("run-apart"), { requestId: "req-apart" });
+  assert.deepEqual(refused, { ok: false, error: { code: "refused", message: `${NAME} is held by run run-beside on runner ${beside.runner}: one run at a time` } }, "a runner apart's take for another run is refused in words while the beside run holds the box");
+
+  // Three of the server's 1 s route ticks: none moves the box, whose route names the runner beside the server.
+  await sleep(3_500);
+  assert.equal(server.attachHub.online(computer), true, "the box stays in the server's hub for the whole hold");
+  assert.equal(server.attachHub.hold(computer), hold, "and the beside run's hold there is the same one");
+  assert.equal(relay.dial.hub.online(computer), false, "the box never moved to the runner apart");
+  assert.deepEqual(driver.closes, [], "no tick closed the box's socket mid-hold");
+  assert.equal((await paired.get(computer)).run, "run-beside", "the route still names the beside run");
+  const row = pairedRow((await api("GET", "/computers")).body, computer);
+  assert.equal(row?.held_by_run, "run-beside", `the row names the beside run: ${JSON.stringify(row)}`);
+  assert.equal(row?.online, true);
+
+  assert.equal((await here.release(made.value, "delete")).ok, true);
+  assert.equal(server.attachHub.hold(computer), undefined, "the release ends the beside run's hold");
+  assert.equal((await paired.get(computer)).runner, null, "and its route goes with it");
+
+  const took = await Promise.race([apart.create(specOf("run-apart"), { requestId: "req-apart-2" }), sleep(20_000).then(() => "hung")]);
+  assert.equal(took?.ok, true, `the run apart takes the box once the beside run let it go: ${JSON.stringify(took)}`);
+  assert.equal(relay.dial.hub.online(computer), true, "the box's socket moved to the runner apart");
+  assert.equal(server.attachHub.online(computer), false);
+
+  const besideRefused = await here.create(specOf("run-beside-2"), { requestId: "req-beside-2" });
+  assert.deepEqual(besideRefused, { ok: false, error: { code: "refused", message: `${NAME} is held by run run-apart on runner runner-a: one run at a time` } }, "a beside take while a runner apart holds the box fails in the same words");
+  assert.equal(relay.dial.hub.online(computer), true, "the refused beside take leaves the box where it is");
+  assert.equal((await apart.release(took.value, "delete")).ok, true);
+});
+
+test("a beside run cancelled mid-hold lets the box go as it unwinds: its loop's finally releases the computer (closeSession, the spec's release), which ends its hold on the server's hub and drops its route; a run apart then takes the box, relayed to its runner", { timeout: 60_000 }, async (t) => {
+  const { server, beside, relay, computer, paired, here, apart } = await besideAndApart(t);
+  // The beside runner's sweep stopped, so only the run's own release can drop the route here.
+  beside.stopSweep();
+  const cancel = new AbortController();
+  const made = await here.create(specOf("run-beside"), { requestId: "req-beside", signal: cancel.signal });
+  assert.equal(made.ok, true, `the beside run's create holds the box: ${JSON.stringify(made)}`);
+  assert.equal((await paired.get(computer)).runner, beside.runner);
+  assert.ok(server.attachHub.hold(computer), "the beside run holds the box on the server's hub");
+
+  // The run as the adapter loop runs it: its pass ends on the cancel, and its finally releases the computer
+  // (adapter-loop.ts closeSession, then the spec's release, then the computer's: this provider's release).
+  const unwound = (async () => {
+    try {
+      await new Promise((resolve) => cancel.signal.addEventListener("abort", resolve, { once: true }));
+    } finally {
+      const released = await here.release(made.value, "delete");
+      assert.equal(released.ok, true, `the unwinding run's release answers ok: ${JSON.stringify(released)}`);
+    }
+  })();
+  cancel.abort();
+  await until(() => paired.get(computer), (route) => route.runner === null, "the cancelled beside run's route is gone once it unwinds", 5_000);
+  await unwound;
+  assert.equal(server.attachHub.hold(computer), undefined, "its hold on the server's hub ended with it");
+
+  const took = await Promise.race([apart.create(specOf("run-apart"), { requestId: "req-apart" }), sleep(20_000).then(() => "hung")]);
+  assert.equal(took?.ok, true, `a run apart takes the box the cancelled run let go: ${JSON.stringify(took)}`);
+  assert.equal(relay.dial.hub.online(computer), true, "the box's socket moved to the runner apart");
+  assert.equal(server.attachHub.online(computer), false, "and left the server's hub");
+  const route = await paired.get(computer);
+  assert.deepEqual([route.runner, route.run], ["runner-a", "run-apart"], "the route names the run apart on its runner");
+  assert.equal((await apart.release(took.value, "delete")).ok, true);
 });

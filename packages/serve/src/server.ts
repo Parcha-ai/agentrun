@@ -27,7 +27,7 @@ import { isNativeRuntime, NATIVE_RUNTIME_FACTS } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
@@ -154,6 +154,7 @@ import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
+import { runnerName } from "./runner/runner.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
@@ -571,6 +572,11 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** The live sockets of the computers paired with this server (computer-attach.ts): a runner beside the server in this
    *  process takes it (runner/beside.ts), so its runs can use them. */
   attachHub: AttachHub;
+  /** The name and incarnation the runner beside this server in its process runs under (runner/beside.ts), new at each
+   *  start: its run's route of a paired box names them, and this server's attach routes read such a route as this hub's
+   *  (computer-attach.ts beside), so the box stays here for the run and a runner apart's take for another run is
+   *  refused meanwhile. */
+  beside: { readonly runner: string; readonly incarnation: string };
   /** What a dial provider's create takes of this server (HostedProvider's dial): the address its machines dial
    *  (AGENTRUN_PUBLIC_URL, absent without one), the tokens it mints for them (computer-attach.ts machineTokens) and the
    *  hub their sockets land in. The runner beside the server hands it to its remote providers (runner/beside.ts). */
@@ -1349,6 +1355,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
+  // The runner beside this server, as its run's route of a paired box names it (Serve.beside): a new name and
+  // incarnation at each start, so a route an earlier start's runner left names a runner that is gone, and goes stale.
+  const beside = { runner: runnerName(), incarnation: randomUUID() };
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1398,6 +1407,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const attach = createAttachRoutes({
     store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true, relayed: relayedNow,
     relay: { runners: store.runners, reach },
+    beside,
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
     log: attachLog,
   });
@@ -6740,6 +6750,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
     boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env)),
     attachHub,
+    beside,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     own: mcpServers.own,

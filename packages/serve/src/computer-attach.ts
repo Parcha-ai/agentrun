@@ -356,6 +356,10 @@ export interface AttachRoutesOptions {
   /** The server's relay of a dial whose token another runner minted: where each runner's attach listener answers, and
    *  the hosts it may dial with the proxy's proof (live-reach.ts). Without it such a dial is refused 503. */
   readonly relay?: { readonly runners: Pick<Runners, "live">; readonly reach: LiveReach };
+  /** On the server: the runner beside it in its process (Serve.beside, runner/beside.ts), whose run's route keeps a
+   *  paired box in this hub. A route that names it and its incarnation is this hub's: the upgrade takes the box here,
+   *  and the tick moves it here (from a runner apart that still has it) and never away. */
+  readonly beside?: { readonly runner: string; readonly incarnation: string };
 }
 
 /** A request's Bearer token, or undefined. */
@@ -418,6 +422,10 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   /** The paired computers (not removed) by id, with their names: read once at the first tick, then kept by this
    *  server's own pair and remove answers (only the server writes paired rows). */
   let known: Map<string, string> | undefined;
+  /** Whether `route` is a run's of the runner beside this server, in this process (`beside`): the box's place is this
+   *  hub. A route of an earlier server's runner beside it names another runner (a new name and incarnation at each
+   *  start), so it is stale as any runner's that is gone. */
+  const besideRoute = (route: Route): boolean => options.beside !== undefined && route.runner === options.beside.runner && route.incarnation === options.beside.incarnation;
 
   /** POST /v2/computers/pairings: a new code, good once until it expires. The store keeps its hash. */
   async function createPairing(): Promise<{ id: string; code: string; expires_at: string; runs_refused: string | null }> {
@@ -693,11 +701,12 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       if (!asked.includes(ATTACH_SUBPROTOCOL)) {
         return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
       }
-      // A paired computer on the server: its route says where its socket goes (no route: this hub).
+      // A paired computer on the server: its route says where its socket goes (no route, or a run's of the runner beside
+      // this server: this hub).
       const routed = row !== undefined && !options.owner && settings !== undefined ? await seeRoute(settings, row.id) : undefined;
       if (socket.destroyed || closing) return void socket.destroy();
       if (relayed) return relayDial(machineTarget(machine, bearer!), bearer!, req, socket, head, deny);
-      if (row !== undefined && routed !== undefined && routed.route.runner !== null) return relayPaired(row, routed.route, routed.seen, bearer!, req, socket, head, deny);
+      if (row !== undefined && routed !== undefined && routed.route.runner !== null && !besideRoute(routed.route)) return relayPaired(row, routed.route, routed.seen, bearer!, req, socket, head, deny);
       wss.handleUpgrade(req, socket, head, (ws) => {
         sockets.add(ws);
         ws.once("close", () => sockets.delete(ws));
@@ -720,8 +729,9 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
             return log(`${event}_refused`, { [field]: computer.id, why: "removed while it attached" });
           }
           await dialer.seen(said.value);
-          // The note a refused or dropped route left (routed.route.refused) goes, now that the box is here.
-          if (routed !== undefined && routed.route.refused !== null) await replaceRoute(settings!, computer.id, routed.seen, EMPTY_ROUTE).catch(() => undefined);
+          // The note a refused or dropped route left (routed.route.refused) goes, now that the box is here; a route of the
+          // runner beside this server stays, its note alone gone.
+          if (routed !== undefined && routed.route.refused !== null) await replaceRoute(settings!, computer.id, routed.seen, { ...routed.route, refused: null }).catch(() => undefined);
           log(`${event}_attached`, { [field]: computer.id, driver: said.value.version });
         }).catch((error: unknown) => {
           log(`${event}_refused`, { [field]: computer.id, why: error instanceof Error ? error.message : String(error) });
@@ -743,12 +753,13 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
 
   /** The server's route tick (every PAIRED_ROUTE_MS, server.ts, its runner apart or beside it): one read of every route
    *  row, compared with where each box's socket is now (this hub, or the runner it is relayed to, in this process's
-   *  memory). A socket in the wrong place (here with a route, relayed to a runner its route no longer names, relayed with
-   *  no route) is closed with 1001, its redial routed; a box routed and attached nowhere, neither moving nor mid-dial, gets
-   *  its route noted "not attached now", which ends its claim's wait at once. An empty row, and a row of a computer that
-   *  is no longer paired, goes. Nothing while no computer is paired; with this server's runner beside it (not
-   *  runnerApart), nothing past that one read while no route row is there and no box is relayed. It judges no runner's
-   *  liveness: a stale route is dropped at the box's next upgrade. */
+   *  memory). A route of the runner beside this server (besideRoute) says this hub. A socket in the wrong place (here
+   *  with a runner apart's route, relayed to a runner its route no longer names, relayed with no route or with the
+   *  runner beside's) is closed with 1001, its redial routed; a box routed and attached nowhere, neither moving nor
+   *  mid-dial, gets its route noted "not attached now", which ends its claim's wait at once. An empty row, and a row of a
+   *  computer that is no longer paired, goes. Nothing while no computer is paired; with this server's runner beside it
+   *  (not runnerApart), nothing past that one read while no route row is there and no box is relayed. It judges no
+   *  runner's liveness: a stale route is dropped at the box's next upgrade. */
   async function tick(): Promise<void> {
     if (options.owner !== undefined || settings === undefined || closing) return;
     known ??= new Map((await paired.list()).map((row) => [row.id, row.name]));
@@ -763,6 +774,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     for (const [id, relayed] of relayedPaired) {
       const route = routes.get(id);
       if (route === undefined || route.runner === null) move(id, relayed.ws, `${known.get(id) ?? id} came back to this server: no run holds it now`);
+      else if (besideRoute(route)) move(id, relayed.ws, `${known.get(id) ?? id} came back to this server: run ${route.run} holds it here`);
       else if (route.runner !== relayed.runner || route.incarnation !== relayed.incarnation) move(id, relayed.ws, `${known.get(id) ?? id} moved to the runner that holds run ${route.run}`);
     }
     for (const { id, seen, route } of rows) {
@@ -773,6 +785,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       }
       if (route.runner === null) continue;
       const here = home.get(id);
+      // A box in this hub under a run of the runner beside this server is where its route says: it stays.
+      if (here !== undefined && besideRoute(route)) continue;
       if (here !== undefined) move(id, here, `${name} moved to the runner that holds run ${route.run}`);
       else if (!relayedPaired.has(id) && !moving.has(id) && !dialing.has(id) && route.refused === null) {
         await replaceRoute(settings, id, seen, { ...route, refused: notAttachedWords(name) }).catch(() => undefined);

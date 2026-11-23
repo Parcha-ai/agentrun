@@ -24,6 +24,11 @@
 // brought whose hold ended (released, or at its deadline) with no bring in flight is dropped at the next sweep
 // (PRESENCE_RENEW_MS); and when the box's socket leaves this hub for a route that names another runner (the run resumed
 // there), this runner's hold of it ends.
+//
+// The runner beside a server, in its process, brings and lets go of a paired box the same way (pairedRelayOn over the
+// server's own hub, runner/beside.ts): its run's claim takes the box's route under that runner's name and incarnation,
+// so a runner apart's take for another run is refused while the hold lasts, and the server's tick, which knows that
+// runner (Serve.beside), keeps the box in its own hub.
 import { createServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -77,16 +82,23 @@ export function publicUrlOf(env: NodeJS.ProcessEnv): string | undefined {
   return parsed && /^https?:$/.test(parsed.protocol) ? parsed.href.replace(/\/+$/, "") : undefined;
 }
 
-/** The runner's relay, started: undefined where its environment names no public address of the server's. */
-export async function startRunnerRelay(options: RunnerRelayOptions): Promise<RunnerRelay | undefined> {
-  const url = publicUrlOf(options.env);
-  if (url === undefined) return undefined;
-  const { store, runner, presence, now = Date.now } = options;
+/** What pairedRelayOn needs: the store's routes, runners and runs; the hub the box is brought to; the runner (and its
+ *  incarnation) the routes name; where a route it could not drop is said; the clock. */
+export interface PairedRelayOnOptions {
+  readonly store: Pick<Store, "settings" | "runners" | "runs">;
+  readonly hub: AttachHub;
+  readonly runner: string;
+  readonly incarnation: string;
+  readonly log?: (line: string) => void;
+  readonly now?: () => number;
+}
+
+/** The paired computers' bring and let-go over `hub` for runner `runner` of incarnation `incarnation`: a runner apart's
+ *  own hub (startRunnerRelay), or the server's for the runner beside it in its process (runner/beside.ts). `left` is
+ *  told when a box's socket leaves the hub; `stop` ends the sweep of the routes it brought. */
+export function pairedRelayOn(options: PairedRelayOnOptions): { readonly paired: PairedRelay; left(id: string): Promise<void>; stop(): void } {
+  const { store, hub, runner, incarnation, now = Date.now } = options;
   const log = options.log ?? (() => {});
-  const { incarnation } = presence;
-  const live = runnerLiveOf(options.env, options.sealKey);
-  const host = live?.host ?? LOOPBACK;
-  const hub = new AttachHub();
   const mine = { runner, incarnation };
   /** The routes this process brought, by computer: the run, when it was taken, and whether a hold was seen on it. */
   const held = new Map<string, { run: string; since: number; seenHold: boolean }>();
@@ -101,14 +113,6 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
     if (hold !== undefined) await hub.unclaim(id, hold);
     held.delete(id);
   };
-  const routes = createAttachRoutes({
-    store, hub, owner: mine, now,
-    log: (event, fields) => log(logLine(event, fields)),
-    onSocket: (computer, ws) => {
-      if (computer.startsWith(PAIRED_ID_PREFIX)) ws.once("close", () => void left(computer).catch(() => undefined));
-    },
-    ...(options.timing ? { timing: options.timing } : {}),
-  });
   const paired: PairedRelay = {
     hub,
     async bring(row, { run, until, claim, signal }) {
@@ -172,6 +176,30 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
     }
   }, PRESENCE_RENEW_MS);
   sweep.unref();
+  return { paired, left, stop: () => clearInterval(sweep) };
+}
+
+/** The runner's relay, started: undefined where its environment names no public address of the server's. */
+export async function startRunnerRelay(options: RunnerRelayOptions): Promise<RunnerRelay | undefined> {
+  const url = publicUrlOf(options.env);
+  if (url === undefined) return undefined;
+  const { store, runner, presence, now = Date.now } = options;
+  const log = options.log ?? (() => {});
+  const { incarnation } = presence;
+  const live = runnerLiveOf(options.env, options.sealKey);
+  const host = live?.host ?? LOOPBACK;
+  const hub = new AttachHub();
+  const mine = { runner, incarnation };
+  const relayed = pairedRelayOn({ store, hub, runner, incarnation, log, now });
+  const { paired } = relayed;
+  const routes = createAttachRoutes({
+    store, hub, owner: mine, now,
+    log: (event, fields) => log(logLine(event, fields)),
+    onSocket: (computer, ws) => {
+      if (computer.startsWith(PAIRED_ID_PREFIX)) ws.once("close", () => void relayed.left(computer).catch(() => undefined));
+    },
+    ...(options.timing ? { timing: options.timing } : {}),
+  });
   const proven = relayProofs(relayKeyOf(options.sealKey), now);
   const deny = (socket: Duplex, status: string, words = "", headers: Record<string, string> = {}) => {
     const lines = Object.entries({ ...headers, "content-type": "text/plain; charset=utf-8", "content-length": String(Buffer.byteLength(words)) }).map(([name, value]) => `${name}: ${value}\r\n`).join("");
@@ -192,7 +220,7 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
   });
   const port = (server.address() as { port: number }).port;
   const shut = async () => {
-    clearInterval(sweep);
+    relayed.stop();
     await routes.close();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

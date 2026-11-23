@@ -327,7 +327,14 @@ is a compare-and-set.
   a relay's connect and a `hello`, and is refused in words naming the runner when it does not arrive. A cancel of the
   run's claim ends the wait at once: the route it took is dropped, and `create` answers `aborted` in words. The run's
   `release`, or the runner's sweep of a hold it no longer has, ends the hold, then drops the route, so the computer's
-  next dial comes back to the server.
+  next dial comes back to the server. A run that ends any other way (cancelled, failed, its claim lost) releases the
+  same way as its loop unwinds. A runner process that dies releases nothing: its runner row stops renewing, so its
+  route is stale within 30 s, and a redial in that window gets the `503` and the stale drop. A runner whose relay
+  closed while its row is fresh still holds its route for at most those 30 s: it errs toward refusing a take.
+- **The runner beside the server takes a route too.** A run on the runner in the server's own process takes the route
+  the same way, naming that runner (its name and incarnation the server's, new at each start; it is live by its runner
+  row, with no relay), and is refused in the same words. The server keeps a computer whose route names it on its own
+  hub: the tick never moves it there, and moves it back there from a relay. A server restart leaves the old route stale.
 - **The list says where it is.** `GET /v2/computers` lists a routed computer's run, its runner (`held_on`) and the
   hold's end from the route, online while its socket is relayed, and the route's note (`hold_note`) when a relay was
   refused or the computer is attached nowhere.

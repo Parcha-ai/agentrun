@@ -7,9 +7,10 @@
 // run's folder as a synced folder in its own /workspace, as a hosted computer that dials does.
 //
 // Its socket is held by the AttachHub of the server's process while no run holds it: a runner in that process (the CLI's
-// start, its runner beside the server) takes it there. A runner of its own process with a relay (dial-relay.ts) has the
-// server move the box's socket onto its own hub for the run (PairedRelay, workspace/paired-route.ts); one with no relay
-// cannot reach it and refuses it in ONE_PROCESS_WORDS.
+// start, its runner beside the server) takes it there, its route taken all the same (dial-relay.ts pairedRelayOn over
+// the server's hub, runner/beside.ts), so a runner apart takes it for no other run meanwhile. A runner of its own
+// process with a relay (dial-relay.ts) has the server move the box's socket onto its own hub for the run (PairedRelay,
+// workspace/paired-route.ts); one with no relay cannot reach it and refuses it in ONE_PROCESS_WORDS.
 import { type AttachHub, attachedProvider, type ComputerProvider, fail, type HelloResult, type PairedComputer, RUN_LABEL, runLifetimeMs, SETTING_KIND_NAMES, SETTING_KINDS } from "@parcha/agentrun-computer";
 import type { Claim, PairedComputerRow } from "../store/index.js";
 import type { ComputerSettingKind, KindCapabilities, KindRegistry, ProviderEntry } from "./resolve-computer.js";
@@ -43,12 +44,13 @@ export const RUNNER_APART_WORDS = `no run on this server can use a paired comput
  *  refuses (the computer package's hosted/provider.ts, naming the same fix). */
 export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${ONE_PROCESS_FIX}`;
 
-/** A runner's relay of the paired computers (dial-relay.ts): its own hub, where the server moves a box's socket for a
- *  run of this runner. `bring` routes the box here for `run` (its hold's end `until`, ms; under `claim`, the run's claim,
- *  so a superseded claim's take throws Fenced) and resolves once the box is on the hub; it rejects with code
- *  computer_unavailable in words (another run holds it, it is not attached, it did not come in time, its claim was
- *  cancelled: `signal`, the create's, which drops the route it took at once), never hanging past PAIRED_BRING_MS.
- *  `letGo` ends `hold` (once every remove or KILL it sent has answered), then drops the route where no hold is left. */
+/** A runner's relay of the paired computers (dial-relay.ts pairedRelayOn): its hub, where the server moves a box's
+ *  socket for a run of this runner (a runner apart's own; the server's, for the runner beside it). `bring` routes the
+ *  box here for `run` (its hold's end `until`, ms; under `claim`, the run's claim, so a superseded claim's take throws
+ *  Fenced) and resolves once the box is on the hub; it rejects with code computer_unavailable in words (another run
+ *  holds it, it is not attached, it did not come in time, its claim was cancelled: `signal`, the create's, which drops
+ *  the route it took at once), never hanging past PAIRED_BRING_MS. `letGo` ends `hold` (once every remove or KILL it
+ *  sent has answered), then drops the route where no hold is left. */
 export interface PairedRelay {
   readonly hub: AttachHub;
   bring(row: Pick<PairedComputerRow, "id" | "name">, hold: { readonly run: string; readonly until: number; readonly claim?: Claim; readonly signal?: AbortSignal }): Promise<void>;
@@ -155,19 +157,20 @@ export function withPaired<R extends KindRegistry>(registry: R, rows: readonly P
   return { ...registry, PROVIDERS: [...registry.PROVIDERS, ...rows.map((row) => pairedEntry(row, registry))] };
 }
 
-/** The provider of the paired computer `row`: attachedProvider over the server's hub where this process holds it; over
- *  the runner's own hub where it relays (`relay`), the box brought there before each create and let go after each
- *  release (relayedProvider); else a refusal in ONE_PROCESS_WORDS. `claim`: the run's claim (ClaimLaunch.claim), which
- *  the bring's route takes under. */
+/** The provider of the paired computer `row`: over a relay's hub where the runner has one (`relay`: a runner apart's
+ *  own, or the server's for the runner beside it), the box brought there before each create and let go after each
+ *  release (relayedProvider); else attachedProvider over the server's hub (`hub`) with no route; else a refusal in
+ *  ONE_PROCESS_WORDS. `claim`: the run's claim (ClaimLaunch.claim), which the bring's route takes under. */
 export function pairedProvider(row: PairedComputerRow, hub: AttachHub | undefined, relay?: PairedRelay, claim?: Claim): ComputerProvider {
+  if (relay !== undefined) return relayedProvider(row, relay, claim);
   if (hub !== undefined) return attachedProvider(pairedOf(row), hub);
-  if (relay === undefined) throw Object.assign(new Error(ONE_PROCESS_WORDS), { code: "computer_unavailable" });
-  return relayedProvider(row, relay, claim);
+  throw Object.assign(new Error(ONE_PROCESS_WORDS), { code: "computer_unavailable" });
 }
 
-/** attachedProvider over a runner's relay hub: create brings the box to this runner for the run (its labels' run, its
+/** attachedProvider over a relay's hub: create brings the box to this runner for the run (its labels' run, its
  *  lifetime's end) and is refused in the bring's words, never hanging; a create that fails after the bring lets the box
- *  go; release ends the hold, then lets the box go. Every other call is attachedProvider's own. */
+ *  go; release ends the hold, then lets the box go (a run's loop releases in its finally, so a cancelled run or a throw
+ *  in its pass lets the box go as it unwinds). Every other call is attachedProvider's own. */
 function relayedProvider(row: PairedComputerRow, relay: PairedRelay, claim: Claim | undefined): ComputerProvider {
   const inner = attachedProvider(pairedOf(row), relay.hub);
   /** The run of each hold this provider made, by its ref's id (`<computer id>.<hold>`). */
