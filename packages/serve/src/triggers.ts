@@ -99,8 +99,10 @@ function checkOf(text: string | undefined): { at: string; ok: boolean; message: 
     return undefined;
   }
 }
-/** Why a message_run trigger turned itself off: the run it messages is gone. */
+/** Why a message_run trigger turned itself off: the run it messages is gone, or was purged. */
 const RUN_DELETED = "its run was deleted";
+/** Whether a message_run target's run is gone: no row, or a purged one, whose row stays as a tombstone (Runs.purge). */
+const gone = (run: { purgedAt: number | null } | undefined): boolean => run === undefined || run.purgedAt !== null;
 
 /** What a source's sender keeps of a trigger, set up from here (composio-triggers.ts: Composio's trigger instance): made
  *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off (and as
@@ -1073,11 +1075,12 @@ export class Triggers {
   /** A message_run firing: its message to the target's run, under its key, queued as a command row the run takes at its
    *  next safe point, within the bound per (trigger, run): a clock's firings coalesce to one waiting message, a pushed
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
-   *  turns the trigger off. */
+   *  or purged (its row kept as a tombstone: Runs.purge) turns the trigger off at once, the firing skipped and no failure
+   *  counted. */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
-    if (!(await this.store.runs.get(target.run_id))) {
+    if (gone(await this.store.runs.get(target.run_id))) {
       await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
       await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
       this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
@@ -1382,11 +1385,12 @@ export class Triggers {
     return asTrigger(row);
   }
 
-  /** The agent a trigger belongs to: its start_run target's, or the run its message_run target names. */
+  /** The agent a trigger belongs to: its start_run target's, or the run its message_run target names (refused when that
+   *  run is gone or purged). */
   private async agentOf(target: Target): Promise<string> {
     if (target.kind === "start_run") return target.agent_id;
     const run = await this.store.runs.get(target.run_id);
-    if (!run) throw invalid([{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }]);
+    if (!run || run.purgedAt !== null) throw invalid([{ field: "target.run_id", reason: "not_found", message: run ? `the run ${target.run_id} was deleted` : `no run ${target.run_id}` }]);
     return run.agentId;
   }
 
