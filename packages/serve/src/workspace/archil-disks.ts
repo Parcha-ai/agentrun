@@ -156,8 +156,11 @@ export async function ensureDisk(options: ArchilControlOptions, name: string, co
   return { id: data.diskId, made };
 }
 
+/** How long availableDisk waits for a disk by default. */
+export const AVAILABLE_MS = 120_000;
+
 /** Waits until disk `id` reads `available` (a disk just made reads `creating` for a while), up to `timeoutMs`. */
-export async function availableDisk(options: ArchilControlOptions, id: string, { timeoutMs = 120_000, everyMs = 1_000, signal }: { timeoutMs?: number; everyMs?: number; signal?: AbortSignal } = {}): Promise<ArchilDiskInfo> {
+export async function availableDisk(options: ArchilControlOptions, id: string, { timeoutMs = AVAILABLE_MS, everyMs = 1_000, signal }: { timeoutMs?: number; everyMs?: number; signal?: AbortSignal } = {}): Promise<ArchilDiskInfo> {
   const until = Date.now() + timeoutMs;
   for (;;) {
     // Each read is bounded by the time left, so a stalled response cannot outwait the deadline.

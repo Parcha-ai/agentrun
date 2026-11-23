@@ -14,7 +14,7 @@ import { agentDiskOf, diskNameOf, keepRunDisk, runDiskKept, serverIdOf, storeAge
 import type { Settings } from "../store/index.js";
 import type { LaunchDisk } from "../run-launch.js";
 import { ArchilClaimRefused } from "./archil-claim.js";
-import { type ArchilDiskInfo, ArchilDiskLimit, availableDisk, ensureDisk, getDisk } from "./archil-disks.js";
+import { type ArchilDiskInfo, ArchilDiskLimit, AVAILABLE_MS, availableDisk, ensureDisk, getDisk } from "./archil-disks.js";
 import type { ArchilControlOptions } from "./archil-mount-credential.js";
 
 /** The disk a run uses, and whose it is: the launch's (a customer's) or its agent's. */
@@ -81,10 +81,12 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     return { diskId: launch.diskId, kind: "launch" };
   }
   const stored = await agentDiskOf(options.store, options.agentId);
+  const waitMs = options.availableMs ?? AVAILABLE_MS;
   /** Waits for the disk to read available at Archil (one just made reads `creating` for a while), unless `read`, this
-   *  claim's read of it, reads it so already; then clears a pending mark (unless it was removed or replaced meanwhile). */
-  const ready = async (diskId: string, pending: boolean, read?: ArchilDiskInfo): Promise<void> => {
-    if (read?.status !== "available") await availableDisk(control, diskId, { ...(options.availableMs !== undefined ? { timeoutMs: options.availableMs } : {}), ...(signal ? { signal } : {}) });
+   *  claim's read of it, reads it so already, until `until` (the claim's one deadline for its disk); then clears a
+   *  pending mark (unless it was removed or replaced meanwhile). */
+  const ready = async (diskId: string, pending: boolean, read?: ArchilDiskInfo, until = Date.now() + waitMs): Promise<void> => {
+    if (read?.status !== "available") await availableDisk(control, diskId, { timeoutMs: Math.max(1, until - Date.now()), ...(signal ? { signal } : {}) });
     if (!pending) return;
     const now = await agentDiskOf(options.store, options.agentId);
     if (now?.diskId === diskId && !now.removing) await storeAgentDisk(options.store, options.agentId, { diskId });
@@ -95,9 +97,12 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
    *  hide that they are lost. Its owner drops it, and the next run makes a new one. */
   const readyReused = async (diskId: string, pending: boolean): Promise<void> => {
     let read: DiskProblem;
+    // The first read and the wait share one deadline, so a read Archil never answers can't hold the claim.
+    const until = Date.now() + waitMs;
+    const left = AbortSignal.timeout(waitMs);
     try {
-      read = await diskProblem(control, diskId, signal ? { signal } : {});
-      if (read.problem === undefined) await ready(diskId, pending, read.disk);
+      read = await diskProblem(control, diskId, { signal: signal ? AbortSignal.any([signal, left]) : left });
+      if (read.problem === undefined) await ready(diskId, pending, read.disk, until);
     } catch (error) {
       throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is not ready in region ${region}: ${(error as Error).message}`, { cause: error });
     }
