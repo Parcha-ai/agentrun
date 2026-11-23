@@ -83,10 +83,11 @@ const CASES = [
   // A held value across an answer's first piece edge: its head in a credential parameter the first piece cuts, or the
   // value holding the line break the piece ends at. No piece shows any part of it.
   {
-    name: "a held value split at a piece's edge, its head in a credential parameter the piece cut",
+    name: "a held value split at a piece's edge, its head in a credential parameter the piece cut, withholds an answer and a call's result whole",
     text: `${"w ".repeat(4080)}cb?token=${P24[0]}\n${P24[1]} ok ${"y ".repeat(100)}`,
     values: [P24.join("")],
     hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+    exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
   },
   {
     name: "a held value split at a piece's edge, whole in the text, is cut in place (control)",
@@ -96,10 +97,11 @@ const CASES = [
     exact: Object.fromEntries(["redactedAnswer", "redactedCall", "runFile"].map((name) => [name, `${"w ".repeat(4080)}cb?token=[redacted]\n${P24[1].slice(0, 4)} ok`])),
   },
   {
-    name: "a held value holding a line break, whole across two pieces' edge",
+    name: "a held value holding a line break, whole across two pieces' edge, withholds the text: no piece shows its part",
     text: `${"w ".repeat(4080)}key: ${P24[0]}\n${P24[1]} end ${"y ".repeat(100)}`,
     values: [`${P24[0]}\n${P24[1]}`],
     hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+    exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
   },
   {
     name: "a held value holding a line break, whole in a short text, is cut in place (control)",
@@ -288,10 +290,11 @@ const CASES = [
       hides: lines.map((line) => line.slice(0, 12)),
     };
   })(),
-  // An answer read in pieces (key-refusal.ts) withholds a piece holding a value split by whitespace, and shows the other
-  // pieces: the callers' piecing is unchanged here.
+  // The piece rule: an answer or a call's result read in pieces (key-refusal.ts) checks a held value's find against the
+  // cuts each piece already made, so a value split inside one piece blanks only that piece and the other pieces show;
+  // one across a piece's edge withholds the whole text (the cases above).
   {
-    name: "a long answer with a held value split by a space in its second piece shows its other pieces",
+    name: "a held value split inside one piece blanks only that piece; the other pieces show",
     text: `${"alpha words ".repeat(700)}${CUT_KEY.slice(0, 12)} ${CUT_KEY.slice(12)} ${"omega words ".repeat(2000)}`,
     values: [CUT_KEY],
     hides: [CUT_KEY.slice(0, 12), CUT_KEY.slice(12, 24)],
