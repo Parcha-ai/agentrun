@@ -859,30 +859,39 @@ test("an archive is pinned by exactly one digest, its sha256 or its sha512 (as G
 // The Antigravity example (examples/harness-recipe/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
 // list it (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<target>.json), each archive
 // pinned by the manifest's sha512, as T3 Code installs it. It runs on its owner's own sign-in, or a key saved for it alone.
-const AGY = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.14-5302690847260672";
-const ANTIGRAVITY_CLI = {
-  "linux-x86_64": { url: `${AGY}/linux-x64/cli_linux_x64.tar.gz`, sha512: "83311d3f354567612dc16c1ae2ea9b503d6f6833aa4e138d39aa229da3f3bb99b0e4d7cca0bce4796b0060d6a51d8113eb7449ed5dc0e7900bf217107ea5bff9" },
-  "linux-aarch64": { url: `${AGY}/linux-arm/cli_linux_arm64.tar.gz`, sha512: "c9b29bba475f63a1a80161ae93ba72b221c7a586d9851e4d0061546704bab66d6b2760b25d716d191724fc7564f3246456ee151e28aa37af48dbcd72bdc6c463" },
-  "darwin-x86_64": { url: `${AGY}/darwin-x64/cli_mac_x64.tar.gz`, sha512: "1b6a1fc6dbe46ba6d9d0405d1b6095189f35ebfc4c3c33ceb1fd1b6d0c9fd702b52ac10b64b8b52aed0d8d71ae02c5df3cffd5e3e3d37549c2daffcce2a853c7" },
-  "darwin-aarch64": { url: `${AGY}/darwin-arm/cli_mac_arm64.tar.gz`, sha512: "26830fd46bfb9200d073cf3e71bf94b707552557b4380ec01afd6e99f3a2b030e65422dab1867f77318078692defc859a7547d17ec4b0b1e9369f13c9c3caea6" },
+// The digests are the manifests' own and are read again at each bump; offline, the test holds the file to what a bump must
+// keep true: every archive is the recipe's version from one build, on the platform its key names, by a sha512 of its own.
+const AGY_BUCKET = "https://storage.googleapis.com/antigravity-public/antigravity-cli/";
+/** Where Google keeps the agy CLI for a platform as the ACP registry names it: `linux-aarch64` is linux-arm/cli_linux_arm64. */
+const agyTarget = (platform) => {
+  const [os, cpu] = platform.split("-");
+  const x64 = cpu === "x86_64";
+  return `${os}-${x64 ? "x64" : "arm"}/cli_${os === "darwin" ? "mac" : os}_${x64 ? "x64" : "arm64"}.tar.gz`;
 };
 
-test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14 pinned by its manifests' sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
+test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
   const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
   const { recipe } = loadRecipe(file);
   assert.equal(recipe.id, "antigravity");
   assert.equal(recipe.release.registry, undefined, "the agy CLI is not in the ACP registry");
-  assert.equal(recipe.release.version, "1.5.14");
-  assert.deepEqual(Object.keys(recipe.release.archives).sort(), Object.keys(ANTIGRAVITY_CLI).sort());
-  for (const [platform, want] of Object.entries(ANTIGRAVITY_CLI)) {
-    const archive = recipe.release.archives[platform];
-    assert.equal(archive.url, want.url, platform);
-    assert.equal(archive.sha512, want.sha512, platform);
+  const { version, archives } = recipe.release;
+  assert.equal(version, "1.5.14");
+  assert.deepEqual(Object.keys(archives).sort(), ["darwin-aarch64", "darwin-x86_64", "linux-aarch64", "linux-x86_64"]);
+  const builds = new Set();
+  for (const [platform, archive] of Object.entries(archives)) {
+    assert.ok(archive.url.startsWith(`${AGY_BUCKET}${version}-`), `${platform}: ${archive.url} is not agy ${version}`);
+    const [build, ...rest] = archive.url.slice(`${AGY_BUCKET}${version}-`.length).split("/");
+    assert.match(build, /^[0-9]+$/, platform);
+    builds.add(build);
+    assert.equal(rest.join("/"), agyTarget(platform), `${platform}'s archive is another platform's`);
+    assert.match(archive.sha512, /^[0-9a-f]{128}$/, platform);
     assert.equal(archive.sha256, undefined, platform);
     assert.equal(archive.format, "tar.gz", platform);
     assert.equal(archive.cmd, "./antigravity", platform);
     assert.equal(archive.args, undefined, platform);
   }
+  assert.equal(builds.size, 1, "every platform's archive is the one build");
+  assert.equal(new Set(Object.values(archives).map((archive) => archive.sha512)).size, 4, "no two archives share a digest: none was copied from another platform");
   assert.deepEqual(recipe.args, ["acp", "--disable-telemetry"]);
   assert.deepEqual(recipe.env, { AGY_CLI_DISABLE_AUTO_UPDATE: "1", AGY_ACP_FORCE_FILE_STORAGE: "1" });
   assert.deepEqual(recipe.signIn, { args: ["--login"], homeArg: "--gemini-dir", terms: "https://antigravity.google/terms" });
