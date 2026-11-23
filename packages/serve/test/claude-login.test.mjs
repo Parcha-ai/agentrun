@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { constants, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
@@ -395,7 +395,7 @@ test("a sign-in that waits for the browser ends with the server's stop, which wa
 
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic" });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic", shared: true });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "elsewhere" }).dir, "/u/p/.claude", "a relative one is read against a working directory the server does not share");
   assert.equal(loginAt("agentrun", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).dir, "/d/claude-login", "AgentRun's own login is in its data");
 
@@ -408,9 +408,15 @@ test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when th
   assert.equal(on.place, "machine");
   assert.equal(on.folder, folder);
   assert.ok(on.command.startsWith(`CLAUDE_CONFIG_DIR=${folder} CLAUDE_SECURESTORAGE_CONFIG_DIR=${folder} `), on.command);
+  // The person's own claude uses that folder too: a status check runs the CLI on a copy of its account file, never on
+  // the folder's own, with the folder's tokens.
   const asked = fake.calls().filter((call) => call.argv === "auth status --json");
   assert.ok(asked.length >= 1);
-  for (const call of asked) assert.deepEqual([call.config, call.secure], [folder, folder]);
+  for (const call of asked) {
+    assert.notEqual(call.config, folder, JSON.stringify(call));
+    assert.ok(call.config && relative(folder, call.config).startsWith(".."), JSON.stringify(call));
+    assert.equal(call.secure, folder, JSON.stringify(call));
+  }
 });
 
 // The person's own claude on its default folder runs with no folder variable: its tokens in ~/.claude (on macOS the
@@ -430,11 +436,18 @@ test("this machine's login on the CLI's default folder is asked as the person's 
   // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads: it clears both folder
   // variables, which their terminal may export while the server has neither.
   assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
+  // The status check runs in their home on a copy of ~/.claude.json (its own config dir, outside the home, which the
+  // CLI's startup writes then reach in place of theirs), with the tokens where a run reads them: on macOS an empty
+  // credentials dir (the item with no suffix), elsewhere ~/.claude.
   const asked = fake.calls().filter((call) => call.argv === "auth status --json");
   assert.ok(asked.length >= 1);
-  for (const call of asked) assert.deepEqual([call.configSet, call.secureSet, call.home], ["", "", home], JSON.stringify(call));
+  for (const call of asked) {
+    assert.deepEqual([call.configSet, call.secureSet, call.home], ["set", "set", home], JSON.stringify(call));
+    assert.ok(call.config && relative(home, call.config).startsWith(".."), JSON.stringify(call));
+    assert.equal(call.secure, process.platform === "darwin" ? "" : join(home, ".claude"), JSON.stringify(call));
+  }
   // The login carries the person's home only on the default folder: that is what tells its variables apart.
-  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p" });
+  assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p" }), { dir: "/u/p/.claude", profiles: "/u/p/.config/anthropic", home: "/u/p", shared: true });
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }).home, undefined);
 });
 

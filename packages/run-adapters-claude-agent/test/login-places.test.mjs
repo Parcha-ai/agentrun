@@ -74,14 +74,14 @@ test("AgentRun's own login folder: the status check, the sign-in and the shown l
   }
 });
 
-test("this machine's login on the CLI's default folder: the status check, the sign-in and the shown line set no folder of the CLI's, in the person's home, as the person's own claude runs", async () => {
+test("this machine's login on the CLI's default folder: the sign-in and the shown line set no folder of the CLI's, in the person's home, as the person's own claude runs; the status check runs in that home too", async () => {
   const home = scratch();
   const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
   const { status, signIn, shown, line } = await cliEnvs(login, home);
   // No CLAUDE_CONFIG_DIR and no CLAUDE_SECURESTORAGE_CONFIG_DIR: the account in <home>/.claude.json, the tokens in
-  // <home>/.claude (Linux) or the Keychain item with no suffix (macOS), as the person's own CLI keeps them.
-  assert.deepEqual(folderVars(status), { ANTHROPIC_CONFIG_DIR: login.profiles });
-  assert.equal(status.HOME, home, "the status check reads the person's home, where their CLI keeps the account");
+  // <home>/.claude (Linux) or the Keychain item with no suffix (macOS), as the person's own CLI keeps them. The status
+  // check's own variables (a copy of the account file) are login-status.test.mjs's.
+  assert.equal(status.HOME, home, "the status check runs in the person's home, where their CLI keeps its tokens");
   assert.deepEqual(folderVars(signIn), { ANTHROPIC_CONFIG_DIR: login.profiles });
   assert.equal(signIn.HOME, home);
   assert.deepEqual(shown, { ANTHROPIC_CONFIG_DIR: login.profiles });
