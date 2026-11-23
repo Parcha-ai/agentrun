@@ -421,6 +421,16 @@ describe("what was up beside the run's calls: its computers and browser sessions
     const open = stretchLane([{ ...browsers[0]!, to: null }], window, TRACE_START + 3400 + 112_250).bars[0]!;
     expect(Number((open.left + open.width).toFixed(2))).toBe(50);
   });
+  it("draws none that lies wholly outside the window: one opened after the last span a long run's trace holds would read as up at its edge", () => {
+    const { browsers } = stretches(USAGE_MACHINES);
+    // The window ends 227.9 s in. A session opened at 300 s, and one over before the first request, are on no part of it.
+    const later = { ...browsers[0]!, key: "later", from: TRACE_START + 300_000, to: TRACE_START + 330_000 };
+    const earlier = { ...browsers[0]!, key: "earlier", from: TRACE_START + 1000, to: TRACE_START + 2000 };
+    expect(stretchLane([earlier, browsers[0]!, later], window, TRACE_END).bars.map((bar) => bar.stretch.key)).toEqual(["b:0:browser-1"]);
+    // One that only reaches into the window is drawn from its edge.
+    const reaching = { ...browsers[0]!, key: "reaching", from: TRACE_START + 1000, to: TRACE_START + 3400 + 22_450 };
+    expect(stretchLane([reaching], window, TRACE_END).bars.map((bar) => [bar.left, Number(bar.width.toFixed(2)), bar.before])).toEqual([[0, 10, true]]);
+  });
   it("says when one started against the first request", () => {
     expect([since(-2400), since(0), since(56_600)]).toEqual(["2.4 s before the first request", "+0:00.0", "+0:56.6"]);
     // A run with no request measures from its own start.

@@ -491,6 +491,21 @@ describe("the Dev tools tab", () => {
       ["browserbase browser", "Not recorded", "Not recorded", "42.0 s", "Lost"],
     ]);
   });
+  it("says how long a computer with no end recorded had been up when the run ended, never its age now, and draws no session opened after the trace's last span", async () => {
+    // Its delete failed: it may be up still, hours after. The usage covers the run to its end (228 s in; the sandbox was made 1 s in).
+    const open_ = { ...USAGE_MACHINES.computer_intervals![0]!, ended_at: null };
+    // A session opened after the window's end (a long run's trace holds its first spans only).
+    const later = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-9", started_at: new Date(TRACE_START + 300_000).toISOString(), ended_at: new Date(TRACE_START + 330_000).toISOString(), charged_seconds: 30 };
+    const usage = { ...USAGE_MACHINES, ended_at: new Date(TRACE_END).toISOString(), computer_intervals: [open_], browser_sessions: [later] };
+    // The page is opened a day later: the run's own end still dates the figure.
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage), now: TRACE_END });
+    expect([...overviewOf(host).querySelectorAll("[data-stretches]")].map((lane) => lane.querySelector("p")!.textContent)).toEqual(["Computers (1)"]);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [tr.children[0]!.textContent, tr.children[2]!.textContent])).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "No end recorded · up 3m 47s when the run ended"],
+      ["browserbase browserbb_9d2c41", "30.0 s"],
+    ]);
+  });
   it("lists a run's computers though its trace has no request and no call, against the run's start", async () => {
     // A run that made its computer and failed before its first request: the sandbox was made 1 s after the run began.
     const empty = { run_id: TRACE.run_id, model_requests: "priced" as const, spans: [], dropped: 0 };

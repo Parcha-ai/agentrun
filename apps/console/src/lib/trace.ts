@@ -105,18 +105,22 @@ export function stretches(usage: Pick<RunUsage, "computer_intervals" | "browser_
 export type StretchBar = { stretch: Stretch; left: number; width: number; row: number; before: boolean; after: boolean };
 /** Each stretch's place on its lane, in percent of the trace's window, as `lane` places spans. The window is the run's
  *  requests and calls, and a computer is made before the first and may outlast the last: the part outside is not drawn,
- *  and `before` and `after` say there is one. One with no end is drawn to `now`; one with no start is not drawn. */
+ *  and `before` and `after` say there is one. One with no end is drawn to `now`. One with no start is not drawn, nor one
+ *  that lies wholly outside the window (a session opened after the last span a long run's trace holds): drawn at the
+ *  window's edge it would read as up then. The Breakdown lists every one. */
 export function stretchLane(items: readonly Stretch[], window: { from: number; ms: number }, now: number, gap = 0.2): { bars: StretchBar[]; rows: number } {
   const ends: number[] = [];
   const share = (ms: number) => (window.ms > 0 ? ((ms - window.from) / window.ms) * 100 : 0);
-  const bars = items.filter((stretch): stretch is Stretch & { from: number } => stretch.from !== null).map((stretch) => {
+  const bars = items.flatMap((stretch): StretchBar[] => {
+    if (stretch.from === null) return [];
     const [start, end] = [share(stretch.from), window.ms > 0 ? share(stretch.to ?? Math.max(now, stretch.from)) : 100];
+    if (end < 0 || start > 100) return [];
     const left = Math.min(100, Math.max(0, start));
     const width = Math.max(0, Math.min(100, end) - left);
     let row = ends.findIndex((free) => free + gap <= left);
     if (row < 0) row = ends.push(0) - 1;
     ends[row] = left + width;
-    return { stretch, left, width, row, before: start < 0, after: end > 100 };
+    return [{ stretch, left, width, row, before: start < 0, after: end > 100 }];
   });
   return { bars, rows: Math.max(1, ends.length) };
 }

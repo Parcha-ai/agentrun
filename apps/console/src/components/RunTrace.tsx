@@ -515,10 +515,14 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
 /** The run's computers and browser sessions, a row each: when it started against the first request (`anchor`: against
  *  the run's start, for a run with no request), how long it was up, and how much of that is in the run's cost. The
  *  overview draws the same on its time axis. A session whose start is not recorded has a row too, with what was charged. */
-function Stretches({ usage, from, now, anchor }: { usage: RunUsage; from: number; now: number; anchor?: string }) {
+function Stretches({ usage, from, anchor }: { usage: RunUsage; from: number; anchor?: string }) {
   const { computers, browsers } = useMemo(() => stretches(usage), [usage]);
   const all = [...computers, ...browsers];
   if (!all.length) return null;
+  // One with no end recorded (a computer whose delete failed, a session whose release was never told) may be up still:
+  // how long it had been up is said as of the run's end, the moment the usage covers, never as its age now.
+  const ended = usage.ended_at ? Date.parse(usage.ended_at) : Number.NaN;
+  const upAtEnd = (began: number) => (ended > began ? `No end recorded · up ${duration(ended - began)} when the run ended` : "No end recorded");
   const th = "caps whitespace-nowrap px-3 py-2 text-right text-label font-normal text-muted-foreground first:text-left last:text-left";
   const td = "whitespace-nowrap px-3 py-2 text-right align-top font-mono";
   return (
@@ -535,7 +539,7 @@ function Stretches({ usage, from, now, anchor }: { usage: RunUsage; from: number
                   {stretch.about && <span className="block break-all pl-4 text-muted-foreground">{stretch.about}</span>}
                 </th>
                 <td className={td}>{stretch.from !== null ? since(stretch.from - from, anchor) : "Not recorded"}</td>
-                <td className={td}>{stretch.from === null ? "Not recorded" : stretch.to !== null ? duration(stretch.to - stretch.from) : `No end recorded · ${duration(Math.max(0, now - stretch.from))} so far`}</td>
+                <td className={td}>{stretch.from === null ? "Not recorded" : stretch.to !== null ? duration(stretch.to - stretch.from) : upAtEnd(stretch.from)}</td>
                 <td className={td}>{stretch.counted !== null ? duration(stretch.counted * 1000) : "Unknown"}</td>
                 <td className="px-3 py-2 text-left align-top text-muted-foreground">{stretch.notes.length ? stretch.notes.join(". ") : NONE}</td>
               </tr>
@@ -629,7 +633,7 @@ function Breakdown({ trace, usage, run, now, onPick, selected }: { trace: Trace;
         </section>
       </div>
 
-      {usage && <Stretches usage={usage} from={traceWindow(trace.spans, now).from} now={now} />}
+      {usage && <Stretches usage={usage} from={traceWindow(trace.spans, now).from} />}
 
       {requests.length > 0 && (
         <section aria-label="Each request" className="border bg-card p-4">
@@ -903,7 +907,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
               : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>}
             {/* A run can make a computer and end before its first request, and a CLI run's record may keep no call: its
                 computers and sessions are listed all the same, against the run's start. */}
-            {usage && <Stretches usage={usage} from={Date.parse(run.created_at)} now={now} anchor="the run's start" />}
+            {usage && <Stretches usage={usage} from={Date.parse(run.created_at)} anchor="the run's start" />}
           </>
         ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} run={run} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
