@@ -1251,7 +1251,9 @@ export type McpOwnersMark = { readonly record: string };
 
 /** A row as a rewrite read it (Mcp.rewrite): its sealed credential, its address, its auth type and its last edit
  *  (updatedAt). The rewrite lands only while the row still has all four, so it never writes back anything it read (an
- *  address, an auth type, prices) over a save made since, even one that kept the address, auth type and credential. */
+ *  address, an auth type, prices) over a save made since, even one that kept the address, auth type and credential. Every
+ *  save moves updatedAt past the row's own, even within its millisecond; a write that passes updatedAt (a refresh) keeps
+ *  the one it read. */
 export type McpRewriteSeen = { readonly sealed: Uint8Array | null; readonly url: string; readonly auth: string; readonly updatedAt: number };
 
 export interface Mcp {
