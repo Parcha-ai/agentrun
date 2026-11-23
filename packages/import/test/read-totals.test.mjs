@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import * as importLib from "../dist/index.js";
 import { lineReader, parseHome, READERS } from "../dist/index.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexFile, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, piAnswer, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const USAGE = ["input", "output", "cacheRead", "cacheWrite", "cacheWrite1h", "reasoning"];
 
@@ -182,3 +183,57 @@ test("a source of the caller's own that asks for no totals read is totalled from
     assert.deepEqual([session.calls, session.tokens.input, session.tokens.output], [1, 100, 50], state ? "with a state" : "without");
   }
 });
+
+// Each request's time, as a turns read gives it (its first record's, else the latest before it, else 0): a totals
+// read's counts carry it too, for what buckets requests by time.
+const timesOf = ({ counts, requests }) => (counts ? Array.from({ length: counts.n }, (_, i) => importLib.atOf(counts, i)) : requests.map((request) => request.at));
+const time = (i) => Date.parse(at(i));
+const untimed = ({ timestamp: _time, ...record }) => record;
+const item = (i, payload) => ({ type: "response_item", timestamp: at(i), payload });
+const usageRecord = (i, id, usage) => ({ type: "token_usage_record", timestamp: at(i), payload: { response_id: id, usage } });
+const OTHER = "00000000-0000-4000-8000-000000000002";
+const piUntimed = (answer) => ({ ...untimed(answer), message: untimed(answer.message) });
+const piAt = (answer, i) => ({ ...answer, message: { ...answer.message, timestamp: time(i) } });
+
+// Each source's files: their records and each request's time. A request over two lines (its first line's time), a line
+// with no time (the latest before it), a usage with no request of its own (its line's), a request of a file with no time.
+const TIMED = {
+  "claude-code": (home) => [
+    [claudeFile(home), [claudeUser({ uuid: "u1", text: "Go.", i: 0 }), claudeAnswer({ uuid: "a1", msg: "m1", req: "r1", usage: anthropicUsage(10, 1), i: 1 }), claudeAnswer({ uuid: "a2", msg: "m1", req: "r1", usage: anthropicUsage(10, 5), i: 4, block: { type: "tool_use", id: "t1", name: "Bash", input: {} } }), untimed(claudeAnswer({ uuid: "a3", msg: "m2", req: "r2", usage: anthropicUsage(20, 5) })), claudeUser({ uuid: "u2", text: "More.", i: 6 }), claudeAnswer({ uuid: "a4", msg: "m3", req: "r3", usage: anthropicUsage(30, 5), i: 7 })], [time(1), time(4), time(7)]],
+    [claudeFile(home, OTHER), [untimed(claudeAnswer({ uuid: "b1", msg: "n1", req: "q1", usage: anthropicUsage(1, 1), session: OTHER }))], [0]],
+  ],
+  codex: (home) => [
+    [codexFile(home), [codexMeta("thread-times"), codexContext(1), codexUser("Go.", 2), item(3, { type: "reasoning", summary: [] }), item(4, { type: "function_call", name: "shell", arguments: "{}", call_id: "c1" }), item(5, { type: "function_call_output", call_id: "c1", output: "ok" }), codexTokens(openaiUsage(100, 0, 10), openaiUsage(100, 0, 10), 6), codexTokens(openaiUsage(50, 0, 5), openaiUsage(150, 0, 15), 8), untimed(codexTokens(openaiUsage(20, 0, 2), openaiUsage(170, 0, 17))), codexAnswer("Done.", 10)], [time(3), time(8), time(8), time(10)]],
+    [codexFile(home, "rollout-2026-01-01T00-00-01-records.jsonl"), [codexMeta("thread-records"), codexContext(1), codexUser("Go.", 2), codexAnswer("Done.", 3), usageRecord(4, "resp_1", openaiUsage(100, 0, 10)), usageRecord(6, "resp_2", openaiUsage(50, 0, 5)), untimed(usageRecord(0, "resp_3", openaiUsage(20, 0, 2)))], [time(3), time(6), time(6)]],
+    [codexFile(home, "rollout-2026-01-01T00-00-02-untimed.jsonl"), [codexMeta("thread-untimed"), codexContext(1), codexUser("Go.", 2), codexAnswer("Done.", 3), codexTokens(openaiUsage(10, 0, 1), openaiUsage(10, 0, 1), 4)].map(untimed), [0]],
+  ],
+  pi: (home) => [
+    [piFile(home), [piMeta(), piUser("Go.", 1), piAnswer({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, 2), piAt(piAnswer({ input: 20, output: 5, cacheRead: 0, cacheWrite: 0 }, 5), 3), { ...piAnswer({ input: 30, output: 5, cacheRead: 0, cacheWrite: 0 }, 6), message: untimed(piAnswer({ input: 30, output: 5, cacheRead: 0, cacheWrite: 0 }, 6).message) }, piUntimed(piAnswer({ input: 40, output: 5, cacheRead: 0, cacheWrite: 0 }, 7))], [time(2), time(3), time(6), time(6)]],
+    [piFile(home, "pi-session-2"), [untimed(piMeta("pi-session-2")), piUntimed(piAnswer({ input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }))], [0]],
+  ],
+};
+
+for (const [source, filesOf] of Object.entries(TIMED)) {
+  test(`${source}: a totals read's counts carry each request's time, a turns read's, from its start and from a cursor`, async (t) => {
+    const home = await tempHome(t);
+    const reader = READERS[source];
+    for (const [file, records, times] of filesOf(home)) {
+      await writeJsonl(file, records);
+      const read = async (options, cursor) => (await reader.read({ file }, cursor, options)).sessions[0];
+      assert.deepEqual(timesOf(await read({})), times, `${file}: a turns read`);
+      assert.deepEqual(timesOf(await read({ turns: false })), times, `${file}: a turns: false read`);
+      assert.deepEqual(timesOf(await read({ turns: false, totals: true })), times, `${file}: a totals read`);
+      // Two passes, the first ending halfway through each line in turn: the second goes on from its cursor.
+      const text = jsonl(records);
+      for (let start = 0; start < text.length; start = text.indexOf("\n", start) + 1) {
+        const cut = start + Math.floor((text.indexOf("\n", start) - start) / 2);
+        await writeFile(file, text.slice(0, cut));
+        const first = await reader.read({ file }, undefined, { turns: false, totals: true });
+        await appendFile(file, text.slice(cut));
+        const next = await reader.read({ file }, first.cursor, { turns: false, totals: true });
+        assert.equal(next.resumed, true);
+        assert.deepEqual(timesOf(next.sessions[0]), times, `${file}: a totals read gone on from byte ${cut}`);
+      }
+    }
+  });
+}
