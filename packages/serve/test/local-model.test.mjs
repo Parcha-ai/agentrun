@@ -208,7 +208,7 @@ test("no Ollama here: the read surface says to install it, and recommends nothin
 // Under the model gateway or the faux model this server never asks Ollama (model.ts asksOllama): the read surface says
 // so, and its words are the refusal alone, never that Ollama isn't running.
 for (const [name, options, env, refusal] of [
-  ["the model gateway", { faux: undefined }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "synth-key" }, /model gateway \(AGENT_MODEL_BASE_URL\)/],
+  ["the model gateway", { faux: undefined }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" }, /model gateway \(AGENT_MODEL_BASE_URL\)/],
   ["the faux model", {}, {}, /faux model/],
 ]) {
   test(`under ${name}, the read surface says Ollama was not asked, and its only words are the refusal`, { timeout: 60_000 }, async (t) => {
