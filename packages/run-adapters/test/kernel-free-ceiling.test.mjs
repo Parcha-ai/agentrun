@@ -118,6 +118,23 @@ test("a free request a crash cut is booked at $0, a known cost, and still counts
   assert.equal((await ask(next, FREE.id))?.message, LIMIT_WORDS(3), "the fourth is refused: the cut request counted toward the limit");
 });
 
+test("a local model's request a crash cut is booked at $0, a known cost, and still counts toward the agent's own limit", async () => {
+  const store = memorySessionStore();
+  // The first claim: request 1 answered, request 2 sent and never answered (its runner lost).
+  const first = await bookingOf(store, runOf(store, { maxRequests: 3 }), MAIN);
+  assert.equal(await ask(first, LOCAL.id), "sent");
+  await first.models.beforeRequest({ model: LOCAL.id, inputTokensMax: 100 });
+  // The next claim books the cut request before it sends anything.
+  const next = await bookingOf(store, runOf(store, { maxRequests: 3 }), MAIN);
+  await next.bookCut();
+  const cut = (await store.read(MAIN)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data?.turn === 2).map((r) => r.data);
+  assert.equal(cut.length, 1, "booked once");
+  assert.deepEqual({ usd: cut[0].usd, bookedUsd: cut[0].bookedUsd, cut: cut[0].cut, free: cut[0].free }, { usd: 0, bookedUsd: 0, cut: true, free: true }, `booked at $0, not unknown: ${JSON.stringify(cut[0])}`);
+  assert.deepEqual(sessionSpendOf(await store.read(MAIN)).cost, { usd: 0, soFarUsd: 0, unpriced: 0 }, "the session's cost is known: $0");
+  assert.equal(await ask(next, LOCAL.id), "sent", "the third request, the cut one counted");
+  assert.equal((await ask(next, LOCAL.id))?.message, LIMIT_WORDS(3), "the fourth is refused: the cut request counted toward the agent's limit");
+});
+
 test("a run with no limit given has none", async () => {
   const store = memorySessionStore();
   const main = await bookingOf(store, runOf(store), MAIN);
