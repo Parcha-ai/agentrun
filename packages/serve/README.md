@@ -2222,7 +2222,11 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the toolkit needs your account and `user_id`
+user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
+address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
 in. The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
 against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one
@@ -2272,8 +2276,13 @@ refused, so a host must not bind a per-run server to a `user_id` that a single-u
 What can go wrong, told apart:
 
 - `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
-  owner's console saves. The link opens Settings → MCP servers with the form filled in (name, URL, kind of credential,
-  toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
+  owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
+  not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
+  (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
+  hold one is left out.
+- `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
+  nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
+  of a server it saved is under way makes the server the owner's, and the token's is this `412`.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
@@ -3314,13 +3323,41 @@ serves these routes alone:
   here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
+  backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
+  - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
+    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
+    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
+    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
+    runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
+    they do on the full server;
+  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+    pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
+    header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
+    address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
+    whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
+    and nothing is sent;
+  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
+    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
+    `412`.
+
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
+  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
+  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
+  way;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
@@ -4963,8 +5000,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the computer providers' account keys ([Sandbox](#sandbox)) and not the Archil account key
-  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential. A tool key reaches it only when its
+  It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
+  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
+  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.

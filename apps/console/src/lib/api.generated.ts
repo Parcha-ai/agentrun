@@ -2999,6 +2999,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {
@@ -4857,6 +4858,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -5921,6 +5923,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6263,12 +6266,13 @@ export interface operations {
   };
   saveComposioServer: {
     body: {
-      api_key: string;
       toolkit: string;
       tools: string[];
       user_id?: string;
       auth_config_id?: string;
       price_usd?: number;
+      api_key?: string;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     answer: {
       server: {
@@ -6279,6 +6283,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6422,6 +6427,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {

@@ -5703,7 +5703,6 @@ class SaveCalendarResponse(TypedDict):
 
 
 class _SaveComposioServerBodyRequired(TypedDict):
-    api_key: str
     toolkit: str
     tools: list[str]
 
@@ -5712,6 +5711,8 @@ class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     user_id: str
     auth_config_id: str
     price_usd: float
+    api_key: str
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
@@ -5752,6 +5753,7 @@ class _SaveComposioServerResponseServerAuthRequired(TypedDict):
 
 class SaveComposioServerResponseServerAuth(_SaveComposioServerResponseServerAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveComposioServerResponseServerOauthRequired(TypedDict):
@@ -6166,6 +6168,7 @@ class _GetMcpServerResponseAuthRequired(TypedDict):
 
 class GetMcpServerResponseAuth(_GetMcpServerResponseAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _GetMcpServerResponseOauthRequired(TypedDict):
@@ -6232,6 +6235,7 @@ class _ListMcpServersResponseServersItemAuthRequired(TypedDict):
 
 class ListMcpServersResponseServersItemAuth(_ListMcpServersResponseServersItemAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _ListMcpServersResponseServersItemOauthRequired(TypedDict):
@@ -6365,6 +6369,7 @@ class _RefreshMcpServerResponseServerAuthRequired(TypedDict):
 
 class RefreshMcpServerResponseServerAuth(_RefreshMcpServerResponseServerAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _RefreshMcpServerResponseServerOauthRequired(TypedDict):
@@ -6447,6 +6452,7 @@ class _SaveMcpServerResponseAuthRequired(TypedDict):
 
 class SaveMcpServerResponseAuth(_SaveMcpServerResponseAuthRequired, total=False):
     headers: list[str]
+    api_key_env: Literal["COMPOSIO_API_KEY"]
 
 
 class _SaveMcpServerResponseOauthRequired(TypedDict):
