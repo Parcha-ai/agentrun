@@ -561,10 +561,11 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     // An import that reads no Claude Code left none of it out above: each Claude Code session a run's request ran
     // through goes by the same rules here, so one no import brings in leaves the request the run's own, not a wait.
     if (!sources.includes("claude-code")) {
-      const targets = new Set(waiting.flatMap(({ parts }) => targetsOf(parts).map((link) => link.sessionId)));
+      // A target the store holds, or one of a run the store holds, decides nothing (the loop below): it is not read.
+      const targets = new Set(waiting.filter(({ parts }) => !stored.has(`${parts[0]!.source}:${parts[0]!.id}`)).flatMap(({ parts }) => targetsOf(parts).map((link) => link.sessionId)));
       for (const locator of claude) {
         const id = basename(locator.file, ".jsonl");
-        if (!targets.has(id)) continue;
+        if (!targets.has(id) || stored.has(`claude-code:${await idOf(id, scan)}`)) continue;
         const kind = await neverKind(locator, now, temps, all, deleted);
         if (kind && NEVER_IN.has(kind)) never.add(id);
       }
