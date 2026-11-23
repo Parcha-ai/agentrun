@@ -22,7 +22,7 @@ function fromCounts({ counts, requests }) {
     if (has & 1) {
       usage = {};
       USAGE.forEach((name, k) => {
-        if (k < 4 || (k === 4 && has & 2) || (k === 5 && has & 4)) usage[name] = counts.usage[i * 6 + k];
+        if (k < 4 || (k === 4 && has & 2) || (k === 5 && has & 4)) usage[name] = counts.values[i * 7 + k];
       });
     }
     out.push({ model: at === -1 ? undefined : counts.models[at], usage });

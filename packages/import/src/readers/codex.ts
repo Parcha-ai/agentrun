@@ -88,8 +88,8 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (response) turn.key = response;
     codex.open = codex.unpaid = undefined;
   };
-  // A totals read's: the same, each request its model and usage alone.
-  const answerAt = (): number => addRequest(counts!, session.model, undefined);
+  // A totals read's: the same, each request its model, usage and time alone.
+  const answerAt = (): number => addRequest(counts!, session.model, undefined, at);
   const requestAt = (): number => {
     if (codex.openAt === undefined) {
       codex.openAt = codex.unpaidAt = answerAt();
@@ -99,8 +99,8 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   };
   const answeredAt = (usage: unknown) => {
     const tokens = normalizeUsage("openai", usage);
-    const at = codex.unpaidAt ?? answerAt();
-    if (tokens) setUsage(counts!, at, tokens);
+    const index = codex.unpaidAt ?? answerAt();
+    if (tokens) setUsage(counts!, index, tokens);
     codex.openAt = codex.unpaidAt = undefined;
   };
   if (value.type === "session_meta") {

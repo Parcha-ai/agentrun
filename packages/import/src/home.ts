@@ -7,7 +7,7 @@ import { type CalculateCost, type Catalog, builtinCatalog, type Priced, priceReq
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
-import { HAS_LONG, HAS_REASONING, HAS_USAGE, USAGE_FIELDS } from "./counts.js";
+import { HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
 import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -40,7 +40,7 @@ export type SessionTotals = {
 /** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
  *  second pass reads only what was written since. It holds no session text (its reads are turns: false and totals: counts,
- *  ids and paths alone, each request as its model and usage), so it can be kept with v8.serialize. Its contents are the
+ *  ids and paths alone, each request as its model, usage and time), so it can be kept with v8.serialize. Its contents are the
  *  package's; `read` is the last pass's bytes, `version` the shape's. A state of another version (or of none, an earlier
  *  one's) is set aside, and every source read again from its start. */
 export type HomeState = { version?: number; read?: number; sources?: Partial<Record<string, SourceState>> };
@@ -124,10 +124,13 @@ function compact(read: SessionRead, models: Models): Compact {
     };
     const names = counts.models.map(intern);
     const fallback = intern(model);
+    // Each request's usage numbers, without the time after them (counts' stride is STRIDE).
+    const usage = new Float64Array(counts.n * USAGE_FIELDS);
+    for (let i = 0; i < counts.n; i += 1) usage.set(counts.values.subarray(i * STRIDE, i * STRIDE + USAGE_FIELDS), i * USAGE_FIELDS);
     return {
       session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) },
       models: counts.model.slice(0, counts.n).map((at) => (at === -1 ? fallback : names[at]!)),
-      usage: counts.usage.slice(0, counts.n * USAGE_FIELDS),
+      usage,
       has: counts.has.slice(0, counts.n),
     };
   }

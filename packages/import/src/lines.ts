@@ -11,7 +11,7 @@ import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.j
 
 /** One file's read so far, all of it plain data (no function, Maps and Sets allowed), so a cursor can carry it and
  *  structuredClone or v8.serialize can copy it. `answers` holds every request read, whether turns are kept or not: what
- *  a total counts; a totals read's are in `counts` instead, each its model and usage alone. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
+ *  a total counts; a totals read's are in `counts` instead, each its model, usage and time alone. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
  *  turns, prompts, titles, tool output, working directory); a turns: false read's cursor holds none of it, only counts,
  *  ids and the like (see LineSource.forget). */
 export type ReadState<O = unknown> = {
@@ -60,8 +60,8 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
   idOf: (file: string) => string;
   /** `own` without the session's text (prompts, titles, tool output), for the cursor of a turns: false read. */
   forget?: (own: O) => O;
-  /** true when a totals read (ReadOptions.totals) may keep each request's model and usage alone, as it is added: the
-   *  source sets no turn's model or usage after adding it, or keeps its requests in `counts` itself. Without it a totals
+  /** true when a totals read (ReadOptions.totals) may keep each request's model, usage and time alone, as it is
+   *  added: the source sets no turn's model, usage or time after adding it, or keeps its requests in `counts` itself. Without it a totals
    *  read is a turns: false read, its requests whole. */
   totals?: true;
 };
@@ -127,7 +127,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
         rememberUser(state.session, turn);
         if (keep) state.turns.push(turn);
         if (turn.role !== "assistant") return;
-        if (state.counts) addRequest(state.counts, turn.model, turn.usage);
+        if (state.counts) addRequest(state.counts, turn.model, turn.usage, turn.at);
         else state.answers.push(turn);
       },
     };

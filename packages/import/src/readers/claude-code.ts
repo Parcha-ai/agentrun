@@ -107,11 +107,11 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     const key = keyOf(message, value);
     const usage = normalizeUsage("anthropic", message.usage);
     if (counts) {
-      // A totals read: the request's model and usage alone, its later lines' usage over it, as below.
+      // A totals read: the request's model, usage and time alone, its later lines' usage over it, as below.
       // Started small: a session's file often holds a request or two, and its cursor keeps the index.
       const indexes = (own.indexes ??= recordIndex(2));
-      const at = key ? packInto(key, PACKED) : undefined;
-      const index = at ? ownerOf(indexes, at) : -1;
+      const packed = key ? packInto(key, PACKED) : undefined;
+      const index = packed ? ownerOf(indexes, packed) : -1;
       if (index !== -1) {
         if (usage) setUsage(counts, index, usage);
         return;
@@ -121,9 +121,9 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
         return false;
       }
       if (!key && !text && calls.length === 0) return;
-      const added = addRequest(counts, session.model, usage);
-      if (at) {
-        addRecord(indexes, at, added);
+      const added = addRequest(counts, session.model, usage, at);
+      if (packed) {
+        addRecord(indexes, packed, added);
         seen.add(`m:${key}`);
       }
       return;
