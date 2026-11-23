@@ -6,7 +6,9 @@
 //     before the first turn are the system prompt; one later is a user turn's text. A `function_call` is a tool_use
 //     under its own call_id and its `function_call_output` the tool_result of that id; reasoning items are dropped (the
 //     Messages translation drops replayed thinking too). Function tools alone: a `custom` (freeform) tool, an
-//     `item_reference`, a file or an image by URL is refused with a 400 naming it, never dropped in silence.
+//     `item_reference`, a file or an image by URL is refused with a 400 naming it, never dropped in silence. So is a
+//     `tool_choice` that forces a call ("required", or one naming a function): Ollama cannot be made to call a tool, and
+//     a forced call run as "auto" would be a promise the route breaks. "auto" is taken, and "none" sends no tool.
 //   Answer: the Messages stream becomes a Responses stream: response.created, an output item for each block (message,
 //     reasoning, function_call) with its deltas and its done events, then response.completed, or response.incomplete
 //     with `incomplete_details.reason: "max_output_tokens"` where the model stopped at its output limit, both carrying
@@ -71,6 +73,17 @@ function argumentsOf(text: unknown): Json {
   }
 }
 
+/** Throws a ResponsesRefusal for a `tool_choice` other than "auto" or "none" (or none at all): the model behind the route
+ *  (Ollama's chat) takes no tool choice, so a call forced by "required" or by a function's name, or tools narrowed by
+ *  "allowed_tools", cannot be kept. */
+function refuseForcedChoice(choice: unknown): void {
+  if (choice === undefined || choice === null || choice === "auto" || choice === "none") return;
+  const unkept = "is not taken on this model's route: the model here cannot be made to call a tool, so send \"auto\"";
+  if (choice === "required") throw new ResponsesRefusal(`tool_choice "required" ${unkept}`);
+  if (isPlain(choice) && choice.type === "function") throw new ResponsesRefusal(`tool_choice naming the function ${String(choice.name ?? "(none)")} ${unkept}`);
+  throw new ResponsesRefusal(`tool_choice ${JSON.stringify(isPlain(choice) ? (choice.type ?? "(no type)") : choice)} is not taken on this model's route: "auto" and "none" only`);
+}
+
 /**
  * A Responses request as one Messages request (see the head of this file). `reasons`: whether the model reasons, so a
  * `reasoning.effort` reaches it as the Messages translation's named level; a model that does not is asked none.
@@ -79,6 +92,7 @@ function argumentsOf(text: unknown): Json {
 export function messagesOfResponses(body: Json, reasons: boolean): Json {
   if (body.store === true) throw new ResponsesRefusal("store: true is not taken on this model's route: nothing is stored here, so send store: false and the whole conversation");
   if (body.previous_response_id !== undefined && body.previous_response_id !== null) throw new ResponsesRefusal("previous_response_id is not taken on this model's route: no response is stored here, so send the whole conversation");
+  refuseForcedChoice(body.tool_choice);
   const system: string[] = [];
   if (typeof body.instructions === "string" && body.instructions) system.push(body.instructions);
   const messages: MessagesMessage[] = [];

@@ -1621,9 +1621,12 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
   refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
   grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
-  on these models. Replayed reasoning, OpenAI's encrypted reasoning included, is dropped, not refused. An answer cut at
-  its output limit ends `response.incomplete` with its usage, so it is booked and codex ends the turn rather than
-  asking again. Every model id the client sends (a title or compaction request's too) runs the one tag.
+  on these models. A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused too: Ollama
+  can't be made to call a tool. `"auto"` and `"none"` are taken. Replayed reasoning, OpenAI's encrypted reasoning
+  included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
+  is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
+  request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
+  at most 64k), so they compact before Ollama would cut the prompt.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the

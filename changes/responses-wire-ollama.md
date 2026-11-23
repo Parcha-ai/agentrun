@@ -6,5 +6,7 @@ The models of this machine's Ollama run on codex and opencode too, and on a harn
 - On upgrade: on a server with no model key and Ollama running, codex and opencode now start the runs they refused before, on Ollama's first model that calls tools. A saved agent on either harness that names no model follows that default. Name the model to pin it. Any key wins.
 - Each request is the whole conversation. `store: true` and `previous_response_id` are refused with a 400 that says so. Replayed reasoning, OpenAI's encrypted reasoning included, is dropped.
 - Function tools only. A custom (freeform) tool, `local_shell` and `web_search` are refused with a 400 naming the tool, never dropped. codex offers no live web search on these models.
+- A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused with a 400: Ollama can't be made to call a tool. `"auto"` and `"none"` are taken.
+- codex and opencode are told the model's window as the route runs it (its `num_ctx`: the model's trained context, at most 64k, at most `OLLAMA_CONTEXT_LENGTH`), not their 272,000 default, so they compact before Ollama would cut the prompt.
 - An answer cut at its output limit ends `response.incomplete` (`max_output_tokens`) with its usage: it is booked, and codex ends the turn instead of asking again.
 - Every model id a client sends (codex's title and compaction requests, opencode's small model) runs the one tag.

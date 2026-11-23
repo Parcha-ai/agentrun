@@ -16,7 +16,7 @@ import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, insta
 import { DATA_ENV, defaultData } from "./files.js";
 import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
-import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
+import { HarnessUnavailable, type InstallFix, type Provider, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
 import { servedSkills } from "./learn/workflow-draft.js";
 import { runKeyOf } from "./key-refusal.js";
@@ -230,7 +230,17 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
  *  reads it; absent, the real clock). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string };
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string };
+
+/** The window of a model the route translates onto a harness's wire (`provider.fetch`: provider.ts routedProvider), for
+ *  an adapter that takes one: the model's pi-ai entry in the run's models (`needs.models`), the entry the route's own model
+ *  is, whose window every request asks Ollama for (options.num_ctx: ollama-provider.ts contextOf, at most 64k). None for
+ *  a model not routed, or one with no entry: its adapter's own default. */
+export function routedWindow(provider: Pick<Provider, "fetch">, needs: AdapterNeeds): { contextWindow?: number } {
+  if (!provider.fetch) return {};
+  const window = needs.models.getModel(needs.model.provider, needs.model.modelId)?.contextWindow;
+  return typeof window === "number" && Number.isSafeInteger(window) && window > 0 ? { contextWindow: window } : {};
+}
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
@@ -426,8 +436,8 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   const provider = providerFor(codexFacts.wire, env, needs.model, codexFacts.id);
   const plan = provider.billing === "plan";
   // A model the route translates onto the wire (an Ollama model): both of its proxies forward with the route's own fetch,
-  // and Codex's live web search, which the translation cannot run, is not offered.
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(provider.fetch ? { fetch: provider.fetch } : nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  // Codex's live web search, which the translation cannot run, is not offered, and its window is the route's (routedWindow).
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...routedWindow(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
@@ -454,8 +464,9 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
-  // A model the route translates onto the wire (an Ollama model): its proxies forward with the route's own fetch.
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(provider.fetch ? { fetch: provider.fetch } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
+  // A model the route translates onto the wire (an Ollama model): its proxies forward with the route's own fetch, and its
+  // window is the route's (routedWindow).
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...routedWindow(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
