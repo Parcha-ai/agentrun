@@ -147,7 +147,21 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
   const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now, ...(self ? { self } : {}) });
-  return { store, account, clock, mounts, claim, janitor, sealKey, keys };
+  // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
+  // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
+  // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
+  const pass = async ({ self, runners } = {}) => {
+    const logged = [];
+    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
+    const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
+    try {
+      await running.first;
+    } finally {
+      await running.close();
+    }
+    return logged;
+  };
+  return { store, account, clock, mounts, claim, janitor, pass, sealKey, keys };
 }
 
 const creates = (account) => account.calls.filter(([verb]) => verb === "create").map(([, id]) => id);
@@ -438,6 +452,50 @@ test("leak (b): another runner's janitor leaves a kept row pinned to a runner st
   await failing.store.settings.put(key, { ...(await failing.store.settings.get(key)), ...RUNNER_A });
   failing.clock.now = T0 + KEEP_MS;
   assert.deepEqual(await failing.janitor({ self: RUNNER_B, runners: { live: async () => { throw new Error("store down"); } } }), { ended: [], failed: [] }, "the runners unread: the pinned row is left for a later pass, never ended blind");
+});
+
+test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, leaves runner-a's kept machine from both sweeps on a provider both runners list; once runner-a is gone or a new incarnation, the machine goes as before", async () => {
+  // runner-a parked the run with its machine kept; runner-b then ended the run (a person's stop, ends-only): the run is
+  // final, the row still runner-a's, inside its keep.
+  const parkedThenStopped = async () => {
+    const one = await server(SANDBOX);
+    await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+    one.store.runs.set("run-1", "stopped");
+    one.clock.now = T0 + 60_000;
+    return one;
+  };
+  const key = keptKeyOf("run-1");
+  const one = await parkedThenStopped();
+  const row = await one.store.settings.get(key);
+  assert.deepEqual([row?.runner, row?.incarnation], ["runner-a", "inc-a"], "the park pinned it to runner-a");
+  const logged = await one.pass({ self: RUNNER_B, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
+  // The kept pass leaves the row; the provider sweep lists the same machine, its run over, and would end it at once.
+  assert.deepEqual(deletes(one.account), [], `runner-b's full janitor pass leaves runner-a's kept machine: ${JSON.stringify(logged)}`);
+  assert.ok(one.account.computers.has("c1"), "still running for runner-a");
+  assert.deepEqual(await one.store.settings.get(key), row, "its row as runner-a's park left it");
+  // runner-a's own pass ends it: the run is over and the row is its own.
+  await one.pass({ self: RUNNER_A, runners: { live: async () => [{ ...RUNNER_A, refused: null }] } });
+  assert.deepEqual(deletes(one.account), ["c1"], "runner-a's own pass ends it, once");
+  assert.equal(await one.store.settings.get(key), undefined, "and removes its row, the run being over");
+
+  // runner-a gone (its word stale): runner-b's pass ends it as before, once.
+  const gone = await parkedThenStopped();
+  await gone.pass({ self: RUNNER_B, runners: { live: async () => [] } });
+  assert.deepEqual(deletes(gone.account), ["c1"], "runner-a gone: runner-b's pass ends it");
+  assert.equal(await gone.store.settings.get(key), undefined);
+  // runner-a restarted under its name (a new incarnation): the machine is no live process's, and goes the same way.
+  const again = await parkedThenStopped();
+  await again.pass({ self: RUNNER_B, runners: { live: async () => [{ runner: "runner-a", incarnation: "inc-a2", refused: null }] } });
+  assert.deepEqual(deletes(again.account), ["c1"], "runner-a's new incarnation: runner-b's pass ends it");
+
+  // The kept rows unread: neither sweep can tell which machine is kept, so neither ends it this pass, and it is said.
+  const unread = await parkedThenStopped();
+  unread.store.settings.all = async () => {
+    throw new Error("the store did not answer");
+  };
+  const said = await unread.pass({ self: RUNNER_B, runners: { live: async () => [] } });
+  assert.deepEqual(deletes(unread.account), [], `the kept rows unread: nothing ended blind: ${JSON.stringify(said)}`);
+  assert.ok(said.some((line) => line.startsWith("the computer janitor could not sweep docker's computers: the computers kept at a park could not be read")), JSON.stringify(said));
 });
 
 test("a Docker sandbox's park names the runner that claimed it and its incarnation; a resume by another runner that cannot reach it makes a new one, said lost with that runner and naming none", async () => {
