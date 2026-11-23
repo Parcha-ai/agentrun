@@ -1,3 +1,4 @@
+import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
@@ -4123,14 +4124,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
-    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
-    const asked = url.searchParams.get("limit");
-    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
-    const limit = asked === null ? PAGE_ROWS : Number(asked);
     // `calls=whole`: each call's arguments and its output too, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), for a grader.
     const shape = url.searchParams.get("calls");
     if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
     const calls = shape === "whole";
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's). A
+    // calls=whole page holds at most CALLS_PAGE_ROWS, as each row's result may be CALL_RESULT_CHARS long.
+    const most = calls ? CALLS_PAGE_ROWS : PAGE_ROWS;
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= most)) throw new ApiError("bad_request", `limit is an integer from 1 to ${most}${calls ? " with calls=whole" : ""}`);
+    const limit = asked === null ? most : Number(asked);
     // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
     // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
     // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.

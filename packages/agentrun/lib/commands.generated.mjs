@@ -3737,7 +3737,7 @@ export const COMMANDS = [
         "name": "limit",
         "type": "integer",
         "required": false,
-        "description": "At most this many rows in a page (1 to 500, default 500); has_more says when another waits."
+        "description": "At most this many rows in a page (1 to 500, default 500; with `calls=whole`, 1 to 100, default 100); has_more says when another waits."
       },
       {
         "name": "calls",

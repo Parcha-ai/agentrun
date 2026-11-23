@@ -8,7 +8,7 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
 import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -4567,7 +4567,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const timeline = (doc.paths["/runs/{run_id}/timeline"] as Json).get as Json;
   timeline.parameters = [
     ...(timeline.parameters as Json[]),
-    { name: "limit", in: "query", required: false, description: "At most this many rows in a page (1 to 500, default 500); has_more says when another waits.", schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
+    { name: "limit", in: "query", required: false, description: `At most this many rows in a page (1 to 500, default 500; with \`calls=whole\`, 1 to ${CALLS_PAGE_ROWS}, default ${CALLS_PAGE_ROWS}); has_more says when another waits.`, schema: { type: "integer", minimum: 1, maximum: 500, default: 500 } },
     { name: "calls", in: "query", required: false, description: `\`whole\`: each \`tool_use\` row carries its call's arguments (\`tool_input\`) and each \`tool_result\` row its output whole to ${CALL_RESULT_CHARS} characters (\`tool_result_text\`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (\`after\`, \`Last-Event-ID\`) from one read goes with the same \`calls\`.`, schema: { enum: ["whole"] } },
   ];
   timeline["x-agentrun-serve-changed"] = { limit: "timelinelimit/1", calls: "callswhole/1" };

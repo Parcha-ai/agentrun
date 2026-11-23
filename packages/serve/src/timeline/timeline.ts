@@ -102,10 +102,15 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 /** The most of a call's output a read for a grader shows (`calls`, tool_result_text): as much as a grader's whole prompt
  *  takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
- *  fit (fitCalls) shares that room among the calls. Past it, a tool's output's head; a web call's is not its head: a
+ *  fit (fitCalls) shares that room among the calls. The run's redaction reads it in pieces of an answer's size
+ *  (key-refusal.ts redactedCall), so a long head costs no more a pass than a short one. Past it, a tool's output's head; a
+ *  web call's is not its head: a
  *  web_search's every result keeps its url, title and published date, and a web_fetch its url and title, their snippets
  *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
 export const CALL_RESULT_CHARS = 120_000;
+
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result may be CALL_RESULT_CHARS long. */
+export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
  *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no

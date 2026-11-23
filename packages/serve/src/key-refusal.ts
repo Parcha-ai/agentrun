@@ -63,7 +63,7 @@ const SHOWN = 2000;
  *  form (6 times it, for JSON's \uXXXX; percent is 3, hex 2, base64 4/3) and 16 more. A key whose start the cut can show
  *  starts before SHOWN, so it ends inside that head and is found whole; one that starts later is never shown. So a long
  *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
- *  that is shown more (a template eval's grader reads a call's result to CALL_RESULT_CHARS). */
+ *  that is shown more. */
 export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
   const window = shown + 6 * longest + 16;
@@ -96,8 +96,31 @@ export const answerPasses = { count: 0 };
 export function redactedAnswer(text: string, secrets: readonly string[]): string {
   if (!text) return text;
   answerPasses.count++;
+  const out = inPieces(text, secrets);
+  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+}
+
+/** `text`, a call's result as a grader's read shows it (timeline calls, tool_result_text), with no held secret in it:
+ *  read as redactedAnswer reads an answer, in pieces of about ANSWER_PIECE characters cut at whitespace (a run of more
+ *  than ANSWER_PIECE characters with no whitespace "[redacted]", unread), then one valueMatcher pass over what the pieces
+ *  show. Only the head the reader is shown is read: pieces stop once they show more than `shown` characters, and the
+ *  caller cuts to `shown`. So no redaction pass reads more than a piece, however long the result or its head. */
+export function redactedCall(text: string, secrets: readonly string[], shown: number): string {
+  if (!text) return text;
+  const out = inPieces(text, secrets, shown);
+  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+}
+
+/** `text` read in pieces as redactedAnswer says, each redacted by itself, joined; with `enough`, no piece is read once
+ *  the pieces read show more than `enough` characters. */
+function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): string {
   const parts: string[] = [];
-  for (let from = 0; from < text.length; ) {
+  let shown = 0;
+  const push = (part: string) => {
+    parts.push(part);
+    shown += part.length;
+  };
+  for (let from = 0; from < text.length && shown <= enough; ) {
     let to = Math.min(text.length, from + ANSWER_PIECE);
     if (to < text.length) {
       const space = text.slice(from, to).search(/\s[^\s]*$/);
@@ -105,7 +128,7 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
         // No whitespace in this piece: the run of text with none goes on to the next whitespace, read as one.
         const next = text.slice(to).search(/\s/);
         to = next < 0 ? text.length : to + next;
-        parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
+        push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
         from = to;
         continue;
       }
@@ -119,18 +142,17 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
         else {
           const next = text.slice(to).search(/\s/);
           to = next < 0 ? text.length : to + next;
-          parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
+          push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
           from = to;
           continue;
         }
       }
     }
     const piece = text.slice(from, to);
-    parts.push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));
+    push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));
     from = to;
   }
-  const out = parts.join("");
-  return valueMatcher(secrets)(out) ? "[redacted]" : out;
+  return parts.join("");
 }
 
 /** Whether a number shows a held value. A held value can be all digits (a gateway's key), and a record or a call's

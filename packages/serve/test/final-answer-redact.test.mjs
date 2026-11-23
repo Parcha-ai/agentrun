@@ -169,6 +169,26 @@ test("an answer of about 1 MB made of sk- runs is redacted in time linear in its
   assert.ok(took < 1500, `took ${Math.round(took)} ms`);
 });
 
+test("a call's result of about 120,000 characters of sk- runs, as a grader's read shows it, is read in pieces: each run redacted whole, in time linear in its length", () => {
+  const text = `${"sk-".repeat(2730)} `.repeat(15);
+  const began = performance.now();
+  const out = refusal.redactedCall(text, [CUT_KEY], 120_000);
+  const took = performance.now() - began;
+  assert.equal(out, "[redacted] ".repeat(15));
+  assert.ok(took < 1500, `took ${Math.round(took)} ms`);
+});
+
+test("a held value split by whitespace across the edge of a call's result's pieces withholds the result whole; one whole at that edge is cut in place", () => {
+  // The first piece ends at its last whitespace before 8,192 characters: here the line break after the value's head.
+  const [head, rest] = [CUT_KEY.slice(0, 12), CUT_KEY.slice(12)];
+  const before = `${"y ".repeat(4089)} `;
+  assert.equal(`${before}${head}`.length, 8191);
+  const after = " the words after it. ".repeat(2000);
+  assert.equal(refusal.redactedCall(`${before}${head}\n${rest}${after}`, [CUT_KEY], 120_000), "[redacted]");
+  const whole = refusal.redactedCall(`${before}${CUT_KEY}${after}`, [CUT_KEY], 120_000);
+  assert.equal(whole, `${before}[redacted]${after}`);
+});
+
 test("an sk- run, a key after a dash inside it, and a held value inside one are redacted as before", () => {
   const tail = "A".repeat(24);
   assert.equal(redactedAnswer(`pre sk-sk-sk-${tail} post`, []), "pre [redacted] post");
