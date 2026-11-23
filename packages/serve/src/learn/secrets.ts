@@ -155,7 +155,10 @@ export function redactSecrets(text: string, values: readonly string[], max = PRI
 /** Where redactSecrets cuts `values` in `text`, shapes left out: each span it cuts in place (UTF-16 offsets, overlapping
  *  ones merged, in order), or "whole" when its whole-text checks over them cut the text whole (a value split by a line
  *  break, percent encoded, an NFKC variant). What a run's census keeps of a file, never the values (run-census.ts):
- *  redactSecrets given these spans as `held` cuts the text as it would have with the values among its own. */
+ *  redactSecrets given these spans as `held` cuts the text as it would have with the values among its own.
+ *  Its "whole" checks run on the text after the in-place cut, not on the raw text: the order a shape such as
+ *  URL_CREDENTIAL would get wrong (a match the cut itself makes or breaks). It finds the values' forms alone, never a
+ *  shape, so that can't happen here today. When the one-redactor change lands, this check moves to its raw-window check. */
 export function heldSpans(text: string, values: readonly string[]): Span[] | "whole" {
   const { forms, hexes, folds, matchUnfolded, match } = derivedOf(values);
   const found = [...forms.flatMap((form) => places(text, form)), ...hexes.flatMap((hex) => spans(text, hex))];
