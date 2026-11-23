@@ -390,7 +390,7 @@ test("a runner that answers at an address in one of the server's runners' blocks
   assert.equal(await inside.opened, true, "an address in the block is dialled");
   await until(async () => took, (n) => n === 1, "the runner's listener took the socket");
   inside.ws.close();
-  const outside = machine(await serverOn("10.32.0.0/14"), (await mintedFor(store, "runner-pod", "inc-pod", "m-pod-2", "run-pod")).token);
+  const outside = machine(await serverOn("198.18.0.0/15"), (await mintedFor(store, "runner-pod", "inc-pod", "m-pod-2", "run-pod")).token);
   const refused = await outside.opened;
   assert.equal(refused.status, 503);
   assert.match(refused.body, /runner runner-pod, which made it, answers at 127\.0\.0\.2, which is not one of this server's runners' hosts/);
