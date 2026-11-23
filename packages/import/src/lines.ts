@@ -10,7 +10,9 @@ import { ACTIVE_GAP_MS, type Answer, type SessionOf, type Turn } from "./types.j
 
 /** One file's read so far, all of it plain data (no function, Maps and Sets allowed), so a cursor can carry it and
  *  structuredClone or v8.serialize can copy it. `answers` holds every request read, whether turns are kept or not: what
- *  a total counts. `own` is the source's own (LineSource.start). */
+ *  a total counts. `own` is the source's own (LineSource.start). A turns: true read's holds the session's text (its
+ *  turns, prompts, titles, tool output, working directory); a turns: false read's cursor holds none of it, only counts,
+ *  ids and the like (see LineSource.forget). */
 export type ReadState<O = unknown> = {
   session: SessionOf;
   turns: Turn[];
@@ -30,7 +32,7 @@ export type ReadState<O = unknown> = {
 };
 
 /** What a source's record and finish are handed: the file's state, the records seen across the import's files ("u:"
- *  a record's uuid, "m:" a request's key), whether turns are kept, and `add`, which keeps a turn (and counts a user's). */
+ *  a record's uuid, "m:" a request's key, "l:" a bare message id a store imported before keys had request ids), whether turns are kept, and `add`, which keeps a turn (and counts a user's). */
 export type ReadContext<O = unknown> = {
   state: ReadState<O>;
   seen: Set<string>;
@@ -53,10 +55,20 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
   finish?: (out: SessionOf, turns: Turn[], context: ReadContext<O>) => Turn[];
   /** The session's id when no record named one. */
   idOf: (file: string) => string;
+  /** `own` without the session's text (prompts, titles, tool output), for the cursor of a turns: false read. */
+  forget?: (own: O) => O;
+};
+
+/** What a listing reads from the session's text: a turns: false cursor keeps none of it, and a read resumed from one
+ *  gives none (it would describe only what was written since). */
+const withoutText = <T extends SessionOf>(session: T): T => {
+  const { firstPrompt: _prompt, titleText: _title, cwd: _cwd, sourceTitle: _source, ...rest } = session;
+  return rest as T;
 };
 
 /** Where a read of a file stopped, and what it had read. Plain data (Maps, Sets and shared objects, no function):
- *  structuredClone or v8.serialize keeps it whole. Read it through its reader alone. */
+ *  structuredClone or v8.serialize keeps it whole. Read it through its reader alone. A turns: true read's cursor
+ *  holds the session's text, as its state does (ReadState); keep or send it as you would the session. */
 export type FileCursor = {
   source: string;
   dev: number;
@@ -87,7 +99,7 @@ const overlay = (base: Set<string>): Set<string> => {
 };
 
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
-async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, seen }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
+async function readLines<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, seen, keepsCursor = true }: ReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
   const handle = await open(file, "r");
   try {
@@ -149,15 +161,20 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
       }
     }
     // A last line with no newline yet may be a record still being written: read into this result when it is whole JSON,
-    // but the cursor stays before it, its state without it, and the import's `seen` untouched by it.
+    // but the cursor stays before it, its state without it. A caller that keeps the cursor reads the line again from it,
+    // so its `seen` is left untouched by it; one that keeps none (readSession) has it in `seen` like any other line.
     let kept = state;
     if (rest.length) {
       kept = structuredClone(state);
-      context.seen = overlay(context.seen);
+      if (keepsCursor) context.seen = overlay(context.seen);
       line(Buffer.concat(rest).toString("utf8"));
     }
     const mark = await markOf(handle, offset);
-    const session = finish(spec, file, state, context);
+    let session = finish(spec, file, state, context);
+    if (!keep) {
+      kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own };
+      if (resumed) session = withoutText(session);
+    }
     return { sessions: [{ locator: { file }, session, requests: state.answers }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, state: kept as ReadState }, read, resumed };
   } finally {
     await handle.close();

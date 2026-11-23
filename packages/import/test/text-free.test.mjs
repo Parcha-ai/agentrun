@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { READERS } from "../dist/index.js";
+import { parseHome, READERS, readSession } from "../dist/index.js";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture answer words, never kept.";
@@ -58,4 +58,32 @@ test("Codex: turns false keeps no answer text, tool output or later prompt in re
   const result1 = kept.sessions[0].session.turns.find((turn) => turn.role === "toolResult");
   assert.equal(result1.isError, true, "the exit code still marks the result failed");
   assert.match(result1.text, /Fixture answer words/);
+});
+
+test("parseHome's state (turns false) holds no prompt, title or working directory, while a read from the start still lists them", async (t) => {
+  const home = await tempHome(t);
+  const TITLE = "Fixture title, never kept.";
+  const PROMPT = "Fixture prompt, never kept.";
+  const CWD = "/fixture/cwd/never/kept";
+  const claude = await writeJsonl(claudeFile(home), [
+    { ...claudeUser({ uuid: "u1", text: PROMPT, i: 0 }), cwd: CWD },
+    { ...claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 2), i: 1 }), cwd: CWD },
+    { type: "custom-title", customTitle: TITLE, sessionId: "00000000-0000-4000-8000-000000000001" },
+    { type: "summary", summary: TITLE, leafUuid: "a1" },
+  ]);
+  await writeJsonl(codexFile(home), [
+    { ...codexMeta("thread-1"), payload: { ...codexMeta("thread-1").payload, cwd: CWD } },
+    codexContext(1),
+    codexUser(PROMPT, 2),
+    codexAnswer(WORDS, 3),
+    codexTokens(openaiUsage(100, 60, 7, 3), openaiUsage(100, 60, 7, 3), 4),
+  ]);
+  await writeJsonl(piFile(home), [{ ...piMeta(), cwd: CWD }, piUser(PROMPT), { type: "message", timestamp: at(2), message: { role: "assistant", provider: "fixture", model: "fixture-model", content: [{ type: "text", text: WORDS }], stopReason: "stop", usage: { input: 10, output: 2 } } }]);
+  const state = {};
+  const sessions = await parseHome(home, { state, catalog: false });
+  assert.equal(sessions.length, 3);
+  const bytes = serialize(state);
+  for (const text of [TITLE, PROMPT, CWD, WORDS]) assert.equal(bytes.includes(Buffer.from(text)), false, `the state holds no ${text}`);
+  const listed = await readSession(claude, "claude-code", { turns: false });
+  assert.deepEqual([listed.firstPrompt, listed.sourceTitle, listed.cwd], [PROMPT, TITLE, CWD], "a listing read from the start has them");
 });

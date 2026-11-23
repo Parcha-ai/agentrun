@@ -58,12 +58,13 @@ test("Codex: a thread naming its parent (and its own child naming it) counts und
 test("a subagent whose parent is not under the home is counted once, as its own line", async (t) => {
   const home = await tempHome(t);
   await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-01-orphan.jsonl"), [
-    codexMeta("thread-orphan", "thread-gone"), codexContext(1), codexAnswer("Orphan answer.", 3),
+    codexMeta("thread-orphan", "thread-gone"), codexContext(1), codexUser("Its parent agent's prompt.", 2), codexAnswer("Orphan answer.", 3),
     codexTokens(openaiUsage(9, 0, 1), openaiUsage(9, 0, 1), 4),
   ]);
   const sessions = await parseHome(home, { sources: ["codex"] });
   assert.equal(sessions.length, 1);
   assert.deepEqual([sessions[0].tokens.input, sessions[0].calls], [9, 1]);
+  assert.equal(sessions[0].turns, 0, "a subagent's prompts are its parent agent's, not the person's");
 });
 
 test("Claude Code: a resumed session's file that opens with a copy of another session's record is its own session; the copy counts once, in the first", async (t) => {

@@ -38,6 +38,10 @@ export type ReadOptions = {
   /** The records and requests an import has read already, across its files: a record in it (a copy a resumed session's
    *  file carries) adds nothing, and this read's are added to it. A cursor read with one is resumed with the same one. */
   seen?: Set<string>;
+  /** false when the caller keeps no cursor from this read (readSession): a last line still being written then adds to
+   *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
+   *  the cursor takes it whole. */
+  keepsCursor?: boolean;
 };
 
 export type Reader<S extends string = string, C = unknown> = {
