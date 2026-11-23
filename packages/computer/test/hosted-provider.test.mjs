@@ -490,6 +490,21 @@ test("a retry of the request whose computer create kept unlisted finds that comp
 	assert.match(after.error.message, /was made for this request and has ended/);
 });
 
+test("a retry whose read of the computer create kept unlisted fails answers that failure, and never asks the vendor for a second; a later retry whose read answers finds it", async () => {
+	const fake = fakeHost();
+	let failing = false;
+	const host = { ...fake.host, list: async () => [], get: async (id, ctx) => { if (failing) throw new HostError("vendor", "503 from the vendor"); return fake.host.get(id, ctx); } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-read-fails" }));
+	failing = true;
+	const failed = await provider.create(SPEC, { requestId: "kept-read-fails" });
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, new RegExp(`${first.name} \\(machine ${first.id}\\), which create kept while the listing left it out, could not be read, so no second computer is made: .*503 from the vendor`));
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "no second vendor create");
+	failing = false;
+	assert.equal(made(await provider.create(SPEC, { requestId: "kept-read-fails" })).id, first.id, "the entry stayed: a retry that reads it answers it");
+});
+
 test("a computer the listing never shows within listedMs, which a read by its id finds not running, fails create as a timeout naming the labels, the machine, the polls and the wait, and is deleted", async () => {
 	const fake = fakeHost();
 	let lists = 0;

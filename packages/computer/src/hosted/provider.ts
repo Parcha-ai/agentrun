@@ -703,7 +703,8 @@ export class HostedProvider implements ComputerProvider {
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
 		if (found.length === 0) {
 			const kept = await this.#keptOf(name, signal);
-			if (kept !== undefined) return this.#again(spec, name, kept, signal);
+			if (!kept.ok) return kept;
+			if (kept.value !== undefined) return this.#again(spec, name, kept.value, signal);
 		} else this.#keptUnlisted.delete(name);
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
@@ -738,16 +739,17 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The computer create kept for this name while the listing left it out (#keptUnlisted), read by its id now: undefined
-	 * when there is none, or the read finds it gone, not this name's, or fails (the entry is dropped but on a failed read).
+	 * when there is none, or the read finds it gone or not this name's (the entry then goes). A read that fails fails the
+	 * create, the entry kept: a retry never asks the vendor for a second computer while the first may still be up.
 	 */
-	async #keptOf(name: string, signal?: AbortSignal): Promise<Machine | undefined> {
+	async #keptOf(name: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 		const id = this.#keptUnlisted.get(name);
-		if (id === undefined) return undefined;
+		if (id === undefined) return ok(undefined);
 		const read = await this.#get(id, signal);
-		if (!read.ok) return undefined;
-		if (read.value !== undefined && ours(read.value.labels, name) && alive(read.value.state)) return read.value;
+		if (!read.ok) return this.#fail(read.error.code, `${name} (machine ${id}), which create kept while the listing left it out, could not be read, so no second computer is made: ${read.error.message}`);
+		if (read.value !== undefined && ours(read.value.labels, name) && alive(read.value.state)) return ok(read.value);
 		this.#keptUnlisted.delete(name);
-		return undefined;
+		return ok(undefined);
 	}
 
 	/**
