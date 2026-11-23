@@ -25,7 +25,7 @@ const card = (answer: LocalModel | null) => <LocalModelCard v2={client(answer)} 
 
 export const Unknown: Story = { render: () => card(null) };
 export const Recommend: Story = { render: () => card(view()) };
-export const RecommendMac: Story = { render: () => card(view({ machine: { platform: "darwin", arch: "arm64", ram_bytes: 32 * GIB, gpu: { kind: "apple", unified: true } }, recommended: { tag: "inkling-2-mini", why: "Apple silicon with Ollama 0.40.17 runs inkling-2-mini; inkling-2-mini needs 15 GiB of memory, and this Mac has 32.0 GiB.", pulled: false } })) };
+export const RecommendMac: Story = { render: () => card(view({ machine: { platform: "darwin", arch: "arm64", ram_bytes: 32 * GIB, gpu: { kind: "apple", unified: true } }, recommended: { tag: "inkling-2-mini", why: "inkling-2-mini fits this machine's 32.0 GiB of memory (it needs 15 GiB).", pulled: false } })) };
 export const Pulling: Story = { render: () => card(view({ pull: { tag: "qwen3:8b", state: "pulling", status: "pulling a3de86cd1c13", completed_bytes: 2 * GIB, total_bytes: 5 * GIB } })) };
 export const Ready: Story = { render: () => card(view({ recommended: { tag: "qwen3:8b", why: "Already pulled: no pull needed.", pulled: true } })) };
 export const NoneNoOllama: Story = { render: () => card(view({ ollama: { reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false } })) };
