@@ -2197,7 +2197,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
-`url` is `https`, or `http` on loopback.
+`url` is `https`, or `http` on loopback when the server was started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`
+([start-time switches](#start-time-switches)); without it a loopback URL is `422` on `url`, in words that name the switch.
 
 A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
 tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
