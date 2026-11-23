@@ -2012,6 +2012,262 @@ test("LXXI: a form's password: Rails' user[password] raw or encoded, *_password 
     for (const wrap of FOUR_WRAPS) await kept(wrap(text));
   }
 });
+test("LXXVIII: a form password's value ends at a bracket only where the bracket ends its argument; inside a quote the quote decides (Greptile P1 on 59ed761265)", async () => {
+  // Values under url-credential's 16 characters, so query-password alone decides (Greptile's `abcd)secret98`).
+  const pw = "Tq7Wm2Rk";
+  // A URL's own bracket is no argument's closer: its value runs on past it, to the quote or the blank.
+  for (const [text, out] of [
+    [`curl 'https://example.org/a(b?password=abcd)${pw}'`, `curl 'https://example.org/a(b?password=[redacted:query-password]'`],
+    [`curl "https://example.org/a(b?password=abcd)"`, `curl "https://example.org/a(b?password=[redacted:query-password]"`],
+    [`see https://example.org/a(b?password=abcd)${pw} next`, `see https://example.org/a(b?password=[redacted:query-password] next`],
+    [`see https://example.org/a(b?password=abcd).${pw} next`, `see https://example.org/a(b?password=[redacted:query-password] next`],
+    [`see <https://example.org/a?password=abcd>${pw} next`, `see <https://example.org/a?password=[redacted:query-password] next`],
+    [`fetch("https://example.org/a[b?password=abcd]${pw}")`, `fetch("https://example.org/a[b?password=[redacted:query-password]")`],
+  ]) assert.equal((await oneCut(text)).text, out);
+  // An argument's bracket still ends it, before sentence punctuation too.
+  for (const [text, out] of [
+    [`(https://x.io/in?password=${pw}).`, `(https://x.io/in?password=[redacted:query-password]).`],
+    [`[login](https://x.io/in?password=${pw}), then`, `[login](https://x.io/in?password=[redacted:query-password]), then`],
+    [`foo("https://x.io/in?password=${pw}")`, `foo("https://x.io/in?password=[redacted:query-password]")`],
+  ]) assert.equal((await oneCut(text)).text, out);
+  // Inside a quote a bracket before the quote may be the value's own last character: it is cut with the value.
+  assert.equal((await oneCut(`echo "(https://x.io/in?password=${pw})."`)).text, `echo "(https://x.io/in?password=[redacted:query-password]"`);
+});
+
+// ---------- the opus delta read on #3570 @ 59ed761265: LXXIX (P1-1), LXXX (P1-2) ----------
+
+/** A PEM block as text, its body synthetic (no literal key header: the export-source scan), for LXXIX. */
+const STRADDLE_PEM = `-----${"BEGIN"} PRIVATE KEY-----\n${R(64, 91)}\n${R(64, 92)}\n${R(64, 93)}\n${R(40, 94)}\n-----${"END"} PRIVATE KEY-----\n`;
+const PEM_ANCHORS = /LS0tLS1CRUdJTi|0tLS0tQkVHSU4g|tLS0tLUJFR0lOI/;
+/** `openssl pkcs12 -nodes | base64 -w<width>`'s shape: a Bag Attributes preamble whose friendlyName is `n` long, then
+ *  the block; its wrap lines, and where the anchor stands in the unwrapped encoding. */
+const pkcs12Wrap = (n, width) => {
+  const enc = Buffer.from(`Bag Attributes\n    friendlyName: ${"a".repeat(n)}\nKey Attributes: <No Attributes>\n${STRADDLE_PEM}`).toString("base64");
+  const m = PEM_ANCHORS.exec(enc);
+  return { lines: enc.match(new RegExp(`.{1,${width}}`, "g")), anchor: m[0], at: m.index };
+};
+
+test("LXXIX: a base64 PEM whose BEGIN anchor straddles a wrap's line break is cut from that line on, for every encoding and split, at widths 64 and 76 and under a Read lead", async () => {
+  const leads = { none: () => "", read: (k) => `${String(k).padStart(6)}→` };
+  for (const width of [64, 76]) {
+    const seen = new Set();
+    for (let n = 0; n < 3 * width; n++) {
+      const { lines, anchor, at } = pkcs12Wrap(n, width);
+      const split = width - (at % width);
+      if (split >= anchor.length) continue; // the anchor whole on one line: LXXIV's
+      seen.add(`${anchor}/${split}`);
+      const row = Math.floor(at / width);
+      for (const [leadName, lead] of Object.entries(leads)) {
+        if (leadName === "read" && width !== 76) continue;
+        const text = [...lines, "$ ls -l"].map((line, k) => `${lead(k + 1)}${line}`).join("\n");
+        const out = await gone(text, lines.slice(row + 1, -1).map((line) => line.slice(8, 32)));
+        assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["base64-pem", "format", false]], `n=${n} width=${width} ${leadName}`);
+        assert.ok(out.text.includes("$ ls -l") && out.text.includes(lines[0]), `n=${n} width=${width} ${leadName}: cut past its block: ${out.text.slice(0, 200)}`);
+      }
+    }
+    // Every encoding of the anchor at every split a wrap of whole groups allows: offset 0 at 4, 8, 12; offset 1 at 2, 6,
+    // 10; offset 2 at 1, 5, 9, 13.
+    assert.equal(seen.size, 10, `width ${width}: ${[...seen].sort().join(" ")}`);
+  }
+  // In every wrapper, one straddling case of each width.
+  for (const width of [64, 76]) {
+    let n = 0;
+    while (width - (pkcs12Wrap(n, width).at % width) >= 14) n++;
+    const { lines, at } = pkcs12Wrap(n, width);
+    for (const wrap of FOUR_WRAPS) await gone(wrap(lines.join("\n")), lines.slice(Math.floor(at / width) + 1, -1).map((line) => line.slice(8, 32)));
+  }
+  // A wrap of base64 that holds no PEM, at both widths: kept.
+  const plain = Buffer.from(`Bag Attributes\n    friendlyName: ${"plain words, no key. ".repeat(12)}`).toString("base64");
+  for (const width of [64, 76]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(plain.match(new RegExp(`.{1,${width}}`, "g")).join("\n")));
+  }
+  // Linear: a 2 MB stack of full wrap lines (each a break the straddle check reads), and of straddling blocks.
+  const { lines } = pkcs12Wrap(Array.from({ length: 300 }, (_, n) => n).find((n) => 76 - (pkcs12Wrap(n, 76).at % 76) < 14), 76);
+  for (const [name, piece] of [["full lines", `${"A".repeat(76)}\n`], ["straddling blocks", `${lines.join("\n")}\n$ ls\n`]]) {
+    const { hits, ms } = await ruleAlone("base64-pem", repeatTo(piece, 2_000_000));
+    assert.ok(ms < 2_000, `${name} x 2 MB: ${Math.round(ms)} ms CPU`);
+    if (name === "straddling blocks") assert.ok(hits.length > 1000, `${name}: ${hits.length} hits`);
+  }
+});
+
+test("LXXX: a camelCase credential name's DNS-1123-shaped value (a UUID, a passphrase, dotted words) is cut; only the existingSecret family names a Secret object by its resource name", async () => {
+  for (const [text, secret] of [
+    ["herokuApiKey: 3f9a1c2e-7b4d-4e8a-9c1f-2d3e4f5a6b7c", "3f9a1c2e-7b4d-4e8a-9c1f-2d3e4f5a6b7c"],
+    ["dbPassword: tidal-oxide-lantern-gravel", "tidal-oxide-lantern-gravel"],
+    ["clientSecret=tidal-oxide-lantern-gravel", "tidal-oxide-lantern-gravel"],
+    ["authToken: abc123.def456.ghi789", "abc123.def456.ghi789"],
+    ["vault:\n  clientSecret: tidal-oxide-lantern-gravel\n  role: app", "tidal-oxide-lantern-gravel"],
+    ["secretKey: tidal-oxide-lantern-gravel", "tidal-oxide-lantern-gravel"],
+  ]) await labelCutIn([text], secret, "secret-assign");
+  // A Secret object named by its resource name under Helm's existingSecret family, a key inside it named under the
+  // family's key names (Bitnami's existingSecretPasswordKey), and the names that only name one (secretName, secretRef,
+  // existingSecretName: no credential word last): kept.
+  for (const text of [
+    "existingSecret: app-credentials",
+    "auth.existingSecretPasswordKey: postgres-password",
+    "existingSecretKey: api-key",
+    "metrics.existingSecretUserKey: db-user",
+    "auth:\n  existingSecretKey: api-key",
+    "auth:\n  existingSecret: app-credentials\n  secretKeys:\n    adminPasswordKey: admin-password",
+    "metrics:\n  metricsExistingSecret: metrics-credentials",
+    "tls:\n  secretName: app-tls",
+    "envFrom:\n  secretRef: app-credentials",
+    "existingSecretName: app-credentials",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  // Linear: secret-assign alone on 2 MB of camelCase name: resource-shaped value lines.
+  for (const piece of ["dbPassword: tidal-oxide-lantern-gravel\n", "existingSecret: app-credentials\n"]) {
+    const { ms } = await ruleAlone("secret-assign", repeatTo(piece, 2_000_000));
+    assert.ok(ms < 2_000, `${JSON.stringify(piece)} x 2 MB: ${Math.round(ms)} ms CPU`);
+  }
+});
+
+test("LXXXI: a flag's NAME=value takes a dotted name (helm --set, --set-string, kubectl --from-literal): a credential's is cut, any other dotted name's is kept", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `helm install x bitnami/postgresql --set db.password=${pw}`,
+    `helm upgrade x . --set-string auth.password=${pw}`,
+    `helm install pg bitnami/postgresql --set auth.postgresPassword=${pw}`,
+    `kubectl create secret generic a --from-literal=db.password=${pw}`,
+    `helm install x . --set=global.redis.password=${pw}`,
+    `helm install x . --set db.user=u,db.password=${pw},image.tag=v1`,
+    `helm install x . --set-string a=1,auth.postgresPassword=${pw}`,
+    `helm install x . --set-file a=f.txt,db.password=${pw}`,
+    `helm install x . --set "db.user=u,db.password=${pw}"`,
+  ], pw, "secret-assign");
+  // A `--set` list's every name=value is read, its value to the next unescaped `,` (`\,` stays in it): only the
+  // credential's value is cut. `--set-literal` takes one name=value, commas and all.
+  for (const [text, out] of [
+    [`--set db.user=u,db.password=${pw},image.tag=v1`, "--set db.user=u,db.password=[redacted:secret-assign],image.tag=v1"],
+    [`--set db.password=ab\\,${pw},image.tag=v1`, "--set db.password=[redacted:secret-assign],image.tag=v1"],
+    [`--set-literal db.password=ab,${pw}`, "--set-literal db.password=[redacted:secret-assign]"],
+  ]) assert.equal((await oneCut(text)).text, out);
+  for (const text of [
+    "helm install x . --set image.tag=v1",
+    "helm install x . --set service.port=8080 --set replicaCount=2",
+    "helm install x . --set image.tag=v1,replicas=2",
+    "helm install x . --set auth.username=app",
+    "helm install x . --set auth.password=$PG_PASSWORD",
+    "kubectl create secret generic a --from-literal=db.password=${DB_PASSWORD}",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  const unit = "--set auth.postgresPassword=abcdefghij --set image.tag=v1 ";
+  // The rule alone reads a long line of them in time linear in it (as LXIX).
+  const rule = SCRUB_RULES.find((each) => each.id === "secret-assign");
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = performance.now();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = performance.now() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+  // And long comma lists, each item's name read: 32 items a list, 16 of them credentials.
+  const list = `--set ${Array.from({ length: 16 }, (_, i) => `app${i}.tag=v1,db${i}.password=abcdefghij`).join(",")} `;
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / list.length);
+    const started = performance.now();
+    const out = await scrubWith([rule], list.repeat(n), { mode: "count" });
+    const took = performance.now() - started;
+    assert.equal(out.cuts.length, n * 16);
+    assert.ok(took < bound, `${size} chars of lists: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXXXII: a command's environment after `sudo`'s or `env`'s options and their arguments (`sudo -u app`, `sudo -E -u app`, `env -u HOME`) is cut", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `sudo -u app db_password=${pw} ./run.sh`,
+    `sudo -E -u app db_password=${pw} ./run.sh`,
+    `env -u HOME db_password=${pw} ./run.sh`,
+    `sudo --user=app --preserve-env db_password=${pw} ./run.sh`,
+    `$ sudo -u app -g staff db_password=${pw} api_mode=prod ./run.sh`,
+  ], pw, "secret-assign");
+  for (const text of [
+    "sudo -u app db_password=$DB_PASSWORD ./run.sh",
+    "env -u HOME db_password=${DB_PASSWORD} ./run.sh",
+    "sudo -u app ./run.sh",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  const unit = "sudo -E -u app db_password=abcdefghij ./run.sh\n";
+  // The rule alone reads a long line of them in time linear in it (as LXIX).
+  const rule = SCRUB_RULES.find((each) => each.id === "secret-assign");
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = performance.now();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = performance.now() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXXXIII: an ADO value runs over blanks only to its `;`, a tab, a line break or a JSON-escaped one (`\\n`, `\\r`, `\\t`); a spaced pair beside a pair before or after it is a connection string's", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `Server = db; Password = ${pw};`,
+    `Password = ${pw}; Server=db`,
+    `password = ${pw} host=db`,
+  ], pw, "connection-string");
+  // A connection string's known key among spaced pairs is a connection string's evidence: the value is cut whatever
+  // its shape, an identifier's too.
+  await labelCutIn(["Server = db; Password = MySecretPass;"], "MySecretPass", "connection-string");
+  await labelCutIn(["Data Source = db; User Id = sa; Password = hunterTwo;"], "hunterTwo", "connection-string");
+  await labelCutIn(["Password = hunterTwo; Initial Catalog = widgets"], "hunterTwo", "connection-string");
+  // Key first, its pair after: the value runs to its `;`, every word in one cut.
+  const first = `Password=Copper lumen ${pw};Server=db`;
+  for (const wrap of FOUR_WRAPS) {
+    const wrapped = wrap(first);
+    const out = await gone(wrapped, ["Copper", "lumen", pw]);
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["connection-string", "label", true]], wrapped);
+  }
+  assert.equal((await oneCut(first)).text, "Password=[redacted:connection-string];Server=db");
+  // The value stops at a JSON-escaped line break or tab as at a real one: what follows stays, the JSON stays valid.
+  for (const esc of ["\\n", "\\r", "\\t"]) {
+    const raw = `{"content":"conn: Server=db;Uid=sa;Pwd=Hunter2x9q ${esc}OK connected${esc}rows: 5"}`;
+    const out = (await oneCut(raw)).text;
+    assert.equal(out, `{"content":"conn: Server=db;Uid=sa;Pwd=[redacted:connection-string] ${esc}OK connected${esc}rows: 5"}`);
+    JSON.parse(out);
+  }
+  for (const sep of ["\n", "\r\n", "\t"]) {
+    for (const wrap of FOUR_WRAPS) {
+      const wrapped = wrap(`conn: Server=db;Uid=sa;Pwd=${pw} ${sep}OK connected${sep}rows: 5`);
+      const out = await gone(wrapped, [pw]);
+      assert.ok(out.text.includes("OK connected"), out.text);
+      if (wrapped.startsWith("{")) JSON.parse(out.text);
+    }
+  }
+  // Code's spaced `=` beside a statement: code's shapes stay no value; beside spaced pairs only the slot is one code
+  // fills, so an identifier in code's casing stays.
+  for (const text of [
+    "x = 1; password = config.password",
+    "a = 1; password = userInput;",
+    "int x=1; password = getPw();",
+    "f(password = pw, host=db)",
+    "the password = what you typed",
+    // A quote as written ends the pairs read back from a key, in a JSON string's escape as anywhere: the same verdict
+    // raw and wrapped.
+    'conn = "Server=" + host; password = nextPassword;',
+    'conn = "Server=db;Uid=sa" + suffix; password = nextPassword;',
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  // A JSON-escaped line of them: inputSpan finds each escape by halves, so the rule alone stays linear in it.
+  const unit = ";Server = db;Pwd=ab cd \\nOK ";
+  // The rule alone reads a long line of them in time linear in it (as LXIX).
+  const rule = SCRUB_RULES.find((each) => each.id === "connection-string");
+  for (const [size, bound] of [[600_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const started = performance.now();
+    const out = await scrubWith([rule], unit.repeat(n), { mode: "count" });
+    const took = performance.now() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
 
 test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
   const pw = "Tq7Wm2Rk9Zx";
