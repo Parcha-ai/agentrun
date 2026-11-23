@@ -145,7 +145,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
   let run: { from: number; at: number } | undefined;
   let from = 0;
-  while (from < text.length && shown <= enough) {
+  // Also stops past 4 × `enough` characters read: text that shows as almost nothing (URLs whose queries are elided) is
+  // not read to its end. Where it stops, the peek reads on as at any stop.
+  while (from < text.length && shown <= enough && from <= 4 * enough) {
     const to = pieceEnd(text, from);
     const raw = text.slice(from, to);
     if (raw.length > ANSWER_PIECE) {
@@ -256,10 +258,11 @@ function runEnd(text: string, at: number): number {
  *  (authorities); or, a run of a JSON array's numbers only, after its last comma. The one secret shape that may hold a
  *  quote is a URL's user and password, so no cut splits a shape, whatever its length: a run with no other place to cut
  *  is read to its end, or unread from its start. A held value cut there still shows to the pass over the joined pieces
- *  (heldIn), and withholds the text whole. Each search keeps to text[from, to), so a long run costs no more a piece. */
+ *  (heldIn), and withholds the text whole. Each search keeps to text[from, to), but for where a URL's authority ends,
+ *  which is read once per URL, to the end of its run at most. */
 function runCut(text: string, from: number, to: number): number {
   const head = text.slice(from, to);
-  const urls = authorities(head);
+  const urls = authorities(text, from, head);
   let url = urls.length - 1;
   for (let at = head.lastIndexOf('"'); at >= 0; at = at > 0 ? head.lastIndexOf('"', at - 1) : -1) {
     // The authority starting last before this quote, the one it could be in: they do not overlap.
@@ -271,15 +274,17 @@ function runCut(text: string, from: number, to: number): number {
   return comma > 0 && /^\s?[-+.\deE,[\]{}:]+$/.test(head) ? from + comma + 1 : -1;
 }
 
-/** Each URL authority in `head`, as [start, end): from its "://" to its first whitespace, "/", "?", "#" or "@", or the
- *  head's end, where a URL's user and password are. In one pass. */
-function authorities(head: string): [number, number][] {
+/** Each URL authority in `head` (text from `from`) that holds a user and password, as [start, end) in `head`: from its
+ *  "://" to the "@" that ends it, past the head's end if need be. One whose first whitespace, "/", "?" or "#" comes
+ *  before any "@" (a URL with no password, then the rest of the JSON it is in) holds none, so none of it is kept whole. */
+function authorities(text: string, from: number, head: string): [number, number][] {
   const found: [number, number][] = [];
   const stop = /[\s/?#@]/g;
   for (let at = head.indexOf("://"); at >= 0; at = head.indexOf("://", at)) {
-    stop.lastIndex = at + 3;
-    const end = stop.exec(head)?.index ?? head.length;
-    found.push([at, end]);
+    stop.lastIndex = from + at + 3;
+    const hit = stop.exec(text);
+    const end = (hit?.index ?? text.length) - from;
+    if (hit?.[0] === "@") found.push([at, end]);
     if (end >= head.length) break;
     at = end;
   }

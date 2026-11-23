@@ -296,6 +296,15 @@ test("a held value split where a call's read stops, its rest past \"+\" or perce
   assert.ok(refusal.redactedCall(plain, [CUT_KEY], CALL_RESULT_CHARS).startsWith("y y "));
 });
 
+test("a call's result that shows as almost nothing once its URLs lose their query values is not read to its end", () => {
+  // 32.7 MB of URLs whose queries elide: it shows as 4,000 short URLs, so a read stopped by what it shows reads it all.
+  const text = ` https://e.com/?x=${"q".repeat(8150)}`.repeat(4000);
+  const began = Date.now();
+  const shown = refusal.redactedCall(text, [CUT_KEY], CALL_RESULT_CHARS, scrubUrls);
+  assert.ok(Date.now() - began < 1500, `${Date.now() - began} ms`);
+  assert.ok(shown.startsWith(" https://e.com/?x=… https://e.com/?x=…") && shown.length < 120_000, shown.slice(0, 80));
+});
+
 test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {
   const ids = Array.from({ length: 2000 }, (_, i) => `id-${i}`);
   const json = JSON.stringify({ ids });
@@ -326,6 +335,14 @@ test("compact JSON past a piece with no whitespace is read in pieces cut at its 
   for (const secrets of [[], [CUT_KEY]]) {
     assert.equal(refusal.redactedCall(ftp, secrets, 120_000), `${"y ".repeat(59_000)}[redacted] end`);
     assert.equal(redactedAnswer(ftp, secrets), `${"y ".repeat(59_000)}[redacted] end`);
+  }
+  // A URL with no path, then more JSON with no "/", "?", "#" or "@" after it: no "@" ends its authority, so it holds no
+  // password, and the quotes after it are cut as anywhere else.
+  const linked = JSON.stringify({ url: "https://example.com", ids });
+  assert.ok(linked.length > 8192 && !/[\s@]/.test(linked));
+  for (const secrets of [[], [CUT_KEY]]) {
+    assert.equal(refusal.redactedCall(linked, secrets, 120_000), linked);
+    assert.equal(redactedAnswer(linked, secrets), linked);
   }
   const holding = JSON.stringify({ ids: [...ids.slice(0, 1000), CUT_KEY, ...ids.slice(1000)] });
   assert.equal(refusal.redactedCall(holding, [CUT_KEY], 120_000), holding.replace(CUT_KEY, "[redacted]"));
