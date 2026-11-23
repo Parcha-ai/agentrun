@@ -3,7 +3,7 @@
 import { CORRECTIONS_FILE } from "./corrections.js";
 import { blobOid, forgetHistory, hostCommitOf, isHostPath, type Restored, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type SnapLearned, type Snapshot } from "./folder.js";
 import { type ChainCommit, FolderUnreadable, type LearningStore, MOVED_FILE, purgedMarker, runMarker, runMarkerText, runOfKey, type StoreCommit, type StoreFile, wroteOf } from "./store.js";
-import { WORKFLOWS_DIR } from "./workflow-draft.js";
+import { statusFree, withStatusOf, WORKFLOWS_DIR } from "./workflow-draft.js";
 
 /** The host's words on the commit a purge ends with (its message reads `host: <these>`). */
 const SCRUB = "a purged run's text removed";
@@ -14,7 +14,8 @@ const ATTEMPTS = 4;
  * Run `runId`'s text taken out of `store`: each commit of main's history, oldest first, rebuilt with corrections.md
  * keeping, of each line text the run's merges added (as the store diffs each merge), only as many copies as the other
  * runs' merges added up to that commit (the first ones); each workflow file the run's merge wrote last there (as its
- * marker names the paths it wrote; a hand commit changes no owner) given back as the rebuilt parent of that merge held it, absent when it was absent there, so a
+ * marker names the paths it wrote; a commit of no run that changes only its `status` and `retired_from` lines has them
+ * replayed on what is given back, and one that changes any other line is its writer from then on) given back as the rebuilt parent of that merge held it, absent when it was absent there, so a
  * purge takes off only what the run's revisions put there and never another run's file; the run's merge commits kept
  * with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text; and each commit's
  * snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut, a given-back
@@ -105,7 +106,8 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   // Each workflow file's owner as the old history stood at the commit, by path: the run whose merge last wrote it, as
   // that merge's own marker names the paths it wrote (written or deleted, whether or not its bytes changed: a rewrite
   // that makes a merge's write the bytes already there keeps its owner); a merge whose marker names none (an earlier
-  // release's) owns what it changed the bytes (or mode) of, or took out. A hand commit changes no owner. Where the purged run owns a file, the rebuilt tree
+  // release's) owns what it changed the bytes (or mode) of, or took out. A commit of no run that changes such a file takes it, unless it
+  // changes its status lines alone (replayed on what is given back, below). Where the purged run owns a file, the rebuilt tree
   // holds it as the rebuilt parent of the purged run's merge that took it held it (`back`; absent there, absent), so a
   // purge takes off only what the run's revisions put there: never another run's file. `prior`: the file's owner before
   // the purged run took it, whom a given-back workflow.json's entry names again; `entries`: each such workflow's entry
@@ -134,6 +136,23 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
       // The run markers this commit adds: its merge's own (one a round).
       const added = files.filter(({ path }) => path.startsWith(RUNS_DIR) && !markers.has(path));
       markers = new Set(files.filter(({ path }) => path.startsWith(RUNS_DIR)).map(({ path }) => path));
+      // A commit of no run (a person's approve, retire or restore; the host's) that changes a file the purged run owns:
+      // a person's commit is a writer for put-back, and a purge never restores over it. A change of the file's `status`
+      // and `retired_from` lines alone is replayed on what the purge gives back (statusReplay: the decision stands, and
+      // the purged run's text still goes; a file given back absent stays absent). Any other change makes that commit
+      // the file's writer from then on: the purge leaves its copy.
+      if (!run) {
+        for (const [path, owner] of owners) {
+          if (owner !== runId) continue;
+          const [was, is] = [held.get(path), now.get(path)];
+          if (was && is && was.equals(is)) continue;
+          if (!was && !is) continue;
+          const given = back.get(path)!;
+          const replayed = was && is ? statusReplay(given.file, splitHeld(was), splitHeld(is)) : undefined;
+          if (replayed === undefined) owners.delete(path);
+          else if (replayed !== given.file) back.set(path, { ...given, file: replayed });
+        }
+      }
       if (run) {
         const take = (path: string) => {
           // A file the purged run owns already keeps what it gives back (its rebuilt parent holds that now).
@@ -246,6 +265,26 @@ const folderOf = (path: string): string | undefined => {
 };
 const sorted = (files: StoreFile[]): StoreFile[] => files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 const sameTree = (a: readonly StoreFile[], b: readonly StoreFile[]): boolean => a.length === b.length && a.every((file, i) => file.path === b[i]!.path && file.mode === b[i]!.mode && file.body.equals(b[i]!.body));
+/** A file as the walk holds it (`<mode>\0<bytes>`): its mode and its bytes. */
+const splitHeld = (held: Buffer): { mode: string; body: Buffer } => {
+  const at = held.indexOf(0);
+  return { mode: held.subarray(0, at).toString("utf8"), body: held.subarray(at + 1) };
+};
+
+/** What a purge gives back for a file the purged run owns, after a commit of no run changed it from `was` to `is`:
+ *  when the change is of its `status` and `retired_from` lines alone (statusFree reads both the same), `given` with
+ *  `is`'s status lines in place of its own (withStatusOf), or `given` as it is when that reads no way (a README that
+ *  reads no way reads retired, so nothing is given to a run), or null when nothing is given back (the purged run wrote
+ *  it new: it stays absent). Undefined for any other change: that commit is the file's writer from then on. */
+function statusReplay(given: StoreFile | null, was: { mode: string; body: Buffer }, is: { mode: string; body: Buffer }): StoreFile | null | undefined {
+  if (was.mode !== is.mode) return undefined;
+  const after = is.body.toString("utf8");
+  const free = statusFree(after);
+  if (free === undefined || free !== statusFree(was.body.toString("utf8"))) return undefined;
+  if (!given) return null;
+  const replayed = withStatusOf(given.body.toString("utf8"), after);
+  return replayed === undefined ? given : { ...given, body: Buffer.from(replayed, "utf8") };
+}
 const secondsOf = (at: string): number => {
   const ms = Date.parse(at);
   return Number.isFinite(ms) ? Math.floor(ms / 1000) : Math.floor(Date.now() / 1000);

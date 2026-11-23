@@ -354,9 +354,12 @@ added (from its first merge on), the run's merge commits kept with their reason 
 Run-Id trailer, the marker: empty of its text), each snapshot rebuilt with the new commit ids and the run's reasons
 cut, and a commit left with nothing of its own dropped. A learned workflow file leaves every tree from the run's first
 merge on when the run's merge wrote it last: each merge's marker lists the paths it wrote (`{"v":1,"wrote":[...]}`,
-`store.ts` runMarkerText), whether or not their bytes changed, a hand commit owns nothing, and the purged run's own
+`store.ts` runMarkerText), whether or not their bytes changed, and the purged run's own
 markers are rewritten to list none; a marker of an earlier release, with no list, falls back to the merge whose diff
-changed the file's bytes last. A history read that does not start at main, or whose commits do not chain (each the
+changed the file's bytes last. A commit of no run (a person's approve, retire or restore) after the run's merge
+that changes only such a file's `status` and `retired_from` front-matter lines has them replayed on the given-back
+copy, so the person's decision stands and the run's text still goes (a file the run wrote new stays absent); a commit
+of no run that changes any other line of it is its writer from then on, and the purge leaves its copy. A history read that does not start at main, or whose commits do not chain (each the
 parent of the one before, the oldest with none), refuses the purge, retryable, nothing rewritten; so does a code.storage
 listing page that says there is more with no cursor to read it by. One
 host commit on top adds `.agentrun/purged/<run>`, so no

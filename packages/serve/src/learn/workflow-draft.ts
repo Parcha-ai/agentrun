@@ -294,11 +294,35 @@ export function released(text: string): string {
   if (typeof front === "string") throw new Error(`it cannot be approved: ${front}`);
   // Its status and retired_from are taken out whole, so each must be one plain line; what is left reads back active, or
   // the write fails: never an OK over a workflow no run is given.
-  if (!statusOnOneLine(text) || !onOneLine(text, "retired_from")) throw new Error("it cannot be approved: its status is not one plain line");
-  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
-  const out = `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
+  const out = statusFree(text);
+  if (out === undefined) throw new Error("it cannot be approved: its status is not one plain line");
   if (learnedStatus(out) !== "active") throw new Error(`it cannot be approved: its status would read ${learnedStatus(out)}`);
   return out;
+}
+
+/** `text`, a draft's README.md, with its `status` and `retired_from` lines taken out whole (LF line ends): every line a
+ *  person's approve, retire or restore leaves as it was. Undefined when its front matter reads no way, or either line is
+ *  not one plain line (no writer edits it). */
+export function statusFree(text: string): string | undefined {
+  const front = frontOf(text);
+  if (typeof front === "string" || !statusOnOneLine(text) || !onOneLine(text, "retired_from")) return undefined;
+  const kept = front.lf.slice(4, front.end).split("\n").filter((line) => !line.startsWith("status:") && !line.startsWith("retired_from:"));
+  return `---\n${kept.join("\n")}${front.lf.slice(front.end)}`;
+}
+
+/** `base`, a draft's README.md, with `from`'s `status` and `retired_from` lines in place of its own (last in its front
+ *  matter, as the host writes them): a person's decision on `from` replayed on `base`'s text (learn/purge.ts). Undefined
+ *  when either reads no way (statusFree), or the result would not read `from`'s status and `retired_from` back. */
+export function withStatusOf(base: string, from: string): string | undefined {
+  const free = statusFree(base);
+  const source = frontOf(from);
+  if (free === undefined || typeof source === "string" || statusFree(from) === undefined) return undefined;
+  const lines = source.lf.slice(4, source.end).split("\n").filter((line) => line.startsWith("status:") || line.startsWith("retired_from:"));
+  const front = frontOf(free);
+  if (typeof front === "string") return undefined;
+  const out = `${front.lf.slice(0, front.end)}${lines.map((line) => `\n${line}`).join("")}${front.lf.slice(front.end)}`;
+  const reads = (text: string) => [learnedStatus(text), frontMatter(text)?.get("retired_from")];
+  return JSON.stringify(reads(out)) === JSON.stringify(reads(from)) ? out : undefined;
 }
 
 /** The status a retired draft README.md goes back to when a person restores it (`retired_from`, which its

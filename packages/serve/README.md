@@ -3847,10 +3847,12 @@ stays in every total.
   commit it names, moved to the rewritten commit by a purge. A run's purge takes its text out of the learning's whole
   history, not only its current files: every commit of main is rebuilt, oldest first, keeping of each `corrections.md`
   line the run's merges added only as many copies as other runs' merges added of the same words up to that commit
-  (none, for words only the run added); each file of a learned workflow (`workflows/<name>/...`) whose bytes the run's
-  merge changed last at that commit given back as it was just before that merge (in the rebuilt history), and absent
-  where it was absent then (a hand commit changes no owner, and once another run's merge writes a file again it is that
-  run's). So a purge takes off only what the run's revisions put there: a workflow the run revised is the earlier
+  (none, for words only the run added); each file of a learned workflow (`workflows/<name>/...`) that the run's
+  merge wrote last at that commit (as its marker lists it) given back as it was just before that merge (in the rebuilt history), and absent
+  where it was absent then (once another run's merge writes a file again it is that run's). A person's approve,
+  retire or restore made after the run's merge stands: its `status` and `retired_from` lines are put on the given-back
+  copy (a workflow the run wrote new still leaves every tree); a commit of no run that changes any other line of such a
+  file keeps its copy, the run's lines in it included. So a purge takes off only what the run's revisions put there: a workflow the run revised is the earlier
   writer's again (its champion reads as before), one it wrote alone leaves every tree, and no other run's file goes.
   Its merges' reasons go too (each merge kept, its message `learning: <run>: merged`, empty of its text), each snapshot
   is rebuilt, and one commit by the host on top marks `.agentrun/purged/<run>` (holding the old-to-new commit map, commit
