@@ -174,7 +174,7 @@ async function read(locator: Locator, cursor?: Cursor, { turns: keep = true, see
     const claimed = new Set(same ? cursor.claimed : []);
     const { session, requests } = sessionOf(locator.file, text, claimed, seen ?? new Set(), keep);
     // Where it ran, as every source's listing has it (an import needs the project); the cursor holds none of it.
-    const cwd = await cwdOf(locator.file);
+    const cwd = await geminiCwd(locator.file);
     if (cwd) session.cwd = cwd;
     return { sessions: out(session, requests), cursor: { source: "gemini", dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, keep, claimed: [...claimed], session: keep ? session : withoutCwd(session), requests }, read: Buffer.byteLength(text), resumed: same };
   } finally {
@@ -184,7 +184,7 @@ async function read(locator: Locator, cursor?: Cursor, { turns: keep = true, see
 
 /** The directory a session ran in, from its project's id: the .project_root marker in the project's directory, else the
  *  registry's path for the id, else the id itself. */
-async function cwdOf(file: string): Promise<string | undefined> {
+export async function geminiCwd(file: string): Promise<string | undefined> {
   let dir = dirname(file);
   while (basename(dir) !== "chats") {
     if (dirname(dir) === dir) return undefined;

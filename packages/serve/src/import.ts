@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, geminiCwd, geminiSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -123,12 +123,16 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
   // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
   let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
+  // Gemini CLI's project is not in a record: it is the path its project directory records (the reader's own rule).
+  if(source==='gemini')cwd=await geminiCwd(file);
   const metadataOf = (parts: Buffer[]): void => {
     try {
       const row = JSON.parse(Buffer.concat(parts).toString('utf8'));
       if(!row || typeof row!=='object' || Array.isArray(row))return;
       if(source==='claude-code'){
         cwd??=str(row.cwd);child ||= row.isSidechain===true;
+      }else if(source==='gemini'){
+        if(str(row.sessionId))id??=geminiSessionId(file,str(row.sessionId));child ||= row.kind==='subagent';
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
       }else if(row.type==='session_meta'){
@@ -148,7 +152,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       if (!bytesRead) {
         metadataOf(parts);
         // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=basename(file,'.jsonl');
+        id??=source==='gemini'?geminiSessionId(file):basename(file,'.jsonl');
         return metadata();
       }
       position += bytesRead;

@@ -5,9 +5,10 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { planImport } from "../dist/import.js";
+import { agentIdOf, planImport } from "../dist/import.js";
 
-test("a Gemini CLI session is planned under the project its .project_root names, not left out as one with no project", (t) => {
+/** A Gemini home with one project and one session in it, written an hour ago unless `fresh`. */
+function home(t, { fresh = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "import-gemini-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -26,11 +27,24 @@ test("a Gemini CLI session is planned under the project its .project_root names,
       { id: "a1", timestamp: at(2), type: "gemini", content: "Done.", model: "gemini-fixture-pro", tokens: { input: 10, output: 2, cached: 0, total: 12 } },
     ].map((record) => `${JSON.stringify(record)}\n`).join(""),
   );
-  const old = new Date(Date.now() - 60 * 60_000);
-  utimesSync(file, old, old);
-  const plan = planImport({ home, env: { PATH: "/usr/bin" }, temp: join(root, "tmp"), sources: ["gemini"] });
-  return plan.then((found) => {
-    assert.deepEqual(found.skipped.map((s) => s.kind), []);
-    assert.deepEqual(found.projects.map((p) => [p.name, p.sessions.length]), [["gemini-app", 1]]);
-  });
+  if (!fresh) {
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(file, old, old);
+  }
+  return { home, project, temp: join(root, "tmp") };
+}
+
+test("a Gemini CLI session is planned under the project its .project_root names, not left out as one with no project", async (t) => {
+  const h = home(t);
+  const found = await planImport({ home: h.home, env: { PATH: "/usr/bin" }, temp: h.temp, sources: ["gemini"] });
+  assert.deepEqual(found.skipped.map((s) => s.kind), []);
+  assert.deepEqual(found.projects.map((p) => [p.name, p.sessions.length]), [["gemini-app", 1]]);
+});
+
+test("a Gemini CLI session still being written, in the project chosen, is reported as left out (live), not missing", async (t) => {
+  const h = home(t, { fresh: true });
+  const found = await planImport({ home: h.home, env: { PATH: "/usr/bin" }, temp: h.temp, sources: ["gemini"], only: [agentIdOf(h.project)] });
+  assert.deepEqual(found.skipped.map((s) => s.kind), ["live"]);
+  const other = await planImport({ home: h.home, env: { PATH: "/usr/bin" }, temp: h.temp, sources: ["gemini"], only: [agentIdOf(join(h.project, "elsewhere"))] });
+  assert.deepEqual(other.skipped, [], "a project not chosen has none of it");
 });
