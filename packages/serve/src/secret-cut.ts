@@ -10,6 +10,10 @@ secretLintProfiler.setEnabled(false);
 
 import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
+import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+import { type Cut, type CutKind, type Hit, lineCount, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf } from "./secret-rules.js";
+
+export { type Cut, type CutKind, RESTORABLE, SCRUB_RULES, type ScrubRule } from "./secret-rules.js";
 
 /** Whether a name is a secret's, whatever list names it or none does: one of its `_`-separated segments, in any case, is
  *  KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN, or its last is PWD after another.
@@ -107,4 +111,145 @@ export async function secretsIn(content: string): Promise<string[]> {
     }
   }
   return [...found];
+}
+
+// ---------- the scrubber (Scrubber beta 1; the interface: tl-share's CONTRACT-scrub-beta1.md)
+
+export type ScrubOptions = {
+  readonly mode: "count" | "cut";
+  /** Values the server holds (serverSecrets, handed refs, env key-shaped values): each cut in every form it stands in. */
+  readonly held?: readonly string[];
+  /** The path of the file `text` is the content of, when the caller knows it: a .env* file or one under ~/.ssh is
+   *  dropped whole. */
+  readonly path?: string;
+  /** Cut mode: asked of each restorable cut alone (label, personal, jev); true leaves its text in place, the cut still
+   *  reported, `kept: true`. Never asked of a format, held or dump cut: those are always cut. */
+  readonly keep?: (cut: Readonly<Cut>) => boolean;
+};
+export type ScrubCount = { counts: Record<string, number>; cuts: Cut[] };
+export type ScrubResult = { ok: true; text: string; cuts: Cut[]; counts: Record<string, number> } | { ok: false; counts: Record<string, never> };
+
+/** The longest text one pass reads, and the most time it may take between two rules: past either, the pass throws (cut
+ *  mode then fails closed). Every rule is linear, so neither is met in good faith. */
+export const SCRUB_MAX_CHARS = 32 * 1024 * 1024;
+export const SCRUB_BUDGET_MS = 30_000;
+
+/** Which kind wins a tie on restorability and length: the one that drops the most. */
+const KIND_RANK: Readonly<Record<CutKind, number>> = { dump: 0, format: 1, held: 2, label: 3, personal: 4, jev: 5 };
+
+/** A cut's text in the output: a value's `[redacted:<rule>]`, a dump's `[redacted:<rule> N lines]`. */
+const marker = (cut: Pick<Cut, "rule" | "kind">, value: string): string => {
+  if (cut.kind !== "dump") return `[redacted:${cut.rule}]`;
+  return `[redacted:${cut.rule} ${lineCount(value)} lines]`;
+};
+const MARKER = /\[redacted:[a-z0-9-]{1,64}(?: \d{1,9} lines)?\]/g;
+
+/** Every rule's hits in `text`, resolved to cuts: hits that overlap are one cut over all of them, named for the strongest
+ *  (not restorable before restorable, then the longest, then KIND_RANK, then the table's order), so a cut a preview may
+ *  restore never holds a value a rule marked not restorable. */
+async function cutsOf(rules: readonly ScrubRule[], text: string, ctx: ScrubContext): Promise<Cut[]> {
+  if (text.length > SCRUB_MAX_CHARS) throw new Error("scrub: text too long");
+  const began = performance.now();
+  const hits: { hit: Hit; rule: ScrubRule; order: number }[] = [];
+  for (const [order, rule] of rules.entries()) {
+    if (!Object.hasOwn(RESTORABLE, rule.kind)) throw new Error(`scrub: rule ${rule.id} has no kind`);
+    for (const hit of await rule.find(text, ctx)) {
+      if (!Number.isInteger(hit.start) || !Number.isInteger(hit.end) || hit.start < 0 || hit.end > text.length || hit.end < hit.start) throw new Error(`scrub: rule ${rule.id} gave a span outside the text`);
+      if (hit.end > hit.start) hits.push({ hit, rule, order });
+    }
+    if (performance.now() - began > SCRUB_BUDGET_MS) throw new Error("scrub: over its time budget");
+  }
+  hits.sort((a, b) => a.hit.start - b.hit.start || b.hit.end - a.hit.end);
+  const stronger = (a: (typeof hits)[number], b: (typeof hits)[number]): boolean => {
+    const restorable = Number(RESTORABLE[a.rule.kind]) - Number(RESTORABLE[b.rule.kind]);
+    if (restorable) return restorable < 0;
+    const length = a.hit.end - a.hit.start - (b.hit.end - b.hit.start);
+    if (length) return length > 0;
+    const rank = KIND_RANK[a.rule.kind] - KIND_RANK[b.rule.kind];
+    return rank ? rank < 0 : a.order < b.order;
+  };
+  const cuts: Cut[] = [];
+  for (let at = 0; at < hits.length; ) {
+    let best = hits[at]!;
+    let end = best.hit.end;
+    let next = at + 1;
+    for (; next < hits.length && hits[next]!.hit.start < end; next++) {
+      const hit = hits[next]!;
+      end = Math.max(end, hit.hit.end);
+      if (stronger(hit, best)) best = hit;
+    }
+    const start = hits[at]!.hit.start;
+    const { rule } = best;
+    cuts.push({ rule: rule.id, kind: rule.kind, restorable: RESTORABLE[rule.kind], start, end, shape: shapeOf(rule, text.slice(start, end)) });
+    at = next;
+  }
+  return cuts;
+}
+
+const countsOf = (cuts: readonly Cut[]): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const cut of cuts) counts[cut.rule] = (counts[cut.rule] ?? 0) + 1;
+  return counts;
+};
+
+/** `scrub` over `rules` in place of SCRUB_RULES: the engine, for a test that injects a rule. */
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions & { mode: "count" }): Promise<ScrubCount>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions & { mode: "cut" }): Promise<ScrubResult>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult> {
+  if (opts.mode === "count") {
+    // A throw here rejects: a scorer must never read an error as zero cuts.
+    const cuts = await cutsOf(rules, text, contextOf(text, opts));
+    return { counts: countsOf(cuts), cuts };
+  }
+  try {
+    const ctx = contextOf(text, opts);
+    const cuts = await cutsOf(rules, text, ctx);
+    let out = "";
+    let from = 0;
+    const made: Cut[] = [];
+    for (const cut of cuts) {
+      const value = text.slice(cut.start, cut.end);
+      // RESTORABLE, never the cut's own field, decides whether `keep` is asked at all.
+      const kept = RESTORABLE[cut.kind] && opts.keep !== undefined && opts.keep(Object.freeze({ ...cut })) === true;
+      out += text.slice(from, cut.start);
+      const outStart = out.length;
+      out += kept ? value : marker(cut, value);
+      made.push({ ...cut, outStart, outEnd: out.length, ...(kept ? { kept: true as const } : {}) });
+      from = cut.end;
+    }
+    out += text.slice(from);
+    await assertClean(rules, out, ctx);
+    return { ok: true, text: out, cuts: made, counts: countsOf(made) };
+  } catch {
+    // Fails closed: whatever threw, no text, no cut, no count leaves.
+    return { ok: false, counts: {} };
+  }
+}
+
+/** Cut `text` of every rule's finds ("cut": the text, its cuts and counts; on ANY error `{ok:false}` and no text), or
+ *  count them ("count": counts and cuts, never text). Async: secretlint's pass is. */
+export function scrub(text: string, opts: ScrubOptions & { mode: "count" }): Promise<ScrubCount>;
+export function scrub(text: string, opts: ScrubOptions & { mode: "cut" }): Promise<ScrubResult>;
+export function scrub(text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult>;
+export function scrub(text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult> {
+  return scrubWith(SCRUB_RULES, text, opts);
+}
+
+function contextOf(text: string, opts: ScrubOptions): ScrubContext {
+  const held = [...new Set((opts.held ?? []).filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET))];
+  let lint: Promise<string[]> | undefined;
+  return { held, path: opts.path, lint: () => (lint ??= secretsIn(text)) };
+}
+
+/** What a cut text must not hold: a known format the rules still find (each cut read as a blank, so a cut's own marker
+ *  is never one), or a held value in a form no rule cut in place (split by whitespace, partly encoded: valueMatcher's
+ *  views, each cut read as a character no form holds). Either throws, and cut mode fails closed. */
+async function assertClean(rules: readonly ScrubRule[], out: string, ctx: ScrubContext): Promise<void> {
+  const blanked = out.replace(MARKER, " ");
+  const again: ScrubContext = { held: [], lint: async () => [] };
+  for (const rule of rules) {
+    if (rule.kind === "format" && (await rule.find(blanked, again)).some((hit) => hit.end > hit.start)) throw new Error(`scrub: ${rule.id} still finds a value`);
+  }
+  if (ctx.held.length && valueMatcher(ctx.held)(out.replace(MARKER, "\u0000"))) throw new Error("scrub: a held value is left");
 }

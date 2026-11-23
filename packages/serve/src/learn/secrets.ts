@@ -36,8 +36,9 @@ const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}
 /** A UK sort code beside its word: three pairs of digits. */
 const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/i;
 
-/** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
-const SHAPES: readonly (readonly [string, RegExp])[] = [
+/** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses, and the scrubber's
+ *  known-format rules (secret-rules.ts). */
+export const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
   ["Google API key", /AIza[0-9A-Za-z_-]{35}/],
   ["private key block", /-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----/],
@@ -76,10 +77,10 @@ const MONEY_SHAPES: readonly (readonly [string, RegExp])[] = [
 /** The kinds of text in `text` learning never keeps: every secret shape, and a bank's numbers beside their words. */
 export const learnedSecretShapes = (text: string): string[] => [...secretShapes(text), ...MONEY_SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind)];
 
-type Span = [start: number, end: number];
+export type Span = [start: number, end: number];
 
 /** Every place `pattern` matches in `text`, overlapping places included. */
-function spans(text: string, pattern: RegExp): Span[] {
+export function spans(text: string, pattern: RegExp): Span[] {
   const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
   const out: Span[] = [];
   const expressions: Span[] = pattern === URL_PASSWORD ? [...text.matchAll(SED_URL_CAPTURE)].map(match => [match.index!, match.index! + match[0].length]) : [];
@@ -204,6 +205,15 @@ function derivedOf(values: readonly string[]): Derived {
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
+}
+
+/** Every place a form of `values` stands in `text`, as redactSecrets finds them: each value as written, as JSON writes
+ *  it, its path spellings, plain needles (base64 at each alignment) and percent forms, its hex in any case and its hex
+ *  identifiers folded. The scrubber's held rule (secret-rules.ts) cuts these; a form found nowhere as it stands (split
+ *  by whitespace, partly encoded) is still seen by valueMatcher over what is left. */
+export function heldSpans(text: string, values: readonly string[]): Span[] {
+  const { forms, hexes, folds } = derivedOf(values);
+  return [...forms.flatMap((form) => places(text, form)), ...hexes.flatMap((hex) => spans(text, hex)), ...folds.flatMap((fold) => spans(text, fold))];
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
