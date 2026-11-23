@@ -45,10 +45,10 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
   const harnesses = new Map<string, { sessions: number; requests: number; tokens: number }>();
   const models = new Map<string, { requests: number; tokens: Tokens; cost: number }>();
   const sources = new Map<string, { sessions: number; requests: number }>();
-  // One request's list price in USD, undefined when it cannot be priced: the catalog's unless the caller prices it.
-  const price = options.price ?? ((model: string | undefined, usage: Usage) => (prices ? priceRequests([{ ...(model ? { model } : {}), usage }], prices) : undefined));
-  const pending: Promise<void>[] = [];
-  const harnessOf = (source: string) => (READERS as Record<string, { harness: string } | undefined>)[source]?.harness ?? source;
+  // The usage of each model's requests of the year, priced once the read is over (a rejection of the price then rejects
+  // this call, with no promise left floating), and each request that carries none, which no price can cover.
+  const usages = new Map<string, Usage[]>();
+  const harnessOf = (source: string) => ((options.readers ?? READERS) as Record<string, { harness: string } | undefined>)[source]?.harness ?? source;
   await parseHome(home, {
     ...options,
     requests: (totals, requests, started) => {
@@ -79,14 +79,34 @@ export async function wrappedHome(home: string, year: number, options: Omit<Pars
         m.requests += 1;
         if (r.usage) addTokens(m.tokens, r.usage);
         if (i > 0 && r.at - mine[i - 1]!.at < ACTIVE_GAP_MS) out.activeMs += r.at - mine[i - 1]!.at;
-        // Priced after the read, one request at a time: a model the catalog does not list leaves only its own out.
-        if (held > 0 && (prices || options.price)) pending.push(Promise.resolve(price(r.model, r.usage!)).then((usd) => void (usd === undefined ? (out.unpricedRequests += 1) : ((out.cost += usd), (m.cost += usd)))));
-        else if (held > 0) out.unpricedRequests += 1;
+        // A request with no usage (pi leaves it off an aborted request) is unpriced; known zero usage is free and priced.
+        if (r.usage) by(usages, r.model ?? "unknown", () => []).push(r.usage);
+        else out.unpricedRequests += 1;
       }
     },
   });
-  await Promise.all(pending);
   const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  // One price per model: the caller's per request, or the catalog's over all of the model's requests at once (one rounding
+  // of the model's sum, so many requests of a fraction of a cent each still add up). A model it cannot price leaves only
+  // its own requests out, counted in `unpricedRequests`.
+  for (const [model, list] of usages) {
+    const known = model === "unknown" ? undefined : model;
+    let usd: number | undefined;
+    if (options.price) {
+      // The caller's price answers per request: one it cannot price is left out alone.
+      for (const usage of list) {
+        const one = await options.price(known, usage);
+        if (one === undefined) out.unpricedRequests += 1;
+        else usd = (usd ?? 0) + one;
+      }
+      if (usd === undefined) continue;
+    } else if (prices) usd = await priceRequests(list.map((usage) => ({ ...(known ? { model: known } : {}), usage })), prices);
+    if (usd === undefined) out.unpricedRequests += list.length;
+    else {
+      out.cost += usd;
+      models.get(model)!.cost = usd;
+    }
+  }
   out.cost = round(out.cost);
   out.days = [...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([d, v]) => ({ day: d, ...v }));
   out.harnesses = [...harnesses].map(([harness, v]) => ({ harness, ...v })).sort((a, b) => b.tokens - a.tokens || (a.harness < b.harness ? -1 : 1));
