@@ -23,7 +23,8 @@
 //   was, or fenced until the next rewrite or reset; a chain built leaves MOVED_FILE out;
 // - tidy: what a rewrite cut short after moving main kept of the old history removed (the local folder's refs, reflog
 //   and loose objects; code.storage's old repository), or a retryable error while it can't be: a purge sent again
-//   finds its marker and tidies;
+//   finds its marker and tidies. Until then neither holds the old history: the local folder holds only commits main
+//   reaches while its tidy mark is there, and code.storage reads the agent's new generation alone;
 // - remove: every commit gone (a reset, an agent's or a person's erasure); the next save makes the store again, empty.
 //   Removing a store that is gone already is done. `erase` (an agent's delete): nothing of the agent is left in the
 //   store at all, code.storage's every repository generation included.

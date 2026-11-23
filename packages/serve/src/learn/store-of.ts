@@ -12,8 +12,9 @@ export { CODE_STORAGE_ENV };
 import { localLearningStore } from "./store-local.js";
 
 /** code.storage's settings: the org, its signing key, the API's base URL (absent: `https://api.<org>.code.storage`), this
- *  server's id (the repository's middle part), each agent's repository generation (absent: kept in this process alone),
- *  and a `fetch` in place of the network (tests). */
+ *  server's id (the repository's middle part, kept in the server's store: a store copied to another server shares it,
+ *  and with the same org's key reaches the original's repositories, README "code.storage"), each agent's repository
+ *  generation (absent: kept in this process alone), and a `fetch` in place of the network (tests). */
 export type CodeStorageSettings = { name: string; key: string | KeyObject; apiUrl?: string; serverId: () => Promise<string>; fetch?: typeof fetch; generations?: Generations };
 
 /** code.storage's environment set wrong: one of its name and key without the other, or a value it can't take. */

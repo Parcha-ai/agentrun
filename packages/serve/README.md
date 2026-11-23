@@ -4013,8 +4013,10 @@ never gets one. The server and its runners are its only writers. Two stores keep
 - **code.storage**, when the server and each runner are started with `AGENTRUN_CODE_STORAGE_NAME` (the org's name) and
   `AGENTRUN_CODE_STORAGE_KEY` (its signing key, a PEM, held as every secret is: never logged, never in a command line),
   and `AGENTRUN_CODE_STORAGE_API_URL` when the API is not `https://api.<org>.code.storage`: one repository an agent,
-  `agentrun-<server id>-<agent id>-g<generation>` (the server id is 12 hex digits; the generation, a setting of the
-  server's store, moves on at each reset or run purge), which runners on other hosts reach as the server does. Every
+  `agentrun-<server id>-<agent id>-g<generation>` (the server id is 12 hex digits; an agent id of lowercase letters,
+  digits, dashes and underscores stands as it is, any other as `h-<its start, lowercased>-<24 hex digits of its
+  SHA-256>`, so no two agents' repositories differ by case alone; the generation, a setting of the server's store,
+  moves on at each reset or run purge), which runners on other hosts reach as the server does. Every
   call checks the repository it names starts `agentrun-<12 hex digits>-`, and none lists repositories, so the org's
   other repositories are never touched. The start says it in one line, `learning: on code.storage (org <name>), one
   repository per agent: agentrun-<server id>-<agent>-g<generation>` (no key, no token). The name turns it on: the key or
@@ -4025,6 +4027,11 @@ never gets one. The server and its runners are its only writers. Two stores keep
   ```sh
   AGENTRUN_CODE_STORAGE_NAME=example-org AGENTRUN_CODE_STORAGE_KEY="$(cat key.pem)" node packages/serve/dist/cli.js
   ```
+
+  The server id is kept in the server's own store (its `server_id` setting), so a store copied to another server (a
+  staging server restored from production's) carries the same id, and with the same org's key that server reads and
+  writes the original's repositories: its resets, purges and agent deletes rewrite and delete them. Start a copy with
+  another org's key, or without these settings.
 
 Moving from one to the other moves nothing: an agent starts again with nothing learned in the store it is started
 with.

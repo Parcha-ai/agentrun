@@ -356,7 +356,9 @@ cut, and a commit left with nothing of its own dropped. A learned workflow file 
 merge on when the run's merge wrote it last: each merge's marker lists the paths it wrote (`{"v":1,"wrote":[...]}`,
 `store.ts` runMarkerText), whether or not their bytes changed, a hand commit owns nothing, and the purged run's own
 markers are rewritten to list none; a marker of an earlier release, with no list, falls back to the merge whose diff
-changed the file's bytes last. A history read that does not start at main refuses the purge, nothing rewritten. One
+changed the file's bytes last. A history read that does not start at main, or whose commits do not chain (each the
+parent of the one before, the oldest with none), refuses the purge, retryable, nothing rewritten; so does a code.storage
+listing page that says there is more with no cursor to read it by. One
 host commit on top adds `.agentrun/purged/<run>`, so no
 round of the run merges again and a purge sent again does nothing. The store's `rewrite` moves main to the new chain
 by compare and swap on the head the purge read, and leaves no byte of the old one: the local folder imports the chain
@@ -369,7 +371,8 @@ compare and swap on the head it built from): a save that landed since makes the 
 and keeps it), and a save on the fenced main is stale, so no save is reported saved into a repository then deleted. A
 purge sent again finds its marker and has the store `tidy` (the local folder prunes when a rewrite stopped after moving
 main left its mark, keeping an import another run's commit makes on main, and a commit whose import a rewrite removed
-is stale; code.storage deletes an old repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
+is stale; while the mark is there it holds only commits main reaches, so no read, seed or `same` finds the old history;
+code.storage deletes an old repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
 server moves the agent's promotion records' commits by it. A promote record whose commit no longer holds its
 revision's text is refused by every champion reader (`promote.ts` refusedOf, refused too when the read fails), so the
 champion promoted before it serves again; a hold at such a commit is refused the same way, so no compile revises the
@@ -380,7 +383,9 @@ leaves the one before every champion its run wrote; a promote recorded later at 
 as a hold, and a replay check for one is refused. What it costs the
 owner: every commit id changes; on code.storage about 0.3 s a
 commit (the local folder is fast), learning waiting meanwhile; a run in flight merges nothing, as after a reset; every
-other run's history and diffs stay. A run's diff is found by its marker, so it survives the rewrite.
+other run's history and diffs stay. A run's diff is found by its marker, so it survives the rewrite. The erasure's
+limit: a later run whose merge writes the purged run's exact bytes again (the same line, the same workflow file) keeps
+them, as its own.
 
 ## The reset
 
