@@ -6,6 +6,13 @@
 // (RFC 1918, 100.64.0.0/10, fc00::/7), still only over https; loopback, link-local (cloud metadata among it, and the
 // metadata services inside those ranges), unspecified, multicast, broadcast, reserved and this machine's own addresses
 // stay refused whatever the list says.
+//
+// Above the owner, the operator (AGENTRUN_PRIVATE_HOSTS, read from each process's own environment at each use, so a
+// server and each of its runners hold to their own): unset, the owner's list holds as above (a machine one owner uses);
+// `none`, no owner's list is read and none can be saved, so nothing of an MCP server or a calendar reaches a private
+// network (a runner many customers share, whose private network is the platform's own); or a comma list of ranges
+// (`10.20.0.0/16,fd12:3456::/32`) a listed host's every address must also fall in. A value that is neither is read as
+// `none` (fail closed), and the capabilities' switches show it.
 import net from "node:net";
 import os from "node:os";
 import { invalid, type InputIssue } from "./errors.js";
@@ -30,6 +37,45 @@ ALLOWABLE.addSubnet("fc00::", 7, "ipv6");
 
 const familyOf = (address: string) => (net.isIPv6(address) ? "ipv6" : "ipv4");
 
+/** The operator's bound on the owner's private hosts, read from the environment of the process that dials. */
+export const PRIVATE_HOSTS_ENV = "AGENTRUN_PRIVATE_HOSTS";
+
+/** What the operator set: the owner's list as it is (`owner`, unset), no owner's list (`none`, also for a value that is
+ *  neither: `invalid` names why), or the ranges a listed host must also resolve in. */
+export type PrivateHostsBound =
+  | { readonly mode: "owner" }
+  | { readonly mode: "none"; readonly invalid?: string }
+  | { readonly mode: "ranges"; readonly ranges: readonly string[]; readonly list: net.BlockList };
+
+/** The operator's bound as `env` sets it (PRIVATE_HOSTS_ENV). */
+export function privateHostsBound(env: NodeJS.ProcessEnv = process.env): PrivateHostsBound {
+  const raw = env[PRIVATE_HOSTS_ENV]?.trim();
+  if (!raw) return { mode: "owner" };
+  if (raw === "none") return { mode: "none" };
+  const list = new net.BlockList();
+  const ranges: string[] = [];
+  for (const entry of raw.split(",").map((one) => one.trim()).filter(Boolean)) {
+    const match = /^([^/]+)\/(\d{1,3})$/.exec(entry);
+    const family = match ? net.isIP(match[1]!) : 0;
+    const bits = match ? Number(match[2]) : NaN;
+    if (!match || family === 0 || bits > (family === 4 ? 32 : 128)) return { mode: "none", invalid: `${PRIVATE_HOSTS_ENV}: ${entry} is not an address range such as 10.20.0.0/16 (or none); read as none` };
+    list.addSubnet(match[1]!, bits, family === 4 ? "ipv4" : "ipv6");
+    ranges.push(entry);
+  }
+  if (!ranges.length) return { mode: "none", invalid: `${PRIVATE_HOSTS_ENV}=${raw} names no range; read as none` };
+  return { mode: "ranges", ranges, list };
+}
+
+/** The bound as the capabilities' switches show it: unset (null), `none`, or the ranges; a value read as none says so. */
+export const privateHostsSwitchValue = (env: NodeJS.ProcessEnv = process.env): string | null => {
+  const bound = privateHostsBound(env);
+  return bound.mode === "owner" ? null : bound.mode === "none" ? (bound.invalid ? `none (${bound.invalid})` : "none") : bound.ranges.join(",");
+};
+
+/** Why an owner's list cannot be saved under the operator's bound, or undefined when it can. */
+export const ownerListRefused = (env: NodeJS.ProcessEnv = process.env): string | undefined =>
+  privateHostsBound(env).mode === "none" ? `This server's operator allows no private-network host (${PRIVATE_HOSTS_ENV}=none): an MCP server or a calendar is reached on a public address alone.` : undefined;
+
 /** The cloud metadata services inside ALLOWABLE (AWS's over IPv6 in fc00::/7, Alibaba Cloud's in 100.64/10): never
  *  allowable whatever the list says. The rest (169.254.169.254 among them) are link-local, outside it already. The same
  *  addresses the computer's egress table refuses (packages/computer/src/docker/egress-table.ts). */
@@ -48,8 +94,11 @@ export function localAddresses(): string[] {
 
 /** Whether a private address `address`, which a listed host resolves to, may be dialled: only in ALLOWABLE, and never one
  *  of `own` (this machine's addresses, and this server's own; an IPv4-mapped form is the same address). */
-export function privateAllowed(address: string, own: readonly string[]): boolean {
+export function privateAllowed(address: string, own: readonly string[], env: NodeJS.ProcessEnv = process.env): boolean {
   if (!inAllowableRange(address)) return false;
+  const bound = privateHostsBound(env);
+  if (bound.mode === "none") return false;
+  if (bound.mode === "ranges" && !bound.list.check(address, familyOf(address))) return false;
   const mine = new net.BlockList();
   for (const one of own) if (net.isIP(one)) mine.addAddress(one, familyOf(one));
   return !mine.check(address, familyOf(address));
@@ -64,7 +113,9 @@ function hostsOf(value: unknown): string[] {
 /** The private-network hosts the owner allows an authorization server, or an MCP server itself (mcp-oauth.ts
  *  mcpServerAt), on: read from the store at each use, so a host removed is refused from the next request on. The one read
  *  of the setting, for the server's sign-in, preview, save and refresh and the runner's token refresh and calls alike. */
-export async function privateOAuthHosts(store: { settings: Pick<Settings, "get"> }): Promise<string[]> {
+export async function privateOAuthHosts(store: { settings: Pick<Settings, "get"> }, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  // The operator's `none`: the owner's list is not read, so no host of it is allowed anywhere this process dials.
+  if (privateHostsBound(env).mode === "none") return [];
   return hostsOf(await store.settings.get(MCP_PRIVATE_HOSTS_KEY));
 }
 
@@ -131,13 +182,16 @@ function entryOf(value: unknown, field: string): { host: string } | { issue: Inp
 
 /** A PUT body `{ hosts }` checked: the list as kept (each entry hostKey'd, the first of any repeat kept), or 422 with
  *  every entry that is not a host name or an IP address on a private network, in words. */
-export function checkPrivateHosts(body: Record<string, unknown>): string[] {
+export function checkPrivateHosts(body: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): string[] {
   const issues: InputIssue[] = unknownFields(body, ["hosts"]);
   const { hosts } = body;
   if (!Array.isArray(hosts)) {
     issues.push({ field: "hosts", reason: hosts === undefined ? "missing" : "wrong_type", message: "hosts is a list of host names or IP addresses (an empty list allows none)." });
     throw invalid(issues);
   }
+  // Under the operator's `none` only the empty list is saved: an owner's host would never be allowed.
+  const refused = hosts.length ? ownerListRefused(env) : undefined;
+  if (refused) throw invalid([{ field: "hosts", reason: "not_an_option", message: refused }]);
   if (hosts.length > MAX_PRIVATE_HOSTS) issues.push({ field: "hosts", reason: "too_long", message: `hosts holds at most ${MAX_PRIVATE_HOSTS} hosts; it holds ${hosts.length}.` });
   const kept: string[] = [];
   hosts.forEach((value, i) => {

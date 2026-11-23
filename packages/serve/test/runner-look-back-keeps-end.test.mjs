@@ -109,13 +109,25 @@ async function world(t) {
       ...(spec.endCost && !spec.endPatch ? { endCost: async () => (await before(), spec.endCost()) } : {}),
     };
   };
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
-  /** The runner lost (closed for a shutdown: its claims given back, nothing ended) and another started on the same data,
-   *  which claims what it held. */
-  const restart = async () => {
-    await runner.close();
-    runner = startRunner({ store, name: "runner-b", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  /** Called with each stop the runner hands a loop (its command poll took a stop or cancel row), once the loop has it. */
+  let stopped = () => {};
+  /** The adapter loop, its clock `ahead` ms past the test's, told to `stopped` as it receives a stop. */
+  const loopOf = (ahead = 0) => {
+    const make = createAdapterLoop(specOf, ahead ? { now: () => Date.now() + ahead } : {});
+    return (deps) => {
+      const loop = make(deps);
+      return { ...loop, stop: (reason) => { const done = loop.stop(reason); stopped(reason); return done; } };
+    };
   };
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: loopOf() });
+  /** The runner lost (closed for a shutdown: its claims given back, nothing ended) and another started on the same data,
+   *  which claims what it held, its loop's clock `ahead` ms past the first's. */
+  const restart = async (ahead = 0) => {
+    await runner.close();
+    runner = startRunner({ store, name: "runner-b", ...TIMING, createLoop: loopOf(ahead) });
+  };
+  /** The next stop of a command row (a person's stop or cancel) a loop receives, its stop reason set. */
+  const stopReceived = () => new Promise((resolve) => (stopped = (reason) => void (reason.kind === "command" && resolve(reason))));
   /** Arms the hold: the next end-of-run step waits. `entered` once it does; `release()` lets it go. */
   const hold = () => {
     const mine = {};
@@ -158,7 +170,7 @@ async function world(t) {
     await endedPast(id);
     await hook.when((got) => got.some((one) => JSON.parse(one.body).type === "run.ended" && JSON.parse(one.body).data?.run_id === id), `${id}'s run.ended`);
   };
-  return { api, store, hook, hold, beforeEnd, restart, endedPast, start, grade, get, listed, timeline, endsTold, toldUpToNow };
+  return { api, store, hook, hold, beforeEnd, restart, stopReceived, endedPast, start, grade, get, listed, timeline, endsTold, toldUpToNow };
 }
 
 /** The two look-backs: a graded run's feedback round, and a fresh run's own end-of-run step. `open(w, id)` brings run `id`
@@ -246,14 +258,17 @@ for (const [name, open] of Object.entries(LOOK_BACKS)) {
     const { above, held } = await open(w, "run-race");
     const mid = await w.get("run-race");
     let cancel;
-    // As the end is written: the row lands, and the runner's command poll hands it on before the commit.
+    let received;
+    // As the end is written: the row lands, and the end waits until the runner's command poll has handed it to the loop.
     w.beforeEnd(async () => {
+      const receipt = w.stopReceived();
       cancel = await w.store.command("run-race", { kind: "cancel" });
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      received = await receipt;
     });
     held.release();
     const row = await w.endedPast("run-race", above);
     assert.ok(cancel, "the cancel landed as the end was written");
+    assert.equal(received?.commandId, cancel.id, "the loop had the cancel before the end committed");
     assert.deepEqual([row.state, row.outcome], ["ended", null], `the run ended on its job's end, not cancelled: ${JSON.stringify({ state: row.state, outcome: row.outcome, summary: row.summary })}`);
     assert.equal(row.endedAt, Date.parse(mid.ended_at));
     const after = await w.get("run-race");
@@ -314,9 +329,8 @@ for (const [name, open] of Object.entries(LOOK_BACKS)) {
     // Held before its first ask: the job's end is kept, no request of the look-back's is written yet.
     const mid = await w.get("run-lost");
     const lost = (await w.store.runs.get("run-lost")).epoch;
-    // Past the kept end's millisecond, so an end written again now reads later.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await w.restart();
+    // The next runner's clock a second ahead, so an end it worked out again reads later.
+    await w.restart(1_000);
     const row = await w.endedPast("run-lost", lost);
     assert.deepEqual([row.state, row.outcome], ["ended", null], `the run ended on its job's end: ${JSON.stringify({ state: row.state, outcome: row.outcome, summary: row.summary })}`);
     assert.equal(new Date(row.endedAt).toISOString(), mid.ended_at, "at the end time read while it looked back");

@@ -273,7 +273,11 @@ What each takes, from its environment alone:
 | `AGENTRUN_TOKEN` | optional | | The API token. Unset, the server makes one in `/data/.token` and prints it once. |
 | `AGENTRUN_TOKENS` | optional | | More API tokens, as `id:secret` entries separated by commas ([Rotating the API token](#rotating-the-api-token)). Any of them opens what the token opens; the log names the id used. A secret, like the token. |
 | Model keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `AGENT_MODEL`, ...) | optional | optional | The runner makes a run's model requests; the server checks a run's model can run before it starts it. Give the same ones to both. With none, Continue with ChatGPT in the console, or save a key there. |
-| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes alone, for a server behind its caller's backend: the console, sign-in, setup, settings, MCP, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
+| `COMPOSIO_API_KEY` | optional | optional | The Composio account key a Composio MCP server saved with `api_key_env` reads (server: the save's calls to Composio, a refresh and the delete's; runner: each run's MCP connection to Composio). A secret: the launcher hands it to each process over a pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP header of a Composio server the run is granted a tool of. Give the same to both; a new value takes effect when they start again. |
+| `AGENTRUN_LAUNCH_HOOK_URL` | optional | | The host's https address (plain http only to this machine): each trigger firing that would start a run is POSTed there, signed, and the host starts the run through the API ([Launch hook](../packages/serve/README.md#launch-hook)). Set with the secret below, or neither. |
+| `AGENTRUN_LAUNCH_HOOK_SECRET` | optional | | The `whsec_` secret the launch hook signs with. A secret: the server's alone, never a runner's or a run's. |
+| `AGENTRUN_API_ONLY` | optional | | `1` serves the run routes, a deploy's routes (a template's apply, an agent's read, revisions, rollback, archive and delete), the MCP servers' names, a Composio server's save (its key named by `api_key_env`, never in the request; a new name, or over a server the token saved) and the delete of a server the token saved alone, for a server behind its caller's backend: the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are `404`, and there are no accounts ([API only](../packages/serve/README.md#api-only)). Unset or `0`, the whole server. |
+| `AGENTRUN_RUN_KEYS` | optional | | `1`: a template's apply makes its agent though a tool key it declares is not set here, with a warning, and each run of that agent must bring the key in `keys` (409 without it). Keys the server holds are still used by runs that bring none. No trigger is made whose firings would run that agent without its keys, unless the launch hook starts them ([Per-run tool keys](../packages/serve/README.md#per-run-tool-keys)). Unset or `0`, off. |
 
 The server listens where `--listen` says: above, its container's own address (its hostname), where Docker publishes the
 port. A runner listens on nothing.
@@ -285,8 +289,69 @@ Runner runner-1 ready: store sqlite schema v<N>, <N> loops
 Runner runner-1 memory: <N> MiB for runs, each weighed by its harness
 ```
 
-The memory is its host's, or its container's limit, less 128 MiB kept for the process itself. From then it writes its heartbeat, `/data/runner-<name>.alive`, as its loop turns. `runner --check --data /data --name
-<name>` exits 0 while the heartbeat is younger than 20 s: that is a runner's health check.
+The memory is its host's, or its container's limit, less 128 MiB kept for the process itself. From then it writes its
+heartbeat, `/data/runner-<name>.alive`, as its loop turns. `runner --check --data /data --name <name>` checks the
+runner's environment ([The runner's environment](#the-runners-environment-runner---check)) and that the heartbeat is
+younger than 20 s, and exits 0 only when both hold: that is a runner's health check.
+
+### A runner on a disk of its own
+
+A runner needs no share of the server's disk when the store is Postgres and runs' folders are on Archil (Mode 2: the
+Archil settings saved, or `AGENTRUN_ARCHIL_REGION` and `AGENTRUN_ARCHIL_S3_URL` set on both). Start it with
+`AGENTRUN_STORE_URL`, `AGENTRUN_SEAL_KEY` and a `--data` of its own, a local directory: it holds only the runner's
+heartbeat, its runs' uid slots, their scratch and the harnesses it installs at a claim. It never reads the server's.
+
+The server keeps an id of its data root in `/data/data-root.id` and says it in the store at each start; a runner whose
+`--data` holds another id, or none, is a runner on a disk of its own. While the server is in Mode 1 (no Archil
+settings), each run's folder is on the server's disk, which such a runner can't reach, so it claims nothing and says why,
+on its log and to the server:
+
+```
+agentrun-serve runner: Runner runner-1 claims nothing: this runner's data directory is not the server's, and the server keeps each run's folder on its own disk (Mode 1: the server holds no Archil settings, saved or in its environment), which this runner can't reach. Save the Archil settings so runs' folders are on Archil (Mode 2), or start the runner on the server's data directory.
+```
+
+It never fails a run for that. Runs wait for a runner on the server's data directory; while every runner there refuses,
+the server refuses a new run (`503 runner_refused`, in the runner's words) and fails the runs still queued, as it does for
+any runner that can't serve. The runner checks again every 5 s, and claims again once the Archil settings are saved. The
+mode is the server's, never the runner's: Archil settings in a runner's environment alone do not let it claim, and a
+runner that lacks them while the server has them in its own environment claims nothing and says to hand them over. A
+store whose server is older than this release has said no data root, and every runner is taken as sharing its disk, as
+before. A run's uploads (`file_ids`) need no disk of the server's in Mode 2: the server keeps them on its Archil disk and
+places them in the run's folder at its start (changes/uploads-on-archil.md). Not on a disk of its own yet: screen
+recordings, which the runner writes on its own disk where the server does not serve them.
+
+### The runner's environment: `runner --check`
+
+`agentrun-serve runner --check --env [--data D]` checks what a runner needs from its environment and prints one line per
+name, never a value, then the outcome. It exits 0 when nothing is missing or bad, 1 otherwise (each gap on stderr too),
+and 2 for bad arguments. Run it through the launcher, as the runner runs, so it reads the secrets the runner would; it
+opens the store with one connection and closes it.
+
+| Name | Checked |
+| --- | --- |
+| `AGENTRUN_STORE_URL` | The store opens, at a schema this runner knows. Unset, a SQLite store in `--data` (the server's) counts. |
+| `AGENTRUN_SEAL_KEY` | It is the key the store's secrets are sealed under. Unset, the key file in `--data` counts. |
+| `AGENTRUN_STORE_POOL_SIZE` | Only when set: a whole number from 1 to the store's most, as the runner's start takes it. The check itself opens one connection. |
+| Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, the Composio account key (`COMPOSIO_API_KEY`, which a claim sends as a granted Composio server's MCP header), each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
+| Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
+| `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
+| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (the region and an https S3 URL set together), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
+
+```
+ok      AGENTRUN_STORE_URL  the store opens: postgres, schema v23
+ok      AGENTRUN_SEAL_KEY   the store's seal key
+ok      ANTHROPIC_BASE_URL  the server holds it, and so does this runner
+missing MONID_API_KEY       the server holds it and a run's claim reads it here: hand it to this runner too
+ok      ANTHROPIC_BASE_URL  on this machine's loopback, and a forwarder answers there
+ok      start               the runner's start takes its settings: run slots, drain, free-model requests, Archil, run isolation
+Runner environment: 1 gap: MONID_API_KEY
+```
+
+Without `--env`, `runner --check --data D --name N` checks the same environment and the heartbeat: use it as the
+runner's readiness check and the deploy's gate. Its environment check opens the store, so a store that does not answer
+fails it. For a liveness check that restarts a runner, use `runner --check --heartbeat --data D --name N`: the heartbeat
+alone, with no store and no secret, so a database blip does not restart every runner. Start the server of the release
+first: it says its names at its start.
 
 A runner exits with:
 
@@ -294,8 +359,21 @@ A runner exits with:
 | --- | --- |
 | 0 | It was stopped (SIGTERM or SIGINT) and handed its runs back. |
 | 2 | Bad arguments. |
-| 3 | The store's schema is one it does not know, or the store is not set up yet. Start the server first; run a runner of the server's release. |
+| 3 | It can't run on the store's schema. The store isn't set up yet, or the server hasn't migrated it to this runner's version yet (start the server first), or the store's runner floor is above this runner's version (run a runner of the server's release). A runner checks the floor at its start and every 10 s after. When the floor rises while it runs, it first claims nothing more, drains and hands its runs back. |
 | 1 | Anything else. |
+
+**Upgrading on Postgres.** Deploy the server first: it migrates the store under the running runners, then roll the
+runners. A runner opens a store a later server migrated as long as the store's runner floor is at most this runner's
+schema version. Additive migrations leave the floor where it was, so the earlier runners keep running. A migration marked
+breaking raises the floor, and each earlier runner then stops as above and exits 3. It notices at its next floor read,
+up to 10 s after the migration commits, and keeps claiming until then; its drain and its hand-back then run its own
+release's statements on the new schema. That is safe when the breaking migration is the cleanup a release later, which
+removes only what the runners of the release before it no longer use (CONTRIBUTING.md). A hand-back that fails leaves
+its runs to the claim's lease, which another runner takes when it lapses. To check a store before a deploy,
+`agentrun-serve store-schema` prints its schema version and runner floor beside the version this build knows, as one
+line of JSON, and changes nothing. A running server reports the same values in `GET /v2/capabilities` (`store_schema`).
+`agentrun-serve store-schema --build` prints only the build's own versions, with no store. Never deploy a server whose
+build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands
@@ -347,6 +425,15 @@ private network of their own, as this stack does. The attach relay's `ws://` hop
 made a dial computer, carries that machine's bearer token over the same private network, so the same rule covers it.
 With neither setting, viewers stay on loopback, which is right when
 the server and its runner share a machine (the default image's command).
+
+**Runners as replicas.** Runners that are instances of one deployment (pods of a Kubernetes deployment, a platform
+service's instances) have no host name of their own that the server resolves, and a new address at each start. Give both
+settings the IPv4 block their addresses come from, such as a cluster's pod range, `AGENTRUN_RUNNER_LIVE_HOST=10.0.0.0/14`
+on each runner and `AGENTRUN_RUNNER_HOSTS=10.0.0.0/14` on the server. Each runner answers at its own address in the
+block (its one network interface address there; a runner with none, or with several, is refused at its start and fails
+`runner --check`), and the server dials any IPv4 address in the block, never one outside it. A block takes its network
+address and a prefix from /8 to /32. The block widens what a store row can make the server dial from a list of names to
+that network, so name the runners' network alone; every request on it still carries the proof.
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
 

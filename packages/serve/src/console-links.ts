@@ -7,3 +7,5 @@ export const agentLink = (origin: string, agentId: string): string => `${origin}
 // A template package's apply page; for a package not stored (a dry run), the install page, which shows it whole first.
 export const templateLink = (origin: string, id: string): string => `${origin}/#/templates/${encodeURIComponent(id)}`;
 export const templateInstallLink = (origin: string, source: string): string => `${origin}/#/templates/install?src=${encodeURIComponent(source)}`;
+// The templates page: where an upload's dry run (nothing stored, nothing on GitHub to read again) sends a person.
+export const templatesLink = (origin: string): string => `${origin}/#/templates`;

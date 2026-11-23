@@ -4,56 +4,33 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { removeAtEnd } from "./support.mjs";
+import { scratch as scratchOf, server } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 const ROOT = new URL("../../../", import.meta.url).pathname;
 const GENERATOR = join(ROOT, "scripts", "generate-clients.mjs");
 const TABLE = join(ROOT, "packages", "agentrun", "lib", "commands.generated.mjs");
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
-/** No box: unset, AGENTRUN_BOXES turns Docker on where it answers, which a CI runner's does (boxes.ts). */
-const NO_BOXES = { AGENTRUN_BOXES: "none" };
 
-function scratch(t) {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-cli-"));
-  removeAtEnd(dir);
-  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name))), ...NO_BOXES };
-  return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
-}
+const scratch = () => scratchOf("cli");
 
-/** A port nothing listens on. */
-async function closedPort() {
-  const server = createServer();
+/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
+ *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). `connections()` counts them. The CLI must run
+ *  beside it (`run`, not a blocking spawnSync) whenever it may connect. */
+async function dropping(t) {
+  let connections = 0;
+  const server = createServer((socket) => (connections++, socket.destroy()));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, connections: () => connections };
 }
 
-/** The server on `data`, with a faux model; resolves once it wrote DIR/.server.json. */
-async function serve(t, dir, env) {
-  const faux = join(dir, "faux.mjs");
-  writeFileSync(faux, 'export default (context, faux) => faux.message("The answer is 42.");\n');
-  const data = join(dir, "data");
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  const exited = new Promise((resolve) => child.once("exit", (code) => resolve(code)));
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  let err = "";
-  child.stdout.resume();
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && child.exitCode === null, `the server started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return { child, exited, data, token: readFileSync(join(data, ".token"), "utf8").trim() };
-}
+/** The server on DIR/data with a faux model (support.mjs server). */
+const serve = (t, dir, env) => server(t, { data: join(dir, "data"), env, faux: 'export default (context, faux) => faux.message("The answer is 42.");\n' });
 
 /** A loopback HTTP server that records every request under its own random path prefix (part of `base`; a request's `url`
  *  is recorded without it) and answers with `answer(request)`: [status, type, bytes]. Anything else, such as another
@@ -92,8 +69,15 @@ function run(env, args, { input, extra = {}, timeout } = {}) {
   });
 }
 
+/** The CLI run to its end, blocking this process (spawnSync), its output kept in `seen`. `.beside` runs it without
+ *  blocking, for a call that reaches a listener in this process. */
 function cliOf(env, seen) {
-  return (args, { input, extra = {} } = {}) => {
+  const beside = async (args, options) => {
+    const done = await run(env, args, options);
+    seen.push(done.out, done.err);
+    return done;
+  };
+  return Object.assign((args, { input, extra = {} } = {}) => {
     // maxBuffer: `server openapi` prints the whole document, past spawnSync's 1 MiB default.
     const run = spawnSync(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, input, encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
     // A spawn that failed (a timeout, or output past maxBuffer: the CLI killed, its stdout cut short) is the test's failure,
@@ -101,8 +85,45 @@ function cliOf(env, seen) {
     assert.ifError(run.error);
     seen.push(run.stdout, run.stderr);
     return { code: run.status, out: run.stdout, err: run.stderr, json: () => JSON.parse(run.stdout) };
-  };
+  }, { beside });
 }
+
+test("CLI capture API commands resolve their documented noun and verb through the public bin", async (t) => {
+  const { env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"received":true}']);
+  const reference = readFileSync(new URL("../skills/agentrun-cli/references/commands.md", import.meta.url), "utf8");
+  const token = "capture-command-test-token";
+  const cases = [
+    { verb: "enroll", method: "POST", path: "/connections", body: { runtime: "codex", project: "/fixture/project" } },
+    { verb: "list", method: "GET", path: "/connections" },
+    { verb: "revoke", method: "DELETE", path: "/connections/connection-1", args: ["connection-1"] },
+    { verb: "start", method: "POST", path: "/connections/connection-1/runs", args: ["connection-1"],
+      body: { session_id: "session-1", turn_id: "turn-1", input: "Review the report.", instructions: "Keep it brief.", policy_complete: true },
+      flags: ["--idempotency-key", "source-turn-1"] },
+    { verb: "get", method: "GET", path: "/runs/run-1", args: ["run-1"] },
+    { verb: "events", method: "POST", path: "/runs/run-1/events", args: ["run-1"],
+      body: { sequence: 1, events: [{ type: "message", role: "user", text: "Review the report." }] } },
+    { verb: "complete", method: "POST", path: "/runs/run-1/complete", args: ["run-1"],
+      body: { status: "completed", answer: "Report ready.", evidence_complete: true } },
+  ];
+  for (const example of cases) await t.test(example.verb, async () => {
+    const args = ["cli-learning", example.verb, ...(example.args ?? []), ...(example.flags ?? []),
+      ...(example.body ? ["--body", JSON.stringify(example.body)] : []), "--base-url", server.base];
+    const before = server.requests.length;
+    const result = await run(env, args, { extra: { AGENTRUN_API_KEY: token }, timeout: 10_000 });
+    assert.equal(result.code, 0, result.err);
+    assert.deepEqual(JSON.parse(result.out), { received: true });
+    assert.equal(server.requests.length, before + 1, "one API request, with no local installer dispatch");
+    const request = server.requests.at(-1);
+    assert.equal(request.method, example.method);
+    assert.equal(request.url, `/v2/cli-learning${example.path}`);
+    assert.equal(request.headers.authorization, `Bearer ${token}`);
+    assert.equal(request.headers["idempotency-key"], example.verb === "start" ? "source-turn-1" : undefined);
+    assert.deepEqual(request.body.length ? JSON.parse(request.body.toString()) : undefined, example.body);
+    assert.doesNotMatch(result.out + result.err, new RegExp(token));
+    assert.ok(reference.includes(`### \`agentrun cli-learning ${example.verb}${example.args ? " " : "`"}`), "the generated reference advertises the invocation tested");
+  });
+});
 
 test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs and sends it a message, the token never in its output", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch(t);
@@ -193,10 +214,12 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.equal(oauthRaw.code, 2, oauthRaw.err);
   for (const run of [oauthCommand, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
-  const port = await closedPort();
-  const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
-  assert.equal(unreachable.code, 3);
-  assert.match(unreachable.err, /Cannot reach the server/);
+  const nobody = await dropping(t);
+  const unreachable = await cli.beside(["agents", "list", "--base-url", nobody.base], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(unreachable.code, 3, unreachable.err);
+  assert.match(unreachable.err, /Cannot reach the server at .+ \(UND_ERR_SOCKET\)/);
+  const reached = nobody.connections();
+  assert.ok(reached >= 1, "the request reached the listener");
   // 4: no token for a server named by URL, and a token the server refuses.
   const noToken = cli(["agents", "list", "--base-url", written.base_url]);
   assert.equal(noToken.code, 4);
@@ -205,8 +228,9 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.notEqual(server.token, "fake-test-key");
   assert.equal(wrong.code, 4);
   // The local server's token is never sent to another address.
-  const elsewhere = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`, ...data]);
-  assert.equal(elsewhere.code, 4);
+  const elsewhere = await cli.beside(["agents", "list", "--base-url", nobody.base, ...data]);
+  assert.equal(elsewhere.code, 4, elsewhere.err);
+  assert.equal(nobody.connections(), reached, "nothing was sent to the other address");
 
   for (const text of seen) assert.ok(!text.includes(server.token), "no output holds the token");
   server.child.kill("SIGTERM");
@@ -218,19 +242,21 @@ test("a stale DIR/.server.json is said plainly, exit 3; a server started with it
   const { dir, env } = scratch(t);
   const cli = cliOf(env, []);
   const record = join(dir, ".server.json");
-  const port = await closedPort();
+  const nobody = await dropping(t);
   const gone = spawnSync(process.execPath, ["-e", ""]).pid;
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: gone, token_file: join(dir, ".token") }), { mode: 0o600 });
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: gone, token_file: join(dir, ".token") }), { mode: 0o600 });
   writeFileSync(join(dir, ".token"), "ar_local_test_token_0123456789abcdef\n", { mode: 0o600 });
   const dead = cli(["agents", "list", "--data", dir]);
   assert.equal(dead.code, 3);
   assert.equal(dead.err, `The server recorded in ${record} (pid ${gone}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.\n`);
-  // A pid that is alive (another process took it) but no server at the address: the same.
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: process.pid, token_file: join(dir, ".token") }));
-  const silent = cli(["agents", "list", "--data", dir]);
-  assert.equal(silent.code, 3);
+  assert.equal(nobody.connections(), 0, "a dead pid is said before anything is sent");
+  // A pid that is alive (another process took it) but no server answers at the address: the same.
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: process.pid, token_file: join(dir, ".token") }));
+  const silent = await cli.beside(["agents", "list", "--data", dir]);
+  assert.equal(silent.code, 3, silent.err);
   assert.match(silent.err, /is not running/);
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: process.pid }));
+  assert.ok(nobody.connections() >= 1, "the request reached the listener");
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: process.pid }));
   const envToken = cli(["agents", "list", "--data", dir]);
   assert.equal(envToken.code, 4);
   assert.match(envToken.err, /set AGENTRUN_API_KEY/);
@@ -250,7 +276,7 @@ test("help: agentrun help lists the commands, a noun lists its verbs, a command'
   assert.match(cli(["--help"]).out, /^Usage: npx @parcha\/agentrun \[--port N\]/);
 });
 
-test("generate-clients --check passes on the committed table, and fails on a hand-edited table, a duplicate command or an operation gone", { timeout: 60_000 }, (t) => {
+test("generate-clients --check passes on the committed table, and fails on a hand-edited table, a duplicate command, an operation gone, or one left to a hand-written command that does not call it", { timeout: 60_000 }, (t) => {
   const { dir } = scratch(t);
   const check = (...args) => spawnSync(process.execPath, [GENERATOR, "--check", ...args], { encoding: "utf8", cwd: ROOT });
   const committed = check();
@@ -393,13 +419,13 @@ test("learning approve, which takes the owner's console session and refuses ever
   assert.doesNotMatch(cli(["learning"]).out, /approve/);
 });
 
-test("with no server at the address, the hint names --base-url for a server on another port", async (t) => {
+test("with no server answering at the address, the hint names --base-url for a server on another port", async (t) => {
   const { env } = scratch(t);
-  const port = await closedPort();
-  const down = await run(env, ["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
-  assert.equal(down.code, 3);
+  const nobody = await dropping(t);
+  const down = await run(env, ["agents", "list", "--base-url", nobody.base], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(down.code, 3, down.err);
   assert.match(down.err, /--base-url/);
-  assert.match(down.err, /ECONNREFUSED/);
+  assert.match(down.err, /UND_ERR_SOCKET/);
 });
 
 test("a reader that closes stdout early (| head) ends the command quietly, exit 0, no EPIPE on stderr", async (t) => {
@@ -650,14 +676,10 @@ test("no CLI command, the table's or a hand-written one, reaches an operation th
   const routeOf = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).filter(([, op]) => op?.operationId).map(([method, op]) => [op.operationId, `${method.toUpperCase()} ${path}`])));
   const { COMMANDS, SECRET_ROUTES } = await import(TABLE);
   assert.deepEqual(COMMANDS.filter((entry) => marked.includes(entry.operationId)).map((entry) => entry.command.join(" ")), [], "no table command");
-  const hand = [
-    ...(await import(join(ROOT, "packages", "agentrun", "lib", "login.mjs"))).SECRETS,
-    (await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT,
-    (await import(join(ROOT, "packages", "agentrun", "lib", "skill.mjs"))).SKILL_INSTALL,
-    ...Object.values(await import(join(ROOT, "packages", "agentrun", "lib", "template.mjs"))).filter((entry) => entry?.command),
-  ];
+  const hand = [(await import(join(ROOT, "packages", "agentrun", "lib", "follow.mjs"))).WAIT, ...(await import(join(ROOT, "packages", "agentrun", "lib", "local.mjs"))).LOCAL];
   const routes = marked.map((id) => routeOf.get(id));
-  assert.deepEqual(hand.filter((entry) => routes.some((route) => String(entry.route ?? "").startsWith(route))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
+  assert.ok(hand.some((entry) => entry.route), "the hand-written commands that call the API name their routes");
+  assert.deepEqual(hand.filter((entry) => [entry.route ?? []].flat().some((own) => routes.includes(own))).map((entry) => entry.command.join(" ")), [], "no hand-written command");
   // The raw `api` call still guards every secret route's body, a command's or not.
   assert.ok(SECRET_ROUTES.some((entry) => entry.operationId === "saveToolKey"), "a raw call to the tool key route is still guarded");
   // The API and the clients keep them: the routes answer the token in words (secret-writes.ts), and the client has the methods.
@@ -666,4 +688,114 @@ test("no CLI command, the table's or a hand-written one, reaches an operation th
   const help = spawnSync(process.execPath, [BIN, "help"], { encoding: "utf8" });
   assert.match(help.stdout, /Keys and other secrets are set in the console, signed in/);
   assert.doesNotMatch(help.stdout, /tool-keys[^\n]*\b(?:set|save|delete)\b/, "help lists no command that writes a key");
+});
+
+test("the API base: /v2 is added to an address whose path holds no v2 segment, a path prefix kept and the trailing slashes cut; the origin never changes", async () => {
+  const { apiBase } = await import("../lib/target.mjs");
+  assert.equal(typeof apiBase, "function", "target.mjs exports the one rule");
+  const cases = [
+    ["https://agents.example.test", "https://agents.example.test/v2"],
+    ["https://agents.example.test/", "https://agents.example.test/v2"],
+    ["https://agents.example.test/v2", "https://agents.example.test/v2"],
+    ["https://agents.example.test/v2///", "https://agents.example.test/v2"],
+    ["https://agents.example.test/prefix", "https://agents.example.test/prefix/v2"],
+    ["https://agents.example.test/prefix/", "https://agents.example.test/prefix/v2"],
+    ["https://agents.example.test/prefix/v2/", "https://agents.example.test/prefix/v2"],
+    ["http://127.0.0.1:7340", "http://127.0.0.1:7340/v2"],
+    // A base inside the API stays itself, as before; a segment that only holds v2 is not one.
+    ["https://agents.example.test/v2/settings", "https://agents.example.test/v2/settings"],
+    ["https://agents.example.test/v2x", "https://agents.example.test/v2x/v2"],
+    // Never re-serialized: the host's case and an explicit port are kept as given.
+    ["HTTPS://Agents.Example.Test:443/api", "HTTPS://Agents.Example.Test:443/api/v2"],
+  ];
+  for (const [given, base] of cases) {
+    assert.equal(apiBase(given), base, given);
+    assert.equal(apiBase(base), base, `${given}: the rule is idempotent`);
+    assert.equal(new URL(apiBase(given)).origin, new URL(given).origin, `${given}: same origin`);
+  }
+  for (const given of ["https://agents.example.test\\prefix", "https:agents.example.test", "http://[::1]:7340", "https://agents.example.test/v2/..", "https://agents.example.test/./x"]) {
+    assert.equal(new URL(apiBase(given)).origin, new URL(given).origin, `${given}: same origin`);
+  }
+});
+
+test("every way to name the server takes its address with or without /v2 and a trailing slash, its path prefix kept: the request goes to PREFIX/v2", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  // The listener answers under its own random prefix alone: a request that lost the prefix is a 404, never recorded.
+  const prefix = server.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  const sent = async (args, extra, label) => {
+    const before = server.requests.length;
+    const answered = await run(env, ["agents", "list", ...nowhere, ...args], { extra });
+    assert.equal(answered.code, 0, `${label}: ${answered.err}`);
+    assert.equal(server.requests.length, before + 1, label);
+    assert.equal(server.requests.at(-1).url, "/v2/agents", label);
+    return server.requests.at(-1);
+  };
+  for (const given of [prefix, `${prefix}/`, `${prefix}//`, `${prefix}/v2`, `${prefix}/v2/`]) {
+    await sent(["--base-url", given], { AGENTRUN_API_KEY: "fake-test-key" }, `--base-url ${given}`);
+  }
+  await sent([], { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" }, "AGENTRUN_BASE_URL");
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  writeFileSync(config, JSON.stringify({ base_url: `${prefix}/`, api_key: "not-a-secret" }), { mode: 0o600 });
+  const fromConfig = await sent([], {}, "base_url in the config");
+  assert.equal(fromConfig.headers.authorization, "Bearer not-a-secret");
+  // A template command, as every command: POST /v2/templates/import.
+  const before = server.requests.length;
+  await run(env, ["template", "install", "github:example/package", "--dry-run", ...nowhere], { extra: { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(server.requests.length, before + 1);
+  assert.equal(`${server.requests.at(-1).method} ${server.requests.at(-1).url}`, "POST /v2/templates/import");
+});
+
+test("the token kept with an address is found with or without /v2, and is never sent to another origin or another path on it", async (t) => {
+  const { dir, env } = scratch(t);
+  const home = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const other = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  const keep = (base_url) => writeFileSync(config, JSON.stringify({ base_url, api_key: "not-a-secret" }), { mode: 0o600 });
+  const prefix = home.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  // Kept without /v2 (as login wrote a --base-url before this rule), asked with it, and the other way round.
+  for (const [kept, asked] of [[prefix, `${prefix}/v2`], [`${prefix}/`, `${prefix}/v2/`], [`${prefix}/v2/`, prefix], [`${prefix}/v2`, `${prefix}/`]]) {
+    keep(kept);
+    const found = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
+    assert.equal(found.code, 0, `kept ${kept}, asked ${asked}: ${found.err}`);
+    assert.equal(home.requests.at(-1).headers.authorization, "Bearer not-a-secret");
+  }
+  // Another port, another host name for the same address, another scheme, another path prefix: no token, nothing sent.
+  keep(prefix);
+  const { port } = new URL(home.base);
+  const elsewhere = [
+    other.base.replace(/\/v2$/, ""),
+    `http://127.0.0.1:${new URL(other.base).port}${new URL(prefix).pathname}`,
+    prefix.replace("127.0.0.1", "localhost"),
+    prefix.replace("http:", "https:"),
+    `http://127.0.0.1:${port}/elsewhere`,
+  ];
+  const seen = home.requests.length + other.requests.length;
+  for (const asked of elsewhere) {
+    const refused = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
+    assert.equal(refused.code, 4, `${asked}: ${refused.err}`);
+    assert.match(refused.err, /No token for/);
+    assert.ok(!`${refused.out}${refused.err}`.includes("not-a-secret"));
+  }
+  assert.equal(home.requests.length + other.requests.length, seen, "nothing was sent");
+});
+
+test("login --base-url takes the address without /v2 too: it checks the token at PREFIX/v2 and keeps the API base, which the next command finds", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, (request) => (request.headers.authorization === "Bearer fake-test-key" ? [200, "application/json", '{"agents":[],"next_cursor":null}'] : [401, "application/json", "{}"]));
+  const prefix = server.base.replace(/\/v2$/, "");
+  const login = await run(env, ["login", "--base-url", `${prefix}/`], { input: "fake-test-key\n" });
+  assert.equal(login.code, 0, login.err);
+  assert.equal(server.requests.at(-1).url, "/v2/agents?limit=1");
+  const config = join(dir, ".config", "agentrun", "config.json");
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: "fake-test-key" });
+  assert.equal(JSON.parse(login.out).base_url, server.base);
+  const next = await run(env, ["agents", "list", "--data", join(dir, "nowhere")]);
+  assert.equal(next.code, 0, next.err);
+  assert.equal(server.requests.at(-1).url, "/v2/agents");
+  assert.equal(server.requests.at(-1).headers.authorization, "Bearer fake-test-key");
 });

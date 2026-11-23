@@ -16,11 +16,12 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { apiOnlyFrom } from "./api-only.js";
-import { harnessModulesOf } from "./harness-table.js";
+import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
+import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
+import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 import { installEnvProxy } from "./env-proxy.js";
-import { startTelemetry } from "./telemetry.js";
+import { startTelemetry, type UsageEventName } from "./telemetry.js";
 // The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
 // on a slow disk that load is most of a start. Nothing above loads more than a few files.
 import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.js";
@@ -32,17 +33,23 @@ surviveClosedPipes();
 // (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
 installEnvProxy();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
+       agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
-       agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
+       agentrun-serve runner --check --env [--data DIR]
+       agentrun-serve runner --check --heartbeat --data DIR [--name NAME]
+       agentrun-serve store-schema [--data DIR]
+       agentrun-serve store-schema --build
+       agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR] [--no-sync]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -75,6 +82,16 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     separated): a path, or a package installed with npm install --prefix DIR/harnesses PACKAGE, whose
                     entries(builtins) export adds harnesses of its own to this server and its runner. It never replaces
                     a built-in harness (pi, claude-agent, codex, opencode); one that does, or is missing, refuses the start
+  --harness-recipe FILE
+                    a harness recipe to add a harness from (repeatable; default AGENTRUN_SERVE_HARNESS_RECIPES, comma-
+                    separated), installed into DIR with agentrun harness install --recipe FILE. Its harness runs once a
+                    harness-check of it passed on DIR, through this server's model proxy (a plan-billed one's keys are
+                    not saved on a server yet); a recipe the loader refuses, or whose id another harness has, refuses
+                    the start
+  --harness-sign-in run a person's runs of a plan-billed recipe with a sign-in on your own sign-in (agentrun harness
+                    sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
+                    unless the server listens on loopback with no public address, keeps its store in DIR (no
+                    AGENTRUN_STORE_URL), runs its runs beside it as its own user, and takes one API token
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -103,6 +120,10 @@ AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts).
 
+AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
+is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
+none for it. A 2xx answer marks the firing sent; any other, or none in 10 s, skipped. Set both, or neither.
+
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
 password; with it, or on any other address, the setup link this server prints carries a code. Sign-in tries are limited
@@ -124,6 +145,13 @@ What is left out is counted by why; --verbose lists each file. --include-deleted
 deleted worktree's); --all keeps those and temporary ones too. Each run keeps what its session used (tokens, requests, tools,
 time at work), priced at the catalog's list prices when its source did not price it. Both end with a summary of every
 session found, those imported before included, and the address to open the console at (--port as the server takes it).
+
+\`agentrun-serve store-schema\` prints, as one line of JSON, the store's schema version and runner floor (the oldest version
+a runner's build must know to run on it) beside the version this build knows, and what this build's server and runner do
+on it: for a deploy's check before it starts a build, which must not be older than the store. It reads and changes
+nothing (no lock, no migration). The store is the server's: AGENTRUN_STORE_URL's Postgres, else SQLite in --data. Exit 0
+once read, 1 when the store could not be read, 2 for bad arguments. --build reads no store and prints only the versions
+this build knows. A running server says the same in GET /v2/capabilities (store_schema).
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its
@@ -160,6 +188,11 @@ if (process.argv[2] === "remote-bridge") {
   const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
   await runRemoteWorkerBridge();
   process.exit(0);
+}
+
+if (process.argv[2] === "learning") {
+  const { learningMain } = await import("./cli-learning/cli.js");
+  process.exit(await learningMain(process.argv.slice(3)));
 }
 
 if (process.argv[2] === "native") {
@@ -241,6 +274,31 @@ if (process.argv[2] === "install-harness") {
     console.error(error.message);
     process.exit(1);
   }
+}
+
+// The owner's own sign-in to a recipe's agent, by the agent itself on this terminal (harness-sign-in.ts): the agent prints
+// the address and reads the code, this terminal its stdin, stdout and stderr. 0 once the agent's sign-in exits 0, 1 when
+// it did not sign in (its code), 2 for usage. No key is read. `agentrun harness sign-in` runs it.
+if (process.argv[2] === "sign-in-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve sign-in-harness: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { recipe: { type: "string" }, data: { type: "string" } } });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values } = read();
+  if (!values.recipe) usage("--recipe FILE names the recipe whose agent signs in.");
+  const { signInHarness } = await import("./harness-sign-in.js");
+  const data = resolve(values.data ?? defaultData());
+  const done = await signInHarness({ recipe: values.recipe!, data, env: process.env, say: (line) => console.error(line) });
+  if (!done.ok) {
+    console.error(done.message);
+    process.exit(1);
+  }
+  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, and a server you start with --harness-sign-in on this machine runs your own runs on it. AgentRun never reads it.`);
+  process.exit(0);
 }
 
 // A recipe's agent run for real and judged (harness-check.ts): its report written as JSON, its stages and the three facts
@@ -359,11 +417,18 @@ if (process.argv[2] === "eval-template") {
 }
 
 // The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
-// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
-// heartbeat (0 fresh, 1 not).
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know (or one whose runner floor rose above it while it
+// ran: its runs handed back), 1 anything else, 0 closed. `--check` checks its environment by name (runner-check.ts) and its
+// heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
 if (process.argv[2] === "runner") {
   const { runnerMain } = await import("./runner/main.js");
   process.exit(await runnerMain(process.argv.slice(3)));
+}
+
+// The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
+if (process.argv[2] === "store-schema") {
+  const { storeSchemaMain } = await import("./store/store-schema.js");
+  process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
 }
 
 if (process.argv[2] === "import") {
@@ -392,6 +457,8 @@ try {
       learning: { type: "string" },
       "no-runner": { type: "boolean", default: false },
       "harness-module": { type: "string", multiple: true, default: [] },
+      "harness-recipe": { type: "string", multiple: true, default: [] },
+      "harness-sign-in": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -453,11 +520,23 @@ const signalled = () => {
 process.on("SIGINT", signalled);
 process.on("SIGTERM", signalled);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
+// AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
 let apiOnly: boolean;
+let runKeys: boolean;
 try {
-  apiOnly = apiOnlyFrom(process.env);
+  apiOnly = switchFrom(API_ONLY_ENV);
+  runKeys = switchFrom(RUN_KEYS_ENV);
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
+  process.exit(2);
+}
+// The launch hook: the URL from the environment, its secret as the server holds its own (by name, on the launcher's
+// list); half set or malformed stops here, in words that never hold the secret.
+let launchHook: LaunchHook | undefined;
+try {
+  launchHook = launchHookFrom({ url: process.env[LAUNCH_HOOK_URL_ENV], secret: secret(LAUNCH_HOOK_SECRET_ENV) });
+} catch (error) {
+  console.error(`agentrun-serve: ${(error as Error).message}`);
   process.exit(2);
 }
 const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
@@ -477,6 +556,8 @@ const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerB
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 let serveOptions: ServeOptions;
+// The anonymous counts start once the server has (below); a feature used before then, in the start's first moment, is not counted.
+let used: ((event: UsageEventName) => void) | undefined;
 const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
   serve = await startServe(serveOptions = {
@@ -486,14 +567,19 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
+    onUsage: (event) => used?.(event),
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
     ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
+    // And its harness recipes: --harness-recipe, else AGENTRUN_SERVE_HARNESS_RECIPES (harness-table.ts).
+    ...(harnessRecipesOf(values["harness-recipe"], process.env).length ? { harnessRecipes: harnessRecipesOf(values["harness-recipe"], process.env) } : {}),
+    // Their runs on the owner's own sign-in, only as the owner says it here (no setting names it) and the start proves.
+    ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
-    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}),
+    ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
@@ -511,8 +597,10 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server (with --no-runner it
+// counts no runs), and each use of suggested agents from the server (onUsage).
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
+used = telemetry.used;
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {
@@ -547,6 +635,7 @@ if (!values["no-runner"] && askedAt === undefined) {
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
 const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
 for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
 // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
 // setup link with its code as the code was made (owner.ts).
 if (serve.setupUrl && serve.setupOpen) console.log(`Set your password: ${serve.setupUrl} (the first visit sets it)`);

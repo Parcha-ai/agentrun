@@ -8,7 +8,7 @@
 // through the inner loop the moment it is chosen. A launch whose harness this runner does not run, or whose body cannot
 // be read, fails the run in words (the dispatch's start() throws, which the runner records as the run failing).
 import { harnessOfBody } from "../harness.js";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
 
 /** What the dispatch reads of a run at its claim, and how it picks the harness's loop. */
@@ -75,7 +75,9 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
 
   async function begin(claim: Claim): Promise<LoopEnd> {
     const row = await deps.launchOf(claim.runId);
-    const launch = readLaunchBody(row.body);
+    // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+    const read = readLaunchBody(row.body);
+    const launch = read && launchOnItsDisk(read);
     if (!launch) throw new LaunchUnreadable(claim.runId);
     const harness = harnessOfBody(row.body as { harness?: string });
     const factory = await deps.resolve(harness, launch, claim.runId);

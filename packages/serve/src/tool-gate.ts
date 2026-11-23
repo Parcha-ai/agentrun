@@ -361,9 +361,11 @@ export type PendingApproval = {
   /** The call's arguments as text, at most ARGS_PREVIEW_BYTES. */
   args_preview: string;
   /** What the call does in words, where its tool says (email_send: "Send email to <to>, cc <cc>: <subject>" and the
-   *  text's first 300 characters), then why it asks when its setting allows it (ToolEntry.asks), redacted as its
-   *  arguments are. */
+   *  text's first 300 characters), redacted as its arguments are. */
   summary?: string;
+  /** Why the call asks though its setting allows it (its tool's own ask, ToolEntry.asks), redacted as its arguments are;
+   *  absent for a call that asks by its setting. Never among its arguments. */
+  asks_because?: string;
   requested_at: string;
   price?: ApprovalPrice;
   /** Present, true, when the run's pin marks the tool destructive (toolEffect): an allow of it needs confirm_destructive. */

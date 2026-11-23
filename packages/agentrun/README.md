@@ -164,12 +164,23 @@ Every other command is the server's API, from a second terminal: `npx @parcha/ag
 `runs get RUN_ID`, `runs message RUN_ID --content "..."`, and one command for each route the server serves
 (`npx @parcha/agentrun help` lists them; `api METHOD PATH` calls any route). It finds the server started with the same
 `--data` on its own: the server writes its address and where its token is to `DIR/.server.json` once it listens. For
-another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`. The response's JSON goes to stdout and an error's to
+another server, set `AGENTRUN_BASE_URL` and `AGENTRUN_API_KEY`, or sign in once with `agentrun login --to URL`
+(`--to cloud` for AgentRun cloud): when the server offers a device sign-in, it prints an address and a code to approve
+there, then keeps the token in `$XDG_CONFIG_HOME/agentrun/config.json` (0600); else it reads the token from stdin, as
+`agentrun login --base-url URL < FILE` does. `agentrun login --base-url URL` typed on a terminal takes the device
+sign-in too, when the server offers one. The response's JSON goes to stdout and an error's to
 stderr; the exit code is 0 when it worked, 1 when the server refused, 2 for bad usage, 3 when the server cannot be
 reached, 4 for a missing or refused token and 5 when the server does not offer the command here (a 501,
 `unsupported_here`, its error saying why). The token is never a flag and never printed. A list command (`agents list`,
 `runs list` and every other that takes `--cursor`) prints one page; `--all` follows `next_cursor` and prints every page
 as one list.
+
+Any other word runs `agentrun-NAME` from an absolute folder of your `PATH`, as git does, when it comes first:
+`agentrun NAME [args]` passes the rest as given, with no shell, on this terminal, and exits with its code. A tool adds a
+command to the CLI by installing `agentrun-NAME`. The server's and the CLI's own commands come first; NAME is letters,
+digits, `-` and `_`. A signal sent to `agentrun` reaches the command, and `agentrun` exits when it does. On Windows it looks for `agentrun-NAME` with `.com`, `.exe`,
+`.bat` or `.cmd`, in that order; a batch file (`.bat`, `.cmd`) is refused, since Node runs one only through `cmd.exe`,
+which would read the arguments again.
 
 `runs wait RUN_ID` waits until the run ends or waits on a person and prints it; `runs start AGENT_ID ... --wait` starts
 a run and does the same. Its exit code says how it stopped: 0 completed, 1 failed or cancelled, 8 it waits on a person

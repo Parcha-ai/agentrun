@@ -12,9 +12,6 @@ export const STOPPED_WHILE_WAITING = "Not run: the run was stopped while it wait
 export const ENDED_WHILE_WAITING = "Not run: the run ended while it waited";
 /** How a refusal of a setting's deny, or of an ask no one can approve, opens (deniedText, noApproverText). */
 export const DENIED_OPENING = "Permission denied: ";
-/** The field of an asked call's card that says why a call its setting allows asks a person anyway (a tool's own ask,
- *  tools.ts ToolEntry.asks): written by the gate alone, so the model's own arguments never carry it onto the card. */
-export const ASKED_BECAUSE = "asked_because";
 /** How a person's deny opens (refusedText). */
 export const USER_DENIED_OPENING = "The user denied this ";
 /** What a read-only bash policy's refusal says after the tool's name (bash-read-only.ts readOnlyText). */

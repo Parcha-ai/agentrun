@@ -10,6 +10,7 @@ on:
       - 'deploy/walk/faux-steps.mjs'
       - 'deploy/walk/rows.sh'
       - '.github/workflows/helm-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
   push:
     branches: [main]
     paths:
@@ -18,6 +19,7 @@ on:
       - 'deploy/walk/faux-steps.mjs'
       - 'deploy/walk/rows.sh'
       - '.github/workflows/helm-walk.yml'
+      - '.github/actions/published-or-checkout-image/**'
   workflow_dispatch:
   # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
   # of the release's (main's, built once for every row).
@@ -55,8 +57,20 @@ jobs:
         uses: ./.github/actions/walk-image
         with:
           artifact: ${{ inputs.image }}
+      # Otherwise the chart's own image, v<appVersion>, when GHCR has it; until its release publishes it (on the release's
+      # pull request, and on main until the tag's release finishes), this checkout's.
+      - name: The chart's image
+        id: pinned
+        if: ${{ !inputs.image }}
+        run: |
+          echo "image=$(sed -n 's/^  repository: //p' deploy/helm/agentrun/values.yaml):v$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' deploy/helm/agentrun/Chart.yaml)" >> "$GITHUB_OUTPUT"
+      - name: Published, else this checkout's
+        if: ${{ !inputs.image }}
+        uses: ./.github/actions/published-or-checkout-image
+        with:
+          image: ${{ steps.pinned.outputs.image }}
       - name: Into the cluster
-        if: ${{ inputs.image }}
+        if: ${{ env.AGENTRUN_IMAGE != '' }}
         run: kind load docker-image "$AGENTRUN_IMAGE" --name helm-walk
       - name: helm lint
         run: helm lint deploy/helm/agentrun

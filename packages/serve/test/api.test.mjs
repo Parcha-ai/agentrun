@@ -309,7 +309,7 @@ test("a tool's missing variables are named, never their values", async () => {
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
-  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native", opencode: "exa-keyless" });
+  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" });
   assert.deepEqual(toolsView({}, { web_search: { provider: "parallel" } }).filter((t) => t.resolves && t.name !== "browser").map((t) => [t.name, t.available, t.missing]), [["web_fetch", true, undefined], ["web_search", false, ["PARALLEL_API_KEY"]]]);
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");

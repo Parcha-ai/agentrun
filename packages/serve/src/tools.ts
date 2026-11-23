@@ -249,7 +249,7 @@ const emailTool = (name: string): ToolEntry => ({
 
 /** web_fetch, bound under `name`. */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: `Read one public web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
+  summary: `Read one public web page from a public host through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one; the guarded direct fetch when Firecrawl answers no page or its free limit is spent), else through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
   nodes: true,
   bind: async (host) => {
@@ -731,7 +731,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Exa's keyless search; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
@@ -739,12 +739,10 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
-  // web_save (web-save.ts): a public file into the run's own Workspace (host.workspace, else the local folder at where.work),
-  // through the guarded download; a template eval's web fake (host.web) answers its files from the case. It makes no paid
-  // request, so nothing books it. No node or call node names it: a workflow's effect has only a local work path, not the
-  // run's Workspace, which in Mode 2 is elsewhere.
+  // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
+  // effect has only a local work path, not the run's Workspace.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one file from a public URL into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, its type checked against its bytes (an image, audio or video the console plays, at a path with an extension of its type; any other type only to a path whose extension names it); a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused at every redirect.`,
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s an mp3, wav, mp4 or m4a's length in seconds) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
     needs: [],
     nodes: false,
     bind: async (host) => {

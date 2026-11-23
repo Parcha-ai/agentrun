@@ -15,6 +15,7 @@ import { isAskable, isHostTool, isTableTool, isWebHostTool, replayOf } from "../
 import { buildToolHost, webHostTools } from "../dist/runner/adapter-run-spec.js";
 import { webFixtureOf } from "../dist/web-fake.js";
 import { PNG } from "./fixtures/faux-web-files.mjs";
+import { SAMPLES } from "./fixtures/media-samples.mjs";
 import { scratch } from "./support.mjs";
 
 const FAUX_WEB_FILES = new URL("./fixtures/faux-web-files.mjs", import.meta.url).pathname;
@@ -193,6 +194,33 @@ test("each media type the server plays is saved when its declared type and its b
   }
 });
 
+test("a saved audio or video file answers its length, duration_s, read from its bytes to the millisecond; an image, or media whose length its bytes don't give, answers none", async (t) => {
+  const { ws } = await folders(t);
+  const timed = [
+    ["mp3Info", "audio/mpeg", "info.mp3"],
+    ["mp3Cbr", "audio/mpeg", "cbr.mp3"],
+    ["wav", "audio/wav", "a.wav"],
+    ["m4a", "audio/mp4", "a.m4a"],
+    ["mp4", "video/mp4", "a.mp4"],
+    ["mp4Fast", "video/mp4", "fast.mp4"],
+  ];
+  for (const [sample, type, name] of timed) {
+    const saved = await webSave({ url: `https://cdn.example/${name}`, path: name }, ws, serving(`https://cdn.example/${name}`, SAMPLES[sample].bytes, type));
+    assert.equal(saved.ok, true, `${sample}: ${JSON.stringify(saved)}`);
+    assert.equal(typeof saved.duration_s, "number", `${sample}: ${JSON.stringify(saved)}`);
+    assert.ok(Math.abs(saved.duration_s - SAMPLES[sample].seconds) <= 0.05, `${sample}: ${saved.duration_s}, not ${SAMPLES[sample].seconds}`);
+    assert.equal(saved.duration_s, Math.round(saved.duration_s * 1000) / 1000, `${sample}: ${saved.duration_s} is not in milliseconds`);
+  }
+  // An image; an mp4 with no movie header; an ogg and a webm, whose length this server does not read.
+  for (const [kind, type, name] of [["png", "image/png", "b.png"], ["mp4", "video/mp4", "bare.mp4"], ["ogg", "audio/ogg", "b.ogg"], ["webm", "video/webm", "b.webm"]]) {
+    const saved = await webSave({ url: `https://cdn.example/${name}`, path: name }, ws, serving(`https://cdn.example/${name}`, BODY[kind], type));
+    assert.equal(saved.ok, true, `${kind}: ${JSON.stringify(saved)}`);
+    assert.equal("duration_s" in saved, false, `${kind}: ${JSON.stringify(saved)}`);
+  }
+  // The model reads it in the tool's description.
+  assert.match(webSaveTool(() => ws, () => ({})).description, /duration_s/);
+});
+
 test("the type is checked: a declared type the bytes disagree with, a path whose extension disagrees, and a page that is not media are refused", async (t) => {
   const { work, ws } = await folders(t);
   const refusedFor = async (body, type, path, pattern) => {
@@ -356,7 +384,7 @@ const until = async (ok, what) => {
   for (let i = 0; i < 2_000 && !ok(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
   assert.ok(ok(), what);
 };
-const { SAVE_CONCURRENCY, saveSlots } = webSaveModule;
+const { SAVE_CONCURRENCY, SERVER_SLOTS, saveSlots } = webSaveModule;
 
 test("at most 4 downloads at once per runner: a fifth waits without dialling until one ends, then all five save", async (t) => {
   assert.equal(SAVE_CONCURRENCY, 4);
@@ -367,8 +395,7 @@ test("at most 4 downloads at once per runner: a fifth waits without dialling unt
     const net = held();
     const saves = urls.map((url, i) => webSave({ url, path: `media/${slots ? "g" : "d"}${i}.png` }, ws, { ...net, ...(slots ? { slots } : {}) }));
     await until(() => net.started.length >= 4, `four dialled: ${net.started}`);
-    if (slots) await until(() => slots.waiting === 1, "the fifth waits for a slot");
-    else await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => (slots ?? SERVER_SLOTS).waiting === 1, "the fifth waits for a slot");
     // Which four get in first depends on their path checks' timing; the one left out has not dialled.
     assert.equal(net.started.length, 4, `the fifth has not dialled: ${net.started}`);
     const [fifth] = urls.filter((url) => !net.started.includes(url));
@@ -484,7 +511,6 @@ test("a caller's abort while waiting for a slot leaves the queue without taking 
 const sharedSlots = await import("../dist/runner/save-slots.js").catch(() => ({}));
 const { runChannel } = await import("../dist/runner/run-child-host.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
-const { SERVER_SLOTS } = webSaveModule;
 
 let socketCount = 0;
 /** A runner's channel to one run's process and the run's side of it, over a Unix socket pair in a scratch folder; both
@@ -517,7 +543,6 @@ test("two run processes share their runner's one gate of 4: three saves in each,
     ...[0, 1, 2].map((i) => webSave({ url: `https://cdn.example/b${i}.png`, path: `media/b${i}.png` }, wb.ws, { ...net, slots: b.slots })),
   ];
   await until(() => net.started.length >= 4 && gate.waiting === 2, `four dialled, two wait: ${net.started}, ${gate.waiting}`);
-  await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(net.started.length, 4, `exactly four dialled: ${net.started}`);
   assert.deepEqual([gate.busy, gate.waiting], [4, 2]);
   net.answer(net.started[0]);
@@ -627,7 +652,7 @@ test("a run process's release after its channel ended leaves no unhandled reject
   assert.deepEqual(unhandled.map(String), []);
 });
 
-test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting at its runner: the next is refused at once, never queued", async (t) => {
+test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting at its runner: the next is refused at once, never queued", { timeout: 10_000 }, async (t) => {
   const { SAVE_SLOTS_PER_RUN } = sharedSlots;
   assert.equal(SAVE_SLOTS_PER_RUN, 16, "save-slots.js exports SAVE_SLOTS_PER_RUN");
   const gate = saveSlots(1);
@@ -636,10 +661,8 @@ test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting 
   const takes = callers.map((caller) => run.child.call("saves", "take", [caller.signal]));
   for (const take of takes) take.catch(() => {});
   await until(() => gate.busy === 1 && gate.waiting === SAVE_SLOTS_PER_RUN - 1, `1 held, 15 waiting: ${gate.busy}, ${gate.waiting}`);
-  // Bounded: a take that queued instead would never settle.
-  const over = run.child.call("saves", "take", [new AbortController().signal]);
-  over.catch(() => {});
-  const outcome = await Promise.race([over.then(() => "granted", (error) => error), new Promise((resolve) => setTimeout(() => resolve("still waiting after a second"), 1_000))]);
+  // The refusal comes before any queue: a take that queued instead never settles, and the test's timeout catches it.
+  const outcome = await run.child.call("saves", "take", [new AbortController().signal]).then(() => "granted", (error) => error);
   assert.match(String(outcome?.message ?? outcome), /this run already has 16 web_save downloads held or waiting/);
   assert.deepEqual([gate.busy, gate.waiting], [1, SAVE_SLOTS_PER_RUN - 1], "the refused take never queued");
   callers.at(-1).abort();

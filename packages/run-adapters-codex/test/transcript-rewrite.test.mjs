@@ -49,3 +49,39 @@ test('a call that is not dangling is refused in words, never rewritten', () => {
   assert.throws(() => settleCall(LINES, 'call_9', { text: 'x', isError: false }), /Codex's rollout has no call call_9 of the host's that it made and never got an output for/);
   assert.throws(() => settleCall([...LINES, output('call_1', 'ok')], 'call_1', { text: 'x', isError: false }), /no call call_1/);
 });
+
+const numbered = (lines) => lines.map((raw, ordinal) => JSON.stringify({ ...JSON.parse(raw), ordinal }));
+
+test('paginated settlements continue the last native ordinal, including two results after an interrupted append', () => {
+  const original = numbered([...LINES, call('call_2', 'read', {})]);
+  const first = settleCall(original, 'call_1', { text: 'ran once', isError: false }, 0);
+  assert.deepEqual(first.slice(0, original.length), original, 'native rows stay byte-for-byte unchanged');
+  assert.equal(JSON.parse(first.at(-1)).ordinal, 4);
+  // These are the persisted lines a new claim sees after the first result was flushed, before native resume.
+  const restored = [...first];
+  assert.throws(() => settleCall(restored, 'call_1', { text: 'duplicate', isError: false }), /no call call_1/);
+  assert.deepEqual(danglingCalls(restored).map((item) => item.callId), ['call_2']);
+  const second = settleCall(restored, 'call_2', { text: 'Permission denied.', isError: true }, 0);
+  assert.equal(JSON.parse(second.at(-1)).ordinal, 5);
+  assert.deepEqual(second.slice(0, first.length), first, 'a durable outcome is never rewritten');
+  assert.deepEqual(danglingCalls(second), []);
+});
+
+test('a paginated rollout with missing or invalid ordering is refused without repairing persisted rows', () => {
+  const original = numbered(LINES);
+  const invalid = [
+    [...original, output('another_call', 'legacy synthetic output')],
+    original.map((raw, i) => i === 1 ? user : raw),
+    original.map((raw, i) => JSON.stringify({ ...JSON.parse(raw), ordinal: i === 2 ? 1 : i })),
+    original.map((raw, i) => JSON.stringify({ ...JSON.parse(raw), ordinal: i === 2 ? -1 : i })),
+    original.map((raw, i) => JSON.stringify({ ...JSON.parse(raw), ordinal: i === 2 ? 2.5 : i })),
+    original.map((raw, i) => JSON.stringify({ ...JSON.parse(raw), ordinal: i === 2 ? '2' : i })),
+    original.map((raw, i) => JSON.stringify({ ...JSON.parse(raw), ordinal: i === 2 ? Number.MAX_SAFE_INTEGER : i })),
+    [...original, 'invalid JSON'],
+  ];
+  for (const lines of invalid) {
+    const before = [...lines];
+    assert.throws(() => settleCall(lines, 'call_1', { text: 'must not append', isError: false }), /rollout.*ordinal/i);
+    assert.deepEqual(lines, before);
+  }
+});

@@ -5,7 +5,8 @@
 // lands its delta on the disk before it answers, or fails in words; a kept computer attached again is pulled whole; at
 // release a final delta lands. A loopback fake computer (one folder level, no tar) runs everywhere; a real computerd in a
 // user namespace of its own (as the computer package's sync-folder.test.mjs runs it) pushes modes and links into a new
-// computer, skipped in words where the host has no daemon build or refuses the namespace.
+// computer and sees a rewrite in the push's own clock tick, skipped in words where the host has no daemon build or
+// refuses the namespace.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -304,6 +305,34 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     assert.equal(disk.files.has(`${ROOT}/secret`), false);
     assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755 }, links: { go: "bin/run" } });
     await three.release();
+  });
+
+  it("a same-size rewrite in the claim's push's own clock tick lands on the disk; the pushed files that did not change are never read back", async () => {
+    const disk = new FakeArchilDisk();
+    for (const [path, body] of [["f", "aaaa"], ["keep", "k"], ["d/g", "g"]]) disk.files.set(`${ROOT}/${path}`, Buffer.from(body));
+    const workspace = archilWorkspace(disk, ROOT);
+    const computer = computerd();
+    const reads = [];
+    const counted = {
+      ...computer,
+      client: {
+        call(method, params, options) {
+          if (method === "files.read" || method === "tar.pull.begin") reads.push([method, params.path]);
+          return computer.client.call(method, params, options);
+        },
+        close() {},
+      },
+    };
+    const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => counted))).start(startOf(workspace));
+    // The mtime a coarse clock (a jiffy) gives a write in the push's own tick: the ctime its extraction left on f.
+    await sh(one.computer.computer.client, 't="$(stat -c %z f)" && printf bbbb > f && touch -d "$t" f');
+    assert.equal(text(disk.files.get(`${ROOT}/f`)), "bbbb", "the rewrite is on the disk at the first sync");
+    assert.deepEqual(reads, [["files.read", "/workspace/f"]], "f is read once; keep and d/g, as pushed, are never read back");
+    // Not racy, so never read again: the push gave them the mtime of the year 2000, which no clock gives a write. Read
+    // through the daemon's own client, under no sync. The racy re-read of a written file is pinned on an injected clock
+    // in the computer package (sync-folder-cases.mjs).
+    for (const path of ["keep", "d/g"]) assert.equal((await stat(computer, path)).mtimeMs, 946_684_800_000, `${path} keeps the mtime the push gave it`);
+    await one.release();
   });
 
   it("a link a synced claim recorded, then a plain file an Archil claim wrote at its path: the Archil claim empties sync.json at its start, so the next synced claim pushes the file's new contents, not the old link", async () => {

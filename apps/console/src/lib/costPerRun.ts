@@ -141,9 +141,12 @@ export function level(value: number): string {
 /** A block of consecutive runs in the execution mix: its first and last run numbers and how many took each path. */
 export type Block = { from: number; to: number; runs: number; counts: Record<RunPath, number> };
 
-/** The mix's block size: one run a column up to 20 runs (one block of a few runs says nothing), then blocks of 5 or
- *  more, about 20 blocks at most however many runs there are. */
-export const blockSizeOf = (count: number) => (count <= 20 ? 1 : Math.max(5, Math.ceil(count / 20)));
+/** The least width of a column of the mix, in px, for it to stand for one run. */
+export const COLUMN_MIN = 4;
+/** The mix's block size: one run a column up to 20 runs (one block of a few runs says nothing) and for as long as the
+ *  plot (`room`, its width in px) gives each run a column COLUMN_MIN wide, so who finished each run reads run by run;
+ *  then blocks of 5 or more, about 20 blocks at most however many runs there are. */
+export const blockSizeOf = (count: number, room = 0) => (count <= 20 || room / count >= COLUMN_MIN ? 1 : Math.max(5, Math.ceil(count / 20)));
 
 /** The runs that do a job in blocks of `size`, in order (the last may be shorter): every one counts, its cost known or
  *  not; a replay does no job and is in none. */

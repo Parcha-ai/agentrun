@@ -393,7 +393,7 @@ describe("the Dev tools tab", () => {
 
   it("shows a computer's time by provider and resource, its unit and the time no claim held, and an unpriced resource as no price, never $0", async () => {
     const compute = (resource: "vcpu" | "gpu" | "disk", quantity: number, unit: "vcpu_second" | "gpu_second" | "gb_month", usd: number | null, extra = {}) =>
-      ({ meter: "compute_time" as const, model: null, provider: "daytona", charged_by: "daytona", quantity, unit, basis: usd === null ? ("unpriced" as const) : ("estimate" as const), usd, resource, gpu_type: resource === "gpu" ? "H100" : null, unheld_quantity: 0, open_computers: 0, ...extra });
+      ({ meter: "compute_time" as const, model: null, provider: "daytona", charged_by: "daytona", quantity, unit, basis: usd === null ? ("unpriced" as const) : ("estimate" as const), attempt: 1, billable: true, usd, resource, gpu_type: resource === "gpu" ? "H100" : null, unheld_quantity: 0, open_computers: 0, ...extra });
     const usage = { ...USAGE_CLI, total: { usd: 0.4125 }, lines: [USAGE_CLI.lines![0]!, compute("vcpu", 3600, "vcpu_second", 0.0504, { unheld_quantity: 1200 }), compute("gpu", 900, "gpu_second", null), compute("disk", 0.000064, "gb_month", null, { open_computers: 1 })] };
     const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
     const table = host.querySelector("section[aria-label='Where the cost went'] [role=region]")!;
@@ -438,7 +438,7 @@ describe("the Dev tools tab", () => {
   });
 
   it("with no lines yet keeps the trace's own split and says why: the run is at work, or its cost can't be split", async () => {
-    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, browser_sessions: null, computer_intervals: null, reason: "running" };
+    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, browser_sessions: null, computer_intervals: null, infra_usd: null, reason: "running" };
     const host = await open(TRACE, { readUsage: async () => running, view: "breakdown" });
     const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
     expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%.*Tool charges\$0\.0204 · 3%/);

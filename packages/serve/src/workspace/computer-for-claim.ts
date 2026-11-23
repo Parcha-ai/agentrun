@@ -44,6 +44,7 @@ import { type RecordInput, type Recording, type RecordWatch, startRecording } fr
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
 import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "../computer-lost.js";
+import { missingNeeds, needsNoSandboxWords, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
@@ -250,6 +251,8 @@ export interface ClaimComputer {
    *  stopped (compute-cost.ts): run before the run's end or park is written (the spec's beforeRelease), so the end's
    *  cost holds it. Absent where nothing is metered. */
   settle?(): Promise<void>;
+  /** Strict durable folder sync for project checkpoints; distinct from metering settlement. */
+  syncProject?(signal?: AbortSignal): Promise<void>;
   release(why?: ViewEnd): Promise<void>;
   /** The claim's release at the run's park, for `cause`: a computer it `keeps` is kept for KEEP_MS (computer-kept.ts),
    *  its live view closed with the park's cause and the keep's time (ParkedEnd) and its hold ended, but the machine left
@@ -1124,6 +1127,13 @@ export async function computerForClaim(
   };
 
   const setting = await settingOf(launch, store);
+  // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
+  // kind is refused before anything is rented, never run without them.
+  const needs = (setting as { needs?: readonly string[] } | undefined)?.needs;
+  if (needs?.length && setting?.kind !== "sandbox") {
+    const label = setting?.provider ? kinds.PROVIDERS.find((one) => one.id === setting.provider)?.label ?? setting.provider : undefined;
+    throw unavailable(needsNoSandboxWords(needs, setting?.kind === "none" || !setting ? "none" : `a ${setting.kind}${label ? ` on ${label}` : ""}`));
+  }
   // A computer every tool of which is set to deny (tool-gate.ts computerDenied) serves the run nothing: none is started,
   // nothing is rented or checked, and the run goes on without it, its timeline saying why.
   const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds)));
@@ -1155,6 +1165,19 @@ export async function computerForClaim(
     throw error;
   }
   const computer = started.computer;
+  // What the agent needs its sandbox to have (computer.needs): asked of the box it started, before anything of the run
+  // reaches a model. A box that lacks one, or that could not be asked, is let go and the run ends in words: never a run on
+  // a box without what its work needs.
+  if (needs?.length) {
+    // A sandbox setting whose start gave no sandbox is no box to check: refused as one that could not be asked.
+    const answer = computer?.kind === "sandbox" ? await missingNeeds(computer.computer.client, needs, deps.signal) : { unchecked: "its start gave no sandbox" };
+    if ("unchecked" in answer || answer.missing.length > 0) {
+      await started.release().catch(() => undefined);
+      await meter?.stopAll().catch(() => undefined);
+      await revoke().catch(() => undefined);
+      throw unavailable(needsWords(answer, needs, kinds.PROVIDERS.find((one) => one.id === resolved.provider)));
+    }
+  }
   // A desktop's or a phone's: its hold, parking the run's ports while a person holds it, and its live view, proxy-only (no
   // vendor's URL reaches a person), opened under this claim. A fenced open is a lost claim. The release ends the hold.
   let endHold: () => void = () => {};
@@ -1221,6 +1244,24 @@ export async function computerForClaim(
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,
+    async syncProject(signal) {
+      const cancellation = signal && deps.signal ? AbortSignal.any([signal, deps.signal]) : signal ?? deps.signal;
+      cancellation?.throwIfAborted();
+      if (started.sync) { if (!(await started.sync()).ok) throw new Error("The project folder could not be durably synchronized."); }
+      else if (resolved.folder === "bind") {
+        // A bind is already this Workspace's filesystem, so there is no remote folder delta to pull. File tools
+        // fsync their own writes, but arbitrary shell edits need this final syncfs after dispatch has settled.
+        // Use the supplied host Workspace, never the lost-aware computer client (which could recreate a machine).
+        const flushed = await deps.workspace.exec(["/usr/bin/sync", "-f", "."], {
+          env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeoutMs: 30_000, maxOutput: 1024,
+          ...(cancellation ? { signal: cancellation } : {}),
+        });
+        if (flushed.code !== 0 || flushed.signal || flushed.timedOut || flushed.truncated)
+          throw new Error("The bound project folder could not be durably synchronized.");
+      }
+      else if (runComputer && "check" in runComputer && runComputer.check) throw new Error("This mounted project has no verified synchronization capability.");
+      cancellation?.throwIfAborted();
+    },
     async park(cause: ParkCause): Promise<boolean> {
       if (!keeps || !settings || released) {
         await release();

@@ -1,6 +1,6 @@
 import { backendSdkOf } from "@/lib/backendSdk";
-import { ObservedSessionPage, ObservedSessions } from "@/components/ObservedSessions";
-import { useObservations } from "@/lib/observations";
+import { ObservedSessionPage } from "@/components/ObservedSessions";
+import { observationHash, useObservations } from "@/lib/observations";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Picker } from "@/components/ui";
 import { Code, RefreshCw } from "lucide-react";
@@ -16,6 +16,7 @@ import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
 import { KeysPage } from "@/components/KeysPage";
+import { HarnessKeysPage } from "@/components/HarnessKeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
@@ -32,10 +33,13 @@ import { WorkspacePage } from "@/components/WorkspacePage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
+import { SuggestionsPage } from "@/components/SuggestionsPage";
+import { repoOfHash } from "@/lib/suggestions";
 import { LiveRun } from "@/components/LiveRun";
+import { Race } from "@/components/Race";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
@@ -73,8 +77,8 @@ import { cn } from "@/lib/utils";
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
- *  `archived` (for runs): the runs list's filters. `settings`: a settings page. */
-type Where = { observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+ *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts). `settings`: a settings page. */
+type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -82,6 +86,9 @@ export function route(h: string = location.hash): Where {
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
+  // A race: the runs its race:<label> label groups, watched side by side, under Runs.
+  m = h.match(/^#\/races\/([^/?]+)$/);
+  if (m) return { section: "runs", race: decodeURIComponent(m[1]) };
   if (h === "#/agents/connect" || h.startsWith("#/agents/connect?")) {
     const source = new URLSearchParams(h.split("?")[1] ?? "").get("source");
     return { section: "agents", nativeConnect: true, ...(source === "remote" || source === "observe" ? { connectionSource: source } : {}) };
@@ -105,6 +112,9 @@ export function route(h: string = location.hash): Where {
       ...(operation === "list-runs" && RUN_STATUSES.includes(params.get("status") as RunStatus) ? { status: params.get("status") as RunStatus } : {}),
       ...(operation === "list-runs" && params.get("archived") === "true" ? { archived: true } : {}) };
   }
+  // Suggested agents: every scanned repository, or one first (`?repo=owner/name`).
+  m = h.match(/^#\/suggestions(?:\?(.*))?$/);
+  if (m) { const repo = repoOfHash(m[1]); return { section: "suggestions", ...(repo ? { repo } : {}) }; }
   // The server's templates: the list, and one template's Apply screen.
   // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
   m = h.match(/^#\/templates\/install\?(.*)$/);
@@ -118,18 +128,20 @@ export function route(h: string = location.hash): Where {
   if (h === "#/triggers/new-github") return { section: "triggers", trigger: null, kind: "github" };
   if (h === "#/triggers/new-composio") return { section: "triggers", trigger: null, kind: "composio" };
   if (h === "#/triggers/new-feed") return { section: "triggers", trigger: null, kind: "feed" };
+  if (h === "#/triggers/new-email") return { section: "triggers", trigger: null, kind: "email" };
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
-  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools, #/settings/email,
-  // #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is one more name here.
+  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/harness-keys, #/settings/tools,
+  // #/settings/email, #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is
+  // one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
   if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook|slack))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|harness-keys|tools|email|computers|workspace|webhook|slack))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -353,8 +365,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const observedDays = statsRange === "7d" ? 7 : 30;
-  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.runsOf && !where.archived && !where.status), days: observedDays });
+  // A race's page (where.race) is under Runs too, but shows no runs list: nothing there reads observations.
+  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.runsOf && !where.archived && !where.status), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
+  // Keep the selected identity through refreshes that temporarily clear the connection list.
+  const [sessionSelected, setSessionSelected] = useState(false);
   const [missionReading, setMissionReading] = useState(false);
   // Automatic refresh must not invalidate a valid slow stats/recent-runs answer. User scope changes still replace it.
   const missionPending = useRef(false);
@@ -382,6 +397,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const namesAsked = useRef(0);
   // The active agents whose learned workflows wait for their owner's OK, with how many (Needs you).
   const [learningWaits, setLearningWaits] = useState<{ agent_id: string; name: string; pending: number }[]>([]);
+  const [missionAgents, setMissionAgents] = useState<Agent[] | null>(null);
+  const [missionAgentsError, setMissionAgentsError] = useState<string | null>(null);
   // The `refreshed` the names were last read for.
   const namesAfter = useRef(-1);
   const [error, setError] = useState<Problem | null>(null);
@@ -433,14 +450,17 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // Whether the poll's timer below has a capabilities read still answering: it starts no other until that one ends.
   const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
-  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
+  // Whether the latest capabilities read failed: a row that waits on them (Claude Code's login) then asks as it would
+  // with no capabilities at all, never hidden for the rest of the visit by one failed read.
+  const [capsFailed, setCapsFailed] = useState(false);
+  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
-  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
-  // Only the newest read lands.
+  // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
+  // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
+  // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -457,7 +477,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   }, [v2, where, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
-    if (where.section !== "runs" || where.run) return;
+    // A race's page reads its own runs (lib/race.ts), and its lanes keep their reads few: no runs list behind it.
+    if (where.section !== "runs" || where.run || where.race) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
     setRuns(null); setError(null);
@@ -477,8 +498,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -529,8 +550,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     missionPending.current = true;
     setMissionError(null); setMissionReading(true);
     const from = rangeFrom(statsRange);
-    // An agent picked: its own latest runs, as every figure below the picker follows it.
-    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
+    // A session's usage is queryable without pretending it is a server agent with its own run endpoint.
+    Promise.all([v2.statsOver({ ...(from ? { from } : {}), ...(statsAgent ? { agent: statsAgent } : {}) }), sessionSelected ? Promise.resolve({ runs: [] }) : statsAgent ? v2.listAgentRuns(statsAgent, 10) : v2.listRuns(10)])
       .then(([s, r]) => {
         if (!live) return;
         setMission(missionFrom(s, r.runs));
@@ -541,7 +562,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       .catch((e) => { if (live) setMissionError(problem(e, "Mission Control")); })
       .finally(() => { if (live) { missionPending.current = false; setMissionReading(false); } });
     return () => { live = false; missionPending.current = false; };
-  }, [v2, where.section, missionTry, statsRange, statsAgent, refreshed]);
+  }, [v2, where.section, missionTry, statsRange, statsAgent, sessionSelected, refreshed]);
   // Back after the server was away: Mission Control reads again what may have moved meanwhile, keeping the page.
   useResumed(() => setMissionTry((n) => n + 1));
   // Coding-agent actions happen outside this tab. Read their results on return, and keep visible counts current.
@@ -555,7 +576,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   }, [where.section]);
   useEffect(() => {
     // Left Mission Control: its counts are read afresh on the way back, so the failed runs seen start over.
-    if (where.section !== "mission") { failedSeenRef.current = null; return; }
+    if (where.section !== "mission") { failedSeenRef.current = null; setMissionAgents(null); setMissionAgentsError(null); return; }
     let live = true;
     // The failed runs the last read listed: one it did not (a run that failed since) reads the page's counts again, so the
     // failed total under the Failed tile and list ("See all N") never falls behind them. GET /stats is no cheap read (the
@@ -568,7 +589,12 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     // With them, every active agent, for which wait for their owner's OK on what they learned (`learning.pending`): a
     // run that ends leaving learned workflows shows in Needs you at the next read. A failed read keeps the last answer.
     const waiting = () => allPages((cursor) => v2.listAgents({ archived: false, cursor }), (p) => p.agents)
-      .then((agents) => { if (live) setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) }))); }, () => {});
+      .then((agents) => { if (live) {
+        setLearningWaits(agents.filter((a) => waitingOf(a) > 0).map((a) => ({ agent_id: a.agent_id, name: a.definition.name ?? a.agent_id, pending: waitingOf(a) })));
+        // The dashboard and Agents page resolve source profiles through the same inventory.
+        setMissionAgents(agents);
+        setMissionAgentsError(null);
+      } }, (error) => { if (live) setMissionAgentsError(problemOf(error)); });
     const read = () => Promise.allSettled([upTo("input_required"), upTo("failed"), upTo("working"), waiting()])
       .then(([asking, failed, working]) => {
         if (!live) return;
@@ -716,7 +742,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     </>}>
       {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
+              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "email" ? <EmailPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
@@ -725,7 +752,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
@@ -733,9 +760,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">
             <div className="min-h-0 flex-1">
-              <MissionControl hasObservedSessions={!!observations.data?.sessions.length} observations={<ObservedSessions read={observations} view="summary" days={observedDays} />} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
-                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); }}><RefreshCw className="size-4" aria-hidden /></Button><CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} /><ConnectExistingAgents variant="primary" /></>}
-                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: setStatsAgent, refreshing: missionReading && mission !== null }}
+              <MissionControl observed={observations} agents={missionAgents} agentsError={missionAgentsError} view={mission} error={missionError} onRetry={() => setMissionTry((n) => n + 1)}
+                actions={<><Button size="icon" aria-label="Refresh Mission Control" disabled={missionReading} onClick={() => { setMissionTry((n) => n + 1); setNeedsTry((n) => n + 1); observations.refresh(); }}><RefreshCw className="size-4" aria-hidden /></Button>{sessionSelected && statsAgent
+                  ? <CodingAgentAction label="Query" prompt={queryObservedSessionPrompt(location.origin, statsAgent, rangeFrom(statsRange))} playgroundHref={observationHash(statsAgent)} playgroundLabel="Connected agent" />
+                  : <CodingAgentAction label="Query" prompt={queryRunsPrompt(location.origin, statsAgent ?? undefined)} playgroundHref={queryPlaygroundHref(statsAgent ?? undefined)} />}<ConnectExistingAgents variant="primary" /></>}
+                scope={{ range: statsRange, onRange: setStatsRange, agent: statsAgent, onAgent: id => { setSessionSelected(!!id && !!observations.data?.sessions.some(session => session.id === id)); setStatsAgent(id); }, refreshing: missionReading && mission !== null }}
                 asking={needs && askingRead ? needs.asking.length : null} failed={needs && failedRead ? failureCount(needs.failed) : null} live={needs && liveRead ? needs.live.length : null}
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
@@ -744,6 +773,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
             </div>
           </div>
+        : where.section === "suggestions"
+        ? <SuggestionsPage v2={v2} repo={where.repo} go={go} />
         : where.section === "templates"
         ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
         : where.section === "triggers"
@@ -771,11 +802,12 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           </section>
         : where.section === "agents"
         ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
-          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} />
+          : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
           : where.agent === null ? <BuildAgent origin={location.origin} v2={v2} />
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+        : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}
             filter={runsFilter} onFilter={(f) => go(runsHash({ runsOf: where.runsOf, ...f }))}

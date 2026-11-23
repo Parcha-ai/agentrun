@@ -11,13 +11,18 @@ afterEach(() => vi.unstubAllEnvs());
 it("fetches a development handoff's matching skill through the actual Vite server, preserving API proxy auth and origin", async () => {
   const skill = "# AgentRun Server\n\nInstructions from this configured server's build.\n";
   const seen: { path: string; authorization?: string; origin?: string }[] = [];
+  // Only the paths this test asks for are recorded: a host agent that probes each new loopback listener with `GET /`
+  // reaches this backend too, and would land in `seen`. A proxied request that lost its path still fails the body check.
+  const asked = new Set(["/skills/agentrun-serve/SKILL.md", "/v2/capabilities"]);
   const backend = createHttpServer((request, response) => {
-    seen.push({ path: request.url!, authorization: request.headers.authorization, origin: request.headers.origin });
+    if (asked.has(request.url!)) seen.push({ path: request.url!, authorization: request.headers.authorization, origin: request.headers.origin });
     response.setHeader("content-type", request.url === "/skills/agentrun-serve/SKILL.md" ? "text/markdown" : "application/json");
     response.end(request.url === "/skills/agentrun-serve/SKILL.md" ? skill : JSON.stringify({ from: "configured server" }));
   });
   await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
   const target = `http://127.0.0.1:${(backend.address() as AddressInfo).port}`;
+  // Such a probe, made here so the test meets it every run rather than now and then.
+  await (await fetch(`${target}/`)).text();
   vi.stubEnv("AGENTRUN_URL", target);
   vi.stubEnv("AGENTRUN_TOKEN", "fake-test-dev-proxy");
   let dev: Awaited<ReturnType<typeof createServer>> | undefined;

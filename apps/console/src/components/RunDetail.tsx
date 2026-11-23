@@ -1,3 +1,5 @@
+import { CliLearningRun } from "@/components/CliLearningRun";
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { useEffect, useRef, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Composer } from "@/components/Composer";
@@ -127,12 +129,13 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
+  const cli = cliRunOf(run);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   // The agent's ask at its computer: a message is no answer to it, but one to a working run.
   const ask = askOf(run);
-  const askMode = !sdk && !native && ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
+  const askMode = !sdk && !cli && !native && ask ? (harnessSteers && messages.steer ? "steer" as const : messages.follow_up ? "follow_up" as const : null) : null;
   const state = runState(run.status, run.state, run.kind, messages, harnessSteers, run.error, run.review, run.computer);
-  const view = sdk || native || budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
+  const view = sdk || cli || native || budget ? { ...state, canMessage: false, messageMode: null } : ask ? { ...state, canMessage: askMode !== null, messageMode: askMode } : state;
   const defaultTab: Tab = graphView ? "graph" : view.final && run.status === "completed" ? "report" : "timeline";
   const [picked, setTab] = useState<Tab>(initial ?? defaultTab);
   // A Graph tab that went away (the graph's read was refused) leaves the run's default tab open, never a blank view.
@@ -267,8 +270,12 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
         : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} readUsage={readUsage} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
         : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
-        <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
+        {/* The reading column, then the Screen tab's panel in a box of its own: it is wider than the column when the
+            run's steps sit beside its screen. A column with nothing in it takes no room above the panel. */}
+        <div className="flex flex-col gap-6 py-8">
+        <div className="mx-auto w-full max-w-4xl space-y-6 px-5 empty:hidden md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
+          {cli && <CliLearningRun cli={cli} ended={view.final} />}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}
           {run.status === "cancelled" && (
             <section className="border border-border-strong/60 p-4"><p className="caps text-label text-muted-foreground">Cancelled</p>
@@ -298,12 +305,14 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
           {tab === "files" && <RunFiles files={files} onOpen={show} showHidden={showHidden} onShowHidden={setShowHidden} />}
+        </div>
           {tab === "screen" && hasScreen && <ScreenPanel runId={run.run_id} screen={screen} machine={machine} opens={screenOpens} followUp={view.canMessage && view.messageMode === "follow_up"} metered={metered} waitsFor={run.status === "input_required" && run.pending?.kind !== "stopped" ? run.pending?.kind : undefined} keptUntil={run.status === "input_required" ? keptUntil : undefined}
-            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} />}
+            onTake={onTakeOver ? take : undefined} onHand={onHandBack ? () => hand() : undefined} recordings={run.recordings} fileUrl={fileUrl} rows={rows} working={view.live} />}
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
-      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk.runtime)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
+      {cli && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{cliRunLabel(cli.runtime)} runs in your CLI. Continue, interrupt or retry the task in that original session. AgentRun records completed prompt windows and checked learning.</p>}
+      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>

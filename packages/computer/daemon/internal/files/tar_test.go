@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type header struct {
 	flag       byte
 	body       string
 	mode       int64
+	mtime      time.Time
 }
 
 func archive(t *testing.T, headers ...header) []byte {
@@ -30,7 +32,7 @@ func archive(t *testing.T, headers ...header) []byte {
 		if mode == 0 {
 			mode = 0o644
 		}
-		if err := w.WriteHeader(&tar.Header{Name: h.name, Linkname: h.link, Typeflag: h.flag, Mode: mode, Size: int64(len(h.body))}); err != nil {
+		if err := w.WriteHeader(&tar.Header{Name: h.name, Linkname: h.link, Typeflag: h.flag, Mode: mode, Size: int64(len(h.body)), ModTime: h.mtime}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := io.WriteString(w, h.body); err != nil {
@@ -208,4 +210,60 @@ func TestADirectoryModeIsNeverAppliedThroughASymlink(t *testing.T) {
 		t.Fatalf("the outside directory's mode became %o through the symlink", info.Mode().Perm())
 	}
 	wantKind(t, err, rpc.KindDenied, "d")
+}
+
+// A file gets its header's mtime, as tar gives it, a new one and one written over a file already there alike: so a
+// synced folder's push (sync-folder.ts PUSHED_MTIME) leaves every file at a time no later write gives it.
+func TestAFileGetsItsHeadersMtime(t *testing.T) {
+	root, _ := dirs(t)
+	if err := os.WriteFile(filepath.Join(root, "there"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pushed := time.Unix(946_684_800, 0)
+	n, err := extractTar(bytes.NewReader(archive(t,
+		header{name: "new", flag: tar.TypeReg, body: "n", mtime: pushed},
+		header{name: "there", flag: tar.TypeReg, body: "new", mtime: pushed},
+		header{name: "d/", flag: tar.TypeDir, mode: 0o755},
+		header{name: "d/later", flag: tar.TypeReg, body: "l", mtime: pushed.Add(time.Hour)},
+	)), root)
+	if err != nil || n != 4 {
+		t.Fatalf("extract: %d %v", n, err)
+	}
+	for name, want := range map[string]time.Time{"new": pushed, "there": pushed, "d/later": pushed.Add(time.Hour)} {
+		info, err := os.Stat(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(want) {
+			t.Fatalf("%s has mtime %v, want its header's %v", name, info.ModTime().UTC(), want.UTC())
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "there")); string(data) != "new" {
+		t.Fatalf("there holds %q", data)
+	}
+}
+
+// Under umask 077 (init's on the exec path), a directory only an entry's path names is made 0755, and one the archive
+// names gets its header's mode: neither takes the umask, so a synced folder records no mode no one gave.
+func TestADirectoryMadeForAnEntryIs0755WhateverTheUmask(t *testing.T) {
+	root, _ := dirs(t)
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	n, err := extractTar(bytes.NewReader(archive(t,
+		header{name: "named/", flag: tar.TypeDir, mode: 0o750},
+		header{name: "named/a", flag: tar.TypeReg, body: "a"},
+		header{name: "unnamed/deep/b", flag: tar.TypeReg, body: "b"},
+	)), root)
+	if err != nil || n != 3 {
+		t.Fatalf("extract: %d %v", n, err)
+	}
+	for name, want := range map[string]os.FileMode{"named": 0o750, "unnamed": 0o755, "unnamed/deep": 0o755, "named/a": 0o644, "unnamed/deep/b": 0o644} {
+		info, err := os.Stat(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s is %o, want %o", name, info.Mode().Perm(), want)
+		}
+	}
 }

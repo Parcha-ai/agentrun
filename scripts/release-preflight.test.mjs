@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkNotice, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkNotice, checkPublished, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -35,7 +35,7 @@ const manifest = directory => ({ name: releasePackageNames[directory], ...(heldP
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
   ...(directory === 'agentrun' ? { dependencies: { '@parcha/agentrun-serve': version } } : directory === 'eve'
     ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-client': version } }
-    : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
+    : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' || directory === 'import' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 /** Holds `directory` in the checked tree (its manifest says "private": true), whatever this checkout holds, and records the
@@ -84,7 +84,7 @@ async function recordPackages(root) {
   const refused = settled.find((outcome) => outcome.status === 'rejected');
   if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, eve: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, import: true, client: true, eve: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -92,7 +92,13 @@ async function fixture(fn) {
   try { await cp(baseline, root, { recursive: true }); await fn(root); }
   finally { await rm(root, { recursive: true, force: true }); }
 }
-const preflight = root => releasePreflight(root, `v${version}`, { checkGit: false });
+// Every package is on npm already: the tests never ask the registry (see the npm tests below for the gate itself).
+const published = async () => '0.1.0-beta.1';
+const preflight = (root, npmView = published) => releasePreflight(root, `v${version}`, { checkGit: false, npmView });
+/** What execFile rejects with when `npm view` fails: npm's exit status, its output on stderr. */
+const npmFailure = stderr => Object.assign(new Error(`Command failed: npm view\n${stderr}`), { code: 1, stdout: '', stderr });
+const notFound = name => npmFailure(`npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/${name.replace('/', '%2f')} - Not found\nnpm error 404\nnpm error 404  '${name}@*' is not in this registry.\n`);
+const absent = (...names) => async name => { if (names.includes(name)) throw notFound(name); return '0.1.0-beta.1'; };
 
 test('provenance requires both the dispatch tag and SHA to match checked-out source', () => {
   const tag = `v${version}`, commit = 'a'.repeat(40);
@@ -108,9 +114,11 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
     await mkdir(join(root, '.release'));
     await mkdir(join(root, 'bin'));
     await cp(new URL('./check-typescript-floor.mjs', import.meta.url), join(root, 'scripts/check-typescript-floor.mjs'));
+    await cp(new URL('./npm-command.mjs', import.meta.url), join(root, 'scripts/npm-command.mjs'));
     await writeFile(join(root, '.release/typescript-floor.json'), '{"status":"passed"}');
-    await writeFile(join(root, 'bin/npm'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }));
+    // An npm that fails, as the CLI script npm names under `npm run` (npm_execpath).
+    await writeFile(join(root, 'bin/npm-cli.cjs'), 'process.exit(1);\n');
+    await assert.rejects(exec(process.execPath, ['scripts/check-typescript-floor.mjs'], { cwd: root, env: { ...process.env, npm_execpath: join(root, 'bin/npm-cli.cjs') } }));
     assert.equal(JSON.parse(await readFile(join(root, '.release/typescript-floor.json'), 'utf8')).status, 'failed');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -118,12 +126,12 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-import-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
-  await assert.rejects(releasePreflight(root, 'v0.1.0', { checkGit: false }), /Tag must match/);
+  await assert.rejects(releasePreflight(root, 'v0.1.0', { checkGit: false, npmView: published }), /Tag must match/);
   await putJson(join(root, 'package.json'), { version, license: 'UNLICENSED' });
   await assert.rejects(preflight(root), /approved MIT or Apache/);
 }));
@@ -181,6 +189,10 @@ test('a receipt names every installed package smoke, the browser one included, a
   const { computer: __, ...withoutComputer } = receipt.runtimeSmoke;
   await putJson(path, { ...receipt, runtimeSmoke: withoutComputer });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
+  // The session readers' smoke: usage normalized, the three sources, an empty home read.
+  const { import: ____, ...withoutImport } = receipt.runtimeSmoke;
+  await putJson(path, { ...receipt, runtimeSmoke: withoutImport });
+  await assert.rejects(preflight(root), /All installed package smoke checks/);
   const { eve: ___, ...withoutEve } = receipt.runtimeSmoke;
   await putJson(path, { ...receipt, runtimeSmoke: withoutEve });
   await assert.rejects(preflight(root), /All installed package smoke checks/, 'held extensions still require their installed runtime smoke');
@@ -232,7 +244,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-import', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -283,7 +295,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'import', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -446,6 +458,20 @@ test('the computer package is published: listed, not held, a release manifest at
   assert.ok(plan.indexOf('decisions') >= 0 && plan.indexOf('computer') > plan.indexOf('decisions'), 'in the plan, after decisions, the package before it in the map');
 }));
 
+test('the import package is published: listed, not held, a release manifest at the workspace version, in the first layer, and in the plan before serve', () => fixture(async root => {
+  // agentrun-serve reads a home's coding-agent sessions with it at runtime, so it is published with serve, before it.
+  assert.ok(releasePackages.includes('import') && !heldPackages.includes('import'), 'published from this checkout');
+  const workspace = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const sessions = repoManifest('import');
+  checkManifest(sessions, 'import', workspace.version, workspace.license);
+  assert.equal(repoManifest('serve').dependencies?.['@parcha/agentrun-import'], workspace.version, 'serve depends on it at the release version');
+  // It depends on no package of the release, so it is published in the first layer, beside dsl.
+  assert.deepEqual(Object.keys({ ...sessions.dependencies, ...sessions.peerDependencies, ...sessions.optionalDependencies }).filter(name => name.startsWith('@parcha/')), []);
+  assert.ok(releaseLayers(releasePackages)[0].includes('import'), 'in the first layer');
+  const plan = (await preflight(root)).packages.map(pkg => pkg.directory);
+  assert.ok(plan.indexOf('import') > plan.indexOf('pi-browser') && plan.indexOf('import') < plan.indexOf('serve'), 'in the plan, after pi-browser and before serve');
+}));
+
 test('a release is refused while fragments remain or the changelog lacks the version', () => fixture(async root => {
   await preflight(root).then(result => assert.equal(result.status, 'passed'));
   await mkdir(join(root, 'changes'));
@@ -565,3 +591,33 @@ test("a release folded with a held package's fragment passes the preflight, and 
   assert.equal((await preflight(root)).status, 'passed', 'entries left under a held package\'s Unreleased do not block the release');
 }));
 
+
+test('a package of the publish set not on npm yet stops the release before anything is published, naming it and the bootstrap step', async () => {
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], absent('@parcha/agentrun-import')), error =>
+    error.message === '@parcha/agentrun-import is not on npm yet. Bootstrap it before releasing: publish a first version by hand and set up its trusted publisher (docs/releasing.md).');
+});
+
+test('every package not on npm yet is named in one error', async () => {
+  await assert.rejects(checkPublished(['@parcha/agentrun-import', '@parcha/agentrun-dsl', '@parcha/agentrun-eve'], absent('@parcha/agentrun-import', '@parcha/agentrun-eve')), error =>
+    error.message === '@parcha/agentrun-import and @parcha/agentrun-eve are not on npm yet. Bootstrap them before releasing: publish a first version of each by hand and set up its trusted publisher (docs/releasing.md).');
+});
+
+test('every package on npm passes the gate', async () => {
+  const asked = [];
+  await checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], async name => { asked.push(name); return '0.1.0-beta.1'; });
+  assert.deepEqual(asked, ['@parcha/agentrun-dsl', '@parcha/agentrun-import']);
+});
+
+test('an npm failure that is not a 404 (network, auth) stops the release too: never taken for published', async () => {
+  const offline = async name => { if (name === '@parcha/agentrun-import') throw npmFailure('npm error code ECONNRESET\nnpm error network aborted\n'); return '0.1.0-beta.1'; };
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], offline), error =>
+    /npm could not say whether @parcha\/agentrun-import is published/.test(error.message) && /ECONNRESET/.test(error.message) && !/Bootstrap/.test(error.message));
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl'], async () => { throw Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }); }), /npm could not say whether @parcha\/agentrun-dsl is published/);
+});
+
+test('releasePreflight runs the gate over the tree\'s publish set: a held package is not asked for, a missing one stops it', () => fixture(async root => {
+  const asked = [];
+  await preflight(root, async name => { asked.push(name); return '0.1.0-beta.1'; });
+  assert.deepEqual(asked, releasePackages.map(directory => releasePackageNames[directory]));
+  await assert.rejects(preflight(root, absent('@parcha/agentrun-import')), /@parcha\/agentrun-import is not on npm yet\. Bootstrap it before releasing/);
+}));

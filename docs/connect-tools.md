@@ -26,7 +26,7 @@ wait for your approval, or are refused.
 
 Many services publish a hosted MCP server. Check the service's docs for its MCP address.
 
-1. In the console, open **Settings → MCP servers** and add a server. Linear and Notion are listed as presets. So is fal (image, video and audio generation), twice: "fal (key)" takes your fal key as a bearer token, and "fal (sign in)" signs in with your fal account. A template that needs fal links to the key one.
+1. In the console, open **Settings → MCP servers** and add a server. Linear and Notion are listed as presets. fal (image, video and audio generation) has two presets: "fal (key)" with your fal key, and "fal (sign in)". fal bills your fal account, and a run counts each fal job at fal's price before it is sent, under its spend cap; a job it can't price is refused when the run has a cap. A template that needs fal links to the key one.
 2. Paste the service's MCP address and choose **Sign in with OAuth**.
 3. Choose **Sign in**, and sign in on the service's page. Signing in saves the server: AgentRun lists its tools and
    keeps the tokens, sealed, and refreshes them. There is no separate Save.

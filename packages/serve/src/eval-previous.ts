@@ -11,9 +11,9 @@
 // and its report.
 import { carriedFields, carriedProblem, schemaCheck } from "./answer-json.js";
 import { transcriptOf } from "./import.js";
-import type { Session } from "./import-sources.js";
+import type { Session } from "@parcha/agentrun-import";
 import { launchBody } from "./run-launch.js";
-import { uuidv7 } from "./runs-over-store.js";
+import { uuidv7 } from "./ids.js";
 import type { Store } from "./store/index.js";
 import { type CompletedOutput, type PreviousHandover, previousHandover } from "./trigger-targets.js";
 import { isObject, type Json } from "./validate.js";
@@ -108,8 +108,9 @@ export async function seedPrevious(store: Store, fixture: PreviousFixture, { age
       });
       await store.agents.setCurrent(agentId, current);
     }
-    // Run ids sort by their start: each seeded one is older than the next, and than the case's run.
-    const runId = uuidv7(startedAt);
+    // Run ids sort by their start: each seeded one is older than the next, and than the case's run. The id is minted as of
+    // its start (`at`), a day before the next, never moved up to the last millisecond minted.
+    const runId = uuidv7({ at: startedAt });
     const key = `template-eval-previous-${i + 1}`;
     const answer = `\`\`\`json\n${JSON.stringify(result.output, null, 2)}\n\`\`\``;
     const session = { turns: [{ role: "user", text: content, at: startedAt }, { role: "assistant", text: answer, calls: [], at: endedAt }] } as unknown as Session;

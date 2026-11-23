@@ -6,7 +6,7 @@
 // (workspace-resolve-computer.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -161,6 +161,20 @@ test("a kind no provider can serve here is not offered, and says why: in Mode 2 
   const view = await createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode: "disk" }).view();
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.deepEqual([kindOf(view, "phone").offered, kindOf(view, "phone").why, kindOf(view, "phone").providers], [false, "no provider serves a phone computer", []]);
+});
+
+test("each kind says whether its runs can record their screen here: a desktop, phone or browser with ffmpeg on the PATH can; without it, each says ffmpeg is missing; a sandbox and none never can, in words", async (t) => {
+  const { store } = await storeOn(t);
+  const viewOn = (path) => createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", env: { PATH: path } }).view();
+  const records = (view) => Object.fromEntries(view.kinds.map((one) => [one.kind, one.record]));
+  const bin = await mkdtemp(join(tmpdir(), "record-path-"));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const noFfmpeg = "ffmpeg isn't installed on this server (no ffmpeg command on PATH)";
+  const never = { none: { available: false, why: "with no computer, there is no screen to record" }, sandbox: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" } };
+  assert.deepEqual(records(await viewOn(bin)), { ...never, desktop: { available: false, why: noFfmpeg }, phone: { available: false, why: noFfmpeg }, browser: { available: false, why: noFfmpeg } });
+  await writeFile(join(bin, "ffmpeg"), "#!/bin/sh\n");
+  await chmod(join(bin, "ffmpeg"), 0o755);
+  assert.deepEqual(records(await viewOn(`/nowhere${delimiter}${bin}`)), { ...never, desktop: { available: true }, phone: { available: true }, browser: { available: true } });
 });
 
 test("a key save takes only the provider's declared names, seals each in the store, answers names and saved flags only, and null removes", async (t) => {
@@ -349,7 +363,7 @@ test("each provider's folder is the one a run's claim holds for its computer, pe
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
 const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd or Groundbox for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind", async (t) => {
   const asked = [];

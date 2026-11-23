@@ -18,6 +18,11 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
+import { meterFor, publicMedia } from "../fal-price.js";
+import { FAUX_ENV } from "../model.js";
+import { fetchOptions } from "../web-fetch-direct.js";
+import { fakeSaveOptions, type WebFake } from "../web-fake.js";
+import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
@@ -58,6 +63,9 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
+  /** A test's fake Composio MCP origin, handed to the claim step and the pin's listing (mcpClaim's composioMcpOrigin): for
+   *  tests only: no environment variable, flag or setting maps onto it; absent, Composio's (composio-made.ts COMPOSIO_ORIGIN). */
+  readonly composioMcpOrigin?: string;
   /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): the runner
    *  beside a local-install server, or a runner in its own process whose own environment opts in. Absent, never. */
   readonly loopback?: boolean;
@@ -72,6 +80,12 @@ export interface McpForClaimOptions {
   readonly fetch?: typeof fetch;
   readonly callBounds?: { callMs?: number; connectMs?: number };
   readonly githubTimer?: GithubTimer;
+  /** Whether the run has a spend cap (its launch's max_cost_usd): under one, a metered job that can't be priced is refused
+   *  unsent. None: it has. */
+  readonly capped?: boolean;
+  /** Where a metered job's input media are read from, through the guard web_save downloads by: an eval's web fake `web`,
+   *  else the faux module or the public network by `env`, in web_save's `slots`. None: such a job can't be priced. */
+  readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
 }
@@ -125,13 +139,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       sealKey: options.sealKey,
       signal: held.signal,
       // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
-      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}), ...(options.composioMcpOrigin ? { composioOrigin: options.composioMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
       ...(options.own ? { own: options.own } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
+      ...(options.composioMcpOrigin ? { composioMcpOrigin: options.composioMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
       ...(options.hold ? { hold: options.hold } : {}),
     });
@@ -145,6 +160,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     return undefined;
   }
   const network = options.network ?? systemNetwork;
+  const media = options.media;
   const gateway = mcpGateway({
     pin,
     credentials: step.credentials,
@@ -160,9 +176,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     },
     beforeCall: step.beforeCall,
     work: options.work,
+    // fal's submission keys are scoped to the run (fal-price.ts falKeys): the same on every claim of it, so a retry after
+    // a resume still dedupes.
+    run: options.claim.runId,
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
+    capped: () => options.capped !== false,
+    ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
@@ -195,7 +216,9 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const parsed = mcpNameOf(name);
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
-      return pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool) ? pinned.prices[parsed!.tool]! : "not metered";
+      if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
+      // A metered server's job is priced from its input, when the call runs: no price to show before it.
+      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),

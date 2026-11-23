@@ -1,9 +1,11 @@
 // ci-shard's time limits, on a made-up repository: a test that never settles fails by its --test-timeout, named, and a suite
 // that never exits is killed at the shard's limit with everything it started, the shard failing with a line that names it.
+// A suite that fails says how: its exit status, or the signal that ended it.
 // A script of a shape ci-shard does not know fails the shard before anything runs. A cancel that reaches ci-shard stops its
-// suite the same way the limit does.
+// suite the same way the limit does. On a pull request (CI_AFFECTED_BASE) an affected pool runs only what the changes reach,
+// and a selection that cannot be worked out fails the shard rather than running a different plan.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -57,8 +59,9 @@ const repo = (name, files, stallScript = "node --test 'test/*.test.mjs'") => {
 // (SIGKILL to what is left after its grace); then SIGKILL to ci-shard's group, and this file lets go of the pipes, so a suite
 // that outlived all that cannot hold this file's process.
 const start = (t, root, name, env) => {
-  // A run of its own, not one nested in this file's (node --test skips a run it finds inside another).
-  const { NODE_TEST_CONTEXT: _nested, ...outer } = process.env;
+  // A run of its own, not one nested in this file's (node --test skips a run it finds inside another). CI_AFFECTED_BASE comes
+  // from `env` alone: a pull request's CI sets it for the shard that runs this file, and a test that passes none means none.
+  const { NODE_TEST_CONTEXT: _nested, CI_AFFECTED_BASE: _base, ...outer } = process.env;
   const run = spawn(process.execPath, [script, name], { cwd: root, env: { ...outer, npm_config_update_notifier: 'false', ...env }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
   let output = '';
   run.stdout.on('data', (chunk) => { output += chunk; });
@@ -100,10 +103,25 @@ test('a test that never settles fails by --test-timeout, named in the shard\'s l
   // Node 24 applies --test-timeout to each test; Node 22 to each test file, so there the file is the name the log gives.
   assert.match(output, major >= 24 ? /✖ a test that never settles/ : /not ok \d+ - test\/hang\.test\.mjs/, output);
   assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=1000 test\/hang\.test\.mjs"$/m, output);
-  assert.doesNotMatch(output, /::error::ci-shard/, 'the shard\'s limit did not fire');
+  assert.match(output, /^::error::ci-shard: npm exec -w stall -c "node --test --test-timeout=1000 test\/hang\.test\.mjs" exited with status 1$/m, output);
+  assert.doesNotMatch(output, /the shard's [\d.]+-minute limit/, 'the shard\'s limit did not fire');
   // Its time against its model, failed or not: how a stale scripts/ci-timings.json shows in the log.
   assert.match(output, /^ci-shard: any-1 ran \d+ s, modelled \d+ s$/m, output);
   assert.ok(seconds < 25, `${seconds} s`);
+});
+
+// A suite ended by a signal before it printed anything (a SIGKILL to its whole process group, as a test that signals pid 0
+// sends) left an empty group in the log and a bare `failed:` line. The suite's group is its own (ci-shard starts it
+// detached), so the kill below reaches the suite alone, never ci-shard or this file.
+test('a suite ended by a signal before it prints anything is named with the signal, and the commands after it still run', { timeout: 90_000 }, async (t) => {
+  const root = repo('signalled', {
+    'test/signalled.test.mjs': "import test from 'node:test'; test('signals its own process group', () => { process.kill(0, 'SIGKILL'); });",
+  });
+  const { status, output } = await shard(t, root, 'any-1', { CI_SHARD_TEST_TIMEOUT_MS: '60000', CI_SHARD_TIMEOUT_MS: '30000' });
+  assert.equal(status, 1, output);
+  assert.match(output, /^::error::ci-shard: npm exec -w stall -c "node --test --test-timeout=60000 test\/signalled\.test\.mjs" was ended by SIGKILL$/m, output);
+  assert.match(output, /^failed: npm exec -w stall -c "node --test --test-timeout=60000 test\/signalled\.test\.mjs"$/m, output);
+  assert.match(output, /::group::npm exec -c "node --test --test-timeout=60000 release\/ok\.test\.mjs"/, 'the suite after it ran');
 });
 
 test('a suite whose tests pass but whose process never exits is killed at the shard\'s limit, with what it started; the commands after it are not run, and each is named', { timeout: 90_000 }, async (t) => {
@@ -147,7 +165,7 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   // once its handler is in place.
   const root = repo('stubborn', {
     'test/stubborn.test.mjs': `
-      import { spawn } from 'node:child_process';
+      import { execFileSync, spawn } from 'node:child_process';
       import test from 'node:test';
       test('starts a process that ignores SIGTERM, and waits', () => new Promise(() => {
         spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); const fs = require('node:fs'); const file = process.env.CI_SHARD_TEST_PID_FILE; fs.writeFileSync(file + '.tmp', String(process.pid)); fs.renameSync(file + '.tmp', file); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
@@ -167,4 +185,74 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   assert.ok(await ended(pid), `the suite's process ${pid}, which ignores SIGTERM, is still running 5 s after ci-shard exited`);
   assert.ok(seconds >= 9 && seconds < 25, `${seconds} s: SIGTERM, the 10 s grace, then SIGKILL`);
   assert.doesNotMatch(run.output(), /::group::npm exec -c/, 'the suites after it were not started');
+});
+
+// `root`'s files committed as main. The function returned merges a branch that writes `text` to `path` into main, so HEAD is a
+// pull request's checkout: the merge commit, whose first parent is the base.
+const pullRequests = (root) => {
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'base');
+  return (path, text) => {
+    const branch = `topic-${path.replaceAll('/', '-')}`;
+    git('switch', '-q', '-c', branch);
+    write(join(root, path), text);
+    git('add', '-A');
+    git('commit', '-q', '-m', `change ${path}`);
+    git('switch', '-q', 'main');
+    git('merge', '-q', '--no-ff', '-m', `merge ${path}`, branch);
+  };
+};
+
+test("a selection that cannot be worked out fails the affected shard before anything runs; without CI_AFFECTED_BASE the same shard runs every test", { timeout: 90_000 }, async (t) => {
+  const root = join(scratch, 'unselectable');
+  // A whole suite whose runner cannot list its files: the selection reads that list, the plan of every test does not.
+  write(join(root, 'package.json'), { name: 'unselectable', private: true, workspaces: ['packages/*'], scripts: { 'test:release': "node --test 'release/*.test.mjs'" } });
+  write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:release'], whole: { w: 'node run.mjs' }, pools: { any: { shards: 1, affected: true } } });
+  write(join(root, 'release/ok.test.mjs'), "import test from 'node:test'; test('release', () => {});");
+  write(join(root, 'packages/w/package.json'), { name: 'w', scripts: { test: 'node run.mjs' } });
+  write(join(root, 'packages/w/run.mjs'), "if (process.argv.includes('--list')) { console.error('w cannot list its files'); process.exit(1); }\n");
+  write(join(root, 'packages/w/src/w.mjs'), 'export const w = 1;\n');
+  pullRequests(root)('packages/w/src/w.mjs', 'export const w = 2;\n');
+  const failed = await shard(t, root, 'any-1', { CI_AFFECTED_BASE: 'HEAD^1' });
+  assert.equal(failed.status, 1, failed.output);
+  assert.match(failed.output, /^ci-shard: the tests the changes since HEAD\^1 reach cannot be worked out: w: `node run\.mjs --list` exited 1/m, failed.output);
+  assert.doesNotMatch(failed.output, /::group::|every test runs/, 'it neither ran a test nor fell back to every test');
+  const every = await shard(t, root, 'any-1', {});
+  assert.equal(every.status, 0, every.output);
+  for (const command of ['npm run test -w w', 'release/ok.test.mjs']) assert.match(every.output, new RegExp(`^::group::.*${command.replaceAll('.', '\\.')}`, 'm'), every.output);
+});
+
+test("on a pull request an affected pool's shards run only the tests the changes since CI_AFFECTED_BASE reach, a shard left with none passing; a shared root runs every test", { timeout: 90_000 }, async (t) => {
+  const root = join(scratch, 'affected');
+  write(join(root, 'package.json'), { name: 'affected', private: true, workspaces: ['packages/*'], scripts: { 'test:release': "node --test 'release/*.test.mjs'" } });
+  write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:release'], pools: { any: { shards: 2, affected: true } } });
+  write(join(root, 'release/ok.test.mjs'), "import test from 'node:test'; test('release', () => {});");
+  write(join(root, 'packages/p/package.json'), { name: 'p', scripts: { test: "node --test 'test/*.test.mjs'" } });
+  write(join(root, 'packages/p/src/one.mjs'), 'export const one = 1;\n');
+  write(join(root, 'packages/p/test/one.test.mjs'), "import test from 'node:test'; import { one } from '../src/one.mjs'; test('one', () => {});");
+  write(join(root, 'packages/p/test/two.test.mjs'), "import test from 'node:test'; test('two', () => {});");
+  const merge = pullRequests(root);
+  merge('packages/p/src/one.mjs', 'export const one = 2;\n');
+  const env = { CI_AFFECTED_BASE: 'HEAD^1' };
+  const first = await shard(t, root, 'any-1', env);
+  assert.equal(first.status, 0, first.output);
+  assert.match(first.output, /^ {2}packages\/p\/src\/one\.mjs: 1 by import$/m, first.output);
+  assert.match(first.output, /^ci-shard: the any pool runs the 1 test file or suite these changes reach, not every one; the merge queue runs every test$/m, first.output);
+  assert.match(first.output, /^::group::npm exec -w p -c "node --test --test-timeout=\d+ test\/one\.test\.mjs"$/m, first.output);
+  assert.equal([...first.output.matchAll(/^::group::npm /gm)].length, 1, first.output);
+  const second = await shard(t, root, 'any-2', env);
+  assert.equal(second.status, 0, second.output);
+  assert.match(second.output, /^ci-shard: any-2 has nothing to run: the plan gave it none of the tests these changes reach$/m, second.output);
+  assert.doesNotMatch(second.output, /::group::npm /, second.output);
+  // A shared root: every test, shared between the two shards as on main.
+  merge('.github/workflows/ci.yml', 'on: push\n');
+  const full = [await shard(t, root, 'any-1', env), await shard(t, root, 'any-2', env)];
+  for (const run of full) {
+    assert.equal(run.status, 0, run.output);
+    assert.match(run.output, /^ci-shard: every test runs: \.github\/workflows\/ci\.yml is a shared root, which any suite may read$/m, run.output);
+  }
+  const ran = full.flatMap((run) => [...run.output.matchAll(/^::group::(.*)$/gm)].map((m) => m[1])).join('\n');
+  for (const file of ['test/one.test.mjs', 'test/two.test.mjs', 'release/ok.test.mjs']) assert.ok(ran.includes(file), `${file} ran: ${ran}`);
 });

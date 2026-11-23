@@ -77,7 +77,9 @@ jobs:
     # (scripts/ci-shard.mjs): each suite's files assigned by time to the shards of its pool (scripts/ci-shards.json), and
     # every shard job fails unless the shards cover every test file once, so a new package or test file is tested without
     # an edit here. A shard's name is its pool and number; the pools' counts there and the list below must agree
-    # (scripts/ci-plan.test.mjs).
+    # (scripts/ci-plan.test.mjs). On a pull request the any pool's shards run only the tests its changes reach
+    # (scripts/ci-affected.mjs), or every test when it changes a shared root such as scripts/ or this file; the merge queue
+    # and main run every test, so a test that selection misses fails there.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
     # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
@@ -90,11 +92,13 @@ jobs:
         # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
         # release. An older 24 is not supported, so no leg tests one.
         node: ['24.22.3']
-        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6, any-7]
+        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11]
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ matrix.shard == 'checks' && '0' || '1' }}
+          # A pull request's any shards also fetch the merge commit's parents: the first is the base its changes are
+          # read from.
+          fetch-depth: ${{ matrix.shard == 'checks' && '0' || (github.event_name == 'pull_request' && startsWith(matrix.shard, 'any-')) && '2' || '1' }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -171,6 +175,9 @@ jobs:
           # The lean pool's shards record every workflow their DSL, serve workflow and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
           LEAN_SWEEP_DIR: ${{ startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
+          # A pull request's merge commit's first parent, the base as GitHub merged it: a pool ci-shards.json marks
+          # affected runs only the tests the changes since it reach. Empty in the merge queue and on main: every test.
+          CI_AFFECTED_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
       # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
       - name: Keep the workflows the tests validated, for the lean job
         if: startsWith(matrix.shard, 'lean-')
@@ -415,12 +422,19 @@ jobs:
         with:
           go-version-file: packages/serve/runas/go.mod
           cache: false
-      - name: The run helper's vet and tests (packages/serve/runas)
+      - name: The run helper's vet and tests (packages/serve/runas, unprivileged)
         if: steps.paths.outputs.run == 'true'
         working-directory: packages/serve/runas
         env:
           CGO_ENABLED: '0'
         run: go vet ./... && go test ./...
+      # The real helper on real files, started as the runner (uid 1000) with the image's capabilities: a run as one slot
+      # reaches neither another slot's folder nor, after its give-back, its own last run's (privileged_test.go). Root
+      # starts it with those capabilities, so this step runs under sudo; the step above skips these tests.
+      - name: The run helper's privileged tests (packages/serve/runas, as root)
+        if: steps.paths.outputs.run == 'true'
+        working-directory: packages/serve/runas
+        run: sudo env "PATH=$PATH" CGO_ENABLED=0 GOCACHE="$RUNNER_TEMP/go-root-cache" GOFLAGS=-buildvcs=false go test -count=1 -v -run Privileged ./...
       - name: The image, built once
         id: image
         if: steps.paths.outputs.run == 'true'

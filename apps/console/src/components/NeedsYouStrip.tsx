@@ -1,3 +1,4 @@
+import { cliRunOf, cliRunLabel } from "@/lib/cliLearning";
 import { useEffect, useState } from "react";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { Button } from "@/components/ui/button";
@@ -49,8 +50,8 @@ const runHref = (id: string) => `#/runs/${encodeURIComponent(id)}`;
 /** Mission Control's first section: what needs a person now (each question answered in place, each failure said once
  *  with a way to run it again) and the runs at work, each with its clock. Nothing at all when nothing waits or works. */
 export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], agentName, onAnswer, onApprove, onHandBack, onRunAgain, onStop, problem, now = Date.now }: NeedsYouProps) {
-  const groups = failureGroups(failed.filter((run) => !backendSdkOf(run)));
-  const backendFailures = failed.filter((run) => !run.imported_from && backendSdkOf(run));
+  const groups = failureGroups(failed.filter((run) => !backendSdkOf(run) && !cliRunOf(run)));
+  const backendFailures = failed.filter((run) => !run.imported_from && (backendSdkOf(run) || cliRunOf(run)));
   // The live runs' clocks move on their own, once a second.
   const [, tick] = useState(0);
   useEffect(() => {
@@ -130,7 +131,7 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
       {live.length > 0 && (
         <div className="border">
           <p className="caps border-b px-4 py-2.5 text-label text-muted-foreground">Running now · {live.length}</p>
-          <ul>{live.map((r) => backendSdkOf(r) ? <BackendRun key={r.run_id} run={r} agentName={agentName(r.agent_id)} /> : <Live key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onStop={onStop} />)}</ul>
+          <ul>{live.map((r) => backendSdkOf(r) || cliRunOf(r) ? <BackendRun key={r.run_id} run={r} agentName={agentName(r.agent_id)} /> : <Live key={r.run_id} run={r} agentName={agentName(r.agent_id)} at={at} onStop={onStop} />)}</ul>
         </div>
       )}
     </section>
@@ -280,10 +281,11 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
 
 /** Backend SDK calls are observed here; their application owns cancellation and fresh-task retries. */
 function BackendRun({ run, agentName }: { run: Run; agentName: string }) {
+  const cli = cliRunOf(run);
   return <li className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
-    <div className="min-w-0 flex-1"><p className="text-small text-muted-foreground">{agentName} · {backendSdkLabel(backendSdkOf(run)!.runtime)}</p><a href={runHref(run.run_id)} className="text-lead hover:underline">{runTitle(run)}</a>
+    <div className="min-w-0 flex-1"><p className="text-small text-muted-foreground">{agentName} · {cli ? cliRunLabel(cli.runtime) : backendSdkLabel(backendSdkOf(run)!)}</p><a href={runHref(run.run_id)} className="text-lead hover:underline">{runTitle(run)}</a>
       {run.status === "failed" && <p className="mt-1 break-words text-small text-destructive-text">{run.error?.message || "The run failed."}</p>}
-      <p className="mt-1 text-small text-muted-foreground">Control and retries stay in your backend. {run.status === "failed" ? "Start another task in the original application." : "Stop or cancel this task in the original application."}</p>
+      <p className="mt-1 text-small text-muted-foreground">Control and retries stay in {cli ? "your CLI" : "your backend"}. {run.status === "failed" ? "Start another task in the original application." : "Stop or cancel this task in the original application."}</p>
     </div>
     <a href={runHref(run.run_id)} className="caps shrink-0 text-small text-muted-foreground hover:text-foreground">Open</a>
   </li>;

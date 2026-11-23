@@ -24,11 +24,11 @@ export const IDEMPOTENCY_TTL_S = 86_400;
 export const stable = (value: unknown): string =>
   Array.isArray(value) ? `[${value.map(stable).join(",")}]` : isObject(value) ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 
-export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "input_schema", "output_schema", "checkout", "native", "sdk"];
+export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instructions", "workflow", "model", "model_tiers", "thinking", "harness", "place", "computer", "learning", "skills", "tools", "tool_settings", "approvals", "max_cost_usd", "max_requests", "input_schema", "output_schema", "checkout", "native", "sdk", "cli_learning"];
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
-export const CHECKOUTS = ["pull_request", "none"] as const;
+export const CHECKOUTS = ["pull_request", "repository", "none"] as const;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** The most bytes an agent's input_schema takes, as JSON. */
@@ -150,10 +150,12 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   if (d.max_cost_usd !== undefined) {
     if (!(typeof d.max_cost_usd === "number" && Number.isFinite(d.max_cost_usd) && d.max_cost_usd >= 0)) out.push(issue(`${at}.max_cost_usd`, "wrong_type", `${at}.max_cost_usd is a number of at least 0, in US dollars: above 0 sets the agent's default cap, 0 clears it`));
   }
+  // The agent's limit on each run's free-model requests: see DefinitionInput.max_requests (openapi.ts).
+  if (d.max_requests !== undefined && !(typeof d.max_requests === "number" && Number.isSafeInteger(d.max_requests) && d.max_requests >= 0)) out.push(issue(`${at}.max_requests`, "wrong_type", `${at}.max_requests is a whole number of at least 0: above 0 sets the most requests on free models each run makes (the server's own limit holds when it is lower), 0 clears it`));
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
-    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
+    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; repository checks out the head of the default branch of the repository the run names (https://github.com/<owner>/<repo> in its first message, or its start's repo); none clears it`));
   }
   return out;
 }

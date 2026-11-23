@@ -113,6 +113,27 @@ test("a turn still in flight when the drain bound runs out is stopped there for 
   assert.deepEqual([row.state, row.runner], ["running", null], "released still running, for the next claim to resume");
 });
 
+test("a drain says how long it took and what it handed back, and the store counts the hand-back (the runner's metrics, GET /v2/capacity)", async (t) => {
+  const cut = await holding(t, 200);
+  await within(cut.runner.close(), 20_000, "the close resolved at the drain's bound");
+  const drained = cut.events.filter((event) => event.type === "drained");
+  assert.equal(drained.length, 1, "said once");
+  assert.deepEqual([drained[0].held, drained[0].left], [1, 1], "one run held, one still going at the bound");
+  assert.ok(drained[0].ms >= 150 && drained[0].ms < 20_000, `the drain took about its bound: ${drained[0].ms} ms`);
+  assert.deepEqual(cut.events.filter((event) => event.type === "handed-back").map(({ runId, cause }) => [runId, cause]), [["run-1", "drain"]], "handed back by the drain");
+  assert.equal((await cut.server.runners.capacity(60_000)).handBacks, 1, "the store kept the hand-back");
+
+  // A turn that finishes within the drain: nothing left, nothing handed back.
+  const done = await holding(t, 60_000);
+  const closing = done.runner.close();
+  await settled();
+  done.loop.finishTurn();
+  await within(closing, 20_000, "the close resolved once the turn ended");
+  assert.deepEqual(done.events.filter((event) => event.type === "drained").map(({ held, left }) => [held, left]), [[1, 0]]);
+  assert.deepEqual(done.events.filter((event) => event.type === "handed-back"), [], "no hand-back: the run ended");
+  assert.equal((await done.server.runners.capacity(60_000)).handBacks, 0);
+});
+
 test("a person's stop sent while the runner drains reaches its run at once: the run ends stopped, its row taken, the close not waiting out the bound", async (t) => {
   const { server, runner, loop, events } = await holding(t, 60_000);
   const closing = runner.close();

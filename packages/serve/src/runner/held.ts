@@ -21,6 +21,7 @@ import type { AlsoRow } from "../store/store.js";
 import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 import type { LearnedFirst } from "./learned-first.js";
+import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -61,6 +62,9 @@ export interface HeldComputerAsk {
 }
 
 export interface Held {
+  /** The host captures this claim's placed project once after draining its exported capabilities. No child-selected
+   * identifiers, paths, callbacks, workspace or secret values cross this boundary. */
+  projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
@@ -89,6 +93,9 @@ export interface Held {
   /** The zone the claim's run's day is told in (environment.ts runZone): its trigger's, read by the runner from the
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
+  /** The keys saved for the claim's own harness alone (harness-keys.ts openHarnessKeys), by name, opened by the runner:
+   *  none unless that harness is a plan-billed recipe. The process lays them on its adapter's environment alone. */
+  harnessKeys(): Promise<Record<string, string>>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
    *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;

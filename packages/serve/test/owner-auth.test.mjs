@@ -408,8 +408,9 @@ test("reset-password clears the password and ends every session; the next visit 
 
 test("every route, called with no credential, enforces its public, owner, API or dedicated scoped credential boundary", async (t) => {
   const server = await owned(t);
-  // Source enrollment, connector commands and SDK receipts accept only their dedicated scoped credential.
-  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
+  // Source enrollment, connector commands and snapshot publication, CLI learning and SDK receipts accept only their
+  // dedicated scoped credential. A browser session or general API token cannot replace source publication authority.
+  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "grantSourceSync", "publishSourceSync", "sourceSyncFailure", "startCliLearningRun", "getCliLearningRun", "cliLearningEvents", "completeCliLearningRun", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
   for (const name of scoped) assert.ok(ROUTES.some(route => route.name === name), `${name} remains covered`);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;

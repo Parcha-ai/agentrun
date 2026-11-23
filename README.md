@@ -168,15 +168,19 @@ reviewed checkout. The published observation-only CLI does not include this remo
    source CLI's secure prompt. Your native credentials stay on that machine; the worker connects outbound.
 3. **See the result.** For **History only**, open Runs and check the imported conversations and counts; no worker
    or model job is started. For a **live connection** or **Both**, open the connected agent, verify its setup, and
-   start a job. Keep a remote source worker online. Optionally turn **Self-improving** On to let completed jobs
-   propose notes and skills. Inspect what passes checking and grading in Learning Dojo, then start a fresh run to
-   use it. Reflection and grading add model usage.
+   start a job. Keep a remote source worker online. Turn **Self-improving** On to give future native runs your
+   standing corrections, which you can inspect and edit in Learning. Native connections do not compile or run
+   learned workflows; those require managed execution or a compatible backend workflow bridge.
 
 History import brings selected completed conversations into Runs without executing them or automatically training
 the agent. A live connection starts new CLI sessions; it does not attach to a desktop conversation already in
 progress. You can connect first and import history later with an explicitly approved history scope.
 
 [Connection and history guide](docs/native-agents.md) · [Remote CLI installation and commands](connector/README.md)
+
+Already use Codex CLI or Claude Code directly? [Connect its existing sessions for learning](docs/tutorials/existing-cli-learning.md)
+with project-scoped hooks that capture completed prompts and deliver explicit owner corrections. Keep starting
+the agent normally; no SDK wrapper or AgentRun task launcher is needed.
 
 Already run an agent inside your backend with an SDK? The development build can add checked learning around its
 existing call site. Your backend keeps its job queue, tools, model credentials and cancellation; AgentRun records
@@ -186,9 +190,11 @@ the run and supplies accepted learning to the next fresh task. Use the matching 
 | --- | --- |
 | Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
 | Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+| External platforms, including OpenClaw and Capy | [Report agents, scheduled jobs and threads from their platform](docs/tutorials/platform-sdk-runs.md) |
 
-The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
-and a learning-Off control. Reflection and independent grading run on the server and add model usage.
+The [live examples](examples/sdk-learning/README.md) verify native tool execution, owner-correction delivery in a fresh
+session, and a learning-Off control. Separate workflow examples verify compilation, an independent check, and reuse
+through the backend's tool bridge. Workflow compilation adds server model usage.
 
 ## Take the tour
 
@@ -240,7 +246,9 @@ flowchart LR
   once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
 The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
-or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history.
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history. `DELETE /v2/agents/{id}/learning` resets
+it: everything the agent learned is deleted, history included, and the agent and its runs stay. Learning starts over
+from the runs after it: `compile_after` counts from the reset.
 
 <details>
 <summary>What gets kept, and what gets refused</summary>
@@ -315,12 +323,13 @@ step is never run again; a write a crash cut off mid-call is marked interrupted 
 
 ## Templates
 
-Five ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
+Six ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
 one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply** grants nothing
 until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
+| `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
@@ -329,6 +338,10 @@ until you tick each MCP tool yourself.
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.
+
+**Agents → Suggested** connects a repository and runs `agent-scout` for you. A scan reads with a token for that one
+repository, contents read-only. Opening a pull request needs the GitHub App's Contents write, asked for only when you
+tick it at Connect GitHub ([Suggested agents](packages/serve/README.md#suggested-agents)).
 
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.

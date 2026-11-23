@@ -1,3 +1,4 @@
+import { cliLearningLabel, cliLearningOf } from "@/lib/cliLearning";
 import { ChevronDown, Hourglass, Pencil, RefreshCw, RotateCcw, Sparkles, TriangleAlert, User } from "lucide-react";
 import { type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { workflowGraph } from "@dsl/graph";
@@ -6,7 +7,10 @@ import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import { NativeLearningSwitch } from "@/components/NativeAgent";
 import { CostPerRun } from "@/components/CostPerRun";
-import { LearningBill } from "@/components/LearningBill";
+import { LearningBill, useAudits } from "@/components/LearningBill";
+import { CostAgreement } from "@/components/CostAgreement";
+import { LearningGlance } from "@/components/LearningGlance";
+import { agreementOf, revisionsOf } from "@/lib/learningGlance";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LoopFeed } from "@/components/LoopFeed";
 import { LoopStory } from "@/components/LoopStory";
@@ -68,6 +72,7 @@ export function LearningTab(props: LearningProps) {
 }
 
 function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) {
+  const cli = cliLearningOf(agent.definition);
   const [view, setView] = useState<AgentLearning | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -133,7 +138,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
   // Whether this caller is the owner signed in to the console, read once a draft waits: until the server says so, no
   // Approve.
   const [approves, setApproves] = useState<Approval | undefined>(undefined);
-  const anyWaiting = workflows.some((x) => x.status === "pending");
+  const anyWaiting = !cli && workflows.some((x) => x.status === "pending");
   useEffect(() => {
     if (!anyWaiting || approves !== undefined) return;
     let live = true;
@@ -141,17 +146,21 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
     return () => { live = false; };
   }, [anyWaiting]); // eslint-disable-line react-hooks/exhaustive-deps
   const byRun = useMemo(() => new Map(runs.map((r) => [r.run_id, r])), [runs]);
+  // The audit ledger, read once for the tab: the glance, the cost against agreement and the bill's audit line share it.
+  const audits = useAudits(v2, agent.agent_id, cost);
+  const revisions = useMemo(() => (cost ? revisionsOf(cost, promotions, serving, audits) : []), [cost, promotions, serving, audits]);
   const lookedBack = runs.filter((r) => r.learning && (r.learning.state === "merged" || r.learning.state === "dropped")).length;
   // The loop at a glance: the corrections, the compile, the takeover, the money, where it is unsure; each says what comes
   // next. Its compile count is the server's (the loop read's completed_runs, what compileDue counts: the agent's own
   // completed runs, never the one page of runs this tab reads).
-  const execution = agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
+  const execution = cli ? "cli" : agent.definition.native ? "native" : backendSdkOf(agent.definition) ? "sdk" : "hosted";
   const story = storyOf({ corrections: lines.length, runs: loop?.completed_runs ?? 0, workflows, cost, promotions, serving, loop, execution, compileAfter: compileAfterOf(agent.definition.learning) });
 
   const frame = (content: ReactNode) => <div className="space-y-3">
     <div className="flex justify-end"><Button size="icon" variant="ghost" aria-label="Refresh learning" title="Refresh learning" disabled={held || isRefreshing}
       onClick={() => { if (!refreshHolds.items.size && !refreshing.current) void read(); }}><RefreshCw className={cn(isRefreshing && "animate-spin")} aria-hidden /></Button></div>
-    {view && <LearningModelSetup access={view.learning_model ?? (agent.definition.native ? { location: "native", ready: true, model: null, needs: null, reason: null } : undefined)} />}
+    {view && !cli && <LearningModelSetup access={view.learning_model ?? (agent.definition.native ? { location: "native", ready: true, model: null, needs: null, reason: null } : undefined)} />}
+    {view && cli && <Banner>This project runs in {cliLearningLabel(cli.runtime)}. Its hooks record your normal prompts and provide your owner-written corrections on later prompts. Workflow learning is unavailable for this CLI connection: it needs an approved tool connection. Stored learning files are preserved.</Banner>}
     {content}
   </div>;
   if (error && !view) return frame(<ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />);
@@ -159,33 +168,47 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
   // A refresh that failed (after an edit, a retire) leaves what was read before it on screen: a line beside it says it
   // was not read again, and why, and Try again reads it again.
   const stale = error ? <RefreshFailed error={error} onRetry={read} /> : null;
-  const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet} />;
+  const switchRow = (quiet: boolean) => <SavedSwitch agent={agent} v2={v2} onAgent={onAgent} server={server} disabled={readOnly} quiet={quiet || !!cli} />;
   const correctionsCard = <CorrectionsCard text={view.corrections} v2={v2} agentId={agent.agent_id} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />;
 
   if (!lines.length && !workflows.length) return frame(
     <div className="space-y-6">
       {stale}
-      <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} />
+      <Empty on={on} lookedBack={lookedBack} switchRow={switchRow(true)} cliRuntime={cli ? cliLearningLabel(cli.runtime) : undefined}
+        firstPrompt={!!cli && agent.runs?.count === 0 && runs.length === 0 && server !== "off"} />
       {correctionsCard}
       {on && <LoopStory stages={story} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} quiet promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
-      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
-      <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
-      <NotKept runs={runs} />
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits} />
+      {!cli && <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />}
+      {!cli && <NotKept runs={runs} />}
     </div>
   );
 
   // The drafts a person retired are no longer given to a run: under Earlier workflows.
   const inUse = workflows.filter((x) => x.status !== "retired");
   const gone = workflows.filter((x) => x.status === "retired");
+  const costChart = <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />;
   return frame(
     <div className="space-y-6">
+      {/* What learning did, in one sentence and four figures, once a learned workflow has taken a run over. */}
+      <LearningGlance cost={cost} revisions={revisions} />
       {/* The loop at a glance. */}
       <LoopStory stages={story} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
-      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
+      {/* The learned workflow stands beside the cost of a run where the tab has room for both, and under it otherwise:
+          the tab's own width decides, since the agent's page keeps a column of its own beside the tab. A CLI agent's
+          tab has no replay, so its cost chart keeps the row. */}
+      {!cli && workflows.some((w) => givenToRuns(w.status)) ? (
+        <div className="[container-type:inline-size]" data-testid="cost-and-workflow">
+          <div className="grid grid-cols-1 gap-6 [@container(min-width:760px)_and_(max-width:1099.98px)]:grid-cols-[minmax(0,1fr)_17.5rem] [@container(min-width:1100px)]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            {costChart}
+            <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} className="min-w-0" />
+          </div>
+        </div>
+      ) : costChart}
+      <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits}
+        beside={revisions.some((p) => p.served && agreementOf(p)) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
           {stale}
@@ -195,22 +218,22 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
             <section className="min-w-0 space-y-3" aria-label="Workflows it learned">
               <div>
                 <h2 className="text-lg font-semibold">Workflows it learned</h2>
-                <p className="mt-0.5 text-body text-muted-foreground">{!inUse.length ? "No workflow is in use: the next run gets none." : `${counted(inUse.length, "workflow")}: a job it does again, as steps a later run can call.`}</p>
+                <p className="mt-0.5 text-body text-muted-foreground">{cli ? "Stored workflows are preserved for inspection. This CLI connection cannot execute them." : !inUse.length ? "No workflow is in use: the next run gets none." : `${counted(inUse.length, "workflow")}: a job it does again, as steps a later run can call.`}</p>
               </div>
               {inUse.length > 0 && (
                 <ul className="space-y-3">
-                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly} runs={byRun} approves={approves} onChanged={changed} refreshHolds={refreshHolds} /></li>)}
+                  {inUse.map((x) => <li key={x.file}><LearnedCard item={x} v2={v2} agentId={agent.agent_id} readOnly={readOnly || !!cli} runs={byRun} approves={approves} onChanged={changed} refreshHolds={refreshHolds} /></li>)}
                 </ul>
               )}
-              {gone.length > 0 && <EarlierLearned items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly} onChanged={changed} refreshHolds={refreshHolds} />}
+              {gone.length > 0 && <EarlierLearned items={gone} v2={v2} agentId={agent.agent_id} runs={byRun} readOnly={readOnly || !!cli} onChanged={changed} refreshHolds={refreshHolds} />}
             </section>
           )}
         </div>
         <aside className="min-w-0 space-y-6" aria-label="About learning">
           <Panel title="Learning">{switchRow(false)}</Panel>
-          <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
-          <NotKept runs={runs} />
-          <NextRun corrections={lines.length} workflows={workflows.filter((w) => givenToRuns(w.status))} off={!on || server === "off"} />
+          {!cli && <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />}
+          {!cli && <NotKept runs={runs} />}
+          <NextRun corrections={lines.length} workflows={cli ? [] : workflows.filter((w) => givenToRuns(w.status))} off={!on || server === "off"} />
         </aside>
       </div>
     </div>
@@ -339,17 +362,20 @@ function Off({ server }: { server?: "on" | "off" | null }) {
 
 /** Nothing learned yet, as the console says a tab is empty: a bordered centred line, one sentence on what learning is,
  *  and the switch as the next step (or, with learning on, how many runs had their compile turn). */
-function Empty({ on, lookedBack, switchRow }: { on: boolean; lookedBack: number; switchRow: ReactNode }) {
+function Empty({ on, lookedBack, switchRow, cliRuntime, firstPrompt }: { on: boolean; lookedBack: number; switchRow: ReactNode; cliRuntime?: string; firstPrompt?: boolean }) {
   return (
     <section className="mx-auto max-w-xl border" aria-label="Learning">
       <div className="px-6 py-12 text-center">
         <Sparkles className="mx-auto mb-3 size-5 text-primary-text" aria-hidden />
-        <p className="font-mono text-body text-muted-foreground">{on ? "Nothing learned yet." : "Learning is off for this agent."}</p>
+        <p className="font-mono text-body text-muted-foreground">{on ? firstPrompt ? "Waiting for the first captured prompt." : cliRuntime ? "No corrections yet." : "Nothing learned yet." : "Learning is off for this agent."}</p>
         <p className="mx-auto mt-2 max-w-md text-lead text-muted-foreground">
-          {on ? "Every later run is given your corrections whole, and a job it does again compiles into a workflow. Both show here."
+          {cliRuntime ? on && firstPrompt
+            ? `Continue your normal work in ${cliRuntime}; its hooks report completed prompts here. Earlier conversations are not imported automatically.`
+            : `Your corrections are kept here and provided to ${cliRuntime} on later prompts when learning is on.`
+            : on ? "Every later run is given your corrections whole, and a job it does again compiles into a workflow. Both show here."
             : "With learning on, every later run is given your corrections, and a job it does again compiles into a workflow."}
         </p>
-        {on && lookedBack > 0 && <p className="mt-3 font-mono text-small text-muted-foreground">{runsWord(lookedBack)} had their compile turn: no workflow kept yet.</p>}
+        {on && !cliRuntime && lookedBack > 0 && <p className="mt-3 font-mono text-small text-muted-foreground">{runsWord(lookedBack)} had their compile turn: no workflow kept yet.</p>}
       </div>
       <div className="border-t">{switchRow}</div>
     </section>

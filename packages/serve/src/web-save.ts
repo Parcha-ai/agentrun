@@ -1,29 +1,13 @@
-// web_save: one file from a public host saved into the run's folder, so a URL that expires (a generation service's CDN
-// link) becomes a file the run keeps and the console's Files tab shows and plays. It downloads through the public-host
-// guard's bytes variant (pi-browser publicDownload): every hop's name resolved, checked public and dialled at the address
-// checked, ports 80 and 443 only, at most SAVE_MAX_BYTES, under one deadline for the whole file.
-//
-// The path is the run's Workspace's (host.workspace, else the local folder at where.work), so its refusals hold: no `..`,
-// no absolute path, no link followed on the way or as the file. A bare name goes under media/. A path that already holds
-// anything is refused, never overwritten, checked before the download and again before the write.
-//
-// The whole file is held in memory and written once, through Workspace.write (a temporary name in the same folder,
-// renamed over the path on the local disk; one put on Archil's), so a download that fails, or goes past the cap, leaves
-// nothing at the path. So at most SAVE_CONCURRENCY downloads run at once per runner, across its runs (SERVER_SLOTS); the
-// rest wait, under their own deadline. A download holds its file's size when its host states its length, about twice that
-// at its peak when it does not (publicDownload). In a Mode 2 run's own process the write crosses to the runner in pieces
-// and the runner writes it (runner/big-writes.ts), under a gate of its own.
-//
-// The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
-// carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
-// console and the file route take it from the extension. Anything else (a page, a PDF, text) is saved only to a path
-// whose extension names exactly the type the host declared.
+// web_save: one public file saved into the run's Workspace (a bare name under media/), so a link that expires becomes a
+// file the run keeps. It downloads through the public-host guard's bytes variant (pi-browser publicDownload, web_fetch's
+// hop loop) and writes once through the Workspace, never over a path in use, a media type only when its bytes agree.
 import { extname } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { extensionOf, typeOf } from "./file-types.js";
+import { mediaSeconds } from "./media-duration.js";
 import { clip, URL_MAX } from "./web-fetch-direct.js";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
@@ -42,13 +26,18 @@ export const PATH_MAX_CHARS = 1_024;
 export const TYPE_MAX_CHARS = 255;
 export const WORDS_MAX_CHARS = 2_000;
 
-export type Saved = { ok: true; path: string; bytes: number; content_type: string; url: string };
+/** `duration_s`: an audio or video file's length in seconds (to the millisecond), when its bytes give it (mp3, wav, mp4,
+ *  m4a, mov: media-duration.ts); absent for any other file, so an agent can time a cut or price a job billed by length. */
+export type Saved = { ok: true; path: string; bytes: number; content_type: string; duration_s?: number; url: string };
 export type Unsaved = { ok: false; url: string; path?: string; refused: string } | { ok: false; url: string; path?: string; error: string };
 /** The guard's resolver and fetch (a test's, or the fakes'), the caller's signal, a lower cap, and other slots than the
  *  server's (a test's). */
 export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: number; timeoutMs?: number; slots?: SaveSlots };
 
-/** The most web_save downloads held in memory at once (at most SAVE_MAX_BYTES each). */
+/** The most web_save downloads at once per runner, across its runs (SERVER_SLOTS); the rest wait under their own
+ *  deadline. Each holds its file in memory until its one write: its size when its host states its length, about twice
+ *  that at the peak when it does not (publicDownload). So a runner's downloads hold at most 800 MiB at 200 MiB a file,
+ *  about 1.6 GiB when no host states a length; Mode 2's pieced writes (runner/big-writes.ts) can add 800 MiB more. */
 export const SAVE_CONCURRENCY = 4;
 /** Slots for downloads, handed out first come first served. `take` answers the slot's release (once), or rejects with
  *  the signal's reason if it aborts first, leaving the queue. */
@@ -215,9 +204,22 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     } catch (error) {
       return { ...failed(error), url: final };
     }
-    return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, url: final };
+    const seconds = lengthOf(file.bytes, typed.type);
+    return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, ...(seconds === undefined ? {} : { duration_s: seconds }), url: final };
   } finally {
     release();
+  }
+}
+
+/** An audio or video file's length in seconds, rounded to the millisecond; undefined for any other type, or when its bytes
+ *  don't give it. Never throws: a saved file is answered saved whatever its bytes hold. */
+function lengthOf(bytes: Uint8Array, type: string): number | undefined {
+  if (!/^(audio|video)\//.test(type)) return undefined;
+  try {
+    const seconds = mediaSeconds(bytes);
+    return seconds === undefined ? undefined : Math.round(seconds * 1000) / 1000;
+  } catch {
+    return undefined;
   }
 }
 
@@ -229,7 +231,7 @@ export const savedText = (answer: Saved | Unsaved): string => JSON.stringify(ans
 export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">, slots?: SaveSlots): ToolRegistration<TSchema, JsonValue> {
   return defineTool({
     name: WEB_SAVE_TOOL,
-    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, url } (url the final one, after redirects), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
+    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, duration_s?, url } (url the final one, after redirects; duration_s an audio or video file's length in seconds, when its bytes give it: mp3, wav, mp4, m4a), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
     parameters: {
       type: "object",
       additionalProperties: false,

@@ -1,8 +1,9 @@
 // DELETE /v2/runs/{run_id} (agent-delete.ts purgeRun): an owner must be able to delete what a run read, and what it cost
 // stays in every total. A run that is not live is purged: its row stays as its tombstone (its id, agent, state, times
 // and cost) and everything else of it goes (its launch, journal and timeline, messages and commands, outputs and files,
-// kept answers, folders and settings, the grades its agent keeps of it, its kept learning's content), with the runs made
-// from it (its audit's shadow run, a learning run that grades it, the replays of its input), each a tombstone too.
+// kept answers, folders and settings, the grades its agent keeps of it, its kept learning's content, its merges' diff files
+// and feedback lines in its agent's learning folder, whose history reads serve none of its merges after), with the runs
+// made from it (its audit's shadow run, a learning run that grades it, the replays of its input), each a tombstone too.
 //   - Money: /usage by every group it takes (none is a label), /stats, and a run's spend as the cap reads it are
 //     deep-equal before and after. Its metrics keep figures and names alone; its kept learning row is a link alone.
 //   - A message or a grade sent while its DELETE runs waits for it and is 410 purged.
@@ -12,8 +13,9 @@
 //   - Who: the owner's session or the API token; no credential 401; a console session that is no owner's 403.
 //   - A DELETE stopped part way is finished by the next one.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,18 +25,20 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { purgeRun } from "../dist/agent-delete.js";
 import { keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { StoreConstraint } from "../dist/store/index.js";
+import { appendCorrection, learningCommit } from "../dist/learn/commit.js";
+import { learningFolderOf } from "../dist/learning.js";
+import { StoreConstraint, Unanswered } from "../dist/store/index.js";
 import { gradesKey, putGrade } from "../dist/learn/promote.js";
 import { metersOverStore, spendOverStore, spentOverStore } from "../dist/store-reads/cap.js";
-import { runFolder, scratchFolder } from "../dist/workspace/paths.js";
+import { forgetServed, viewOverStore } from "../dist/store-view.js";
+import { agentLearningFolder, runFolder, scratchFolder } from "../dist/workspace/paths.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
-import { builtConsole, call, cookieOf, FAUX, follow, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
+import { ended, git, repoOf, started } from "./learn-support.mjs";
+import { agent, answerFlow, builtConsole, call, cookieOf, FAUX, follow, serve, startInProcessRunner, startRun, WINDOW, withEnv } from "./support.mjs";
 
 /** An agent's folder name on a disk (archil-routes.ts: agentDirName). */
 const agentDirOf = (id) => `${id.toLowerCase()}-${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 16)}`;
-
-const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
 
 /** Every place in the store's file that holds `id`: `table.column` of each row whose value has it, from every table the
  *  schema made. */
@@ -237,11 +241,23 @@ test("a run that is idle (completed, a follow-up away) or that a person stopped 
 
 /** A purge's host (agent-delete.ts AgentDeleteHost) over rows the test holds: run `rows[id]` read as the test sets it, its
  *  turn over while `turnOver[id]`, its purge recorded. */
-function hostOver(rows, turnOver, { waitMs = 5_000 } = {}) {
+function hostOver(rows, turnOver, { waitMs = 5_000, flips = {} } = {}) {
   const purgedRuns = [];
+  // How often each run was read (runs.get) and asked whether its turn is over (turnOver). `flips[id]`: {at, row}, the
+  // row the run reads from its at-th read on (its runner wrote it ended meanwhile).
+  const reads = {};
+  const asked = {};
   const store = {
+    // A store's own origin is itself (Store.origin): the readers' caches key on it (store-view.ts forgetServed).
+    get origin() {
+      return this;
+    },
     runs: {
-      get: async (id) => (rows[id] ? { id, agentId: "calc", purgedAt: null, ...rows[id] } : undefined),
+      get: async (id) => {
+        reads[id] = (reads[id] ?? 0) + 1;
+        if (flips[id] && reads[id] === flips[id].at) rows[id] = flips[id].row;
+        return rows[id] ? { id, agentId: "calc", purgedAt: null, ...rows[id] } : undefined;
+      },
       purge: async (id) => {
         if (rows[id].state === "running" || rows[id].runner !== null) throw new StoreConstraint(`run ${id} is live`);
         purgedRuns.push(id);
@@ -254,26 +270,30 @@ function hostOver(rows, turnOver, { waitMs = 5_000 } = {}) {
     forgetCopies: async () => {},
     forgetRun: async () => {},
     kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
-    turnOver: async (id) => turnOver[id] === true,
+    turnOver: async (id) => {
+      asked[id] = (asked[id] ?? 0) + 1;
+      return turnOver[id] === true;
+    },
     waitMs,
     pollMs: 20,
   };
-  return { host, purgedRuns };
+  return { host, purgedRuns, reads, asked };
 }
 
 test("a run that reads idle before its runner wrote it ended is waited for, then purged; one whose turn is not over is 409 at once", async () => {
-  // Its turn is over (a person's stop): the runner writes it stopped and lets it go 300 ms after the DELETE comes.
+  // Its turn is over (a person's stop): the runner writes it stopped and lets it go before the DELETE's second read of it
+  // (the first is the DELETE's own, the second its wait's first poll).
   const rows = { ending: { state: "running", runner: "runner-1" } };
-  const { host, purgedRuns } = hostOver(rows, { ending: true });
-  setTimeout(() => (rows.ending = { state: "stopped", runner: null }), 300);
+  const { host, purgedRuns, reads } = hostOver(rows, { ending: true }, { flips: { ending: { at: 2, row: { state: "stopped", runner: null } } } });
   await purgeRun(host, "ending");
   assert.deepEqual(purgedRuns, ["ending"]);
+  assert.equal(reads.ending, 2, "purged once its wait read it ended");
 
-  // A run working on: refused at once, nothing purged, never waited for.
+  // A run working on: refused at once, nothing purged, never waited for: its turn is asked once, and it is read no more.
   const working = hostOver({ busy: { state: "running", runner: "runner-1" } }, {});
-  const started = Date.now();
   await assert.rejects(purgeRun(working.host, "busy"), (error) => error.code === "run_not_final" && error.extra.details.runs[0] === "busy");
-  assert.ok(Date.now() - started < 1_000, "answered at once");
+  assert.equal(working.asked.busy, 1, "its turn asked once: answered at once");
+  assert.equal(working.reads.busy, 1, "never read again");
   assert.deepEqual(working.purgedRuns, []);
 
   // One whose end never comes within the wait: refused.
@@ -365,21 +385,26 @@ for (const step of ["run_made_from_gone", "run_forgotten"]) {
 const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
 
 /** A server whose run DELETE holds at `step` for the run `gate.run` once `gate.arm()` was called: `gate.reached` settles
- *  when it holds there, `gate.release()` lets it go on. */
+ *  when it holds there, `gate.release()` lets it go on. `gate.queued(agentId, n)` settles once `n` requests wait in that
+ *  agent's delete turn (the server's deleteTurnQueued seam): each is provably behind the held DELETE. */
 async function heldAt(t, step) {
-  const gate = { armed: false, run: undefined };
+  const gate = { armed: false, run: undefined, waits: [] };
   gate.arm = (run) => {
     gate.run = run;
     gate.armed = true;
     gate.reached = new Promise((resolve) => (gate.reach = resolve));
     gate.held = new Promise((resolve) => (gate.release = resolve));
   };
+  gate.queued = (agentId, n) => new Promise((resolve) => gate.waits.push({ agentId, n, resolve }));
   const server = await haltable(t, {
     agentDeleteAt: async (at, id) => {
       if (at !== step || !gate.armed || id !== gate.run) return;
       gate.armed = false;
       gate.reach();
       await gate.held;
+    },
+    deleteTurnQueued: (agentId, waiting) => {
+      for (const one of gate.waits) if (one.agentId === agentId && waiting >= one.n) one.resolve();
     },
   });
   return { ...server, gate };
@@ -394,7 +419,7 @@ test("a message sent while a run's DELETE runs (its folders gone, its tombstone 
   const deleting = api("DELETE", `/runs/${gone}`);
   await within(gate.reached, 60_000, "the DELETE reached its folders' end");
   const sending = api("POST", `/runs/${gone}/messages`, { content: "And eight?" });
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await within(gate.queued("calc", 1), 60_000, "the message waits in the DELETE's turn");
   gate.release();
   const [deleted, sent] = await Promise.all([deleting, sending]);
   assert.equal(deleted.status, 204, `the DELETE: ${deleted.status} ${JSON.stringify(deleted.body)}`);
@@ -419,15 +444,19 @@ function slowPut(port, token, path, head, tail) {
   return { answer, finish };
 }
 
-test("a grade whose body arrives after its run's purge is 410 purged: no grade of the run is kept", { timeout: 120_000 }, async (t) => {
-  const { api, data, store, port, token, halt } = await haltable(t);
+test("a grade whose body arrives while its run's DELETE runs (its run read live when it was sent) waits for the DELETE and is 410 purged: no grade of the run is kept", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, port, token, halt, gate } = await heldAt(t, "run_forgotten");
   const [gone, kept] = await twoRuns(api, store);
   await halt();
-  // The grade's run is read when it is sent; its body comes once the run is purged.
+  // The grade's run is read when it is sent, before the purge's tombstone; its body comes while the DELETE holds the turn.
   const grading = slowPut(port, token, `/v2/runs/${gone}/grade`, '{"correct":', " false}");
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  gate.arm(gone);
+  const deleting = api("DELETE", `/runs/${gone}`);
+  await within(gate.reached, 60_000, "the DELETE reached its folders' end");
   grading.finish();
+  await within(gate.queued("calc", 1), 60_000, "the grade waits in the DELETE's turn");
+  gate.release();
+  assert.equal((await deleting).status, 204);
   purged(await grading.answer, "the grade");
   assert.deepEqual(((await store.settings.get(gradesKey("calc")))?.items ?? []).map((grade) => grade.run), [kept], "no grade of the purged run");
   assert.deepEqual(mentions(data, gone), ["runs.id"], "no table names it but its tombstone");
@@ -549,4 +578,305 @@ test("a run on its agent's own Archil disk: its folder there is deleted, the dis
   assert.equal(await store.settings.get(runDiskKey(gone)), undefined, "the run's disk setting is gone");
   assert.deepEqual(await store.settings.get(runDiskKey(kept)), { diskId: own }, "its sibling's is kept");
   assert.equal((await api("GET", `/runs/${kept}`)).status, 200);
+});
+
+test("a purged run's answer and input stay in no in-process cache of its store: a read keeps both (its view's answer and input, its whole answer row), and its purge drops them", { timeout: 120_000 }, async (t) => {
+  const { api, store, halt } = await haltable(t);
+  // The faux model answers "On <the message>: done.": an answer one past a Timeline row's cap is read again whole, and
+  // kept by the journal's reader as well as the view's.
+  const content = `${"z".repeat(1991 - 4)} end`;
+  const { run_id: run } = await startRun(api, "calc", content);
+  await follow(api, run, ["completed"]);
+  await halt();
+  const deps = { origin: "", serverSecrets: () => [] };
+  const read = async () => assert.equal((await viewOverStore(store, run, deps)).result.final_answer, `On ${content}: done.`);
+  await read();
+  const held = forgetServed(store, run);
+  assert.deepEqual(held.slice(0, 2), [`answer ${run}`, `input ${run}`], `a read keeps its answer and input: ${JSON.stringify(held)}`);
+  assert.equal(held.length, 3, `and its whole answer row: ${JSON.stringify(held)}`);
+  await read();
+
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await purgeRun(host, run);
+  assert.notEqual((await store.runs.get(run)).purgedAt, null, "the run is purged");
+  assert.deepEqual(forgetServed(store, run), [], "nothing of it is kept once it is purged");
+});
+
+test("a purge that commits and then throws keeps none of the run's text in memory (a retried DELETE skips a purged run), and one that throws before it commits keeps what a read filled", { timeout: 120_000 }, async (t) => {
+  const { api, store, halt } = await haltable(t);
+  const { run_id: lost } = await startRun(api, "calc", "The answer whose commit went unanswered.");
+  const { run_id: faulted } = await startRun(api, "calc-faulted", "The answer whose purge faulted past its commit.");
+  const { run_id: refused } = await startRun(api, "calc-refused", "The answer whose purge faulted before its commit.");
+  for (const run of [lost, faulted, refused]) await follow(api, run, ["completed"]);
+  await halt();
+  const deps = { origin: "", serverSecrets: () => [] };
+  // A read fills the run's answer and input slots (forgetServed says it held them; a second read fills them again).
+  const held = async (run) => {
+    await viewOverStore(store, run, deps);
+    assert.deepEqual(forgetServed(store, run).slice(0, 2), [`answer ${run}`, `input ${run}`], `a read of ${run} keeps its answer and input`);
+    await viewOverStore(store, run, deps);
+  };
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  // The store's purge commits, then throws: `after` is what it throws.
+  const purge = store.runs.purge;
+  t.after(() => (store.runs.purge = purge));
+  const committedThen = (after) => (store.runs.purge = async (...args) => {
+    await purge.apply(store.runs, args);
+    throw after;
+  });
+
+  // Postgres answered nothing past the commit, which landed: the run's text goes with the refusal.
+  await held(lost);
+  committedThen(new Unanswered("its commit", 1));
+  await assert.rejects(purgeRun(host, lost), (error) => error.name === "Unanswered");
+  assert.notEqual((await store.runs.get(lost)).purgedAt, null, "the purge committed");
+  assert.deepEqual(forgetServed(store, lost), [], "nothing of the run whose commit went unanswered is kept");
+
+  // Another fault past the commit: the same, and the client's retry, which finds the run purged, answers.
+  await held(faulted);
+  committedThen(new Error("a fault past the commit"));
+  await assert.rejects(purgeRun(host, faulted), /a fault past the commit/);
+  store.runs.purge = purge;
+  assert.notEqual((await store.runs.get(faulted)).purgedAt, null, "the purge committed");
+  assert.deepEqual(forgetServed(store, faulted), [], "nothing of the run whose purge faulted past its commit is kept");
+  assert.equal(await purgeRun(host, faulted), undefined, "the retry answers");
+
+  // A fault before the commit: nothing purged, and what a read filled stays, as before the DELETE.
+  await held(refused);
+  store.runs.purge = async () => {
+    throw new Error("a fault before the commit");
+  };
+  await assert.rejects(purgeRun(host, refused), /a fault before the commit/);
+  store.runs.purge = purge;
+  assert.equal((await store.runs.get(refused)).purgedAt, null, "nothing was purged");
+  assert.deepEqual(forgetServed(store, refused).slice(0, 2), [`answer ${refused}`, `input ${refused}`], "what the process served of it is kept");
+});
+
+test("a read begun before a run's purge and finished after it keeps none of the purged run's text: its answer and input stay in no in-process cache, and no later read serves them", { timeout: 120_000 }, async (t) => {
+  const { store, halt } = await haltable(t);
+  await halt();
+  // A run whose learning held a draft for its owner's OK: its read checks the agent's folder (deps.statuses) after its
+  // snapshot, and the test holds it there.
+  const run = "run-read-over-purge";
+  const answer = "The held answer, purged.";
+  const input = { content: "The held input, purged." };
+  await store.agents.create({ id: "calc", name: "Calc" }, { id: "rev-calc", kind: "agentic", body: { instructions: "Answer.", learning: true } });
+  const claim = await storedRun(store, "calc", run, null, { input, title: "Held", place: { mode: "runner" } });
+  const file = "workflows/held/workflow.json";
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: answer, costUsd: 0, endedAt: Date.now() }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "merged", merged: "c1", detail: "Waiting for your OK: workflow held.", workflows: [{ file, name: "held", pending: true }] } } }] });
+  let asked;
+  const askedFolder = new Promise((resolve) => (asked = resolve));
+  let release;
+  const folderRead = new Promise((resolve) => (release = resolve));
+  const deps = { origin: "", serverSecrets: () => [], statuses: async () => (asked(), folderRead) };
+  const reading = viewOverStore(store, run, deps);
+  await askedFolder;
+
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await purgeRun(host, run);
+  assert.notEqual((await store.runs.get(run)).purgedAt, null, "the run is purged while its read waits");
+  release(new Map([[file, { status: "pending" }]]));
+  const held = await reading;
+  assert.deepEqual([held.result.final_answer, held.input], [answer, input], "the read served what it read before the purge");
+
+  assert.deepEqual(forgetServed(store, run), [], "the read that the purge overtook kept none of the run's text");
+  const after = JSON.stringify((await viewOverStore(store, run, { origin: "", serverSecrets: () => [] })) ?? null);
+  assert.ok(!after.includes(answer) && !after.includes(input.content), `no read after the purge serves its answer or input: ${after}`);
+});
+
+/** `write` over agent `agentId`'s learning folder on this server (learning.ts learningFolderOf), as a run's look-back or
+ *  its compile writes it (learn/commit.ts): its merge's commit. */
+async function learned(data, agentId, write) {
+  const { workspace, end } = learningFolderOf(data, agentId);
+  try {
+    const done = await write(workspace);
+    assert.equal(done.ok, true, JSON.stringify(done));
+    return done.commit;
+  } finally {
+    await end();
+  }
+}
+
+test("a run's purge removes what its agent's learning folder keeps of it in its current files (its merge's diff, its corrections line, the line as a later merge's diff shows it), as the README says, another run's kept; the agent's purge removes the folder", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt } = await haltable(t);
+  const [gone, kept] = await twoRuns(api, store);
+  await halt();
+  // Each run's look-back merged one feedback line (learn/commit.ts appendCorrection): its diff, and its line on main. The
+  // later merge's diff shows the earlier line as context.
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: gone, text: "Say six times seven is 42." }));
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: kept, text: "Answer in words." }));
+  const folder = agentLearningFolder(data, "calc");
+  const diffOf = (run) => join(folder, ".agentrun", "diffs", `${run}.json`);
+  assert.match(await readFile(diffOf(kept), "utf8"), /six times seven/, "the later merge's diff shows the earlier line");
+  const commits = Number(git(folder, ["rev-list", "--count", "main"]));
+
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(existsSync(diffOf(gone)), false, "the run's diff leaves its agent's learning folder");
+  assert.equal(await readFile(join(folder, "corrections.md"), "utf8"), "- Answer in words.\n", "its corrections line leaves main, another run's stays");
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.");
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 1, "in one commit");
+  assert.equal(git(folder, ["log", "-1", "--format=%an <%ae>%n%s", "main"]), "agentrun-serve <serve@agentrun.invalid>\nhost: a purged run's corrections removed", "the host's");
+  const later = JSON.parse(await readFile(diffOf(kept), "utf8"));
+  assert.deepEqual(later.files.map(({ path, patch }) => [path, patch]), [["corrections.md", "@@ -1,0 +2,1 @@\n+- Answer in words.\n"]], "the later merge's diff keeps its own line, the purged one gone from its context");
+
+  assert.equal((await api("POST", "/agents/calc/archive")).status, 200);
+  assert.equal((await api("DELETE", "/agents/calc")).status, 204);
+  assert.equal(existsSync(folder), false, "the agent's purge removes its learning folder");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(existsSync(folder), false, "a purged run's DELETE again makes no learning folder");
+});
+
+test("a run's purge takes its feedback line off main once: a DELETE again after a stop past its commit (its diff file left) takes no other run's same line", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt } = await haltable(t);
+  const [gone, kept] = await twoRuns(api, store);
+  await halt();
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: kept, text: "Answer in words." }));
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: gone, text: "Answer in words." }));
+  const folder = agentLearningFolder(data, "calc");
+  const diff = join(folder, ".agentrun", "diffs", `${gone}.json`);
+  const left = await readFile(diff, "utf8");
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "one of the two same lines leaves main");
+  const commits = Number(git(folder, ["rev-list", "--count", "main"]));
+
+  // A stop after the scrub's commit, before its diff file went, leaves the file for the next DELETE.
+  await writeFile(diff, left);
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(existsSync(diff), false, "the DELETE again removes the diff file left");
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "the other run's same line stays");
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits, "and commits nothing");
+
+  // A merge of the run made since its scrub (a purge that stopped before its tombstone left the run open to a grade): the
+  // next DELETE takes that line off too, in a commit of its own.
+  await learned(data, "calc", (ws) => appendCorrection(ws, { runId: gone, round: 2, text: "Count in words too." }));
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(git(folder, ["show", "main:corrections.md"]), "- Answer in words.", "a later round's line leaves main too");
+  assert.equal(existsSync(join(folder, ".agentrun", "diffs", `${gone}.r2.json`)), false, "with its diff file");
+  assert.equal(Number(git(folder, ["rev-list", "--count", "main"])), commits + 2, "in its merge's commit and its scrub's");
+});
+
+test("a run's purge scrubs its text from its agent's learning folder: its diff files leave the folder, and its workflow and its feedback line leave main's files in a host commit each, and the folder's history reads (the log, a workflow's revisions, a champion read by its digest) serve none of its merges; a DELETE again commits nothing", { timeout: 180_000 }, async (t) => {
+  const mark = `PURGE-MARK-${randomBytes(6).toString("hex")}`;
+  const { api, data, store } = await serve(t, { learning: "on" });
+  // The run: its input and its answer hold the marker (the faux model answers "On <the message>: done."), and so does its
+  // owner's feedback, which its look-back merges as one line of corrections.md.
+  const gone = (await startRun(api, "keeper", `What is ${mark}?`, { learning: true, instructions: "Answer the question." })).run_id;
+  const done = await ended(api, gone);
+  assert.ok(JSON.stringify(done.view).includes(mark), "its answer holds the marker");
+  const graded = await api("PUT", `/runs/${gone}/grade`, { correct: false, label: `Never answer ${mark} again.` });
+  assert.deepEqual([graded.status, graded.body.feedback], [200, "correction"], JSON.stringify(graded.body));
+  const looked = await ended(api, gone);
+  assert.equal(looked.view.learning?.state, "merged", JSON.stringify(looked.view.learning));
+  // Another run's look-back merged its own feedback line after (its diff shows the purged run's line as context). A later
+  // round of the purged run merged two workflows, its reason holding the marker; a later round of the other run revised
+  // one of them, and no run the other ("solo", which the purge takes off main). Promotion records name the purged run's
+  // revisions by their digests and its merge.
+  const kept = await started(api, "keeper", "What is two and two?");
+  await ended(api, kept);
+  const keptGraded = await api("PUT", `/runs/${kept}/grade`, { correct: false, label: "Answer in whole numbers." });
+  assert.deepEqual([keptGraded.status, keptGraded.body.feedback], [200, "correction"], JSON.stringify(keptGraded.body));
+  assert.equal((await ended(api, kept)).view.learning?.state, "merged");
+  const path = "workflows/answer/workflow.json";
+  const readmeOf = (name) => ({ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` });
+  const v1 = JSON.stringify(answerFlow("Answer the question."));
+  const v2 = JSON.stringify(answerFlow("Answer the question, in whole numbers."));
+  const solo = JSON.stringify(answerFlow("Answer the question alone."));
+  const merge = await learned(data, "keeper", (ws) => learningCommit(ws, { runId: gone, round: 7, reason: `It learned from ${mark}.`, files: [{ path, text: v1 }, readmeOf("answer"), { path: "workflows/solo/workflow.json", text: solo }, readmeOf("solo")] }));
+  await learned(data, "keeper", (ws) => learningCommit(ws, { runId: kept, round: 7, reason: "It answers in whole numbers.", files: [{ path, text: v2 }] }));
+  const digestOf = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+  const [digest, soloDigest] = [digestOf(v1), digestOf(solo)];
+  const record = (workflow, at) => ({ workflow, digest: at, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", commit: merge });
+  await store.settings.put("learning.promotions.keeper", { v: 1, items: [record("answer", digest), record("solo", soloDigest)] });
+  const championOf = (read, workflow) => read.promotions.serving.find((line) => line.workflow === workflow)?.champion;
+
+  const repo = repoOf(data, "keeper");
+  const diffs = join(repo, ".agentrun", "diffs");
+  const ownDiffs = () => readdirSync(diffs).filter((name) => name.startsWith(`${gone}.`));
+  const reads = async () => {
+    const one = async (route) => {
+      const res = await api("GET", `/agents/keeper/learning${route}`);
+      assert.equal(res.status, 200, `${route}: ${JSON.stringify(res.body)}`);
+      return res.body;
+    };
+    const diff = await api("GET", `/runs/${kept}/learning/diff`);
+    assert.equal(diff.status, 200, JSON.stringify(diff.body));
+    return { view: await one(""), log: await one("/log?limit=200"), revisions: await one("/workflows/answer/revisions"), promotions: await one("/promotions"), diff: diff.body };
+  };
+  const before = await reads();
+  assert.ok(ownDiffs().length >= 2, `its merges' diff files: ${ownDiffs()}`);
+  assert.ok(git(repo, ["show", "main:corrections.md"]).includes(mark), "main holds its feedback line");
+  assert.ok(before.log.items.some(({ by }) => by.run === gone) && JSON.stringify(before.log).includes(mark), "the log serves its merges and their reasons");
+  assert.deepEqual(before.revisions.revisions.map(({ commit }) => commit).slice(0, 1), [merge], "its revision is the workflow's first");
+  assert.deepEqual([championOf(before, "answer")?.commit, championOf(before, "solo")?.commit], [merge, merge], "each champion is read at its merge");
+  assert.ok(JSON.stringify(before.diff).includes(mark), "the other run's diff shows its line as context");
+  // A page of the log read before the purge, newest first: the other run's revision, then the purged run's merge.
+  const first = (await api("GET", "/agents/keeper/learning/log?limit=2")).body;
+  assert.deepEqual(first.items.map(({ by }) => by.run), [kept, gone]);
+  const commits = Number(git(repo, ["rev-list", "--count", "main"]));
+
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  // a. Its diff files are gone from the folder.
+  assert.deepEqual(ownDiffs(), [], "its diff files leave the folder");
+  // b. No file of main's tree holds the marker; another run's line stays; two commits, the host's: its workflow solo off
+  //    main, then its feedback line.
+  for (const file of git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n")) assert.ok(!git(repo, ["show", `main:${file}`]).includes(mark), `main's ${file} holds no marker`);
+  assert.equal(git(repo, ["show", "main:corrections.md"]), "- Answer in whole numbers.");
+  assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 2, "two commits");
+  assert.deepEqual(git(repo, ["log", "-2", "--format=%s", "main"]).split("\n"), ["host: a purged run's corrections removed", "host: a purged run's workflows removed"]);
+  // c. The history reads serve none of its merges (their commits, their reasons) and no marker: the log and the view's log
+  //    leave them out, the workflow's revisions skip its merge, and no champion is named: the gate refuses its record's
+  //    commit, so championOf skips it, and no other promotion is left.
+  const after = await reads();
+  const said = JSON.stringify(after);
+  assert.ok(!said.includes(mark), `no history read serves the marker: ${said}`);
+  // Ids stay: a promotion record keeps the commit it names, and the other run's diff its parent's id (its base).
+  const history = { view: after.view, log: after.log, revisions: after.revisions, champion: championOf(after, "answer"), solo: championOf(after, "solo") };
+  for (const commit of [merge, looked.view.learning.merged]) {
+    const naming = Object.entries(history).filter(([, read]) => JSON.stringify(read).includes(commit)).map(([key, read]) => `${key}: ${JSON.stringify(read)}`);
+    assert.deepEqual(naming, [], `no history read names its merge ${commit}`);
+  }
+  assert.ok(after.log.items.some(({ by }) => by.run === kept), "another run's merge stays in the log");
+  assert.deepEqual([after.revisions.revisions.length, after.revisions.total], [1, 1], "the workflow's one revision left is the other run's");
+  const servingOf = (workflow) => after.promotions.serving.filter((line) => line.workflow === workflow).map((line) => ({ digest: line.digest, champion: line.champion }));
+  assert.deepEqual(servingOf("answer"), [{ digest: null, champion: null }], "its revision is no champion: none serves, none is read");
+  // The page after the one read before the purge starts where that one ended: the other run's look-back.
+  const next = (await api("GET", `/agents/keeper/learning/log?limit=2&cursor=${first.next_cursor}`)).body;
+  assert.deepEqual([next.items.map(({ by }) => by.run), next.next_cursor], [[kept], null], "the next page skips no change");
+  // A workflow it was the last to change reads so too: the purge took it off main.
+  assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]), "");
+  assert.deepEqual(servingOf("solo"), [{ digest: null, champion: null }], "nor its workflow off main");
+
+  // A DELETE again re-runs the scrub (a run purged before it, its diff file left): the file goes, and nothing is committed.
+  const stale = join(diffs, `${gone}.json`);
+  await writeFile(stale, JSON.stringify({ v: 1, run: gone, merge: "0".repeat(40), parent: "0".repeat(40), files: [{ path: "corrections.md", status: "modified", patch: `@@ -0,0 +1 @@\n+- Never answer ${mark} again.\n` }] }));
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.equal(existsSync(stale), false, "a DELETE again removes a diff file left");
+  assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 2, "and commits nothing");
 });

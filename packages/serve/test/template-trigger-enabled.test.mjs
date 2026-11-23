@@ -62,7 +62,7 @@ test("apply makes a trigger whose enabled is a parameter on or off by its value:
   const made = async (parameters) => {
     const applied = await api("POST", "/templates/inbox/apply", { parameters });
     assert.equal(applied.status, 201, JSON.stringify(applied.body));
-    const triggers = await Promise.all(applied.body.trigger_ids.map(async (id) => (await api("GET", `/triggers/${id}`)).body));
+    const triggers = await Promise.all(applied.body.triggers.map(async ({ trigger_id: id }) => (await api("GET", `/triggers/${id}`)).body));
     return Object.fromEntries(triggers.map((one) => [one.name, one]));
   };
   const off = await made({ weekly: false });

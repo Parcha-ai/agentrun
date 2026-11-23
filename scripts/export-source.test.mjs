@@ -48,7 +48,7 @@ async function fixture(t) {
   await write('scripts/machine-path.mjs', machinePathRule);
   await write('package.json', JSON.stringify({ name: 'fixture', private: true }));
   await write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
-    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
+    '': {}, 'packages/dsl': {}, 'packages/jev': {}, 'packages/pi-browser': {}, 'packages/import': {}, 'packages/serve': {}, 'packages/decisions': {}, 'packages/computer': {}, 'packages/client': {}, 'packages/run-adapters': {}, 'packages/run-adapters-claude-agent': {}, 'packages/run-adapters-codex': {}, 'packages/run-adapters-acp': {}, 'packages/agentrun': {},
   } }));
   await write('docs/guide.md', '# Public fixture\n');
   await write('packages/dsl/schema/workflow.schema.json', '{}\n');
@@ -163,7 +163,7 @@ test('the removed website output flag is rejected before writing artifacts', asy
 
 test('root and package license notices are scanned and retained byte-for-byte', async t => {
   const f = await fixture(t);
-  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'serve', 'run-adapters-acp'].map(pkg => `packages/${pkg}/${name}`)]);
+  const notices = ['LICENSE', 'NOTICE'].flatMap(name => [name, ...['dsl', 'jev', 'import', 'serve', 'run-adapters-acp'].map(pkg => `packages/${pkg}/${name}`)]);
   for (const path of notices) await f.write(path, `Notice fixture: ${path}\n`);
   await f.run();
   for (const path of notices) {
@@ -325,6 +325,29 @@ test('the computer image recipe (the root helper, its Dockerfile and its two bui
   await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/box\/agentrun-other/);
 });
 
+test('the media image recipe (packages/computer/media/Dockerfile) is archived and scanned as text; another file there still stops the export', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/media/Dockerfile', '# fixture\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  assert.ok((await f.listing()).includes('agentrun-dsl-source/packages/computer/media/Dockerfile\n'));
+  assert.equal(receipt.files.find(file => file.path === 'packages/computer/media/Dockerfile')?.kind, 'text');
+  await f.write('packages/computer/media/Containerfile', '# fixture\n');
+  await assert.rejects(f.run(), /Unreviewed source-export file type: packages\/computer\/media\/Containerfile/);
+});
+
+test('the documents image recipe (packages/computer/documents: its Dockerfile and documents.sh) is archived and scanned as text', async t => {
+  const f = await fixture(t);
+  await f.write('packages/computer/documents/Dockerfile', '# fixture\n');
+  await f.write('packages/computer/documents/documents.sh', '#!/bin/sh\n');
+  await f.run();
+  const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
+  for (const path of ['packages/computer/documents/Dockerfile', 'packages/computer/documents/documents.sh']) {
+    assert.ok((await f.listing()).includes(`agentrun-dsl-source/${path}\n`), path);
+    assert.equal(receipt.files.find(file => file.path === path)?.kind, 'text', path);
+  }
+});
+
 test('inventory generation works without build output and does not produce an archive', async t => {
   const f = await fixture(t);
   await f.run('--inventory-only');
@@ -337,7 +360,7 @@ test('inventory generation works without build output and does not produce an ar
 
 test('the dependency inventory follows the runtime graph only: a lock that changes a dev-only entry gives the same bytes, a runtime dependency changes them', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = ({ dev, runtime } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
     '': dev ? { devDependencies: { 'dev-tool': dev } } : {},
     ...workspaces,
@@ -359,7 +382,7 @@ test('the dependency inventory follows the runtime graph only: a lock that chang
 
 test('the ACP harness package is an inventory root: its runtime dependency ships in the source archive and is listed for it', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   await f.write('package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -376,7 +399,7 @@ test('the ACP harness package is an inventory root: its runtime dependency ships
 // version is read as its manifest says again (UNKNOWN until it is checked), never carried over.
 test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for them, and reads a bumped one as its manifest says', async t => {
   const f = await fixture(t);
-  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
+  const workspaces = Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}]));
   const lock = version => JSON.stringify({ lockfileVersion: 3, packages: {
     '': {},
     ...workspaces,
@@ -403,7 +426,7 @@ test('the inventory reads the pinned OpenCode binaries as MIT, flags nothing for
 // package names the host it runs in as an optional peer, which the inventory keeps.
 const optionalPeerLock = ({ requiredBy } = {}) => JSON.stringify({ lockfileVersion: 3, packages: {
   '': { devDependencies: { 'test-runner': '1.0.0', 'host-agent': '1.0.0' } },
-  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
+  ...Object.fromEntries(['dsl', 'jev', 'pi-browser', 'import', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'].map(name => [`packages/${name}`, {}])),
   'packages/serve': { dependencies: { 'auth-lib': '1.0.0' } },
   'packages/pi-browser': { peerDependencies: { 'host-agent': '*', 'absent-host': '*' }, peerDependenciesMeta: { 'host-agent': { optional: true }, 'absent-host': { optional: true } } },
   'node_modules/host-agent': { version: '1.0.0', license: 'MIT', dev: true },
