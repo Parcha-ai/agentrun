@@ -4751,6 +4751,7 @@ export type RaiseRunCapResponse = {
 /** One file's raw bytes (GET /runs/{run_id}/files/{path}). */
 export interface ReadRunFileParams {
   download?: 0 | 1;
+  cut?: "run";
   Range?: string;
 }
 
@@ -7159,7 +7160,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
+  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download","cut"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
   resumeRun: {"method":"POST","path":"/runs/{run_id}/resume","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRun: {"method":"POST","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startRun: {"method":"POST","path":"/runs/{run_id}/start","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
