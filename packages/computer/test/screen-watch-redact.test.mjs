@@ -1,7 +1,8 @@
-// redactWords on long word runs and on every form its URL, login, secret-named parameter and endpoint shapes take. A
-// long run of word characters must not hold the event loop: the four shapes are hand-written scans that read each
-// character a bounded number of times, counted by redactWordsReads. Their matches stay those of the one-regex forms
-// they replace, kept below as the oracle. No timing assertions.
+// redactWords on long word runs and on every form its URL, login, secret-named parameter, JWT and endpoint shapes
+// take. A long run of word characters must not hold the event loop: four shapes are hand-written scans that read each
+// character a bounded number of times, counted by redactWordsReads, and the JWT regex starts only at the first eyJ of
+// a run. The scans' matches stay those of the one-regex forms they replace, kept below as the oracle; the JWT's first-eyJ
+// start also cuts a token glued to a word character before it, which the old \b start missed. No timing assertions.
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as screenWatch from "../dist/screen-watch.js";
@@ -11,14 +12,22 @@ const { redactWords } = screenWatch;
 const NBSP = String.fromCodePoint(0xa0);
 const E_ACUTE = String.fromCodePoint(0xe9);
 
-/** redactWords as it was with a regex for every shape: the oracle the scans must agree with. */
-function regexRedactWords(words) {
+/** The JWT's old start, at a \b only: it missed a token glued to a word character (x9eyJ..., x_eyJ...). */
+const OLD_JWT = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g;
+/** The JWT's start now: the first eyJ of its run, glued or not. */
+const FIRST_EYJ_JWT = /eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g;
+
+/**
+ * redactWords with a regex for every shape, the JWT's start given: with FIRST_EYJ_JWT it is the oracle the scans must
+ * agree with, and with OLD_JWT it is redactWords as it was.
+ */
+function regexRedactWords(words, jwt = FIRST_EYJ_JWT) {
 	return words
 		.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]")
 		.replace(/[\w.+-]+:[^\s@/'"]+@[\w.-]+/g, "[a login]")
 		.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]")
 		.replace(/\b[\w-]*(?:token|password|passwd|secret|key|jwt|auth|code|signingKey|credential)[\w-]*=[^\s&"';,]+/gi, "[a secret]")
-		.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
+		.replace(jwt, "[a secret]")
 		.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
 		.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
 		.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]")
@@ -44,8 +53,8 @@ test("redactWords' URL, login, secret-parameter and endpoint scans read each cha
 	for (const [unit, n] of [
 		["a", 40_000],
 		["a-", 40_000],
-		// It also starts the JWT regex at every eyJ, which stays quadratic in such a run until its start is anchored
-		// too, so this case takes seconds; the reads counted are the four scans'.
+		// The old JWT regex started at every eyJ of this run too. The first-eyJ start takes one; the JWT is a regex, so
+		// its reads are not counted here.
 		["eyJ-", 40_000],
 		["a:", 40_000],
 		["token", 40_000],
@@ -150,6 +159,40 @@ test("redactWords cuts every endpoint form it cut before, and only those", () =>
 	]);
 });
 
+test("redactWords cuts a JWT from the first eyJ of its run, glued to a word character too", () => {
+	const token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl";
+	// [words, cut now, cut before]: before, the start was a \b, so a token glued to a letter, digit or _ was missed
+	// from its first eyJ and cut, if at all, from a later eyJ after a dot or a dash.
+	for (const [words, now, before = now] of [
+		[token, "[a secret]"],
+		[`id=${token}`, "id=[a secret]"],
+		[`got ${token} back`, "got [a secret] back"],
+		[`"${token}"`, '"[a secret]"'],
+		[`'${token}'`, "'[a secret]'"],
+		[`first\n${token}\nlast`, "first\n[a secret]\nlast"],
+		// Two parts, the second cut short or empty: still cut.
+		["eyJhbGciOiJIUzI1NiJ9.eyJzdWIi", "[a secret]"],
+		["eyJhbGciOiJIUzI1NiJ9. ok", "[a secret] ok"],
+		// Glued: after a dash as before, and now after a letter, a digit or an underscore.
+		[`x-${token}`, "x-[a secret]"],
+		[`x9${token}`, "x9[a secret]", "x9eyJhbGciOiJIUzI1NiJ9.[a secret]"],
+		[`x_${token}`, "x_[a secret]", "x_eyJhbGciOiJIUzI1NiJ9.[a secret]"],
+		["heyJude.mp3", "h[a secret]", "heyJude.mp3"],
+		// An eyJ fragment before the token in the same run: the cut starts at the first eyJ.
+		[`eyJab-${token}`, "[a secret]"],
+		["xeyJ-eyJa.b", "x[a secret]", "xeyJ-[a secret]"],
+		// Near-misses: no dot after the first part, or no first part.
+		["eyJ", "eyJ"],
+		["eyJabc", "eyJabc"],
+		["eyJ.abc", "eyJ.abc"],
+		["eyJ-eyJ-eyJ", "eyJ-eyJ-eyJ"],
+	]) {
+		assert.equal(regexRedactWords(words), now, `the oracle: ${JSON.stringify(words)}`);
+		assert.equal(regexRedactWords(words, OLD_JWT), before, `before: ${JSON.stringify(words)}`);
+		assert.equal(redactWords(words), now, JSON.stringify(words));
+	}
+});
+
 test("redactWords cuts every login form it cut before, and only those", () => {
 	assertCuts([
 		["fetch of user:hunter2@db.internal failed", "fetch of [a login] failed"],
@@ -245,17 +288,23 @@ const MANY = [
 	"token", "TOKEN", "key", "Key", "auth", "pass", "wd", "code", "eyJ", "Bearer ", "://", "x.io", ":80", "1.2.3.4", "sk_",
 ];
 
+/** Few pieces, so a JWT's parts often line up, glued to a word character or not. */
+const JWTS = ["a", "9", "_", "-", ".", " ", "=", '"', "eyJ", "eyJ", "x"];
+
 test("redactWords gives what the regex form gave, on seeded random strings", (t) => {
 	const random = randomOf(0x5eed);
 	let cases = 0;
+	let widened = 0;
 	const cut = { "[a URL]": 0, "[a login]": 0, "[a secret]": 0, "[an endpoint]": 0 };
 	for (const [pieces, count, longest] of [
 		[FEW, 20_000, 24],
 		[HOSTS, 10_000, 24],
 		[MANY, 10_000, 24],
+		[JWTS, 10_000, 24],
 		[FEW, 2_000, 80],
 		[HOSTS, 2_000, 80],
 		[MANY, 2_000, 80],
+		[JWTS, 2_000, 80],
 	]) {
 		for (let i = 0; i < count; i++) {
 			const length = Math.floor(random() * (longest + 1));
@@ -263,12 +312,18 @@ test("redactWords gives what the regex form gave, on seeded random strings", (t)
 			for (let j = 0; j < length; j++) words += pieces[Math.floor(random() * pieces.length)];
 			const expected = regexRedactWords(words);
 			assert.equal(redactWords(words), expected, JSON.stringify(words));
+			// The intended difference from before: only where an eyJ is glued to a word character.
+			if (regexRedactWords(words, OLD_JWT) !== expected) {
+				assert.match(words, /\weyJ/, `cut differently from before with no glued eyJ: ${JSON.stringify(words)}`);
+				widened++;
+			}
 			cases++;
 			for (const mark of Object.keys(cut)) if (expected.includes(mark)) cut[mark]++;
 		}
 	}
-	t.diagnostic(`${cases} strings; strings with each cut: ${JSON.stringify(cut)}`);
-	assert.equal(cases, 46_000);
+	t.diagnostic(`${cases} strings; strings with each cut: ${JSON.stringify(cut)}; cut wider than before: ${widened}`);
+	assert.equal(cases, 58_000);
+	assert.ok(widened > 100, `${widened} strings had a glued JWT cut that the old start missed`);
 	// The pieces are chosen so each shape is cut in a good share of the strings, not left untried.
 	assert.ok(cut["[a URL]"] > 1_000, `${cut["[a URL]"]} strings had a URL cut`);
 	assert.ok(cut["[a login]"] > 500, `${cut["[a login]"]} strings had a login cut`);
