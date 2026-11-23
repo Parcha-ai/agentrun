@@ -67,12 +67,14 @@ export function machineFolder(env: Readonly<Record<string, string | undefined>> 
 
 /** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
  *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
- *  `~/.config/anthropic`). */
+ *  `~/.config/anthropic`). This machine's on the CLI's default folder carries the person's home too, so the harness
+ *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
   if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
-  return { dir: machineFolder(env).folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic") };
+  const { folder, source } = machineFolder(env);
+  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}) };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -260,7 +262,7 @@ export async function turnOffClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
 }
 
 /** POST /settings/claude-login/login: the CLI's own sign-in, started on this machine, where it opens a browser, with the
- *  shown line's own variables (the harness's signInEnv), so it signs in at the folder the status reads. A sign-in that
+ *  shown line's own variables (the harness's signInEnv), so it signs in where the status reads. A sign-in that
  *  still waits is ended first (deps.signIns). The browser code goes to the CLI, never here; the answer is the view as it
  *  is when the sign-in starts, its `sign_in` waiting. */
 export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLoginView> {

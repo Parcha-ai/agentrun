@@ -1559,7 +1559,12 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
-  and the status is read there too, since `auth login` writes the account it signed in to its config dir. `sign_in`
+  and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
+  `machine` with the default `~/.claude`, the CLI is asked and signed in as the person's own `claude` runs: no
+  `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it reads the account in `~/.claude.json`
+  and the tokens their Claude Code keeps (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`). A run
+  there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
+  that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
   `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
