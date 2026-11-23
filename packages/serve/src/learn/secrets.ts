@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span } from "../redact/match.js";
+import { cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span, squeeze } from "../redact/match.js";
 
 /** Whether `text` ends in a `Bearer` scheme and the blanks after it: the one place a shape is read across whitespace
  *  (the scheme, then its token), so a reader that cuts a text at whitespace must not cut there (key-refusal.ts
@@ -108,8 +108,6 @@ export function excerptShown(text: string, shown: { readonly text: (text: string
   const end = /[\uD800-\uDBFF]/.test(clean.charAt(max - 1)) ? max - 1 : max;
   return `${clean.slice(0, end)}…`;
 }
-
-const squeeze = (text: string) => text.normalize("NFKC").replace(/\s+/gu, "");
 
 /** The base64 of `secret` as it can sit inside a longer blob: the characters that depend on the secret's bytes alone,
  *  at each of the three alignments, in both alphabets. */

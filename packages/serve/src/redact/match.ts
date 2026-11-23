@@ -490,6 +490,14 @@ type View = { readonly text: string; readonly covered: readonly Span[] };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
+/** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector). */
+const IGNORABLE = /\p{Default_Ignorable_Code_Point}+/gu;
+const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
+
+/** `text` as a view reads it, and as a held value's needles are read: NFKC, with its whitespace and its characters that
+ *  render as nothing gone, before NFKC (so one between a letter and its accent hides neither) and after. A held value
+ *  with a zero-width space or a soft hyphen between its characters reads as itself. */
+export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
  *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
@@ -538,10 +546,10 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((text) => /\\u[0-9a-fA-F]{4}/.test(text), [UNICODE]),
 ];
 
-/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, NFKC, and its whitespace gone, as
- *  learn/secrets.ts has always squeezed it. NFKC is applied to each stretch of non-ASCII characters with the ASCII
- *  character before it, which gives what it gives over the whole text (an ASCII character is a starter nothing composes
- *  onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
+/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
+ *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
+ *  stretch of non-ASCII characters with the ASCII character before it, which gives what it gives over the whole text (an
+ *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
 function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   const out: string[] = [];
@@ -586,15 +594,15 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (held && !isSpace(held.char.charCodeAt(0))) emit(held.char, held.from, held.to);
     held = undefined;
   };
-  const nfkc = (chars: string) => chars.normalize("NFKC").replace(/\s+/gu, "");
   const flushGroup = () => {
     if (!group) return;
-    const made = nfkc(group.chars);
+    const made = squeeze(group.chars);
     const { lead } = group;
-    const rest = lead ? nfkc(group.chars.slice(lead.char.length)) : "";
+    const rest = lead ? squeeze(group.chars.slice(lead.char.length)) : "";
     // Where nothing composed onto the ASCII character, it comes from itself alone: a value cut in place right before
-    // a non-ASCII character is still covered to its last character.
-    if (lead && made === nfkc(lead.char) + rest) {
+    // a non-ASCII character is still covered to its last character. A stretch that squeezes to nothing (characters that
+    // render as nothing) adds nothing to the view, as whitespace adds nothing.
+    if (lead && made === squeeze(lead.char) + rest) {
       held = lead;
       flushHeld();
       emit(rest, lead.to, group.to);
