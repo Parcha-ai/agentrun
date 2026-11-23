@@ -517,15 +517,58 @@ const PERCENT: Decoder = {
 };
 /** "+" as a space, as a form's encoding writes one. */
 const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
-/** One JSON \uXXXX escape, decoded to its UTF-16 unit: a held value a JSON writer wrote that way, every character or
- *  some. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII stretch is. */
-const UNICODE: Decoder = {
+/** What JSON's one-character escapes stand for. */
+const ESCAPED: Readonly<Record<string, string>> = {
+  n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
+};
+/** A character of `text` at `at` read through one level of JSON's escapes, and where it ends: a "\" and one of
+ *  ESCAPED's keys, or "\u" and four hex digits (a UTF-16 unit), or else the character as it stands. */
+type Char = { char: string; end: number };
+function unescaped(text: string, at: number): Char | undefined {
+  if (at >= text.length) return undefined;
+  if (text[at] !== "\\") return { char: text[at]!, end: at + 1 };
+  const next = text[at + 1];
+  if (next !== undefined && ESCAPED[next] !== undefined) return { char: ESCAPED[next]!, end: at + 2 };
+  if (next !== "u") return undefined;
+  for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return undefined;
+  return { char: String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), end: at + 6 };
+}
+/** JSON's escapes, decoded twice: a held value a JSON writer wrote, every character or some ("\n", "\"", a "\u" and
+ *  four hex digits), and one written again as a JSON string's text (JSON in JSON: "\\n", "\\\""). Where one level's "\"
+ *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
+ *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
+ *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. */
+const JSON_ESCAPE: Decoder = {
   trigger: "\\",
   decode(text, at, unit) {
-    if (text[at + 1] !== "u") return -1;
-    for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return -1;
-    unit(String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), at, at + 6);
-    return at + 6;
+    const first = unescaped(text, at);
+    if (!first) return -1;
+    if (first.char !== "\\") {
+      unit(first.char, at, first.end);
+      return first.end;
+    }
+    // The first level decoded a "\": what follows it, itself read through the first level, may be a second escape.
+    const second = unescaped(text, first.end);
+    if (second && ESCAPED[second.char] !== undefined) {
+      unit(ESCAPED[second.char]!, at, second.end);
+      return second.end;
+    }
+    if (second?.char === "u") {
+      let end = second.end;
+      let digits = "";
+      for (let i = 0; i < 4; i++) {
+        const digit = unescaped(text, end);
+        if (!digit || !HEX(digit.char.charCodeAt(0))) break;
+        digits += digit.char;
+        end = digit.end;
+      }
+      if (digits.length === 4) {
+        unit(String.fromCharCode(Number.parseInt(digits, 16)), at, end);
+        return end;
+      }
+    }
+    unit("\\", at, first.end);
+    return first.end;
   },
 };
 
@@ -538,12 +581,12 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[])
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
 });
 /** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space; JSON's \uXXXX escapes decoded. Each is lowered for hexes and flattened for folded identifiers in holds. */
+ *  space; JSON's escapes decoded twice. Each is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
   viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
   viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
-  viewSpec((text) => /\\u[0-9a-fA-F]{4}/.test(text), [UNICODE]),
+  viewSpec((text) => /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [JSON_ESCAPE]),
 ];
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
