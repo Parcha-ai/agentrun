@@ -79,6 +79,7 @@ describe("RaceStart", () => {
     const [one, two] = [...host.querySelectorAll("[data-race-lane]")];
     expect(one.querySelector("a")?.getAttribute("href")).toBe("#/runs/run-1");
     expect(two.textContent).toContain("codex doesn't run on this server: no OpenAI key.");
+    expect(two.querySelector<HTMLButtonElement>('button[aria-label="Lane 2 harness"]')!.disabled, "a refused lane may be picked again").toBe(false);
     expect(went).toEqual([]);
     refuse = false;
     const first = sent.find((s) => s.lane === "2")!.key;
@@ -87,6 +88,48 @@ describe("RaceStart", () => {
     expect(sent.map((s) => s.lane)).toEqual(["1", "2", "2"]);
     expect(sent.at(-1)!.key).toBe(first);
     expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a lane whose answer never came whole keeps its pick and key, and Start again sends the same request, so it never starts twice", async () => {
+    const lost: [string, () => Response | Promise<Response>][] = [
+      ["a request that never got an answer", () => Promise.reject(new TypeError("Failed to fetch"))],
+      ["a 5xx with no refusal in it", () => new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } })],
+      ["a start the server is still making", () => json(409, { error: { code: "idempotency_in_progress", message: "A request with this key is still in progress.", retryable: true } })],
+    ];
+    for (const [why, answer] of lost) {
+      let lose = true;
+      const { host, sent, went } = mount((one) => (one.lane === "2" && lose ? answer() : started(one)));
+      await type(host, TASK);
+      await act(async () => { button(host, "Start the race")!.click(); });
+      await settle();
+      const two = host.querySelector('[data-race-lane="2"]')!;
+      expect(two.textContent, why).toContain("Not sure this lane started; Start again checks.");
+      for (const picker of ["harness", "model"])
+        expect(two.querySelector<HTMLButtonElement>(`button[aria-label="Lane 2 ${picker}"]`)!.disabled, `${why}: the ${picker} holds still`).toBe(true);
+      expect(host.querySelector("textarea")!.readOnly, `${why}: the task holds still`).toBe(true);
+      lose = false;
+      await act(async () => { button(host, "Start the lanes left")!.click(); });
+      await settle();
+      const [first, again] = sent.filter((s) => s.lane === "2");
+      expect(again, why).toBeDefined();
+      expect([again.key, again.body], `${why}: the same request`).toEqual([first.key, first.body]);
+      expect(went, why).toEqual([`#/races/${LABEL}`]);
+      act(() => root!.unmount());
+      root = undefined;
+      document.body.innerHTML = "";
+    }
+  });
+
+  it("lanes are seeded when the capabilities first name a harness that runs, after none did", async () => {
+    const none = HARNESSES.map((h) => ({ ...h, available: false }));
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const render = (harnesses: typeof HARNESSES) => act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch: globalThis.fetch }), harnesses, go: () => {}, label: LABEL })));
+    render(none);
+    expect(host.querySelectorAll("[data-race-lane]")).toHaveLength(0);
+    render(HARNESSES);
+    await settle();
+    expect(host.querySelectorAll("[data-race-lane]"), "the two a race needs, never one").toHaveLength(2);
   });
 
   it("a second click while the lanes are starting sends nothing more: each lane once", async () => {

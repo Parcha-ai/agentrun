@@ -12,8 +12,10 @@ import type { Run } from "@/lib/v2";
 
 /** A harness as capabilities list it: whether it runs here, and the models a person may pick for it. */
 type RaceHarness = { id: string; available: boolean; default_model?: string | null; models?: string[] };
-/** What became of a lane's start: its run, or the server's words for why not. */
-type Outcome = { run: Run } | { error: string };
+/** What became of a lane's start: its run; the server's refusal, in its words (nothing started, so the lane may change);
+ *  or an answer that never came whole (it may have started, so the lane keeps the request it sent, and Start sends that
+ *  again under the same key: the server answers with the run if it made one). */
+type Outcome = { run: Run } | { error: string } | { unsure: ReturnType<typeof laneStart> };
 
 /** Lane `i`'s first pick: the harnesses that run here in turn, each on its default model (then its next ones). */
 function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
@@ -23,7 +25,10 @@ function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
   return { harness: h.id, model: models[(start + Math.floor(i / runnable.length)) % models.length] };
 }
 
-const words = (e: unknown) => (e instanceof ClientError ? e.toApiError().message : e instanceof Error ? e.message : String(e));
+/** Whether `e` is the server saying no, nothing started: a 4xx with its error object, other than an idempotency answer
+ *  (a start under this key it may still be making). A lost answer, a timeout or a 5xx may have started the run. */
+const refused = (e: unknown): e is ClientError =>
+  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.code.startsWith("idempotency_");
 
 /** #/races/new: one task and 2 to 4 lanes, each a harness and a model this server runs. Start sends one inline run per
  *  lane (lib/race.ts laneStart), each under its own Idempotency-Key, all at once; a lane the server refuses says why in
@@ -36,7 +41,10 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
   const keys = useRef(keepersByRun()).current;
   const [task, setTask] = useState("");
   const [cap, setCap] = useState("1");
-  const [lanes, setLanes] = useState<LaneChoice[]>(() => (runnable.length ? Array.from({ length: MIN_LANES }, (_, i) => firstPick(runnable, i)) : []));
+  const seed = () => Array.from({ length: MIN_LANES }, (_, i) => firstPick(runnable, i));
+  const [lanes, setLanes] = useState<LaneChoice[]>(() => (runnable.length ? seed() : []));
+  // Capabilities read again may name a harness that runs where none did: the race gets the lanes it needs then.
+  useEffect(() => { if (runnable.length && !lanes.length) setLanes(seed()); }, [runnable.length, lanes.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const [outcomes, setOutcomes] = useState<Record<number, Outcome>>({});
   const [sending, setSending] = useState(false);
   const busy = useRef(false);
@@ -56,8 +64,9 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
   const taskMissing = !task.trim();
   const capWrong = !(Number.isFinite(capUsd) && capUsd > 0);
   const startedAny = Object.values(outcomes).some((o) => "run" in o);
+  const unsure = (i: number) => !!outcomes[i] && "unsure" in outcomes[i];
   // The task and cap every lane runs: fixed once a request leaves, so a lane started again runs what the others did.
-  const fixed = startedAny || sending;
+  const fixed = startedAny || sending || lanes.some((_, i) => unsure(i));
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
@@ -67,15 +76,16 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
 
   const start = async () => {
     setAsked(true);
-    if (busy.current || taskMissing || capWrong) return;
+    if (busy.current || taskMissing || capWrong || lanes.length < MIN_LANES) return;
     busy.current = true;
     setSending(true);
     const done = await Promise.all(left.map(async (i): Promise<[number, Outcome]> => {
-      const body = laneStart(label, i + 1, lanes[i], task.trim(), capUsd);
+      const was = outcomes[i];
+      const body = was && "unsure" in was ? was.unsure : laneStart(label, i + 1, lanes[i], task.trim(), capUsd);
       try {
         return [i, { run: await v2.startInlineRun(body, keys(String(i + 1)).keyFor("race", body)) }];
       } catch (e) {
-        return [i, { error: words(e) }];
+        return [i, refused(e) ? { error: e.message } : { unsure: body }];
       }
     }));
     const next: Record<number, Outcome> = { ...outcomes, ...Object.fromEntries(done) };
@@ -112,22 +122,23 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
                 </div>
                 {ran && <a className="truncate font-mono text-small text-primary-text hover:underline" href={`#/runs/${encodeURIComponent(ran.run_id)}`}>{ran.run_id}</a>}
                 <div data-lane-harness="" data-value={lane.harness}>
-                  <Picker label={`Lane ${i + 1} harness`} value={lane.harness} disabled={!!ran || sending} className="w-full"
+                  <Picker label={`Lane ${i + 1} harness`} value={lane.harness} disabled={!!ran || sending || unsure(i)} className="w-full"
                     options={runnable.map((h) => ({ value: h.id, label: h.id }))}
                     onChange={(id) => pick(i, firstPick(runnable.filter((h) => h.id === id), 0))} />
                 </div>
                 <div data-lane-model="" data-value={lane.model}>
-                  <Picker label={`Lane ${i + 1} model`} value={lane.model} disabled={!!ran || sending} className="w-full"
+                  <Picker label={`Lane ${i + 1} model`} value={lane.model} disabled={!!ran || sending || unsure(i)} className="w-full"
                     options={models.map((m) => ({ value: m, label: m }))}
                     onChange={(model) => pick(i, { ...lane, model })} />
                 </div>
                 {outcome && "error" in outcome && <p role="alert" className="font-mono text-small text-destructive-text">{outcome.error}</p>}
+                {outcome && "unsure" in outcome && <p role="status" className="font-mono text-small text-warning-text">Not sure this lane started; Start again checks.</p>}
               </div>
             );
           })}
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" variant="primary" disabled={sending || left.length === 0}>{sending ? "Starting…" : startedAny ? "Start the lanes left" : "Start the race"}</Button>
+          <Button type="submit" variant="primary" disabled={sending || left.length === 0 || lanes.length < MIN_LANES}>{sending ? "Starting…" : startedAny ? "Start the lanes left" : "Start the race"}</Button>
           {lanes.length < MAX_LANES && !sending && <Button type="button" onClick={() => setLanes((all) => [...all, firstPick(runnable, all.length)])}>Add a lane</Button>}
           {lanes.length > MIN_LANES && !sending && !outcomes[lanes.length - 1] && <Button type="button" variant="ghost" onClick={() => setLanes((all) => all.slice(0, -1))}>Remove lane {lanes.length}</Button>}
           {startedAny && <a className="font-mono text-small text-primary-text hover:underline" href={`#/races/${encodeURIComponent(label)}`}>Watch the race</a>}
