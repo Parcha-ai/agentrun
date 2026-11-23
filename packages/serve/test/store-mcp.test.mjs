@@ -107,6 +107,25 @@ test("the API token's write and removal over a saved row land only while the row
   assert.equal(await store.mcp.server("github"), undefined);
 });
 
+test("the owner's write over a row the token saved drops the token's marks from its record in the same transaction, its saved-at-a-listed-origin mark too; a record for another row of the name is left as it is", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const mark = (row) => ({ auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null });
+  const owns = { record: "mcp.source/github" };
+  const row = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null }, null, owns);
+  const tokens = { source: "url", toolkit: null, of: row.createdAt, by: "token", listed: true };
+  // A record for another row of the name (an earlier one's): the owner's write leaves it.
+  await store.settings.put(owns.record, { ...tokens, of: row.createdAt - 1 });
+  clock.now += 1_000;
+  const once = await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null, instructions: "Once." }, mark(row), undefined, owns);
+  assert.equal(once?.instructions, "Once.");
+  assert.deepEqual(await store.settings.get(owns.record), { ...tokens, of: row.createdAt - 1 }, "another row's record is left as it is");
+  // This row's: both marks go, the rest is kept.
+  await store.settings.put(owns.record, tokens);
+  clock.now += 1_000;
+  await store.mcp.putIfCredential({ ...SERVER, auth: "per_run", sealed: null, instructions: "Twice." }, mark(once), undefined, owns);
+  assert.deepEqual(await store.settings.get(owns.record), { source: "url", toolkit: null, of: row.createdAt });
+});
+
 test("a rewrite lands only on the row as its writer read it: the same credential, address and auth type, compared in its one statement", async (t) => {
   const { store, clock } = await storeOn(t);
   const read = await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
