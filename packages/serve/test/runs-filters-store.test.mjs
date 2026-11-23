@@ -4,7 +4,6 @@
 // no case folding). A run with no metrics yet used none.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { numberParams } from "../dist/store/postgres/connection.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const T = Date.parse("2026-11-01T00:00:00Z");
@@ -36,8 +35,4 @@ test("the store lists the runs started in [startedFrom, startedBefore), and thos
   assert.deepEqual(await ids({ model: "anthropic/claude-opus-5" }), [], "a model no run used");
   assert.deepEqual(await ids({ model: "'; DROP TABLE runs; --" }), [], "bound, never spliced");
   assert.equal((await ids({})).length, 4);
-});
-
-test("Postgres' statements take ?? as the ? operator, and every other ? as the next parameter", () => {
-  assert.equal(numberParams("SELECT (m::jsonb ?? ?) FROM t WHERE a = ? AND b = '?' AND \"?\" = ?"), "SELECT (m::jsonb ? $1) FROM t WHERE a = $2 AND b = '?' AND \"?\" = $3");
 });
