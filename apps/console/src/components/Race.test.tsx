@@ -26,7 +26,7 @@ function server(runs: Run[], rowsOf: (id: string) => TimelineRow[] = () => []) {
   const listed: unknown[] = [];
   const v2 = {
     listRuns: async (...args: unknown[]): Promise<{ runs: Run[]; next_cursor: string | null }> => { listed.push(args); return { runs, next_cursor: null }; },
-    getRun: async (id: string) => runs.find((r) => r.run_id === id)!,
+    getRun: async (id: string) => runs.find((r) => r.run_id === id) ?? run(id, { race: "bench" }),
     getTimeline: async (id: string, opts: { after?: number; waitMs?: number } = {}) => {
       reads.push({ id, after: opts.after, waitMs: opts.waitMs });
       const first = opts.after === undefined;
@@ -162,5 +162,50 @@ describe("Race: the runs one race:<label> label groups, side by side", () => {
     for (let i = 0; i < 50 && host.querySelectorAll("[data-race-lane]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect([...host.querySelectorAll("[data-race-lane]")].map((l) => l.getAttribute("data-race-lane"))).toEqual(["r1", "r2"]);
     expect(listed.length).toBeGreaterThan(1);
+  });
+
+  it("starts no read while one waits, so an older answer never puts back the lanes a newer one showed", async () => {
+    const { v2 } = server([]);
+    const before = [run("r1", { race: "bench", lane: "1" })], after = [...before, run("r2", { race: "bench", lane: "2" })];
+    let calls = 0, waiting = 0, most = 0;
+    // The first read answers at once; the second waits 300 ms and answers with the older lane set; every later one has r2.
+    v2.listRuns = async () => {
+      const n = ++calls;
+      waiting++; most = Math.max(most, waiting);
+      if (n === 2) await new Promise((r) => setTimeout(r, 300));
+      waiting--;
+      return { runs: n <= 2 ? before : after, next_cursor: null };
+    };
+    const host = await render(v2, "bench", 40);
+    const shown: number[] = [];
+    const watch = new MutationObserver(() => shown.push(host.querySelectorAll("[data-race-lane]").length));
+    watch.observe(host, { childList: true, subtree: true });
+    for (let i = 0; i < 80 && !(calls > 3 && host.querySelector("[data-race-lane='r2']")); i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 100)); });
+    watch.disconnect();
+    expect(most).toBe(1);
+    expect(host.querySelector("[data-race-lane='r2']")).toBeTruthy();
+    // Once r2 showed, the lanes never went back to one.
+    expect(shown.slice(shown.indexOf(2))).not.toContain(1);
+  });
+
+  it("a race whose first read failed shows its lanes once a later read answers", async () => {
+    const { v2 } = server([]);
+    let calls = 0;
+    v2.listRuns = async () => { if (++calls === 1) throw new Error("503"); return { runs: [run("r1", { race: "bench", lane: "1" })], next_cursor: null }; };
+    const host = await render(v2, "bench", 40);
+    for (let i = 0; i < 50 && !host.querySelector("[data-race-lane='r1']"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(calls).toBeGreaterThan(1);
+    expect(host.querySelector("[data-race-lane='r1']")).toBeTruthy();
+  });
+
+  it("a later read that fails keeps the lanes shown", async () => {
+    const { v2 } = server([]);
+    let calls = 0;
+    v2.listRuns = async () => { if (++calls > 1) throw new Error("503"); return { runs: [run("r1", { race: "bench", lane: "1" })], next_cursor: null }; };
+    const host = await render(v2, "bench", 20);
+    for (let i = 0; i < 50 && calls < 4; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect(calls).toBeGreaterThanOrEqual(4);
+    expect(host.querySelector("[data-race-lane='r1']")).toBeTruthy();
   });
 });

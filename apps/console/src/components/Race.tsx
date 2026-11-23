@@ -27,20 +27,35 @@ export const RACE_REREAD_MS = 15_000;
 
 /** A race (lib/race.ts): the runs its race:<label> label groups, 2 to 4 lanes side by side, each following its run's
  *  timeline. Read-only: a lane links to its run's own page for anything more. The lanes are read again every
- *  `rereadMs` (RACE_REREAD_MS; a test's shorter); a lane already shown keeps its place and its timeline. */
+ *  `rereadMs` (RACE_REREAD_MS; a test's shorter), also after a first read that failed; a lane already shown keeps its
+ *  place and its timeline. */
 export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; label: string; rereadMs?: number }) {
   const [read, setRead] = useState<Awaited<ReturnType<typeof readRace>> | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [reads, setReads] = useState(0);
   // One clock for every lane, so their running times tick together.
   const [now, setNow] = useState(() => Date.now());
+  // Every read of the race, the first and each again, goes through one guard: only the newest begun may land, and a
+  // tick that comes while a read still waits (up to RACE_PAGES pages, or a server that is down) starts none, so reads
+  // never pile up and an older answer never puts back the lanes a newer one showed.
+  const raceReads = useRef(latest()).current;
+  const waiting = useRef(false);
   useEffect(() => {
-    let live = true;
     setError(null);
-    readRace(v2, label).then((r) => { if (live) setRead(r); }, (e) => { if (live) setError(e); });
-    // A later read that fails keeps the lanes shown: the next one tries again.
-    const again = setInterval(() => { readRace(v2, label).then((r) => { if (live) setRead(r); }, () => {}); }, rereadMs);
-    return () => { live = false; clearInterval(again); };
+    let answered = false;
+    const readOnce = () => {
+      if (waiting.current) return;
+      waiting.current = true;
+      const n = raceReads.begin();
+      readRace(v2, label).then(
+        (r) => { if (raceReads.current(n)) { answered = true; setRead(r); setError(null); } },
+        // A read that fails after one answered keeps the lanes shown; before, it says so. Either way the next tries again.
+        (e) => { if (raceReads.current(n) && !answered) setError(e); },
+      ).finally(() => { if (raceReads.current(n)) waiting.current = false; });
+    };
+    readOnce();
+    const again = setInterval(readOnce, rereadMs);
+    return () => { raceReads.cancel(); waiting.current = false; clearInterval(again); };
   }, [label, reads]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
