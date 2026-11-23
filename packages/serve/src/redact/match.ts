@@ -743,7 +743,8 @@ export function cutSpans(text: string, needles: Needles, shapes: readonly Shape[
   const found: Span[] = held.map(([start, end]): Span => [start, end]);
   for (const form of needles.forms) places(text, form, found);
   for (const hex of needles.hexes) places(lower(), hex, found);
-  for (const shape of shapes) found.push(...spansOf(text, lower, shape));
+  // One by one: a text of very many finds would overflow the stack as one call's arguments.
+  for (const shape of shapes) for (const span of spansOf(text, lower, shape)) found.push(span);
   if (needles.folds.length) foldSpans(text, needles.folds, found);
   return merged(found);
 }
