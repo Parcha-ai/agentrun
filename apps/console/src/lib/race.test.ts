@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LANE_WAIT_MS, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, raceFilter, readRace } from "./race";
+import { LANE_WAIT_MS, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, RACE_PAGES, raceFilter, readRace } from "./race";
 import type { Run, TimelineRow } from "./v2";
 
 const run = (id: string, labels: Record<string, string>, created_at = "2026-11-23T10:00:00Z"): Run => ({
@@ -31,6 +31,36 @@ describe("a race: the runs one race:<label> label groups", () => {
     expect(asked).toEqual([[50, null, { label: "race:x" }]]);
     expect(read.lanes.map((r) => r.run_id)).toEqual(["r1", "r2", "r3", "r4"]);
     expect(read.more).toBe(1);
+    expect(read.atLeast).toBe(false);
+  });
+
+  it("reads the next pages before it picks the lanes: an older run with a lower lane still makes the first four", async () => {
+    const asked: unknown[] = [];
+    // 51 runs, newest first: lane 1 is the oldest, alone on the second page.
+    const pages: Record<string, { runs: Run[]; next_cursor: string | null }> = {
+      first: { runs: Array.from({ length: 50 }, (_, i) => run(`r${51 - i}`, { race: "x", lane: String(51 - i) })), next_cursor: "p2" },
+      p2: { runs: [run("r1", { race: "x", lane: "1" })], next_cursor: null },
+    };
+    const v2 = { listRuns: async (...args: unknown[]) => { asked.push(args[1]); return pages[(args[1] as string | null) ?? "first"]!; } };
+    const read = await readRace(v2 as never, "x");
+    expect(asked).toEqual([null, "p2"]);
+    expect(read.lanes.map((r) => r.run_id)).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(read.more).toBe(47);
+    expect(read.atLeast).toBe(false);
+  });
+
+  it("stops after RACE_PAGES pages, and then says there may be more than it counted", async () => {
+    let reads = 0;
+    const v2 = { listRuns: async () => { reads++; return { runs: Array.from({ length: 50 }, (_, i) => run(`p${reads}-${i}`, { race: "x", lane: String(i + 1) })), next_cursor: "more" }; } };
+    const read = await readRace(v2 as never, "x");
+    expect(reads).toBe(RACE_PAGES);
+    expect(read.more).toBe(RACE_PAGES * 50 - 4);
+    expect(read.atLeast).toBe(true);
+  });
+
+  it("a run with no lane label comes after every numbered lane", () => {
+    const runs = [run("a-hand", { race: "x" }), run("r2", { race: "x", lane: "2" }), run("r1", { race: "x", lane: "1" })];
+    expect(lanesOf(runs).map((r) => r.run_id)).toEqual(["r1", "r2", "a-hand"]);
   });
 
   it("follows each lane with a short wait, so four lanes leave the browser's six connections room", () => {
