@@ -3412,7 +3412,7 @@ export const COMMANDS = [
         "name": "model",
         "type": "string",
         "required": false,
-        "description": "Only runs that used this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched whole. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400."
+        "description": "Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400."
       }
     ],
     "headers": [],

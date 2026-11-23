@@ -1085,7 +1085,7 @@ Route: `GET /runs`.
 - `--source STRING` (string): Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.
 - `--from STRING` (string): Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400.
 - `--to STRING` (string): Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400.
-- `--model STRING` (string): Only runs that used this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched whole. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.
+- `--model STRING` (string): Only runs that sent at least one request to this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched exactly: no prefix, no case folding. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun runs message RUN_ID`

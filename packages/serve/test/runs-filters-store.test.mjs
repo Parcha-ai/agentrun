@@ -1,8 +1,10 @@
 // The store's side of GET /runs' window and model filters (Runs.listed's startedFrom, startedBefore and model), on each
 // store the tests run on (SQLite, and Postgres under npm run test:pg): the runs started in [startedFrom, startedBefore),
-// and the runs whose metrics name the model among those they used. A run with no metrics yet used none.
+// and the runs that sent at least one request to the model: their metrics' `models` hold it as a key, exactly (no prefix,
+// no case folding). A run with no metrics yet used none.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { numberParams } from "../dist/store/postgres/connection.js";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
 const T = Date.parse("2026-11-01T00:00:00Z");
@@ -27,9 +29,15 @@ test("the store lists the runs started in [startedFrom, startedBefore), and thos
   assert.deepEqual(await ids({ startedBefore: T }), ["before"]);
   assert.deepEqual(await ids({ startedFrom: T + 2 * HOUR }), [], "a window no run started in");
   assert.deepEqual(await ids({ model: "anthropic/claude-sonnet-5" }), ["at-from", "before"], "every run that used it");
-  assert.deepEqual(await ids({ model: "openai/gpt-5" }), ["before"], "a name is matched whole, never as a prefix");
+  assert.deepEqual(await ids({ model: "openai/gpt-5" }), ["before"], "a run that used two models is listed under each, and a name is matched whole");
+  assert.deepEqual(await ids({ model: "openai/gpt" }), [], "never as a prefix");
+  assert.deepEqual(await ids({ model: "OpenAI/GPT-5" }), [], "never with its case folded");
   assert.deepEqual(await ids({ model: "anthropic/claude-sonnet-5", startedFrom: T }), ["at-from"]);
   assert.deepEqual(await ids({ model: "anthropic/claude-opus-5" }), [], "a model no run used");
   assert.deepEqual(await ids({ model: "'; DROP TABLE runs; --" }), [], "bound, never spliced");
   assert.equal((await ids({})).length, 4);
+});
+
+test("Postgres' statements take ?? as the ? operator, and every other ? as the next parameter", () => {
+  assert.equal(numberParams("SELECT (m::jsonb ?? ?) FROM t WHERE a = ? AND b = '?' AND \"?\" = ?"), "SELECT (m::jsonb ? $1) FROM t WHERE a = $2 AND b = '?' AND \"?\" = $3");
 });

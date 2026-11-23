@@ -238,7 +238,8 @@ async function tryOwner(url: string, schema: string, connectMs: number, where: s
   }
 }
 
-/** `?` parameters numbered $1, $2 … (outside quoted text and identifiers), kept per statement text. */
+/** `?` parameters numbered $1, $2 … (outside quoted text and identifiers), kept per statement text. `??` is Postgres' own `?`
+ *  operator (jsonb's "has this key"), written once. */
 const numbered = new Map<string, string>();
 export function numberParams(sql: string): string {
   let out = numbered.get(sql);
@@ -246,13 +247,17 @@ export function numberParams(sql: string): string {
   let n = 0;
   let quote: string | undefined;
   out = "";
-  for (const char of sql) {
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i]!;
     if (quote) {
       if (char === quote) quote = undefined;
       out += char;
     } else if (char === "'" || char === '"') {
       quote = char;
       out += char;
+    } else if (char === "?" && sql[i + 1] === "?") {
+      out += "?";
+      i++;
     } else out += char === "?" ? `$${++n}` : char;
   }
   if (numbered.size < 10_000) numbered.set(sql, out);

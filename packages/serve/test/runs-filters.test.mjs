@@ -47,6 +47,9 @@ test("GET /runs' from and to keep the runs started in [from, to), and model the 
   assert.deepEqual(await listed(api, "from=2027-01-01T00:00:00Z"), [], "a window no run started in lists none");
 
   assert.deepEqual(await listed(api, "model=openai/gpt-5"), [before, atFrom].sort(), "every run that used the model, its main model or not");
+  assert.deepEqual(await listed(api, "model=anthropic/claude-sonnet-5"), [before, atTo].sort(), "a run that used two models is listed under each");
+  assert.deepEqual(await listed(api, "model=openai/gpt"), [], "a prefix of a model's name is no model a run used");
+  assert.deepEqual(await listed(api, "model=OpenAI/GPT-5"), [], "nor is the name in another case");
   assert.deepEqual(await listed(api, `model=${encodeURIComponent("anthropic/claude-sonnet-5")}&from=${from}`), [atTo], "with the window");
   assert.deepEqual(await listed(api, "model=anthropic/claude-opus-5"), [], "a model no run used lists none");
   assert.deepEqual(await listed(api, "model=gpt-5"), [], "a model's name without its provider is no model a run used");

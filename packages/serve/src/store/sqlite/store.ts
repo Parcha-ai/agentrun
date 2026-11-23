@@ -114,11 +114,10 @@ type FiringRecord = {
 /** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
  *  SQLite (it folds case). */
 const NOT_A_SHADOW_RUN = "substr(runs.id, 1, 6) <> 'audit.'";
-/** How a runs list's `model` (ListedFilter.model, `provider/model`) matches a run, as SQL taking the model as its one `?`:
- *  "used", a model among those the run's metrics count requests on (metrics.models); "exact", the run's own model (metrics.model,
- *  the one with the most). A run with no metrics yet matches neither. */
-const RUN_MODEL_MATCH: "used" | "exact" = "used";
-const runModelMatch = (d: Dialect): string => (RUN_MODEL_MATCH === "used" ? d.jsonObjectHasKey("runs.metrics", ["models"]) : `${d.jsonText("runs.metrics", ["model"])} = ?`);
+/** A runs list's `model` (ListedFilter.model, `provider/model`) as SQL taking the model as its one `?`: the runs that sent at
+ *  least one request to it, a key of the requests their metrics count per model (metrics.models), exactly (no prefix, no case
+ *  folding). A run with no metrics yet sent none. */
+const runUsedModel = (d: Dialect): string => d.jsonObjectHasKey("runs.metrics", ["models"]);
 /** A runner holds the run's claim at `now` (SQL), and the run is not over. */
 const heldAt = (now: string) => `(runs.runner IS NOT NULL AND runs.claimed_until >= ${now} AND runs.state NOT IN ('ended', 'stopped', 'failed'))`;
 /** The run's listing is behind at `now` (SQL; its parameters twice, `params`): built before the latest write that moved
@@ -1401,7 +1400,7 @@ class SqliteStore implements Store {
         // The window [startedFrom, startedBefore): a run started at its start is in it, one started at its end is not.
         if (startedFrom !== undefined) (where.push("runs.started_at >= ?"), params.push(startedFrom));
         if (startedBefore !== undefined) (where.push("runs.started_at < ?"), params.push(startedBefore));
-        if (model !== undefined) (where.push(runModelMatch(d)), params.push(model));
+        if (model !== undefined) (where.push(runUsedModel(d)), params.push(model));
         where.push(`COALESCE(runs.archived_at, agents.archived_at) IS ${archived ? "NOT NULL" : "NULL"}`, "runs.purged_at IS NULL");
         if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
         // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.

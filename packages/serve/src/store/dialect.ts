@@ -22,7 +22,8 @@ export interface Dialect {
    *  that follow (two `?`): bound, never spliced, so any key reads safely. False when the column is NULL. */
   jsonObjectHas(column: string): string;
   /** True when the JSON object at `path` (object keys) in TEXT column `column` has the key of the string parameter that
-   *  follows (one `?`): bound, never spliced, so any key reads safely. False when the column, or the path, is NULL. */
+   *  follows (one `?`), exactly (no case folding): bound, never spliced, so any key reads safely. False when the column, or the
+   *  path, is NULL. */
   jsonObjectHasKey(column: string, path: readonly string[]): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;

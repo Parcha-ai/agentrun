@@ -192,7 +192,7 @@ export interface ListedFilter {
   /** Only runs started at or after this time (ms), and before `startedBefore` (ms): the window [startedFrom, startedBefore). */
   readonly startedFrom?: number;
   readonly startedBefore?: number;
-  /** Only runs whose metrics name this model (`provider/model`): runModelMatch says how (sqlite/store.ts). */
+  /** Only runs that sent at least one request to this model (`provider/model`), a key of their metrics' `models`, exactly. */
   readonly model?: string;
   readonly archived: boolean;
   readonly status?: string;
