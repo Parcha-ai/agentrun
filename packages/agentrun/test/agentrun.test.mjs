@@ -45,15 +45,13 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, no Ollama, no box, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser (and no Ollama: support.mjs). */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
   removeAtEnd(home);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !MODEL_KEYS.includes(name)));
-  // AGENTRUN_BOXES=none: the server it starts asks no Docker (on by default when the setting is not set). OLLAMA_HOST
-  // names an Ollama the server refuses to ask (plain http to another machine), so an Ollama this machine runs gives it
-  // no model (serve's ollama-provider.ts).
-  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none", OLLAMA_HOST: "http://ollama.invalid" } };
+  // AGENTRUN_BOXES=none: the server it starts asks no Docker (on by default when the setting is not set).
+  return { home, env: { ...env, HOME: home, XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"), CI: "1", AGENTRUN_BOXES: "none" } };
 }
 
 test("demo: with no model key, the bin starts on a free loopback port and prints one line, the address the server says to open, on stdout, and its boxes line on stderr; the server has no model and the console asks for its first password", { timeout: 120_000 }, async (t) => {

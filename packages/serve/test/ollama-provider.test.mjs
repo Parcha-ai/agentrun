@@ -14,6 +14,9 @@ const { chooseModel, hostModel, providerModels, runModels } = await import("../d
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
+// The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
+delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
+
 const PLAIN = "synth-plain:1b";
 const TOOLS = "synth-tools:2b";
 /** Every model key the default could come from, and the settings that would put another model first: none of them set. */
@@ -84,6 +87,18 @@ test("a start on another provider's model never asks Ollama: an OpenRouter key, 
   await runModels(env, undefined);
   await runModels(env, "openrouter/openai/gpt-6.1-sol");
   assert.equal(ollama.got.tags, 0, "no listing started, so none awaited");
+  assert.deepEqual(ollama.got.show, []);
+});
+
+test("the suites' switch, AGENTRUN_SERVE_FAUX_NO_OLLAMA in the process's own environment, turns every Ollama off whatever env a caller passes", async (t) => {
+  const ollama = await fakeOllama(t);
+  process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+  t.after(() => delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA);
+  const env = { OLLAMA_HOST: ollama.host };
+  assert.deepEqual(await listOllama(env), []);
+  assert.deepEqual((await providerModels(env)).getModels("ollama"), []);
+  assert.equal((await runModels(env, `ollama/${TOOLS}`).catch((error) => error)) instanceof Error, true, "a run on it finds no model");
+  assert.equal(ollama.got.tags, 0);
   assert.deepEqual(ollama.got.show, []);
 });
 

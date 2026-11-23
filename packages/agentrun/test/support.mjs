@@ -2,6 +2,10 @@
 import { rmSync } from "node:fs";
 import { after } from "node:test";
 
+// No test asks an Ollama this machine may run: serve's switch (ollama-provider.ts OLLAMA_OFF_ENV), read from the process's
+// own environment, which every server and command a test starts with process.env inherits.
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+
 /** Directories to remove at the file's end. node:test runs a test's after-hooks in the order they were added, so a
  *  removal added as a directory is made would run before the stop of a command or server started in it afterwards,
  *  while that process still writes there. At the file's end every test's stops have run. */

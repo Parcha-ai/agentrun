@@ -96,8 +96,14 @@ type Remote = { remote_host?: unknown; remote_model?: unknown };
  *  models here are local, $0 and uncounted, and a cloud model is none of those. */
 const remote = (entry: Remote | null | undefined): boolean => entry?.remote_host !== undefined || entry?.remote_model !== undefined;
 
-/** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase). */
+/** A test process's switch, read from its own environment (process.env), never from the `env` a caller passes: set, no
+ *  Ollama is asked, whatever address that `env` names or leaves to the default. A test hook's name (model.ts FAUX_PREFIX),
+ *  so a server never hands it on to its runs. The test suites set it (test/support.mjs); a test of Ollama clears it. */
+export const OLLAMA_OFF_ENV = "AGENTRUN_SERVE_FAUX_NO_OLLAMA";
+
+/** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase) or the test switch is on (OLLAMA_OFF_ENV). */
 const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
+  if (process.env[OLLAMA_OFF_ENV]) return undefined;
   try {
     return ollamaBase(env);
   } catch {
