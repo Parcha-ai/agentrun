@@ -24,6 +24,8 @@ import { ended, git, repoOf, started } from "./learn-support.mjs";
 import { codeStorageFake } from "./fixtures/code-storage-fake.mjs";
 import { agent, answerFlow, call, cookieOf, serve, startRun } from "./support.mjs";
 
+const SIGN_IN_PHRASE = "the owner signs in with this phrase";
+
 /** `write` over agent `agentId`'s learning store on this server (learn/store-of.ts), as a run's merge writes it: its
  *  commit. */
 async function learned(data, agentId, write) {
@@ -350,7 +352,7 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     onStore(t, data, settingsOf());
     const origin = `http://127.0.0.1:${port}`;
     const json = { "content-type": "application/json" };
-    const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+    const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
     assert.equal(setup.status, 201, setup.text);
     const cookie = cookieOf(setup);
     const first = (await startRun(api, agentId, "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
