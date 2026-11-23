@@ -1573,9 +1573,10 @@ lists no models and slows nothing: the listing has 2 seconds in all, and follows
   and `::`, where `ollama serve` listens on every address, mean this machine (127.0.0.1 and `[::1]`). A path is kept.
   Plain http goes only to this machine (loopback); another machine takes `https://`. A refused `OLLAMA_HOST` lists no
   models. `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
-- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the model's trained context up to
-  65,536 tokens (65,536 where `/api/show` names none). The model's context window here is the same number, so pi
-  compacts before Ollama would cut the prompt.
+- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
+  trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
+  whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
+  number, so pi compacts before Ollama would cut the prompt.
 - Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
   answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
   model, so the tags never reach the answer.

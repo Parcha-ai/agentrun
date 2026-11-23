@@ -711,7 +711,7 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
 async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv): Promise<M> {
   if (!asksOllama(env)) return models;
   const listed = await ollamaModels(env);
-  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed) as never);
+  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed, env) as never);
   return models;
 }
 

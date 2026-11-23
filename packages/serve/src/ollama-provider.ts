@@ -171,9 +171,18 @@ export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
  *  A server compares it to see a model pulled, removed or an Ollama started since it made its offers (server.ts). */
 export const ollamaListing = (env: NodeJS.ProcessEnv): string => ollamaKept(env).map((model) => `${model.name}=${model.capabilities.join(",")}@${model.trained ?? ""}`).join(" ");
 
-/** The context a request on `model` asks for, and its window here: its trained context up to OLLAMA_NUM_CTX, which a model
- *  /api/show names none for gets. */
-export const contextOf = (model: Pick<OllamaListed, "trained">): number => Math.min(OLLAMA_NUM_CTX, model.trained ?? OLLAMA_NUM_CTX);
+/** The context a request on `model` asks for, and its window here: its trained context up to OLLAMA_NUM_CTX (which a model
+ *  /api/show names none for gets), and never above the OLLAMA_CONTEXT_LENGTH `env` sets. */
+export const contextOf = (model: Pick<OllamaListed, "trained">, env: NodeJS.ProcessEnv): number => Math.min(OLLAMA_NUM_CTX, model.trained ?? OLLAMA_NUM_CTX, contextLengthOf(env) ?? OLLAMA_NUM_CTX);
+
+/** OLLAMA_CONTEXT_LENGTH, Ollama's own default context, where `env` sets it to a whole number above 0: a person who set it
+ *  lower (for their memory) is never sent more. Any other value, none. */
+const contextLengthOf = (env: NodeJS.ProcessEnv): number | undefined => {
+  const given = env.OLLAMA_CONTEXT_LENGTH?.trim();
+  if (!given || !/^\d+$/.test(given)) return undefined;
+  const length = Number(given);
+  return Number.isSafeInteger(length) && length > 0 ? length : undefined;
+};
 
 /** Whether `model` chats (an embedding model does not). */
 const chats = (model: OllamaListed): boolean => model.capabilities.includes("completion");
@@ -188,9 +197,9 @@ export function ollamaToolsModel(env: NodeJS.ProcessEnv): string | undefined {
 type OllamaModel = Model<typeof OLLAMA_API> & { toolsAs?: ToolsAs };
 
 /** The provider of `listed` (its chat models) at `base`: keyless, $0, each model's window its context (contextOf). */
-export function ollamaProvider(base: string, listed: readonly OllamaListed[]) {
+export function ollamaProvider(base: string, listed: readonly OllamaListed[], env: NodeJS.ProcessEnv) {
   const models: OllamaModel[] = listed.filter(chats).map((model) => {
-    const window = contextOf(model);
+    const window = contextOf(model, env);
     return {
       id: model.name,
       name: `${model.name} (Ollama)`,

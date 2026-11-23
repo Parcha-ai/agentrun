@@ -95,6 +95,21 @@ test("a model trained on more than 64k runs at 64k: every /api/chat request carr
   for (const body of ollama.got.chat) assert.equal(body.options?.num_ctx, 65_536, JSON.stringify(body.options));
 });
 
+test("OLLAMA_CONTEXT_LENGTH, set to a whole number above 0, caps num_ctx and the window below 64k and the trained context; any other value is ignored", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "Fine." }) });
+  const capped = { OLLAMA_HOST: ollama.host, OLLAMA_CONTEXT_LENGTH: "32768" };
+  const route = await routeOf(`ollama/${TOOLS}`, capped);
+  assert.equal(route.like?.contextWindow, 32_768, "the user's own context length, below 64k and the trained 131072");
+  await eventsOf(route);
+  assert.equal(ollama.got.chat.at(-1).options?.num_ctx, 32_768);
+  const models = await providerModels(capped);
+  assert.equal(models.getModel("ollama", TOOLS).contextWindow, 32_768);
+  assert.equal((await providerModels({ ...capped, OLLAMA_CONTEXT_LENGTH: "50000" })).getModel("ollama", PLAIN).contextWindow, 40_960, "above the trained context: the trained one");
+  for (const ignored of ["0", "-1", "lots", "8192.5", ""]) {
+    assert.equal((await providerModels({ ...capped, OLLAMA_CONTEXT_LENGTH: ignored })).getModel("ollama", TOOLS).contextWindow, 65_536, `${JSON.stringify(ignored)} ignored`);
+  }
+});
+
 test("a model trained on less than 64k runs at its own context, in num_ctx and its window alike", async (t) => {
   const ollama = await fakeOllama(t, { reply: () => ({ text: "Fine." }) });
   const env = { OLLAMA_HOST: ollama.host };

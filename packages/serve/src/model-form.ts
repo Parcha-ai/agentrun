@@ -68,7 +68,7 @@ export type FreeModel = { id: string; context_window: number };
 export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): Promise<FreeModel[]> {
   if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || factsOf(env, harness)) return [];
   const [{ builtinModels }, { withLocalModels, isFree }, { contextOf, OLLAMA_PROVIDER, ollamaModels }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js"), import("./ollama-provider.js")]);
-  const local = (await ollamaModels(env)).filter((model) => model.capabilities.includes("completion")).map((model) => ({ id: `${OLLAMA_PROVIDER}/${model.name}`, context_window: contextOf(model) }));
+  const local = (await ollamaModels(env)).filter((model) => model.capabilities.includes("completion")).map((model) => ({ id: `${OLLAMA_PROVIDER}/${model.name}`, context_window: contextOf(model, env) }));
   if (!env.OPENROUTER_API_KEY) return local;
   return [...local, ...withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
     .map((model) => ({ id: `openrouter/${model.id}`, context_window: model.contextWindow }))
