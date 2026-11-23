@@ -672,11 +672,13 @@ export class McpServersOverStore {
       if ((now ? saving(now) : null) !== entry.was) return back("changed_meanwhile");
       const prices = now?.url === entry.url ? ((now.prices ?? undefined) as McpPrices | undefined) : undefined;
       // Written only while the row is still the one just read, in the store's one statement: a save that lands in between
-      // stands too.
+      // stands too. A sign-in is the owner's alone: over a row the token saved, it drops the token's marks in the
+      // transaction that writes the signed-in row (`owns`), as the owner's save does, so the server is the owner's once
+      // the sign-in lands, and one refused leaves it the token's.
       const saved = await saveMcpServerIfCredential(this.store, this.sealKey, {
         name: entry.name, url: entry.url, auth: "oauth", protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(prices && Object.keys(prices).length ? { prices } : {}), credential: { type: "oauth", set },
-      }, credentialMark(now));
+      }, credentialMark(now), now ? { owns: { record: mcpSourceKey(entry.name) } } : {});
       if (!saved) return back("changed_meanwhile");
       // What the start said the server is, written for the row just saved, as a save's is.
       if (entry.source) await this.store.settings.put(mcpSourceKey(entry.name), storedSource(entry.source, saved));
