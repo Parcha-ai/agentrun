@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LANE_WAIT_MS, lanesOf, laneStats, MAX_LANES, raceFilter, readRace } from "./race";
+import { LANE_WAIT_MS, lanesOf, laneStats, MAX_LANES, RACE_PAGES, raceFilter, readRace } from "./race";
 import type { Run, TimelineRow } from "./v2";
 
 const run = (id: string, labels: Record<string, string>, created_at = "2026-11-23T10:00:00Z"): Run => ({
@@ -34,10 +34,27 @@ describe("a race: the runs one race:<label> label groups", () => {
     expect(read.atLeast).toBe(false);
   });
 
-  it("a read that comes back full says there may be more than it counted", async () => {
-    const runs = Array.from({ length: 50 }, (_, i) => run(`r${i + 1}`, { race: "x", lane: String(i + 1) }));
-    const read = await readRace({ listRuns: async () => ({ runs, next_cursor: "50" }) } as never, "x");
-    expect(read.more).toBe(46);
+  it("reads the next pages before it picks the lanes: an older run with a lower lane still makes the first four", async () => {
+    const asked: unknown[] = [];
+    // 51 runs, newest first: lane 1 is the oldest, alone on the second page.
+    const pages: Record<string, { runs: Run[]; next_cursor: string | null }> = {
+      first: { runs: Array.from({ length: 50 }, (_, i) => run(`r${51 - i}`, { race: "x", lane: String(51 - i) })), next_cursor: "p2" },
+      p2: { runs: [run("r1", { race: "x", lane: "1" })], next_cursor: null },
+    };
+    const v2 = { listRuns: async (...args: unknown[]) => { asked.push(args[1]); return pages[(args[1] as string | null) ?? "first"]!; } };
+    const read = await readRace(v2 as never, "x");
+    expect(asked).toEqual([null, "p2"]);
+    expect(read.lanes.map((r) => r.run_id)).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(read.more).toBe(47);
+    expect(read.atLeast).toBe(false);
+  });
+
+  it("stops after RACE_PAGES pages, and then says there may be more than it counted", async () => {
+    let reads = 0;
+    const v2 = { listRuns: async () => { reads++; return { runs: Array.from({ length: 50 }, (_, i) => run(`p${reads}-${i}`, { race: "x", lane: String(i + 1) })), next_cursor: "more" }; } };
+    const read = await readRace(v2 as never, "x");
+    expect(reads).toBe(RACE_PAGES);
+    expect(read.more).toBe(RACE_PAGES * 50 - 4);
     expect(read.atLeast).toBe(true);
   });
 

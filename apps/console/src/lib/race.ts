@@ -14,8 +14,10 @@ export const MAX_LANES = 4;
 /** How long each lane's timeline read waits for news. The server speaks HTTP/1.1 and a browser keeps 6 connections per
  *  origin: four lanes on the usual 25 s wait would hold four of them, so a lane asks again every few seconds instead. */
 export const LANE_WAIT_MS = 3_000;
-/** How many runs one read of the race asks for: enough to say how many lanes past MAX_LANES were left out. */
+/** How many runs one page of the race asks for, and how many pages one read of it follows at most (200 runs): a label
+ *  reused past that is told as "at least". */
 const RACE_READ = 50;
+export const RACE_PAGES = 4;
 
 /** GET /runs' label filter for race `label`. */
 export const raceFilter = (label: string) => `${RACE_KEY}:${label}`;
@@ -31,11 +33,20 @@ export function lanesOf(runs: readonly Run[]): Run[] {
   return [...runs].sort((a, b) => unnumbered(a) - unnumbered(b) || laneOrder.compare(lane(a) ?? "", lane(b) ?? "") || (a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0)).slice(0, MAX_LANES);
 }
 
-/** Race `label`'s lanes, and how many of its runs past MAX_LANES are not shown: `atLeast` when the one read came back
- *  full, so there may be more than it counted. Archived runs are not read (the runs list's default), so not counted. */
+/** Race `label`'s lanes, and how many of its runs past MAX_LANES are not shown. GET /runs lists the newest first, so
+ *  every page is read (up to RACE_PAGES) before the lanes are chosen: an older run with a lower lane still makes the
+ *  first four. `atLeast` when pages were left unread, so there may be more than it counted. Archived runs are not read
+ *  (the runs list's default), so not counted. */
 export async function readRace(v2: Pick<Client, "listRuns">, label: string): Promise<{ lanes: Run[]; more: number; atLeast: boolean }> {
-  const { runs } = await v2.listRuns(RACE_READ, null, { label: raceFilter(label) });
-  return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES), atLeast: runs.length >= RACE_READ };
+  const runs: Run[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < RACE_PAGES; page++) {
+    const read: { runs: Run[]; next_cursor: string | null } = await v2.listRuns(RACE_READ, cursor, { label: raceFilter(label) });
+    runs.push(...read.runs);
+    cursor = read.next_cursor;
+    if (!cursor) break;
+  }
+  return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES), atLeast: cursor !== null };
 }
 
 /** What a lane's header says: cost (the run's own once it ended, else the newest timeline page's), tokens, tool calls

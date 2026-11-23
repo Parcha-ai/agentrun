@@ -3,6 +3,7 @@ import { ProblemCard } from "@/components/Problem";
 import { RunSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
+import { Button } from "@/components/ui/button";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { type Client, follow } from "@/lib/client";
 import { costOfCap, runEnded, runTitle } from "@/lib/format";
@@ -10,6 +11,7 @@ import { problem } from "@/lib/problem";
 import { LANE_KEY, LANE_WAIT_MS, laneStats, raceFilter, readRace } from "@/lib/race";
 import { cn } from "@/lib/utils";
 import type { Run, TimelineRow } from "@/lib/v2";
+import { latest, pause, TRIES_MS } from "@/lib/viewing";
 
 /** How many of a lane's newest steps show; older ones fold behind "N earlier steps", so no lane grows a scroller. */
 const LANE_STEPS = 4;
@@ -78,9 +80,29 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [pageCost, setPageCost] = useState<Run["cost"] | null>(null);
   const [failed, setFailed] = useState<unknown>(null);
+  const [readFailed, setReadFailed] = useState(false);
   const state = useRef("");
+  // Only the newest read of the run lands: an older one answering last never puts a finished run back to Working.
+  const runReads = useRef(latest()).current;
+  const live = useRef<AbortSignal | null>(null);
+  // The run read again: a failed read is tried twice more (TRIES_MS), since the timeline's follow has stopped by the
+  // final page and nothing else would ask; one that still fails says so, with a way to read again.
+  const readRun = async () => {
+    const n = runReads.begin(), signal = live.current;
+    for (const ms of TRIES_MS) {
+      await pause(ms);
+      if (signal?.aborted || !runReads.current(n)) return;
+      try {
+        const r = await v2.getRun(first.run_id);
+        if (!signal?.aborted && runReads.current(n)) { setRun(r); setReadFailed(false); }
+        return;
+      } catch { /* the next try */ }
+    }
+    if (!signal?.aborted && runReads.current(n)) setReadFailed(true);
+  };
   useEffect(() => {
     const ctl = new AbortController();
+    live.current = ctl.signal;
     follow(v2, first.run_id, {
       signal: ctl.signal,
       waitMs: LANE_WAIT_MS,
@@ -90,7 +112,7 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
         const s = `${p.status}/${p.state}`;
         if (s === state.current) return;
         state.current = s;
-        v2.getRun(first.run_id).then((r) => { if (!ctl.signal.aborted) setRun(r); }, () => {});
+        void readRun();
       },
     }).catch((e) => { if (!ctl.signal.aborted) setFailed(e); });
     return () => ctl.abort();
@@ -115,6 +137,12 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
           <span data-lane-tools>{stats.toolCalls} {stats.toolCalls === 1 ? "tool call" : "tool calls"}{stats.failed ? ` · ${stats.failed} failed` : ""}</span>
           {stats.tokens && <span data-lane-tokens>{stats.tokens}</span>}
         </div>
+        {readFailed && (
+          <p role="status" data-lane-read-failed className="mt-2 flex flex-wrap items-center gap-2 text-small text-destructive-text">
+            This run's newest state did not read, so its status may be behind.
+            <Button size="xs" variant="ghost" onClick={() => void readRun()}>Read again</Button>
+          </p>
+        )}
       </header>
       <div className="min-w-0 px-2 py-2">
         {failed ? <ProblemCard className="m-2" problem={problem(failed, "this lane's timeline")} /> : <Timeline rows={rows} live={!ended} fold={LANE_STEPS} ended={ended} />}

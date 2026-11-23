@@ -25,7 +25,7 @@ function server(runs: Run[], rowsOf: (id: string) => TimelineRow[] = () => []) {
   const reads: { id: string; after?: number; waitMs?: number }[] = [];
   const listed: unknown[] = [];
   const v2 = {
-    listRuns: async (...args: unknown[]) => { listed.push(args); return { runs, next_cursor: null }; },
+    listRuns: async (...args: unknown[]): Promise<{ runs: Run[]; next_cursor: string | null }> => { listed.push(args); return { runs, next_cursor: null }; },
     getRun: async (id: string) => runs.find((r) => r.run_id === id)!,
     getTimeline: async (id: string, opts: { after?: number; waitMs?: number } = {}) => {
       reads.push({ id, after: opts.after, waitMs: opts.waitMs });
@@ -92,10 +92,51 @@ describe("Race: the runs one race:<label> label groups, side by side", () => {
     expect(host.textContent).not.toContain("At least");
   });
 
-  it("a full read says at least that many more runs, since there may be more than it counted", async () => {
-    const { v2 } = server(Array.from({ length: 50 }, (_, i) => run(`r${i + 1}`, { race: "bench", lane: String(i + 1) })));
+  it("reads every page of the race before it picks the lanes, and says at least that many more when it stops with pages left", async () => {
+    const { v2 } = server([]);
+    const asked: unknown[] = [];
+    // Newest first, as GET /runs lists: lane 1 is on the last page read, and a cursor is still left after it.
+    v2.listRuns = async (...args: unknown[]) => {
+      asked.push(args[1]);
+      const at = Number(args[1] ?? 0);
+      return { runs: Array.from({ length: 50 }, (_, i) => run(`r${200 - at - i}`, { race: "bench", lane: String(200 - at - i) })), next_cursor: String(at + 50) };
+    };
+    v2.getRun = async (id: string) => run(id, { race: "bench", lane: id.slice(1) });
     const host = await render(v2);
-    expect(host.textContent).toContain("At least 46 more runs");
+    expect(asked.slice(0, 4)).toEqual([null, "50", "100", "150"]);
+    expect([...host.querySelectorAll("[data-race-lane]")].map((l) => l.getAttribute("data-race-lane"))).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(host.textContent).toContain("At least 196 more runs");
+  });
+
+  it("a lane keeps the newest read of its run: an older read that answers last never puts a finished run back to Working", async () => {
+    const working = run("r1", { race: "bench", lane: "1" }), done = run("r1", { race: "bench", lane: "1" }, "completed");
+    const { v2 } = server([working]);
+    let calls = 0;
+    // The first read (the run working) answers after the second (the run completed).
+    v2.getRun = async () => (++calls === 1 ? new Promise((r) => setTimeout(() => r(working), 600)) : done);
+    const host = await render(v2);
+    for (let i = 0; i < 100 && calls < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    for (let i = 0; i < 40; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(calls).toBe(2);
+    expect(host.querySelector("[data-race-lane='r1'] header")?.textContent).toContain("Completed");
+  });
+
+  it("a lane whose run fails to read after three tries says so, and reads again when asked", async () => {
+    const done = run("r1", { race: "bench", lane: "1" }, "completed");
+    const { v2 } = server([run("r1", { race: "bench", lane: "1" })]);
+    let fail = true, calls = 0;
+    v2.getRun = async () => { calls++; if (fail) throw new Error("503"); return done; };
+    const host = await render(v2);
+    const note = () => host.querySelector("[data-race-lane='r1'] [data-lane-read-failed]");
+    for (let i = 0; i < 150 && !note(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(note()?.textContent).toContain("did not read");
+    // The newest read was tried three times (an older read, begun on an earlier page, stops once a newer one begins).
+    expect(calls).toBeGreaterThanOrEqual(3);
+    fail = false;
+    await act(async () => { note()!.querySelector("button")!.click(); });
+    for (let i = 0; i < 20 && note(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(note()).toBeNull();
+    expect(host.querySelector("[data-race-lane='r1'] header")?.textContent).toContain("Completed");
   });
 
   it("a lane's cost shows against its cap", async () => {
