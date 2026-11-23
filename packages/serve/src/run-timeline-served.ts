@@ -36,7 +36,7 @@ export type ServedTimelineDeps = {
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
- *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output's head to
+ *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output whole to
  *  CALL_RESULT_CHARS too (TimelineOptions.calls), through the same cut, for a reader that grades the run. */
 export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store, runId: string, context: Context, calls = false): Promise<TimelineEvent[]> {
   // The run's rows, its decisions, its learning end and the triggers' names, all read in one snapshot of the store (one

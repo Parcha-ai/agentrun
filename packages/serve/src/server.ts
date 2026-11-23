@@ -4127,7 +4127,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const asked = url.searchParams.get("limit");
     if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
     const limit = asked === null ? PAGE_ROWS : Number(asked);
-    // `calls=whole`: each call's arguments and its output's head too (tool_input, tool_result_text), for a grader.
+    // `calls=whole`: each call's arguments and its output too, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), for a grader.
     const shape = url.searchParams.get("calls");
     if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
     const calls = shape === "whole";
