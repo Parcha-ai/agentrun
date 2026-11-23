@@ -416,7 +416,13 @@ A run's runner renews its claim on the run every 10 s, for a claim of 30 s. A ru
 time, writes nothing more to the run, and the store refuses any write under a claim the run has moved past. Once the
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
-timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
+timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does.
+The exception is a park's keep: a desktop, phone or sandbox a park keeps for 10 minutes comes back to the run's resume.
+One that only the runner that kept it can reach again (a Docker container, a machine that dials the server) holds the
+parked run for that runner while it is there under the same process (its word in the last 30 s, not refusing) and the
+keep lasts: no other runner claims the run, so a runner whose loops are full makes it wait until then. Once that runner
+is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
+is gone.` `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the

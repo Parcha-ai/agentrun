@@ -140,11 +140,13 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
   const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  const claim = (epoch, extra = {}) => {
+  // `launch`: more of the claim's launch (its `holder`: the runner that claims and its incarnation).
+  const claim = (epoch, extra = {}, launch = {}) => {
     store.runs.take("run-1", epoch);
-    return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+    return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
-  const janitor = () => sweepKeptComputers({ store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now });
+  // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there.
+  const janitor = ({ self, runners } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now, ...(self ? { self } : {}) });
   return { store, account, clock, mounts, claim, janitor, sealKey, keys };
 }
 
@@ -400,6 +402,74 @@ test("a server's restart during a sandbox's keep: the janitor leaves it within 1
 test("a sandbox's park hold words and timeout words", () => {
   assert.equal(computerKeptWords("sandbox"), "The sandbox is kept for 10 minutes while you decide.");
   assert.equal(computerLapsedWords("sandbox"), "The sandbox wasn't kept: 10 minutes passed.");
+});
+
+// Claim affinity (computer-kept.ts pinnedOf): a Docker computer is on the claiming runner's engine, so its park names
+// that runner and its incarnation on the row; the store's claim rule then gives the run to that runner alone while it is
+// there (store-claim-affinity.test.mjs, runner-claim-affinity.test.mjs).
+const RUNNER_A = { runner: "runner-a", incarnation: "inc-a" };
+const RUNNER_B = { runner: "runner-b", incarnation: "inc-b" };
+
+test("leak (b): another runner's janitor leaves a kept row pinned to a runner still there, whatever its time; that runner's own janitor ends it, and once it is gone any janitor does", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const key = keptKeyOf("run-1");
+  // As this build's park writes it; put raw, so a janitor with no pin rule fails on its own pass alone.
+  const row = { ...(await one.store.settings.get(key)), ...RUNNER_A };
+  await one.store.settings.put(key, row);
+  const live = [{ ...RUNNER_A, refused: null }];
+  const runners = { live: async () => live };
+  one.clock.now = T0 + KEEP_MS + 60_000;
+  // runner-b's janitor: only runner-a's engine has the container, so a delete from here finds nothing, reads as done,
+  // marks the row ended, and runner-a's own timer then finds it ended and deletes nothing: the container leaks.
+  assert.deepEqual(await one.janitor({ self: RUNNER_B, runners }), { ended: [], failed: [] }, "runner-b's janitor leaves runner-a's row");
+  assert.deepEqual(deletes(one.account), [], "nothing deleted from runner-b");
+  assert.deepEqual(await one.store.settings.get(key), row, "the row as runner-a's park left it");
+  assert.deepEqual(await one.janitor({ self: RUNNER_A, runners }), { ended: ["c1"], failed: [] }, "runner-a's own janitor ends it at its time");
+  assert.deepEqual(deletes(one.account), ["c1"]);
+
+  const gone = await server(SANDBOX);
+  await (await gone.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  await gone.store.settings.put(key, { ...(await gone.store.settings.get(key)), ...RUNNER_A });
+  gone.clock.now = T0 + KEEP_MS;
+  assert.deepEqual(await gone.janitor({ self: RUNNER_B, runners: { live: async () => [] } }), { ended: ["c1"], failed: [] }, "runner-a gone: any runner's janitor ends it as before");
+  const failing = await server(SANDBOX);
+  await (await failing.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  await failing.store.settings.put(key, { ...(await failing.store.settings.get(key)), ...RUNNER_A });
+  failing.clock.now = T0 + KEEP_MS;
+  assert.deepEqual(await failing.janitor({ self: RUNNER_B, runners: { live: async () => { throw new Error("store down"); } } }), { ended: [], failed: [] }, "the runners unread: the pinned row is left for a later pass, never ended blind");
+});
+
+test("a Docker sandbox's park names the runner that claimed it and its incarnation; a resume by another runner that cannot reach it makes a new one, said lost with that runner and naming none", async () => {
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  assert.deepEqual(await readKept(one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c1", name: "c1", epoch: 3, until: T0 + KEEP_MS, folder: "bind", ...RUNNER_A }, "pinned to runner-a, this process");
+  // runner-a is gone (the claim rule let runner-b have the run), and its engine with the container: runner-b's finds none.
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B });
+  assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true });
+  assert.equal(said.length, 1, "said once");
+  assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: the runner that kept it is gone. It's a new sandbox: the one before is gone, with what was on it.");
+  await resumed.release();
+});
+
+test("a phone harness kept at its park is not pinned: its row names no runner, and another runner's resume attaches the same phone", async () => {
+  const one = await server({ setting: { kind: "phone", provider: "phone-harness" }, groups: PHONE_GROUPS, machine: "android", keys: { PHONE_HARNESS_API_KEY: "fake-test-key" } });
+  const first = await one.claim(3, {}, { holder: RUNNER_A });
+  assert.equal(await first.park(), true);
+  const row = await readKept(one.store.settings, "run-1");
+  assert.deepEqual([row.runner, row.incarnation], [undefined, undefined], "the vendor's phone: any runner reaches it, so nothing pins the run");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B });
+  assert.deepEqual(creates(one.account), ["c1"], "the same phone: no create");
+  assert.equal(resumed.replaced, undefined);
+  assert.equal(said[0]?.kept, true, "said to be the same one");
+  await resumed.release();
+  assert.deepEqual(deletes(one.account), ["c1"]);
 });
 
 /** A Mode 2 Daytona sandbox with no DAYTONA_ARCHIL_EGRESS (a synced folder), its run's folder on a fake disk. */

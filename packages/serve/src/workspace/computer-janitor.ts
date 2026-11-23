@@ -33,7 +33,7 @@ import { FAUX_ENV } from "../model.js";
 import { FINAL_STATES, type Store } from "../store/index.js";
 import { deleteUnderHold, ownerGoneOf, serverIdOf, wantsOn } from "./agent-computer.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { type KeptSweep, sweepKept } from "./computer-kept.js";
+import { type KeptHolder, type KeptSweep, sweepKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
@@ -49,7 +49,11 @@ export const JANITOR_PROVIDER_MS = 5 * 60_000;
 export interface JanitorDeps {
   /** The store: whose runs a computer's run label names, and the phone provider's ledger; with `settings` and `agents`,
    *  this server's id and its agents, whose own computers it then sweeps by their owner. */
-  readonly store: Pick<Store, "runs" | "computerLedger"> & Partial<Pick<Store, "settings" | "agents" | "computerIntervals">>;
+  readonly store: Pick<Store, "runs" | "computerLedger"> & Partial<Pick<Store, "settings" | "agents" | "computerIntervals" | "runners">>;
+  /** The runner this janitor sweeps for (its name and presence incarnation): a computer kept at a park pinned to another
+   *  runner still there is that runner's to end, never this one's (computer-kept.ts sweepKept). Absent: every pinned
+   *  row whose runner is there is left. */
+  readonly self?: KeptHolder;
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers and the key reader. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf"> & { readonly settings?: ProviderSettings; readonly keyTable?: KeyTable };
@@ -202,8 +206,9 @@ export async function sweepServerComputers(deps: Pick<JanitorDeps, "store" | "co
 
 /** The pass over the desktops and phones kept at a run's park (computer-kept.ts sweepKept): one past its time, or whose
  *  run ended, is ended through its provider, made with this server's keys, whatever its lifetime (a vendor's own end is
- *  hours away). Undefined without the store's settings, where none is kept. Never throws. */
-export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
+ *  hours away); one pinned to another runner still there (the store's runners) is left to that runner. Undefined without
+ *  the store's settings, where none is kept. Never throws. */
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "now" | "self"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
   if (!store.settings) return undefined;
@@ -214,7 +219,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
     const options = providerOptions(id, await keysOf(id), computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     return options.ok ? make(options.options, { ledger: storeLedger(store.computerLedger, id) }) : undefined;
   };
-  return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf, deleted: (provider, id) => writes.ended(provider, id) });
+  return sweepKept({ settings: store.settings, runs: store.runs, now: (deps.now ?? Date.now)(), providerOf, deleted: (provider, id) => writes.ended(provider, id), ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
 }
 
 /** The janitor: one sweep now, then one every `everyMs`, never two at once, and a kept pass at the earliest time a kept

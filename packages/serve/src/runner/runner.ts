@@ -207,6 +207,10 @@ export type HandBackCause = "drain" | "interrupted" | "end_retry" | "give_back";
 
 export interface Runner {
   readonly name: string;
+  /** The incarnation of its word in the store (presence.ts: its caller's, else its own), which its loops hand each claim's
+   *  computer (LoopDeps.incarnation): a computer a park keeps pinned to this runner names it. Absent with no store
+   *  runners, where no word is kept. */
+  readonly incarnation?: string;
   /** The claims this runner holds and has not lost. */
   held(): Claim[];
   /** Stops claiming, lets each held run go on to its own end for up to drainMs, then stops every loop left where it can
@@ -834,7 +838,11 @@ export function startRunner(options: RunnerOptions): Runner {
     let ending: () => void = () => {};
     // Set below, once held is made: the loop asks deliverNow only once its first turn has ended, well after.
     let heldNow: Held | undefined;
+    // This runner's process as its word in the store names it (presence.ts), for the claim's computer: a park that keeps one
+    // only this runner can reach again pins it to this runner and this incarnation (computer-kept.ts pinnedOf).
+    const ours = (options.presence ?? presence)?.incarnation;
     const loop = loopsOf({
+      ...(ours ? { incarnation: ours } : {}),
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
@@ -1022,7 +1030,8 @@ export function startRunner(options: RunnerOptions): Runner {
    *  claim's loop still running holds its weight too): each claimed on its own, its weight put in `weights`. The first that
    *  does not fit ends the claim, unless the runner holds nothing: then it is claimed alone. */
   const claimByMemory = async (budget: RunnerMemory, free: number, weights: Map<string, number>): Promise<Claim[]> => {
-    const waiting = await store.runs.claimable({ limit: free });
+    // As this runner's claimer: a run whose computer is kept for another runner still there is not among them.
+    const waiting = await store.runs.claimable({ limit: free, runner: name });
     if (waiting.length === 0) return [];
     const weighed = await budget.weigh(waiting);
     let heldMib = [...runs.values(), ...replaced].reduce((sum, held) => sum + held.mib, 0);
@@ -1161,8 +1170,10 @@ export function startRunner(options: RunnerOptions): Runner {
     for (const held of runs.values()) clock.clearTimeout(held.deadline);
   };
 
+  const incarnation = (options.presence ?? presence)?.incarnation;
   return {
     name,
+    ...(incarnation ? { incarnation } : {}),
     held: () => [...runs.values()].filter((held) => !held.fence.lost && !held.ending).map((held) => held.claim),
     async close() {
       if (closed || killed) return;
