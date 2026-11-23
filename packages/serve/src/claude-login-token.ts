@@ -8,7 +8,8 @@
 // after Anthropic refused the token it handed (`refused`, the CLI's 401). One ask posts once at most: one renewal is in
 // flight per refresh token in this process, and across processes the renewer holds the CLI's own refresh lock on the
 // folder and reads the file again once it holds it, so a token another holder (the CLI, another runner) renewed is
-// taken and nothing is posted. The answer is written back only to the file it came from, atomically (a temp file at mode
+// taken and nothing is posted. It holds that lock as the CLI's lock library does, by the mtime it set: a lock another
+// holder took over (this one paused past the stale time) is never touched, removed or posted under. The answer is written back only to the file it came from, atomically (a temp file at mode
 // 0600 in the same folder before any byte is in it, synced, then renamed over it), every other field kept as it was. A
 // pair whose write fails is held in this process's memory until it is saved: every ask hands its token and tries the
 // write again, and one whose token nears its own end still unsaved is refused in LOGIN_NOT_SAVED's words. A refresh
@@ -194,6 +195,10 @@ export interface RenewLoginOptions {
   readonly callMs?: number;
   /** Default LOCK_WAIT_MS. */
   readonly lockWaitMs?: number;
+  /** The refresh locks' file operations. Default: fs/promises' own. */
+  readonly lockFs?: LockFs;
+  /** How often a held lock is read and touched (its heartbeat). Default: the pinned CLI's (`update:5000`). */
+  readonly lockUpdateMs?: number;
 }
 
 /** Refresh tokens this process never posts again: one Anthropic refused for good (`invalid_grant`), and one it took (a
@@ -283,71 +288,166 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
   };
 }
 
+/** The file operations a refresh lock is taken, touched and released with: fs/promises' own, or a test's that watches
+ *  or pauses them (RenewLoginOptions.lockFs). */
+export interface LockFs {
+  mkdir(path: string): Promise<unknown>;
+  stat(path: string): Promise<{ readonly mtimeMs: number }>;
+  utimes(path: string, atime: Date, mtime: Date): Promise<void>;
+  rm(path: string, options: { readonly recursive: boolean; readonly force: boolean }): Promise<void>;
+}
+const LOCK_FS: LockFs = { mkdir: (path) => mkdir(path), stat: (path) => stat(path), utimes: (path, atime, mtime) => utimes(path, atime, mtime), rm: (path, options) => rm(path, options) };
+
+/** Whether a lock's mtime as read (`read`) is the one its holder set (`set`): within the same second, which holds on a
+ *  filesystem that keeps seconds alone and through utimes' rounding. Another holder's is a second apart at least: it
+ *  takes a lock over only once it is lockStaleMs (60 s) older than its own clock, and sets its own then. */
+const sameMtime = (read: number, set: number): boolean => Math.abs(read - set) < 1_000;
+
+/** A refresh lock this process took: whether it is still its own, and its release. */
+interface HeldLock {
+  /** Whether the lock is still this holder's: its mtime the one this holder last set. Once not, never again: a holder
+   *  paused past the stale time may have lost it to another, which took it over and set its own. */
+  owned(): Promise<boolean>;
+  /** Stops its heartbeat and removes it, only while it is still this holder's: never another holder's lock. */
+  release(): Promise<void>;
+}
+
 /** A lock in proper-lockfile's form, as the pinned CLI takes it (login-refresh.ts): a directory made with mkdir, its
- *  mtime touched while it is held; one older than lockStaleMs is a dead holder's and is taken over. Its release when
- *  taken; none while another holds it. */
-async function lockDirectory(path: string): Promise<(() => Promise<void>) | undefined> {
+ *  mtime touched while it is held; one older than lockStaleMs is a dead holder's and is taken over. Held as
+ *  proper-lockfile holds its own: the mtime this holder set is kept, and a heartbeat (every `updateMs`) that reads another
+ *  (or none: the lock is gone) marks the lock lost, the CLI's "compromised" (its `n.mtime.getTime()!==u.mtime.getTime()`
+ *  check before each touch), and stops: it never touches it again, and the release never removes it. None while another
+ *  holds it. */
+async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promise<HeldLock | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await mkdir(path);
+      await fs.mkdir(path);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
       let touched: number;
       try {
-        touched = (await stat(path)).mtimeMs;
+        touched = (await fs.stat(path)).mtimeMs;
       } catch {
         // Released since: try again.
         continue;
       }
       if (Date.now() - touched <= loginRefresh.lockStaleMs) return undefined;
-      await rm(path, { recursive: true, force: true });
+      await fs.rm(path, { recursive: true, force: true });
       continue;
     }
-    const timer = setInterval(() => {
-      const at = new Date();
-      void utimes(path, at, at).catch(() => undefined);
-    }, loginRefresh.lockUpdateMs);
-    timer.unref();
-    return async () => {
+    // Made here: this holder's mtime is the one it sets now, and the lock is its own while the lock holds that one.
+    let mine = Date.now();
+    try {
+      await fs.utimes(path, new Date(mine), new Date(mine));
+    } catch (error) {
+      await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    let lost = false;
+    let timer: NodeJS.Timeout | undefined;
+    /** The heartbeat's touch in flight: a release waits for it, so it never reads the mtime a touch just set as another's. */
+    let beat: Promise<void> | undefined;
+    const owned = async (): Promise<boolean> => {
+      if (lost) return false;
+      try {
+        if (sameMtime((await fs.stat(path)).mtimeMs, mine)) return true;
+      } catch {
+        // Gone, or unreadable: not this holder's to touch or remove.
+      }
+      lost = true;
       clearInterval(timer);
-      await rm(path, { recursive: true, force: true });
+      return false;
+    };
+    timer = setInterval(() => {
+      if (lost || beat) return;
+      beat = (async () => {
+        if (!(await owned())) return;
+        const at = Date.now();
+        try {
+          await fs.utimes(path, new Date(at), new Date(at));
+          mine = at;
+        } catch (error) {
+          // Gone since it was read: lost. Another failure is tried again at the next beat, as proper-lockfile does.
+          if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+            lost = true;
+            clearInterval(timer);
+          }
+        }
+      })().finally(() => {
+        beat = undefined;
+      });
+    }, updateMs);
+    timer.unref();
+    return {
+      owned,
+      release: async () => {
+        clearInterval(timer);
+        await beat;
+        if (await owned()) await fs.rm(path, { recursive: true, force: true });
+        lost = true;
+      },
     };
   }
   return undefined;
 }
 
 /** The CLI's two refresh locks on credentials directory `dir`, in its order (the lock in the folder, then the older one
- *  beside the folder's real path; that one taken where it can be, as the CLI does): their release, or none while
- *  another holder has either. */
-async function takeRefreshLocks(dir: string): Promise<(() => Promise<void>) | undefined> {
-  const current = await lockDirectory(join(dir, loginRefresh.lockName));
+ *  beside the folder's real path; that one taken where it can be, as the CLI does): whether both are still this
+ *  holder's, and their release; or none while another holder has either. */
+async function takeRefreshLocks(dir: string, fs: LockFs, updateMs: number): Promise<HeldLock | undefined> {
+  const current = await lockDirectory(join(dir, loginRefresh.lockName), fs, updateMs);
   if (!current) return undefined;
   // null: the older lock could not be made, and the CLI goes on without it then (only another holder of it stops it).
-  let legacy: (() => Promise<void>) | undefined | null;
+  let legacy: HeldLock | undefined | null;
   try {
-    legacy = await lockDirectory(`${await realpath(dir).catch(() => dir)}${loginRefresh.legacyLockSuffix}`);
+    legacy = await lockDirectory(`${await realpath(dir).catch(() => dir)}${loginRefresh.legacyLockSuffix}`, fs, updateMs);
   } catch {
     legacy = null;
   }
   if (legacy === undefined) {
-    await current();
+    await current.release();
     return undefined;
   }
-  return async () => {
-    await legacy?.().catch(() => undefined);
-    await current();
+  const older = legacy;
+  return {
+    // Both asked each time: each one's own lost mark is set by its own read.
+    owned: async () => ((await current.owned()) ? older === null || (await older.owned()) : false),
+    release: async () => {
+      await older?.release().catch(() => undefined);
+      await current.release();
+    },
   };
 }
 
 /** One renewal of the login in file `file` whose access token was `seen` and refresh token `refresh`: under the CLI's
- *  refresh locks, the file read again, one post, and the answer written back. */
+ *  refresh locks, the file read again, one post, and the answer written back. A lock lost before the post (taken over
+ *  while this holder was paused) is never posted under: the holder waits for the new one's write as for any other's,
+ *  the pinned CLI's own check before its post (`tengu_oauth_token_refresh_lock_compromised_pre_post`). One lost after
+ *  the post keeps the answer: the refresh token posted is spent, so the pair is written back by the same check the CLI
+ *  makes (the file still holds the refresh token posted, or a cleared one), without the lock, as the CLI writes it then
+ *  (`tengu_oauth_refresh_compromised_cas_saved`), and held in memory if that write fails (saveHeld). */
 async function renewUnderLock(dir: string, file: string, seen: string, refresh: string, options: RenewLoginOptions): Promise<Renewed | undefined> {
   const say = options.log ?? (() => undefined);
+  const fs = options.lockFs ?? LOCK_FS;
+  const updateMs = options.lockUpdateMs ?? loginRefresh.lockUpdateMs;
   const giveUp = Date.now() + (options.lockWaitMs ?? LOCK_WAIT_MS);
-  let release: (() => Promise<void>) | undefined;
   for (;;) {
-    release = await takeRefreshLocks(dir);
-    if (release) break;
+    const locks = await takeRefreshLocks(dir, fs, updateMs);
+    if (locks) {
+      try {
+        // Read again under the lock: a holder that renewed before it was taken has written its pair, which is taken.
+        const held = await credentialsNow(file);
+        if (!held || held.oauth.accessToken !== seen || held.oauth.refreshToken !== refresh) return undefined;
+        if (await locks.owned()) {
+          const answer = await postRefresh(held.oauth, refresh, options);
+          if (!(await locks.owned())) say({ claude_login: "lock_lost", at: "after_post" });
+          return await writeBack(file, refresh, answer, options);
+        }
+        say({ claude_login: "lock_lost", at: "before_post" });
+      } finally {
+        await locks.release().catch(() => undefined);
+      }
+    }
     // Another holder renews it now: its write is taken when it lands, never a second post of the same refresh token.
     if ((await credentialsNow(file))?.oauth.accessToken !== seen) return undefined;
     if (Date.now() > giveUp) {
@@ -355,15 +455,6 @@ async function renewUnderLock(dir: string, file: string, seen: string, refresh: 
       throw new Error("another holder kept the login's refresh lock");
     }
     await sleep(LOCK_POLL_MS);
-  }
-  try {
-    // Read again under the lock: a holder that renewed before it was taken has written its pair, which is taken.
-    const held = await credentialsNow(file);
-    if (!held || held.oauth.accessToken !== seen || held.oauth.refreshToken !== refresh) return undefined;
-    const answer = await postRefresh(held.oauth, refresh, options);
-    return await writeBack(file, refresh, answer, options);
-  } finally {
-    await release().catch(() => undefined);
   }
 }
 
