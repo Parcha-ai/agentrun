@@ -1,6 +1,6 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, Factory Droid) into one Session shape: normalized token usage,
 subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
 server imports past sessions through it.
 
@@ -31,7 +31,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,droid] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -44,19 +44,38 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"` or `"pi"` writes it:
+`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"` or `"droid"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
 | Anthropic | `input_tokens` (already excludes the cache) | `cache_creation.ephemeral_1h_input_tokens` | |
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
 | pi | `input` | `cacheWrite1h` | |
+| Droid | `inputTokens` (already excludes the cache) | | `thinkingTokens` (part of `output`) |
 
 A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
 record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.
+
+### Factory Droid
+
+Sessions are `~/.factory/sessions/<cwd slug>/<session id>.jsonl` (some in `sessions/` itself), under
+`$FACTORY_HOME_OVERRIDE` instead of the home where `env` names it. Each assistant message is one request, each record
+counted once by its `id` (a fork copies its source's records). A Worker, whose `session_start` names its
+`callingSessionId`, counts under that session.
+
+Droid writes no request's tokens. The `<session id>.settings.json` beside the transcript holds the session's running
+total (`tokenUsage`, its own calls alone; `inclusiveTokenUsage` is not read, as the Workers count on their own) and its
+latest `model`. That total goes on the session's last request, the others 0, or on a request of its own when the
+transcript holds none. So:
+
+- A session with no settings file has tokens 0 and cost `null`.
+- Droid writes no dollar cost. `cost` is the total at the catalog's list price for the model of the request it is on (a
+  session that switched models is priced at that one), `null` for a model the catalog does not list (a BYOK
+  `custom:` model).
+- serve's import does not bring Droid sessions in as runs; they count in `parseHome` and the CLI.
 
 ## Readers
 
