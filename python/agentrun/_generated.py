@@ -4918,6 +4918,7 @@ class FinishChatGPTSignInResponse(_FinishChatGPTSignInResponseRequired, total=Fa
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class GetCalendarResponse(TypedDict):
@@ -4937,6 +4938,7 @@ class GetChatGPTSignInResponse(_GetChatGPTSignInResponseRequired, total=False):
     authorize_url: str
     expires_at: str
     models: list[str]
+    problem: str
 
 
 class _GetClaudeLoginResponseRequired(TypedDict):
@@ -11405,7 +11407,7 @@ OPERATIONS: dict[str, Operation] = {
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download",), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
+    "readRunFile": Operation(method="GET", path="/runs/{run_id}/files/{path}", path_params=("run_id", "path"), multi_segment=("path",), query=("download", "cut"), headers=("Range",), body=None, answer="bytes", secret=False, public_fields=(), tagged=False),
     "resumeRun": Operation(method="POST", path="/runs/{run_id}/resume", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "createRun": Operation(method="POST", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "startRun": Operation(method="POST", path="/runs/{run_id}/start", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12097,12 +12099,12 @@ class RunsResource(Group):
         return self._call("raiseRunCap", (run_id,), body, None, timeout=timeout)
 
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[False] = False, timeout: float | None = None) -> bytes: ...
     @overload
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
-    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: Literal[True], timeout: float | None = None) -> StreamedResponse: ...
+    def read_file(self, run_id: str, path: str, *, download: Literal[0, 1] | None = None, range: str | None = None, cut: Literal["run"] | None = None, stream: bool = False, timeout: float | None = None) -> bytes | StreamedResponse:
         """One file's raw bytes (GET /runs/{run_id}/files/{path})."""
-        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range}, timeout=timeout, stream=stream)
+        return self._call("readRunFile", (run_id, path), None, {"download": download, "Range": range, "cut": cut}, timeout=timeout, stream=stream)
 
     def resume(self, run_id: str, *, timeout: float | None = None) -> ResumeRunResponse:
         """Resume a paused workflow run (POST /runs/{run_id}/resume)."""
