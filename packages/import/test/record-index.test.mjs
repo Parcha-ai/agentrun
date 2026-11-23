@@ -58,7 +58,30 @@ test("an index kept as bytes (v8 serialize) finds what it held", () => {
   assert.equal(owner(copy, uuidKey(2001)), 0);
 });
 
-test("more than 2^24 records, a Map's most, are held and found", () => {
+test("from 4 slots, every key is found with its owner across each doubling of the index", () => {
+  const index = recordIndex(4);
+  const keys = [];
+  const size = () => index.uuids.slots.length + index.others.slots.length;
+  let slots = size();
+  let doublings = 0;
+  for (let i = 0; i < 40_000; i += 1) {
+    const key = i % 2 ? uuidKey(i) : `m:msg_${i}:req_${i}`;
+    add(index, key, i & 0xffff);
+    keys.push(key);
+    if (size() === slots) continue;
+    doublings += 1;
+    slots = size();
+    for (let j = 0; j < keys.length; j += 1 + (keys.length >> 8)) assert.equal(owner(index, keys[j]), j & 0xffff, `${keys[j]} after doubling ${doublings}`);
+  }
+  assert.ok(doublings >= 20, `${doublings} doublings`);
+  assert.equal(recordCount(index), keys.length);
+  keys.forEach((key, j) => assert.equal(owner(index, key), j & 0xffff, key));
+  assert.equal(owner(index, uuidKey(40_001)), -1);
+});
+
+// Holds about 0.9 GB outside the JS heap, so it runs on demand, not beside the other tests.
+const LARGE = process.env.AGENTRUN_IMPORT_LARGE_TESTS === "1" ? false : "holds ~0.9 GB outside the JS heap; set AGENTRUN_IMPORT_LARGE_TESTS=1 to run it";
+test("more than 2^24 records, a Map's most, are held and found", { skip: LARGE }, () => {
   const n = 2 ** 24 + 4096;
   const index = recordIndex();
   for (let i = 0; i < n; i += 1) add(index, uuidKey(i), i & 0xffff);
