@@ -251,14 +251,16 @@ function endpointStart(words: string, from: number, end: number): number {
  * Words with no URL and no secret: a URL of any scheme, a login, a bearer, a secret-named parameter, a key- or
  * token-shaped value and an endpoint (a host or an IPv4 address with a port) are taken out. The URL, the login, the
  * parameter and the endpoint with a DNS name are scans that read each character a few times: as regexes with no
- * anchored start they read to the end of a long word run from every character in it.
+ * anchored start they read to the end of a long word run from every character in it. The JWT starts only at the first
+ * eyJ of its run, for the same reason.
  */
 export function redactWords(words: string): string {
 	redactWordsReads = 0;
 	const loginsCut = cutLogins(cutUrls(words));
 	return cutEndpoints(
 		cutSecretParams(loginsCut.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]"))
-			.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
+			// A token from the first "eyJ" of its run, glued to a word ("id_eyJ...") too.
+			.replace(/eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
 			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
 			.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
 			.replace(/\b(?:sk|pk|pck|ph|tok|pw|jwt)_[A-Za-z0-9_-]{6,}/g, "[a secret]"),
