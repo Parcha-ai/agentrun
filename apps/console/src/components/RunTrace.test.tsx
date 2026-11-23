@@ -69,6 +69,15 @@ describe("the Dev tools tab", () => {
     expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);
     expect(plain.textContent).not.toMatch(/stopped short|refused for the run/);
   });
+  it("says a run stopped short for its budget though its trace has no request and no call", async () => {
+    // A CLI harness's record keeps no request, and the run answered its wrap-up without calling a tool.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 0 };
+    const host = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run });
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toEqual(["The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had."]);
+    // A run with no span that did not stop for its budget has no such section.
+    const plain = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 });
+    expect(plain.querySelector("section[aria-label='What stands out']")).toBeNull();
+  });
   it("lists every request and call in the order they started, each call under the request that made it", async () => {
     const host = await open(TRACE);
     const listed = callRows(host);

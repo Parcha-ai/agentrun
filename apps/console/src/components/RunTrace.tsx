@@ -8,7 +8,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, capDollars, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -787,6 +787,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const cap = typeof run.cost?.cap_usd === "number" ? run.cost.cap_usd : null;
   const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${run.cost?.upper_bound ? "at most " : ""}${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
   const costParts = priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole";
+  const stopped = budgetStop(run);
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;
   // A zoom goes in about the open span's middle, so it stays in view; with none open, about the middle of what shows.
@@ -827,8 +828,18 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
         {spans.length === 0 ? (
           // A run whose record keeps no request (a CLI harness's) and called no tool has no span, yet its booking may
           // still have its cost by line.
-          usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
-            : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
+          <>
+            {/* A run can stop short for its budget with no span to show: a CLI harness's record keeps no request, and it may
+                answer the wrap-up with no call. Why it stopped is said all the same. */}
+            {stopped && (
+              <section aria-label="What stands out">
+                <Heading level="h2">What stands out</Heading>
+                <ul className="grid border-l border-t"><li className="border-b border-r bg-card p-3"><span className="block text-body font-semibold text-destructive-text">{stopped.title}</span><span className="mt-0.5 block text-small text-muted-foreground">{stopped.detail}</span></li></ul>
+              </section>
+            )}
+            {usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
+              : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>}
+          </>
         ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} run={run} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
             <section aria-label="Overview of the run" className="border bg-card">
