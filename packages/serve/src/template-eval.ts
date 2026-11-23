@@ -18,6 +18,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
+import { frontMatter } from "./manifest.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
@@ -73,7 +74,6 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 /** An owner's data folder is the eval's own server's to open (EvalOptions.data): a named server keeps its own. */
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
 const GRADER_FIELDS: Record<string, string[]> = {
@@ -166,12 +166,13 @@ export class CaseError extends Error {
   }
 }
 
-/** A file's YAML front matter and body, read as templates.ts reads a package's (core schema, unique keys, no aliases). */
+/** A file's YAML front matter and body, read as a package's are (manifest.ts); an empty one is a mapping with no keys. */
 function frontOf(text: string): { data: Json; body: string } | string {
-  const match = FRONT.exec(text);
-  if (!match) return { data: {}, body: text };
-  const parsed = yamlOf(match[1]!);
-  return typeof parsed === "string" ? `its front matter ${parsed}` : isObject(parsed) ? { data: parsed, body: text.slice(match[0].length) } : "its front matter is not a mapping";
+  const read = frontMatter(text);
+  if (!read) return { data: {}, body: text };
+  if ("problem" in read) return `its front matter ${read.problem}`;
+  const data = read.data ?? {};
+  return isObject(data) ? { data, body: read.body } : "its front matter is not a mapping";
 }
 function yamlOf(text: string): unknown {
   const doc = parseDocument(text, { schema: "core", merge: false, uniqueKeys: true, strict: true });
@@ -911,13 +912,29 @@ function expectOk(what: string, answered: Answered, ok: number[] = [200, 201, 20
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How long the run read that asks whether a runner holds a queued run may take. */
+export const CLAIM_READ_TIMEOUT_MS = 10_000;
+/** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
+ *  CLAIM_READ_TIMEOUT_MS or is stopped by `signal` (the eval's stop): not known, so never a reason to cancel the run. */
+async function heldNow(api: Api, runId: string, signal?: AbortSignal): Promise<boolean | undefined> {
+  const timeout = AbortSignal.timeout(CLAIM_READ_TIMEOUT_MS);
+  const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
+  return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
+}
+
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
  *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
 async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
-  // A run nobody takes stays queued: given up on after queueTimeoutMs, by name, never left to the whole deadline.
-  const queuedUntil = Date.now() + queueTimeoutMs;
+  const started = Date.now();
+  // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
+  // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
+  // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
+  // (failed, stalled past its bound, or stopped) says neither: it is asked again at the next page, and the stop and the
+  // deadline still end the wait.
+  let queuedUntil = started + queueTimeoutMs;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
@@ -937,12 +954,16 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
     }
     if (status === "queued" && Date.now() > queuedUntil) {
-      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-      return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s: no runner took it (state ${String(page.state)}), and it was cancelled` };
+      const held = await heldNow(api, runId, signal);
+      if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
+      else if (held === false) {
+        await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+        return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+      }
     }
     if (Date.now() > deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - (queuedUntil - queueTimeoutMs)) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }
     if (page.has_more !== true && page.unchanged === true) await sleep(250);
   }
@@ -1455,8 +1476,13 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     else made.triggers.add(one.trigger_id);
   }
   await deleteTriggers(api, made, true);
-  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   if (kept) made.triggers.add(kept);
+  // A server under AGENTRUN_RUN_KEYS=1 takes a key it lacks from each run, and says so in the apply's warning at
+  // secrets.<NAME>; an eval's runs carry no keys, so each would be refused. The eval stops before any, as for a case that
+  // does not check (its agent removed with the case).
+  const owed = (Array.isArray(applied.warnings) ? applied.warnings : []).flatMap((warning) => (isObject(warning) && warning.reason === "not_set_up_here" && typeof warning.field === "string" && warning.field.startsWith("secrets.") ? [warning.field.slice("secrets.".length)] : []));
+  if (owed.length) throw new CaseError(ctx.options.dir, [`the server takes ${owed.join(" and ")} from each run (AGENTRUN_RUN_KEYS=1), and an eval's runs carry no keys: run it without --server, or on a server that holds ${owed.length > 1 ? "them" : "it"}`]);
+  if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);
   const agent = expectOk(`reading the agent ${agentId}`, await api("GET", `/agents/${encodeURIComponent(agentId)}`));
   // The saved server the apply gave each need ({toolkit: server}; null for a need it left unset).
   const used = Object.fromEntries(Object.entries(isObject(applied.servers) ? applied.servers : {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));

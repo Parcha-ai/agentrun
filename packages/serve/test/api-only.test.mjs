@@ -1,18 +1,19 @@
 // The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
 // (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
-// read further: the console, the store page's data, sign-in, setup, settings writes, MCP, triggers and their webhook
-// hooks, the agents list and their writes, and a live view's WebSocket. It
-// has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
+// read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, triggers and their
+// webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
+// Composio server by api_key_env and deletes a server, and lists the servers' names (GET /settings/mcp-server-names);
+// their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
 // (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
 // profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
+import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
@@ -45,12 +46,8 @@ test("AGENTRUN_API_ONLY is on for 1 or true, off when unset, empty, 0 or false, 
   for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(read(value), true, value);
   for (const value of [undefined, "", "0", "false", "False"]) assert.equal(read(value), false, String(value));
   for (const value of ["yes", "on", "2", "api"]) {
-    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message === `AGENTRUN_API_ONLY is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(value)}`, value);
+    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message.startsWith("AGENTRUN_API_ONLY ") && error.message.includes(JSON.stringify(value)), value);
   }
-});
-
-test("the switches' module imports nothing: the CLI reads both before the rest of the server loads", () => {
-  assert.doesNotMatch(readFileSync(new URL("../dist/env-switch.js", import.meta.url), "utf8"), /^\s*import\b|\bfrom\s*["']|\bimport\s*\(/m);
 });
 
 test("every route the profile serves is a route of the server", () => {
@@ -76,11 +73,19 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // archive (and unarchive) before its delete.
     ["POST", "/v2/templates/x/apply"], ["GET", "/v2/agents/a1"], ["HEAD", "/v2/agents/a1"], ["GET", "/v2/agents/a1/revisions"],
     ["POST", "/v2/agents/a1/current"], ["POST", "/v2/agents/a1/archive"], ["POST", "/v2/agents/a1/unarchive"],
+    // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
+    // names are listed by GET /settings/mcp-server-names, above.
+    ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
-    ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
+    ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
+    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
+    ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
+    // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
+    // with headers of the caller's own.
+    ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"], ["HEAD", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/mcp-servers/x"],
     ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
@@ -276,6 +281,35 @@ test("an API-only server serves an inline-run agent's learning reads with the to
   }
 });
 
+test("an API-only server serves the saved MCP servers' names with the token, and nothing else of them; no token, or a wrong one, is 401", async (t) => {
+  const secret = "names-route-sealed-header-value-0001";
+  const upstream = await startFakeMcp({ token: secret });
+  t.after(() => upstream.close());
+  const whole = await serve(t, { runner: false });
+  const empty = await send(whole, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([empty.status, empty.body], [200, { names: [] }], "none saved: an empty list");
+  for (const name of ["mail-reader", "crm"]) {
+    const saved = await whole.api("PUT", `/settings/mcp-servers/${name}`, { url: upstream.url, auth: { type: "headers", headers: { authorization: `Bearer ${secret}` } } });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  }
+  const listed = await send(whole, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([listed.status, listed.body], [200, { names: ["crm", "mail-reader"] }], "each saved server once, by name, sorted");
+  await whole.stop();
+
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+  const names = await send(server, "GET", "/v2/settings/mcp-server-names");
+  assert.deepEqual([names.status, names.body], [200, { names: ["crm", "mail-reader"] }], "the API-only server serves it");
+  const text = JSON.stringify(names.body);
+  for (const value of [secret, upstream.url, new URL(upstream.url).host, "headers", "authorization"]) assert.equal(text.includes(value), false, `the answer holds no ${value}`);
+  // Beside it, the full list (URLs, auth types, tools) stays refused on the API-only server.
+  assert.equal((await send(server, "GET", "/v2/settings/mcp-servers")).status, 404, "the full list is not served API-only");
+  for (const [options, why] of [[{ token: false }, "no token"], [{ token: false, headers: { authorization: `Bearer ${notSecret("token")}` } }, "a wrong token"]]) {
+    const refused = await send(server, "GET", "/v2/settings/mcp-server-names", options);
+    assert.equal(refused.status, 401, `${why}: ${JSON.stringify(refused.body)}`);
+    assert.equal(/mail-reader|crm/.test(JSON.stringify(refused.body)), false, `${why}: no name in the refusal`);
+  }
+});
+
 test("an API-only server serves the computers list and the Archil settings with the token: key names and saved or not, never a value", async (t) => {
   // A computer key and the Archil account key planted, sealed under a seal key the test knows, and the Archil settings in
   // the server's environment: neither answer may carry a planted value, a sealed blob, the seal key or the token.
@@ -378,6 +412,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });

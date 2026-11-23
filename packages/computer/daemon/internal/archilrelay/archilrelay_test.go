@@ -22,7 +22,7 @@ import (
 const patience = 30 * time.Second
 
 func TestConfigOfTakesExactlyTheHelpersArguments(t *testing.T) {
-	good := []string{"--gateway", "10.60.0.40", "--mount-lane", "18100", "--data-lane", "42050"}
+	good := []string{"--gateway", "192.0.2.40", "--mount-lane", "18100", "--data-lane", "42050"}
 	config, err := archilrelay.ConfigOf(good)
 	if err != nil {
 		t.Fatalf("ConfigOf(%q): %v", good, err)
@@ -34,13 +34,13 @@ func TestConfigOfTakesExactlyTheHelpersArguments(t *testing.T) {
 		"none":                {},
 		"a hostname":          {"--gateway", "proxy.example", "--mount-lane", "18100", "--data-lane", "42050"},
 		"IPv6":                {"--gateway", "::1", "--mount-lane", "18100", "--data-lane", "42050"},
-		"a lane on 8100":      {"--gateway", "10.60.0.40", "--mount-lane", "8100", "--data-lane", "42050"},
-		"a lane on 32050":     {"--gateway", "10.60.0.40", "--mount-lane", "18100", "--data-lane", "32050"},
-		"the same lane twice": {"--gateway", "10.60.0.40", "--mount-lane", "18100", "--data-lane", "18100"},
-		"port 0":              {"--gateway", "10.60.0.40", "--mount-lane", "0", "--data-lane", "42050"},
-		"a leading zero":      {"--gateway", "10.60.0.40", "--mount-lane", "018100", "--data-lane", "42050"},
-		"a flag twice":        {"--gateway", "10.60.0.40", "--gateway", "10.60.0.41", "--data-lane", "42050"},
-		"an unknown flag":     {"--gateway", "10.60.0.40", "--mount-lane", "18100", "--other", "42050"},
+		"a lane on 8100":      {"--gateway", "192.0.2.40", "--mount-lane", "8100", "--data-lane", "42050"},
+		"a lane on 32050":     {"--gateway", "192.0.2.40", "--mount-lane", "18100", "--data-lane", "32050"},
+		"the same lane twice": {"--gateway", "192.0.2.40", "--mount-lane", "18100", "--data-lane", "18100"},
+		"port 0":              {"--gateway", "192.0.2.40", "--mount-lane", "0", "--data-lane", "42050"},
+		"a leading zero":      {"--gateway", "192.0.2.40", "--mount-lane", "018100", "--data-lane", "42050"},
+		"a flag twice":        {"--gateway", "192.0.2.40", "--gateway", "192.0.2.41", "--data-lane", "42050"},
+		"an unknown flag":     {"--gateway", "192.0.2.40", "--mount-lane", "18100", "--other", "42050"},
 	} {
 		if _, err := archilrelay.ConfigOf(args); err == nil {
 			t.Errorf("%s: ConfigOf(%q) accepted", name, args)
@@ -49,11 +49,11 @@ func TestConfigOfTakesExactlyTheHelpersArguments(t *testing.T) {
 }
 
 func TestHeaderIsTheProxyV2Layout(t *testing.T) {
-	got := archilrelay.Header(netip.MustParseAddrPort("169.254.123.2:40000"), netip.MustParseAddrPort("35.238.187.214:32050"))
+	got := archilrelay.Header(netip.MustParseAddrPort("169.254.123.2:40000"), netip.MustParseAddrPort("203.0.113.14:32050"))
 	// Written out from the spec's section 2.2, not from Header: signature, 0x21 (v2, PROXY), 0x11 (TCP4), length 12,
-	// src 169.254.123.2, dst 35.238.187.214, sport 40000 (0x9c40), dport 32050 (0x7d32).
+	// src 169.254.123.2, dst 203.0.113.14, sport 40000 (0x9c40), dport 32050 (0x7d32).
 	want := []byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a, 0x21, 0x11, 0x00, 0x0c,
-		169, 254, 123, 2, 35, 238, 187, 214, 0x9c, 0x40, 0x7d, 0x32}
+		169, 254, 123, 2, 203, 0, 113, 14, 0x9c, 0x40, 0x7d, 0x32}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("Header = % x\nwant     % x", got, want)
 	}
@@ -142,7 +142,7 @@ func TestRelayCarriesEachArchilPortToItsLaneWithTheOriginalDestination(t *testin
 	for _, c := range []struct {
 		dst string
 		got chan []byte
-	}{{"54.88.2.136:8100", mountGot}, {"35.238.187.214:32050", dataGot}} {
+	}{{"198.51.100.36:8100", mountGot}, {"203.0.113.14:32050", dataGot}} {
 		dst := netip.MustParseAddrPort(c.dst)
 		address, _ := relay(t, config, dst)
 		back, err := exchange(t, address, "client-hello")
@@ -167,7 +167,7 @@ func TestRelayClosesWhatItCannotCarry(t *testing.T) {
 	_ = closed.Close()
 	config := archilrelay.Config{Gateway: netip.MustParseAddr("127.0.0.1"), MountLane: down, DataLane: down + 1}
 	for name, dst := range map[string]string{
-		"the gateway is down": "35.238.187.214:32050",
+		"the gateway is down": "203.0.113.14:32050",
 		"no Archil port":      "93.184.216.34:443",
 	} {
 		address, logs := relay(t, config, netip.MustParseAddrPort(dst))
@@ -230,7 +230,7 @@ func resettingGateway(t *testing.T) net.Listener {
 func TestRelayEndsBothSidesWhenTheGatewayResetsWhileTheClientStaysOpen(t *testing.T) {
 	gw := resettingGateway(t)
 	config := archilrelay.Config{Gateway: netip.MustParseAddr("127.0.0.1"), MountLane: port(t, gw), DataLane: port(t, gw) + 1}
-	address, _ := relay(t, config, netip.MustParseAddrPort("54.88.2.136:8100"))
+	address, _ := relay(t, config, netip.MustParseAddrPort("198.51.100.36:8100"))
 	time.Sleep(50 * time.Millisecond)
 	idle := runtime.NumGoroutine()
 	conn, err := net.DialTimeout("tcp", address, patience)

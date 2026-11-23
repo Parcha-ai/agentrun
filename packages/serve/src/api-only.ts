@@ -1,7 +1,8 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
-// its assets, sign-in and setup, settings, MCP, triggers and their webhook hooks, the rest of agents and templates.
-// Off by default.
+// its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and the delete of a server
+// (the secret-write gate lets the token save over or delete only a server it saved, mcp-secret-writes.ts), the MCP
+// endpoint, triggers and their webhook hooks, the rest of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -17,14 +18,24 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
- *  - a backend that builds runs from the MCP servers saved here reads their names (listMcpServerNames), never a URL or a
- *    credential, to hold back a job whose server isn't saved before its launch is refused for it;
+ *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
- *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
- *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). */
+ *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
+ *    agents and revisions that stay, archives and deletes any agent made here, as the whole server's token does, and with
+ *    the launch hook its apply makes schedule and feed triggers. A trigger the apply can't make here is skipped, and said
+ *    (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was: without the hook, an enabled one
+ *    still fires here on this server's keys until the agent is archived;
+ *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
+ *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
+ *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
+ *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
+ *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
+ *    There is no list or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
+ *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's
+ *    triggers stay refused. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
@@ -37,6 +48,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
+  "saveComposioServer", "deleteMcpServer",
 ]);
 
 /** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on

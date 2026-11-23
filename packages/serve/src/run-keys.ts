@@ -7,8 +7,9 @@
 //
 // AGENTRUN_RUN_KEYS=1 (env-switch.ts): an install whose runs bring the tool keys it does not hold. A template's
 // apply then makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of
-// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), and no trigger is made
-// whose firings could not carry it (firingsOwe). Off, nothing changes.
+// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), no trigger is made
+// whose firings could not carry it (firingsOwe), and a firing of one made before is refused the same. Off, nothing
+// changes.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
@@ -22,9 +23,6 @@ import { RUN_KEYS_ENV } from "./env-switch.js";
 /** A run's own tool keys, by name. */
 export type RunKeys = Readonly<Record<string, string>>;
 
-/** The tool keys a run of `tools` reads (run-secrets.ts unlockedFields, over tool-keys.ts TOOL_KEYS). */
-export const keysOfTools = (tools: readonly string[]): string[] => unlockedFields(tools);
-
 /** The tool keys a template's apply made `revision` with (its package's `secrets`, kept on the revision): the ones a run
  *  can carry. A model key is not one. */
 export const packageKeysOf = (revision: object): string[] => ((revision as { package?: TemplatePackage | null }).package?.secrets ?? []).filter((name) => TOOL_FIELDS.includes(name));
@@ -33,7 +31,7 @@ export const packageKeysOf = (revision: object): string[] => ((revision as { pac
  *  tools read (an agentic revision's tools, a workflow's on its nodes and calls, and its decision providers'), and its
  *  template's tool keys. */
 export const declaredFrom = (needs: RunNeeds, revision: object): string[] =>
-  [...new Set([...keysOfTools([...needs.tools, ...needs.decisionProviders.map((provider) => `decisions.${provider}`)]), ...packageKeysOf(revision)])];
+  [...new Set([...unlockedFields([...needs.tools, ...needs.decisionProviders.map((provider) => `decisions.${provider}`)]), ...packageKeysOf(revision)])];
 
 /** The names a run of `revision` may carry in `keys` (declaredFrom). */
 export async function declaredKeys(revision: Pick<Revision, "kind" | "body"> & object): Promise<string[]> {
@@ -99,8 +97,8 @@ export function keysOwed(revision: object, env: NodeJS.ProcessEnv, carried: read
   }));
 }
 
-/** The 409 a run that owes `owed` (keysOwed) gets at its start, and a trigger that could only start or message such runs
- *  gets when it is made or moved (firingsOwe). */
+/** The 409 a run that owes `owed` (keysOwed) gets at its start or a message, and a trigger that could only start or
+ *  message such runs gets when it is made or moved, and at a message_run firing (firingsOwe). */
 export const keysOwedRefusal = (owed: readonly InputIssue[]): ApiError =>
   new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: [...owed], details: { unbound: [], missing: {} } });
 

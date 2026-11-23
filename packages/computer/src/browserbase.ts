@@ -40,7 +40,6 @@ import {
 	createUncertain,
 	DEFAULT_CONFIRM,
 	defaultSleep,
-	httpsBase,
 	idProblem,
 	labelsOf,
 	labelsProblem,
@@ -58,6 +57,7 @@ import {
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
+import { httpsBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
 	type AttachedComputer,
