@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LANE_WAIT_MS, lanesOf, laneStats, MAX_LANES, raceFilter, readRace } from "./race";
+import { LANE_WAIT_MS, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, raceFilter, readRace } from "./race";
 import type { Run, TimelineRow } from "./v2";
 
 const run = (id: string, labels: Record<string, string>, created_at = "2026-11-23T10:00:00Z"): Run => ({
@@ -62,5 +62,27 @@ describe("a lane's stats, from its run and its followed timeline", () => {
     const stats = laneStats(ended, [], { usd: 0.2, basis: "estimate", charge_state: null, cap_usd: 1 } as Run["cost"], Date.parse("2026-11-23T12:00:00Z"));
     expect(stats.seconds).toBe(30);
     expect(stats.cost?.usd).toBe(0.5);
+  });
+});
+
+describe("starting a race: one inline run per lane", () => {
+  it("a lane's start is its own agent (external race-<label>-<n>, one revision per harness and model), the race's task and cap, and the labels the race view reads", () => {
+    const body = laneStart("bench-1", 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, "Fix the failing test", 1.5);
+    expect(body).toEqual({
+      external: { source: "console", kind: "race", id: "race-bench-1-2", version: "codex openai/gpt-6.1-sol" },
+      definition: { name: "Race bench-1, lane 2", harness: "codex", model: "openai/gpt-6.1-sol" },
+      input: { content: "Fix the failing test" },
+      max_cost_usd: 1.5,
+      labels: { race: "bench-1", lane: "2", harness: "codex", model: "openai/gpt-6.1-sol" },
+    });
+    // The race view orders and names it from those labels.
+    expect(lanesOf([run("r2", body.labels!), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1).labels!)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
+  });
+
+  it("a new race's label is a label value the server takes, and two races get two labels", () => {
+    const a = newRaceLabel(new Date("2026-11-23T10:04:00Z"), () => "1f2e3d4c-0000-4000-8000-000000000000");
+    expect(a).toBe("20261123-1004-1f2e");
+    expect(a).toMatch(/^[A-Za-z0-9-]{1,256}$/);
+    expect(newRaceLabel()).not.toBe(newRaceLabel());
   });
 });

@@ -36,6 +36,8 @@ import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
+import { RaceStart } from "@/components/RaceStart";
+import { RunSkeleton } from "@/components/Skeleton";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
@@ -76,8 +78,9 @@ import { cn } from "@/lib/utils";
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
- *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts). `settings`: a settings page. */
-type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+ *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
+ *  one. `settings`: a settings page. */
+type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -85,7 +88,9 @@ export function route(h: string = location.hash): Where {
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
-  // A race: the runs its race:<label> label groups, watched side by side, under Runs.
+  // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
+  // one (a new race's label is never `new`: newRaceLabel).
+  if (h === "#/races/new") return { section: "runs", newRace: true };
   m = h.match(/^#\/races\/([^/?]+)$/);
   if (m) return { section: "runs", race: decodeURIComponent(m[1]) };
   if (h === "#/agents/connect" || h.startsWith("#/agents/connect?")) {
@@ -799,6 +804,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+        // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} go={go} /> : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}

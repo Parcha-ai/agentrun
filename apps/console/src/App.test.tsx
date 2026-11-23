@@ -29,6 +29,9 @@ describe("route", () => {
     expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
     expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
   });
+  it("opens the form that starts a race under Runs, never a race labeled new", () => {
+    expect(route("#/races/new")).toEqual({ section: "runs", newRace: true });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });

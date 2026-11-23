@@ -3,8 +3,9 @@
 // (`lane:<n>`) orders the lanes, never their start times, so the order says nothing about who started first.
 import type { Client } from "./client";
 import { tokensWords } from "./format";
+import { uuid } from "./idempotency";
 import { steps } from "./timeline";
-import type { Run, TimelineRow } from "./v2";
+import type { Run, RunCreateInline, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -33,6 +34,30 @@ export function lanesOf(runs: readonly Run[]): Run[] {
 export async function readRace(v2: Pick<Client, "listRuns">, label: string): Promise<{ lanes: Run[]; more: number }> {
   const { runs } = await v2.listRuns(RACE_READ, null, { label: raceFilter(label) });
   return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES) };
+}
+
+/** A race starts with at least this many lanes. */
+export const MIN_LANES = 2;
+/** What one lane runs on. */
+export type LaneChoice = { harness: string; model: string };
+
+/** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
+ *  one revision per harness and model (the external version), so a lane changed after a refusal is a new revision, never
+ *  a conflict with the one refused. Every lane gets the race's task and cap, and the labels the race view reads. */
+export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number): RunCreateInline {
+  return {
+    external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
+    definition: { name: `Race ${label}, lane ${n}`, harness: lane.harness, model: lane.model },
+    input: { content: task },
+    max_cost_usd: maxCostUsd,
+    labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },
+  };
+}
+
+/** A new race's label: when it starts (UTC, to the minute) and a few random characters, so two races never share one. */
+export function newRaceLabel(now = new Date(), random: () => string = uuid): string {
+  const at = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  return `${at}-${random().slice(0, 4)}`;
 }
 
 /** What a lane's header says: cost (the run's own once it ended, else the newest timeline page's), tokens, tool calls
