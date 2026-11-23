@@ -172,6 +172,25 @@ test("the build and the test shards run on Blacksmith in the merge queue and on 
   for (const job of ['test', 'test-lean']) assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} runs where the build does`);
 });
 
+test("the Postgres job's shares hold every test file that opens the store once, none empty, and ci.yml runs each of them", async () => {
+  const { parseShard, pgTestFiles, shareOf } = await import('../packages/serve/scripts/test-pg-files.mjs');
+  assert.deepEqual(shareOf(['a', 'b', 'c', 'd', 'e'], { k: 2, n: 3 }), ['b', 'e'], 'every third file from the second');
+  assert.deepEqual(parseShard('--shard=2/4'), { k: 2, n: 4 });
+  for (const text of ['--shard=0/4', '--shard=5/4', '--shard=2', '--shard=a/b', '--shard', '--shard=1/4x']) assert.throws(() => parseShard(text), /is not --shard=<k>\/<n>/, text);
+  const files = pgTestFiles(join(root, 'packages/serve'));
+  for (const n of [1, 4, 7]) {
+    const shares = Array.from({ length: n }, (_, index) => shareOf(files, { k: index + 1, n }));
+    assert.deepEqual(shares.flat().sort(), [...files].sort(), `${n} shares hold every file once`);
+  }
+  const job = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).jobs['serve-postgres'];
+  const listed = job.strategy.matrix.shard;
+  const n = listed.length;
+  assert.deepEqual(listed, Array.from({ length: n }, (_, index) => index + 1), 'the job runs the shares 1 to n');
+  assert.ok(job.steps.some((step) => (step.run ?? '').endsWith(` npm run test:pg -w packages/serve -- --shard=\${{ matrix.shard }}/${n}`)), `the suite's step runs the matrix's share of ${n}`);
+  assert.equal(job.name, `serve store on Postgres (\${{ matrix.shard }}/${n})`);
+  for (const k of listed) assert.ok(shareOf(files, { k, n }).length, `share ${k} of ${n} has a file`);
+});
+
 test('a pool\'s "affected" is true or false', () => {
   const root = repo('affected-flag', { workspaces: { a: ['@x/a', "node --test 'test/*.test.mjs'", ['test/a.test.mjs']] }, config: { pools: { any: { shards: 1, affected: 'yes' } } } });
   assert.throws(() => testShards(root), /the pool any's "affected" is true or false, not "yes"/);
