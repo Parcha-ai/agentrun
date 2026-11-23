@@ -185,8 +185,14 @@ type Tier = { rate: number; words: string } | { why: string };
  *    higher of the page's rate and $0.14. Kling v3 4k image-to-video: $0.42 with audio on or off; the page names no rate
  *    for voice control, which it takes.
  *  - sync-lipsync v2: $3 a minute for lipsync-2 (the default, get_pricing's), $5 for lipsync-2-pro: ratio 5/3.
- *  - Nano Banana Pro (and its edit): $0.15 an image at 1K (the default) or 2K (get_pricing's), double at 4K; a web
- *    search adds $0.015 (per unit, as above).
+ *  - Nano Banana Pro (and its edit), also served as Gemini 3 Pro Image Preview (and its edit): $0.15 an image at 1K
+ *    (the default) or 2K (get_pricing's, read 13:20:43Z for all four), double at 4K; a web search adds $0.015 (per
+ *    unit, as above). Gemini 3 Pro Image Preview's page names no charge for the web search it takes, so it is held at
+ *    Nano Banana Pro's, the higher.
+ *  - Nano Banana 2 (and its edit), also served as Gemini 3.1 Flash Image Preview (and its edit): $0.08 an image at 1K
+ *    (the default, get_pricing's, read 13:20:43Z for all four), ×0.75 at 0.5K, ×1.5 at 2K, ×2 at 4K; a web search adds
+ *    $0.015 and high thinking (thinking_level "high") $0.002 (both per unit, as above). Gemini 3.1 Flash Image
+ *    Preview's page names no charge for the high thinking it takes, so it is held at Nano Banana 2's, the higher.
  *  - Fabric (and its text): $0.08 a second at 480p (get_pricing's), $0.15 at 720p; Fabric fast $0.10 at 480p
  *    (get_pricing's) and $0.20 at 720p. Their resolution has no default (their OpenAPI).
  *  An endpoint not listed here is priced at get_pricing's one rate, whatever its settings, unless it falls in a family
@@ -238,11 +244,23 @@ const kling = (base: number, page: { off: number; on: number; voice?: number }, 
   },
 });
 const IDEOGRAM_V3 = byOne("rendering_speed", 0.03, new Map([["TURBO", 0.03], ["BALANCED", 0.06], ["QUALITY", 0.09]]), "BALANCED");
-const NANO_BANANA_PRO: Tiers = {
-  ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"),
+/** A web search's charge, per unit: $0.015 when enable_web_search is true (its default is false). */
+const webSearch = (input: Record<string, unknown>): { usd: number; words: string } | { why: string } | undefined => {
+  const search = settingOf(input, "enable_web_search", [true, false], false);
+  return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
+};
+const NANO_BANANA_PRO: Tiers = { ...byOne("resolution", 0.15, new Map([["1K", 0.15], ["2K", 0.15], ["4K", 0.3]]), "1K"), perUnitUsd: webSearch };
+/** Nano Banana 2: by its resolution, plus a web search's charge and high thinking's ($0.002, thinking_level "high"; none
+ *  for "minimal" or none, its default), each per unit. */
+const NANO_BANANA_2: Tiers = {
+  ...byOne("resolution", 0.08, new Map([["0.5K", 0.06], ["1K", 0.08], ["2K", 0.12], ["4K", 0.16]]), "1K"),
   perUnitUsd: (input) => {
-    const search = settingOf(input, "enable_web_search", [true, false], false);
-    return "why" in search ? search : search.value ? { usd: 0.015, words: "a web search" } : undefined;
+    const search = webSearch(input);
+    if (search && "why" in search) return search;
+    const thinking = settingOf(input, "thinking_level", [null, "minimal", "high"], null);
+    if ("why" in thinking) return thinking;
+    const added = [...(search ? [search] : []), ...(thinking.value === "high" ? [{ usd: 0.002, words: "high thinking" }] : [])];
+    return added.length ? { usd: usd(added.reduce((sum, one) => sum + one.usd, 0)), words: added.map((one) => one.words).join(" and ") } : undefined;
   },
 };
 const KLING_PRO = kling(0.14, { off: 0.112, on: 0.168, voice: 0.196 }, 0.14);
@@ -266,15 +284,22 @@ const RATE_TIERS: ReadonlyMap<string, Tiers> = new Map<string, Tiers>([
   ["fal-ai/sync-lipsync/v2", byOne("model", 3, new Map([["lipsync-2", 3], ["lipsync-2-pro", 5]]), "lipsync-2")],
   ["fal-ai/nano-banana-pro", NANO_BANANA_PRO],
   ["fal-ai/nano-banana-pro/edit", NANO_BANANA_PRO],
+  ["fal-ai/gemini-3-pro-image-preview", NANO_BANANA_PRO],
+  ["fal-ai/gemini-3-pro-image-preview/edit", NANO_BANANA_PRO],
+  ...["fal-ai/nano-banana-2", "fal-ai/nano-banana-2/edit", "fal-ai/gemini-3.1-flash-image-preview", "fal-ai/gemini-3.1-flash-image-preview/edit"].map((endpoint) => [endpoint, NANO_BANANA_2] as const),
   ["veed/fabric-1.0", FABRIC],
   ["veed/fabric-1.0/text", FABRIC],
   ["veed/fabric-1.0/fast", byOne("resolution", 0.1, new Map([["480p", 0.1], ["720p", 0.2]]))],
 ]);
-/** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. */
-const TIERED_FAMILIES: readonly string[] = ["fal-ai/ideogram/v3", "fal-ai/ideogram/character", "fal-ai/nano-banana-pro", "fal-ai/veo3", "fal-ai/veo3.1", "fal-ai/kling-video/v3", "fal-ai/sync-lipsync/v2", "veed/fabric-1.0"];
+/** The families fal bills by their settings: an endpoint is in one when it is the family's id or under it. Ideogram v4's
+ *  pages (read 2026-11-23 13:13Z) bill by rendering_speed and megapixels, and get_pricing (13:20:43Z) states most of
+ *  them in "units", which no input counts, and its tiling and tiling LoRA $0.04 and $0.045 an image: none of its rates
+ *  is decided here, so each of its endpoints is refused under a cap. */
+const TIERED_FAMILIES: readonly string[] = ["fal-ai/ideogram/v3", "fal-ai/ideogram/character", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "fal-ai/veo3", "fal-ai/veo3.1", "fal-ai/kling-video/v3", "fal-ai/sync-lipsync/v2", "veed/fabric-1.0"];
 /** The endpoints in those families with one rate, whatever their settings (their model pages, read 2026-11-23): Kling v3
  *  4k text-to-video ($0.42 with audio on or off), turbo pro ($0.14) and turbo standard ($0.112), motion-control pro
- *  ($0.168) and standard ($0.126); Ideogram v3 layerize-text ($0.09 an image); sync-lipsync v2 pro ($5 a minute). */
+ *  ($0.168) and standard ($0.126); Ideogram v3 layerize-text ($0.09 an image, the rate get_pricing states too, read
+ *  13:20:43Z); sync-lipsync v2 pro ($5 a minute). */
 const ONE_RATE: ReadonlySet<string> = new Set([
   "fal-ai/kling-video/v3/4k/text-to-video",
   "fal-ai/kling-video/v3/turbo/pro/image-to-video",
@@ -341,6 +366,12 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
   const bills = `fal bills ${endpoint} per ${oneOf(unit)}`;
   if (AFTER_ONLY.has(unit)) return { unknown: `${bills}, which can't be known before the job runs` };
   if (!isObject(input)) return { unknown: `${bills}, and this job has no input to count them from` };
+  // limit_generations holds a job to num_images, and is true by default in each fal OpenAPI read with it (Nano Banana
+  // Pro, 2, 2.1 and lite, the Gemini image previews, Ideogram v3 layerize-text, their edits; 2026-11-23 13:13Z); false
+  // lets its prompt ask for more, and fal bills each image made, so no count can be read. Only true or none is priced.
+  if ((unit === "images" || unit === "megapixels") && input.limit_generations !== undefined && input.limit_generations !== true) {
+    return { unknown: `${bills}, and this job's limit_generations ${JSON.stringify(input.limit_generations)} lets its prompt ask for more images than num_images, each one billed: it is priced only with limit_generations true or left out (its default is true)` };
+  }
   if (unit === "images" || unit === "audios") {
     const count = countOf(input, unit);
     return count ? { units: count.n, from: count.from } : { unknown: `${bills}, and this job's input does not say how many as a whole number above 0` };

@@ -36,6 +36,9 @@ const PRICES = {
   "fal-ai/nano-banana-pro/edit": [0.15, "images"],
   "fal-ai/ideogram/character": [0.05, "images"],
   "fal-ai/veo3.1/ultra": [0.5, "seconds"],
+  "fal-ai/gemini-3-pro-image-preview": [0.15, "images"],
+  "fal-ai/nano-banana-2": [0.08, "images"],
+  "ideogram/v4/tiling": [0.04, "images"],
   "veed/fabric-1.0": [0.08, "seconds"],
   "fal-ai/bytedance/omnihuman/v1.5": [0.16, "seconds"],
   "fal-ai/infinitalk": [0.2, "seconds"],
@@ -191,6 +194,17 @@ test("a job is held and booked at the rate its settings are billed at: get_prici
   const undecided = await variants.call("run_model", { endpoint_id: "fal-ai/veo3.1/ultra", input: { prompt: "a sunrise", duration: "8s" } });
   assert.equal(textOf(undecided), "mcp:fal/run_model was not sent: fal bills fal-ai/veo3.1 by its settings and fal-ai/veo3.1/ultra has no rate decided here, so a run with a spend cap can't send it. Nothing was sent.");
   assert.equal(variants.received("run_model"), 2, "fal received the two priced jobs, not the undecided one");
+  // Nano Banana Pro under another id at its rates; Nano Banana 2 at 4K; Ideogram v4 tiling, whose rate is not decided,
+  // refused; a job whose prompt may ask for more images than num_images, refused (the lead's examples, 2026-11-23).
+  await variants.call("run_model", { endpoint_id: "fal-ai/gemini-3-pro-image-preview", input: { prompt: "a poster", num_images: 4, resolution: "4K", enable_web_search: true } });
+  near(variants.admits[2].holdUsd, 1.26, "Gemini 3 Pro: 4 images at 4K, each with the web search's $0.015");
+  await variants.call("run_model", { endpoint_id: "fal-ai/nano-banana-2", input: { prompt: "a poster", resolution: "4K" } });
+  near(variants.admits[3].holdUsd, 0.16, "Nano Banana 2: 1 image at 4K, double its $0.08");
+  const tiling = await variants.call("run_model", { endpoint_id: "ideogram/v4/tiling", input: { prompt: "a pattern" } });
+  assert.equal(textOf(tiling), "mcp:fal/run_model was not sent: fal bills ideogram/v4 by its settings and ideogram/v4/tiling has no rate decided here, so a run with a spend cap can't send it. Nothing was sent.");
+  const unlimited = await variants.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "4 separate variations", num_images: 1, limit_generations: false } });
+  assert.equal(textOf(unlimited), "mcp:fal/run_model was not sent: fal bills fal-ai/nano-banana-pro per image, and this job's limit_generations false lets its prompt ask for more images than num_images, each one billed: it is priced only with limit_generations true or left out (its default is true), so a run with a spend cap can't send it. Nothing was sent.");
+  assert.equal(variants.received("run_model"), 4, "fal received the four priced jobs, none of the refused");
   // Settled at the images returned, at the same rate, the web search's charge per image.
   const done = await setup(t, { capUsd: 5, run: (args) => reply(args, { result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] } }) });
   await done.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", num_images: 2 } });

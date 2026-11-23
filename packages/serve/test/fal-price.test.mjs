@@ -41,6 +41,19 @@ test("images and audios are counted from the input, one by default", async () =>
   assert.ok("unknown" in unitsBefore("fal-ai/ideogram/v3", "images", { num_images: 0 }), "a count of none");
 });
 
+test("an image job with limit_generations anything but true or left out is unknown: its prompt can ask for more images than num_images, each billed", async () => {
+  const { unitsBefore } = await load();
+  // Nano Banana Pro's OpenAPI (read 2026-11-23 13:13Z), as every one read with the field: limit_generations defaults to true.
+  for (const endpoint of ["fal-ai/nano-banana-pro", "fal-ai/nano-banana-pro/edit", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/ideogram/v3/layerize-text"]) {
+    for (const [limit, shown] of [[false, "false"], ["false", '"false"'], [null, "null"], [0, "0"]]) {
+      assert.deepEqual(unitsBefore(endpoint, "images", { prompt: "4 separate variations", num_images: 1, limit_generations: limit }), { unknown: `fal bills ${endpoint} per image, and this job's limit_generations ${shown} lets its prompt ask for more images than num_images, each one billed: it is priced only with limit_generations true or left out (its default is true)` }, `${endpoint} ${shown}`);
+    }
+    assert.deepEqual(unitsBefore(endpoint, "images", { prompt: "x", num_images: 2, limit_generations: true }), { units: 2, from: "num_images" }, endpoint);
+    assert.deepEqual(unitsBefore(endpoint, "images", { prompt: "x", num_images: 2 }), { units: 2, from: "num_images" }, endpoint);
+  }
+  assert.ok("unknown" in unitsBefore("fal-ai/flux/schnell", "megapixels", { prompt: "x", image_size: "square_hd", limit_generations: false }), "per megapixel too");
+});
+
 test("megapixels are each image's width by height, rounded up to a whole megapixel, times the images; with no image_size, unknown", async () => {
   const { unitsBefore } = await load();
   const mp = (input) => unitsBefore("fal-ai/flux/schnell", "megapixels", input);
@@ -357,6 +370,25 @@ test("a job is priced at the rate its settings are billed at: get_pricing's rate
   }
   assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution: "4k" }), `fal bills fal-ai/nano-banana-pro per image at a rate its resolution sets, and fal's model page names no rate for resolution "4k"`);
   assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", enable_web_search: "yes" }), `fal bills fal-ai/nano-banana-pro per image at a rate plus a charge its enable_web_search sets, and fal's model page names no rate for enable_web_search "yes"`);
+  // Gemini 3 Pro Image Preview and its edit: Nano Banana Pro under another id, at its rates (get_pricing $0.15, read
+  // 13:20:43Z; its page names 4K at double, and no charge for the web search it takes, held at Nano Banana Pro's).
+  for (const endpoint of ["fal-ai/gemini-3-pro-image-preview", "fal-ai/gemini-3-pro-image-preview/edit"]) {
+    for (const resolution of [undefined, "1K", "2K"]) near(ratio(endpoint, "images", { prompt: "x", resolution }), 1, `${endpoint} ${resolution}`);
+    near(ratio(endpoint, "images", { prompt: "x", resolution: "4K" }), 2, `${endpoint} 4K`);
+    assert.deepEqual(rateOf(endpoint, "images", { prompt: "x", num_images: 4, resolution: "4K", enable_web_search: true }), { ratio: 2, perUnitUsd: 0.015, words: [`× 2 for resolution "4K" (fal's model page: $0.3 against $0.15)`, "plus $0.015 per image for a web search"] }, endpoint);
+    assert.equal(off(endpoint, "images", { prompt: "x", resolution: "8K" }), `fal bills ${endpoint} per image at a rate its resolution sets, and fal's model page names no rate for resolution "8K"`);
+  }
+  // Nano Banana 2 and its edit, and Gemini 3.1 Flash Image Preview and its edit (Nano Banana 2 under another id):
+  // $0.08 an image at 1K (the default, get_pricing's), ×0.75 at 0.5K, ×1.5 at 2K, ×2 at 4K; a web search adds $0.015
+  // and high thinking $0.002, each held per image.
+  for (const endpoint of ["fal-ai/nano-banana-2", "fal-ai/nano-banana-2/edit", "fal-ai/gemini-3.1-flash-image-preview", "fal-ai/gemini-3.1-flash-image-preview/edit"]) {
+    for (const [resolution, expected] of [[undefined, 1], ["1K", 1], ["0.5K", 0.75], ["2K", 1.5], ["4K", 2]]) near(ratio(endpoint, "images", { prompt: "x", resolution }), expected, `${endpoint} ${resolution}`);
+    for (const thinking_level of [undefined, null, "minimal"]) near(ratio(endpoint, "images", { prompt: "x", thinking_level, enable_web_search: false }), 1, `${endpoint} thinking ${thinking_level}`);
+    assert.deepEqual(rateOf(endpoint, "images", { prompt: "x", thinking_level: "high" }), { ratio: 1, perUnitUsd: 0.002, words: ["plus $0.002 per image for high thinking"] }, endpoint);
+    assert.deepEqual(rateOf(endpoint, "images", { prompt: "x", resolution: "4K", enable_web_search: true, thinking_level: "high" }), { ratio: 2, perUnitUsd: 0.017, words: [`× 2 for resolution "4K" (fal's model page: $0.16 against $0.08)`, "plus $0.017 per image for a web search and high thinking"] }, endpoint);
+    assert.equal(off(endpoint, "images", { prompt: "x", thinking_level: "medium" }), `fal bills ${endpoint} per image at a rate plus a charge its thinking_level sets, and fal's model page names no rate for thinking_level "medium"`);
+    assert.equal(off(endpoint, "images", { prompt: "x", resolution: "1k" }), `fal bills ${endpoint} per image at a rate its resolution sets, and fal's model page names no rate for resolution "1k"`);
+  }
   // Fabric: $0.08 a second at 480p (get_pricing's), $0.15 at 720p; its resolution has no default (its OpenAPI).
   const talking = { image_url: "https://m.example/i.png", audio_url: "https://v3.fal.media/files/a.mp3" };
   near(ratio("veed/fabric-1.0", "seconds", { ...talking, resolution: "480p" }), 1, "480p");
@@ -381,11 +413,14 @@ test("every endpoint fal's catalog lists in a family billed by its settings is d
   const { decidedRates, rateOf } = await load();
   // fal's public model catalog (api.fal.ai/v1/models, searched 2026-11-23 12:31Z) and each endpoint's model page, read
   // 2026-11-23 between 12:25Z and 12:32Z. A variant fal adds later has to be decided here before it can run under a cap.
-  const families = ["fal-ai/ideogram/character", "fal-ai/ideogram/v3", "fal-ai/kling-video/v3", "fal-ai/nano-banana-pro", "fal-ai/sync-lipsync/v2", "fal-ai/veo3", "fal-ai/veo3.1", "veed/fabric-1.0"];
+  // Ideogram v4, the Gemini image previews and Nano Banana 2 from the same catalog search and their pages, read
+  // 2026-11-23 13:13Z.
+  const families = ["fal-ai/ideogram/character", "fal-ai/ideogram/v3", "fal-ai/kling-video/v3", "fal-ai/nano-banana-pro", "fal-ai/gemini-3-pro-image-preview", "fal-ai/nano-banana-2", "fal-ai/gemini-3.1-flash-image-preview", "ideogram/v4", "fal-ai/sync-lipsync/v2", "fal-ai/veo3", "fal-ai/veo3.1", "veed/fabric-1.0"];
   const bySettings = [
     "fal-ai/ideogram/v3", "fal-ai/ideogram/v3/edit", "fal-ai/ideogram/v3/remix", "fal-ai/ideogram/v3/reframe", "fal-ai/ideogram/v3/replace-background", "fal-ai/ideogram/v3/generate-transparent",
     "fal-ai/ideogram/character", "fal-ai/ideogram/character/edit", "fal-ai/ideogram/character/remix",
-    "fal-ai/nano-banana-pro", "fal-ai/nano-banana-pro/edit",
+    "fal-ai/nano-banana-pro", "fal-ai/nano-banana-pro/edit", "fal-ai/gemini-3-pro-image-preview", "fal-ai/gemini-3-pro-image-preview/edit",
+    "fal-ai/nano-banana-2", "fal-ai/nano-banana-2/edit", "fal-ai/gemini-3.1-flash-image-preview", "fal-ai/gemini-3.1-flash-image-preview/edit",
     "fal-ai/veo3.1", "fal-ai/veo3.1/image-to-video", "fal-ai/veo3.1/first-last-frame-to-video", "fal-ai/veo3.1/reference-to-video", "fal-ai/veo3.1/extend-video",
     "fal-ai/veo3.1/fast", "fal-ai/veo3.1/fast/image-to-video", "fal-ai/veo3.1/fast/first-last-frame-to-video", "fal-ai/veo3.1/fast/reference-to-video", "fal-ai/veo3.1/fast/extend-video",
     "fal-ai/veo3.1/lite", "fal-ai/veo3.1/lite/image-to-video", "fal-ai/veo3.1/lite/first-last-frame-to-video",
@@ -417,13 +452,16 @@ test("every endpoint fal's catalog lists in a family billed by its settings is d
     ["fal-ai/kling-video/v3/pro/elements", "fal-ai/kling-video/v3"], ["fal-ai/kling-video/v3", "fal-ai/kling-video/v3"],
     ["fal-ai/ideogram/character/reframe", "fal-ai/ideogram/character"], ["fal-ai/ideogram/v3/upscale", "fal-ai/ideogram/v3"],
     ["fal-ai/nano-banana-pro/fast", "fal-ai/nano-banana-pro"], ["fal-ai/sync-lipsync/v2/turbo", "fal-ai/sync-lipsync/v2"], ["veed/fabric-1.0/hd", "veed/fabric-1.0"],
+    ["fal-ai/gemini-3-pro-image-preview/fast", "fal-ai/gemini-3-pro-image-preview"], ["fal-ai/nano-banana-2/pro", "fal-ai/nano-banana-2"], ["fal-ai/gemini-3.1-flash-image-preview/fast", "fal-ai/gemini-3.1-flash-image-preview"],
+    // Ideogram v4: every endpoint fal's catalog lists, none decided (its pages bill by rendering_speed and megapixels).
+    ...["", "/fast", "/image-to-image", "/instant", "/tiling", "/lora", "/tiling/lora", "/image-to-image/lora", "/trainer"].map((variant) => [`ideogram/v4${variant}`, "ideogram/v4"]),
   ]) {
     for (const input of [{ prompt: "x" }, undefined]) {
       assert.deepEqual(rateOf(endpoint, "seconds", input), { unknown: `fal bills ${family} by its settings and ${endpoint} has no rate decided here` }, endpoint);
     }
   }
   // Outside every family: get_pricing's one rate.
-  for (const endpoint of ["fal-ai/veo3.10", "fal-ai/veo2", "fal-ai/kling-video/v3.5/pro/image-to-video", "fal-ai/sync-lipsync/v3", "fal-ai/sync-lipsync", "fal-ai/ideogram/v2", "fal-ai/nano-banana", "veed/fabric-1.5"]) {
+  for (const endpoint of ["fal-ai/veo3.10", "fal-ai/veo2", "fal-ai/kling-video/v3.5/pro/image-to-video", "fal-ai/sync-lipsync/v3", "fal-ai/sync-lipsync", "fal-ai/ideogram/v2", "fal-ai/nano-banana", "veed/fabric-1.5", "fal-ai/nano-banana-2.1", "ideogram/v4.5", "ideogram/v40"]) {
     assert.deepEqual(rateOf(endpoint, "seconds", { prompt: "x", resolution: "4k" }), { ratio: 1, perUnitUsd: 0, words: [] }, endpoint);
   }
 });
