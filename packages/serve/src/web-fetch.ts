@@ -1,9 +1,15 @@
-// web_fetch: the guarded fetch's Page (web-fetch-direct.ts) plus `via`, the path that served it. It is the kernel's guarded direct
-// fetch unless the run's plane resolves it to Parallel (tool-plane.ts: the agent's or the server's pick): then the page is
+// web_fetch: the guarded fetch's Page (web-fetch-direct.ts) plus `via`, the path that served it. Where the run's plane
+// resolves it to keyless Firecrawl (tool-plane.ts: the default on a server with no Parallel key, or a pick), the page is
+// read by Firecrawl's keyless scrape (firecrawl-keyless.ts), which is sent the URL, and when Firecrawl answers no page,
+// or the run's breaker holds it (its free limit spent: off for the run; rate-limited: until its wait passes), through the
+// guarded direct fetch. Under --faux Firecrawl is the fake's URL (FAUX_FIRECRAWL_ENV), and with none named it is never
+// asked. Where the plane resolves it to kernel, it is the kernel's guarded direct fetch. Where it resolves to Parallel
+// (a pick), the page is
 // read through Parallel's Extract API (https://docs.parallel.ai/api-reference/extract-beta/extract, about $0.001 a URL),
 // and when Parallel answers no page (the URL in its `errors`, no content, a 5xx, a timeout) through the guarded direct
-// fetch. A URL goes to Parallel only once the public-host guard's own check passes it: a URL the guard refuses is never
-// sent, and is answered with the direct fetch's refusal. A 401 or 403 means the key is not served: Parallel is not asked
+// fetch. A URL goes to Parallel or Firecrawl only once the public-host guard's own check passes it (its name resolved,
+// every address public): a private, loopback, link-local or intranet URL is never sent to a third party, and is
+// answered with the direct fetch's refusal, as it is with no provider at all. A 401 or 403 means the key is not served: Parallel is not asked
 // again in the run. No request to Parallel is retried: one that failed goes to the direct fetch. A pick of Parallel the
 // server holds no key for answers a failed Page saying so, never a fetch of another kind.
 // The key is the one the server hands the run's process on its decision descriptor (decisions.ts) when one of its
@@ -25,6 +31,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
 import { clip, fetchOptions, HTML_READ_CHARS, linksOf, linksWithin, MAX_CHARS_MIN, PAGE_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, partProblem, type Read, readDirect, TEXT_CAP, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, URL_PARAMETERS } from "./web-fetch-direct.js";
+import type { KeylessFetch } from "./firecrawl-keyless.js";
 import { FAUX_ENV } from "./model.js";
 import { PaidRefused, paidRequest, parallelFeeOf } from "./paid-calls.js";
 import { forModel } from "./result.js";
@@ -38,7 +45,7 @@ const PORTS = new Set(["", "80", "443"]);
 export const PAGES_HELD = 8;
 
 /** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. */
-export type WebPage = Page & { via: "parallel" | "direct" | "stopped"; parallel?: string };
+export type WebPage = Page & { via: "parallel" | "firecrawl-keyless" | "direct" | "stopped"; parallel?: string };
 /** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
 export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
 /** A page web_fetch could not read, and how it tried. */
@@ -112,11 +119,15 @@ async function passes(url: string, options: GuardOptions, ms: number): Promise<b
   return publicFetch(url, { ...options, signal, fetchImpl: async () => { throw checked; } }).then(() => false, (error: unknown) => error === checked);
 }
 
-/** The page at `url` read once: through `parallel` when it is given and live and the guard passes the URL within
- *  `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A page
- *  fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that fails is
- *  never a silent fallback. */
-async function readOnce(url: unknown, parallel: Extract | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
+/** The page at `url` read once: through `firecrawl` or `parallel` when it is given and live and the guard passes the URL
+ *  within `checkMs` (default the guarded fetch's 30 s), else (or when it answers no page) through the guarded fetch. A
+ *  page fetched directly where `parallel` was given says why Parallel gave none (`parallel`): a picked provider that
+ *  fails is never a silent fallback. Keyless Firecrawl is a free service with the direct fetch behind it, by design. */
+async function readOnce(url: unknown, parallel: Extract | null | undefined, firecrawl: KeylessFetch | null | undefined, checkMs: number, options: GuardOptions): Promise<WebRead | WebUnread> {
+  if (firecrawl?.live() && typeof url === "string" && (await passes(url, options, checkMs))) {
+    const read = await firecrawl.read(url, options.signal);
+    if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
+  }
   let why: string | undefined;
   if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
   else if (parallel && !(typeof url === "string" && (await passes(url, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
@@ -162,11 +173,11 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
  *  that fails leaves `pages`, so a later call reads again. The read is the run's, not a caller's: no caller's signal
  *  reaches it (it keeps Parallel's and the fetch's own time limits), so one caller's stop never fails another's; each
  *  caller stops waiting at its own signal (untilStopped). */
-export async function webFetch(url: unknown, { parallel, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
+export async function webFetch(url: unknown, { parallel, firecrawl, pages, checkMs = TIMEOUT_MS, offset, maxChars, signal, ...options }: GuardOptions & Part & { parallel?: Extract | null; firecrawl?: KeylessFetch | null; pages?: Pages; checkMs?: number } = {}): Promise<WebPage> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
   if (!reading) {
-    const started = readOnce(url, parallel, checkMs, options);
+    const started = readOnce(url, parallel, firecrawl, checkMs, options);
     if (pages && named !== undefined) {
       // Ahead of any caller's await, so no call sees a failed read kept.
       const drop = () => void (pages.get(named) === started && pages.delete(named));
@@ -199,6 +210,23 @@ export function pagesOf(env: NodeJS.ProcessEnv): Pages {
   if (!pages) pagesByRun.set(env, (pages = new Map()));
   return pages;
 }
+/** Each run's keyless Firecrawl scrape (and its breaker), by the environment its calls are given, as parallels. */
+const firecrawls = new WeakMap<NodeJS.ProcessEnv, Promise<KeylessFetch | null>>();
+/** The run's keyless Firecrawl scrape, made once for the environment its calls are given, so its breaker holds for the
+ *  rest of the run (firecrawlFetch). Under --faux it asks the fake whose URL FAUX_FIRECRAWL_ENV names, and with none
+ *  named it is null: a test never reaches the network. Its module loads at the first call (it reads web-search.ts,
+ *  which reads this module as it loads). */
+export function firecrawlOf(env: NodeJS.ProcessEnv): Promise<KeylessFetch | null> {
+  let made = firecrawls.get(env);
+  if (!made) {
+    made = import("./firecrawl-keyless.js").then(({ FAUX_FIRECRAWL_ENV, firecrawlFetch }) => {
+      const fake = env[FAUX_ENV] ? env[FAUX_FIRECRAWL_ENV] : undefined;
+      return env[FAUX_ENV] && !fake ? null : firecrawlFetch(fake ? { endpoint: fake } : {});
+    });
+    firecrawls.set(env, made);
+  }
+  return made;
+}
 /** The run's Parallel extract, made once for the environment its calls are given, so a refused key holds for the rest of
  *  the run: on the Parallel key that environment holds (parallelKeyOf: the per-run pipe, or the claim's own), null
  *  without one. */
@@ -212,7 +240,8 @@ export function parallelOf(env: NodeJS.ProcessEnv): Extract | null {
 }
 
 /** The part `options` names of the page at `url` by the provider the run's plane resolves web_fetch to: Parallel's
- *  extract (with the direct fetch behind it) where it resolves to parallel, the guarded direct fetch otherwise, and a
+ *  extract (with the direct fetch behind it) where it resolves to parallel, keyless Firecrawl's scrape (the same) where
+ *  it resolves to firecrawl-keyless, the guarded direct fetch otherwise, and a
  *  failed Page saying why where it is unavailable or the part is one a call may not ask for (partProblem), before
  *  anything is fetched. From `pages` (the run's, pagesOf) where they hold the URL. */
 export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: GuardOptions & Part & { pages?: Pages } = {}): Promise<WebPage | Page> {
@@ -221,7 +250,7 @@ export async function fetchFor(env: NodeJS.ProcessEnv, url: unknown, options: Gu
   const resolved = planeOf(env).web_fetch;
   if (isUnavailable(resolved)) return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: `web_fetch does not run here: ${whyUnavailable(resolved)}` };
   const extract = resolved === "parallel" ? parallelOf(env) : null;
-  const page = await webFetch(url, { ...options, parallel: extract });
+  const page = await webFetch(url, { ...options, parallel: extract, firecrawl: resolved === "firecrawl-keyless" ? await firecrawlOf(env) : null });
   return resolved === "parallel" && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
 }
 
@@ -263,7 +292,7 @@ export function webFetchTool(env: NodeJS.ProcessEnv, name = WEB_FETCH_TOOL, fake
   if (planeOf(env).web_fetch === "parallel" && !fake) parallelOf(env);
   return defineTool({
     name,
-    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (its link targets and the URLs written out in its text, a JSON body's strings and an XML feed's links among them, where an HTML page fetched directly gives its link targets alone; with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused and never read (ok false, with refused saying why); so is a page fetched directly that is not text.`,
+    description: `Read one web page from a public host, a part at a time. It has no cookies, sign-ins or session: it reads one page cold, so a page behind a sign-in, or one that depends on an earlier page, needs the browser tool, where this run has it. Answers JSON: ok, the final url, the HTTP status, the page's title, text (a part of its readable text as markdown: about max_chars characters from offset, ${PAGE_CHARS.toLocaleString("en-US")} by default, at least ${MAX_CHARS_MIN} and at most ${TEXT_CAP.toLocaleString("en-US")}) and chars (that part's length), the absolute links the page holds (its link targets and the URLs written out in its text, a JSON body's strings and an XML feed's links among them, where an HTML page fetched directly gives its link targets alone; with the part at offset 0; links_omitted counts those its caps left out), and via: parallel when Parallel's extract read it, firecrawl-keyless when Firecrawl's keyless service read it (it is sent the URL), direct when it was fetched from the host (with parallel saying why, where Parallel was picked and gave no page), stopped when the call was stopped before its page arrived. A part that is not the whole page says so: truncated is true while more follows, next_offset is where the rest begins, original_chars is the page's whole length where it is known, and a line after the JSON says which characters these are; call again with offset to read on. A page whose HTML is longer than ${HTML_READ_CHARS.toLocaleString("en-US")} characters (scripts and styles aside) is cut before it is read: html_chars gives its whole length on every part, its text is only the start of the page, and the last part's line says it was cut. converted is "text" when the text is the page's plain text, its conversion to markdown having run out of time. A page is read to its first ${PAGE_READ_MAX_CHARS.toLocaleString("en-US")} characters (beyond_read on the last part says it goes on). A page is fetched once a run, at its first call: its later parts come from that read, with no request (through Parallel, one billed extract a page). A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never read and never sent to a third party (ok false, with refused saying why); so is a page fetched directly that is not text.`,
     parameters: URL_PARAMETERS,
     replay: "safe",
     execute: async (args, _api, context) => {

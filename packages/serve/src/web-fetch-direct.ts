@@ -157,6 +157,11 @@ export function partOfRead({ text, beyond, length, links, links_omitted, html_ch
   return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
 }
 
+/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape, keyless Exa's fetch), as a
+ *  Read: its url, title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it
+ *  holds. */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(url, URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+
 /** The page at `url`, read once through the guarded direct fetch, or why it was not. The rest of `options` are the
  *  guard's resolver and fetch, for a test; a signal ends it early. */
 export async function readDirect(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Read | Unread> {

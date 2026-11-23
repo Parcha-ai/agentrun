@@ -278,7 +278,8 @@ land (native and picked web search and tool settings, monid on every harness, th
    an unavailable tool says why in `reason`, and `missing` names the variables a tool short of a key still needs.
 2. `web_fetch` refuses loopback,
    private, link-local and metadata addresses and ports other than 80/443, at the first hop and after a redirect; a
-   refused URL is never sent to Parallel.
+   refused URL is never sent to Parallel, Firecrawl or Exa. With no Parallel key `web_fetch` reads through keyless
+   Firecrawl (`via: "firecrawl-keyless"`), which is sent the URL; Firecrawl refusing it, the guarded direct fetch.
 3. A tool key reaches only a run that names a tool it unlocks, over the pipe, never in any process's environment; a saved
    key exists on disk only sealed (no plaintext under the data directory).
 4. On claude-agent and codex, the host tools (`read`, `write`, `edit`, `web_fetch`, and
@@ -287,9 +288,11 @@ land (native and picked web search and tool settings, monid on every harness, th
 5. A monid endpoint's call (`monid:<provider>/<endpoint>`) is sent once and never retried; a wallet refusal (402) or a workspace control (`BLOCKED`) comes back
    by name; an answer over 60,000 characters is filed under `work/evidence/monid/`.
 6. On pi with no native search, `web_search` searches through Parallel where the server holds a Parallel key (its fee a
-   `Tool cost` line), else Exa's keyless endpoint with no key: only `{query, numResults}` leaves the server, over IPv4;
-   past Exa's free limit it is tried once more, then a tool error in our words (`Free web search is rate-limited right
-   now…`), never Exa's fix text and never a hang.
+   `Tool cost` line), else Firecrawl's keyless endpoint with no key and no header of ours (only `{query, limit}` leaves
+   the server), with Exa's keyless endpoint behind it (only `{query, numResults}`, over IPv4). Firecrawl's free limit
+   spent turns it off for the run and Exa answers the same call; both off, `web_search` answers `search is unavailable
+   for the rest of this run`. A rate limit is a tool error in our words (`Free web search is rate-limited right now…`), never Firecrawl's
+   or Exa's fix text and never a hang.
 
 ### Places (computers, workspace, files)
 

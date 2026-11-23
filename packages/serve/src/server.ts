@@ -55,6 +55,7 @@ import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
+import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
@@ -398,6 +399,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (exa-keyless.ts). */
   fauxExa?: string;
+  /** With `faux` only: the URL of a fake MCP server (a test's, on loopback) that web_search's and web_fetch's keyless
+   *  Firecrawl ask in place of Firecrawl's endpoint (firecrawl-keyless.ts). A URL, not a module: it is passed as given.
+   *  Under `faux` with none, keyless Firecrawl is never asked. */
+  fauxFirecrawl?: string;
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
@@ -527,6 +532,8 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
+  // A URL, so never resolved as a path.
+  if (options.fauxFirecrawl) env[FAUX_FIRECRAWL_ENV] = options.fauxFirecrawl;
   // The mountinfo the server itself reads (fauxMountinfo in serve), also when its own environment names it: a CLI server
   // in a container hands it to the runner beside it, whose environment drops every faux variable it inherited.
   const mountinfo = options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV];
