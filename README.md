@@ -117,7 +117,8 @@ start a new agent from a template.
    npx @parcha/agentrun
    ```
 
-   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
+   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun` (not the
+   folder you run it in: `--data DIR` names another, and a new folder alone is not a new install), and
    opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**

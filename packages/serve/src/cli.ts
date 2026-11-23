@@ -551,7 +551,7 @@ try {
   process.exit(1);
 }
 if (early) console.log(`Starting ${publicUrl ?? urlOf(early, values.listen ?? DEFAULT_HOST)}/ (warming: health says so and the API answers 503 until the server is ready)`);
-const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
+const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerBeside }, { earlierDataRefusal, startedWith }, { canOpen }] = await Promise.all([import("./server.js"), import("./runner/beside.js"), import("./adapters.js"), import("./host.js")]);
 // How it was started, for the hints that start it again (adapters.ts npxLine): itself and its runs read it.
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
@@ -588,7 +588,9 @@ try {
     ...(values["no-runner"] ? { runnerApart: true } : {}),
   });
 } catch (error) {
-  console.error(`agentrun-serve: ${(error as Error).message}`);
+  // A data directory an earlier version wrote, refused on a start `npx @parcha/agentrun` made: the ways on as that command
+  // (adapters.ts earlierDataRefusal). Any other start keeps the refusal's own words.
+  console.error(`agentrun-serve: ${earlierDataRefusal(error, data, process.env) ?? (error as Error).message}`);
   process.exit(1);
 }
 // The start launches one runner beside the server on the same data dir (design: "server and runner"): it claims and runs
