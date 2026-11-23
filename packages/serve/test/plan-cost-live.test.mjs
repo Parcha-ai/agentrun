@@ -1,7 +1,8 @@
 // A model request billed to a person's plan (Claude Code's login, a ChatGPT plan: its runner.request's `plan`) costs the
-// run $0 however it ends, as the cap's reader (the kernel's sessionSpendOf) holds it. While it is in flight (its runner.request written, its
-// runner.turn not yet), a live run's cost says so too: a known $0 on the plan, counted among the plan's requests, never
-// "not priced". A request with no price of its own (an API-key call on a model with none) stays not priced, live and ended.
+// run $0 however it ends, as the kernel's sessionSpendOf holds it, its spend for the cap and its cost alike. While it is in
+// flight (its runner.request written, its runner.turn not yet), a live run's cost says so too: a known $0 on the plan,
+// counted among the plan's requests, never "not priced". A request booked twice is one of the plan's requests, as it is
+// one request. A request with no price of its own (an API-key call on a model with none) stays not priced, live and ended.
 // Each run's journal is written as its runner writes it (the booking's runner.request and runner.turn records in the
 // harness session) and left running, as a live run is read.
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ import { storeOn } from "./store-helpers.mjs";
 
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
-const { bookedSpend, planSpend } = await import("../dist/runner/metrics.js");
+const { bookedSpend } = await import("../dist/runner/metrics.js");
 const { sessionSpendOf } = await import("@parcha/agentrun-kernel");
 
 const ROOT = 1;
@@ -81,16 +82,26 @@ test("a guard: a request off the plan in flight stays not priced, live", async (
   assert.equal(usage.summary, "Cost so far: $0 known, 1 not priced, over 1 model request");
 });
 
-test("bookedSpend and planSpend hold an in-flight plan request at $0, as the cap's reader (sessionSpendOf) does", () => {
+test("a live run whose plan request was booked twice (two bookings of one session, a cut written twice): one of the plan's requests, its tokens once", async (t) => {
+  const [request, turn] = planAnswered(1);
+  const { cost, usage } = await liveRun(t, [request, turn, turn]);
+  assert.deepEqual(cost.plan, { requests: 1, tokens: 3698, on: "claude_code" }, `the view: ${JSON.stringify(cost)}`);
+  assert.deepEqual(usage?.usage, { usd: 0, requests: 1 }, `the usage row: ${JSON.stringify(usage)}`);
+});
+
+test("bookedSpend holds an in-flight plan request at $0 and counts it the plan's, as the kernel's sessionSpendOf does, its cost and its spend alike", () => {
   const e = (conversationId, id, kind, data) => ({ conversationId, id, kind, data });
   const records = [e(7, 2, "runner.request", { turn: 1, model: MODEL, plan: true })];
   const entries = [e(1, 1, "agentrun.session.key", { key: "harness", conversation: 7 }), ...records];
   const spend = bookedSpend(entries, "model");
   assert.deepEqual([spend.usd, spend.unpriced, spend.requests, spend.unmetered], [0, 0, 1, 1], JSON.stringify(spend));
-  assert.equal(sessionSpendOf(records.map(({ kind, data }) => ({ kind, data }))).spentUsd, spend.usd, "the cap's reader holds it at $0 too");
-  assert.deepEqual(planSpend(entries), { requests: 1, tokens: 0 });
-  // Answered, it is counted once, with its tokens.
-  const answered = [...entries, e(7, 3, "runner.turn", { turn: 1, usd: null, usage: { input: 2, output: 3 }, billing: "plan", bookedUsd: 0, rule: "answered" })];
-  assert.deepEqual(planSpend(answered), { requests: 1, tokens: 5 });
+  const kernel = sessionSpendOf(records.map(({ kind, data }) => ({ kind, data })));
+  assert.deepEqual({ spentUsd: kernel.spentUsd, cost: kernel.cost }, { spentUsd: 0, cost: { usd: 0, soFarUsd: 0, unpriced: 0 } }, "the kernel holds it at $0, for the cap and as its cost");
+  assert.deepEqual(spend.plan, { requests: 1, tokens: 0 });
+  // Answered, it is counted once, with its tokens; booked again, still once.
+  const turn = e(7, 3, "runner.turn", { turn: 1, usd: null, usage: { input: 2, output: 3 }, billing: "plan", bookedUsd: 0, rule: "answered" });
+  const answered = [...entries, turn];
+  assert.deepEqual(bookedSpend(answered, "model").plan, { requests: 1, tokens: 5 });
   assert.deepEqual([bookedSpend(answered, "model").usd, bookedSpend(answered, "model").requests], [0, 1]);
+  assert.deepEqual(bookedSpend([...answered, { ...turn, id: 4 }], "model").plan, { requests: 1, tokens: 5 }, "a second booking of the turn counts nothing again");
 });

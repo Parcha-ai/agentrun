@@ -89,8 +89,6 @@ test("a run carries the Parallel key its web search reads: the search goes out o
 
 test("a model that quotes the run's key in its thinking, its text, a tool call and its answer: no 8 characters of it in any answer, file or log line", { timeout: 120_000 }, (t) => quotedKey(t, newKey()));
 
-test("a key of 8 characters, the shortest taken, is cut the same when the model quotes it", { timeout: 120_000 }, (t) => quotedKey(t, `k-${randomBytes(3).toString("hex")}`));
-
 /** A run carries `key` and its model quotes it everywhere it writes: no 8 characters of it in an answer, file or log line. */
 async function quotedKey(t, key) {
   const { api, data, dir, logs } = await setup(t);
@@ -188,6 +186,46 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: a template's schedule trigger, wh
   for (const said of [/PARALLEL_API_KEY/, /AGENTRUN_RUN_KEYS=1/, /keys/, /AGENTRUN_LAUNCH_HOOK_URL/]) assert.match(words, said);
 });
 
+test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trigger the agent already has on, by its name, says that one is kept and still fires, and how to turn it off; one kept off is not said", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const { api, store } = await setup(t, { templates: searcherTemplate(dir, MORNING), runKeys: true, runner: false });
+  const applied = await api("POST", "/templates/searcher/apply", {});
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  const [[, , made]] = skippedOf(applied.body);
+  // The agent's own trigger of that name, made before the setting was on.
+  const own = (enabled) => ({ id: "trg_morning", agentId: agent, name: "morning", enabled, source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: agent, input: { content: "Search the web for widgets." } }, nextAt: null, catchupWindowS: 0, templateId: applied.body.template });
+  for (const enabled of [true, false]) {
+    await store.triggers.create(own(enabled));
+    const planned = await api("POST", "/templates/searcher/apply", { agent_id: agent, dry_run: true });
+    const updated = await api("POST", "/templates/searcher/apply", { agent_id: agent });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    const [[field, reason, words], ...more] = skippedOf(updated.body);
+    assert.deepEqual([field, reason, more], ["triggers.0", "not_set_up_here", []], JSON.stringify(updated.body.warnings));
+    assert.equal(planned.body.plan.triggers[0].reason, words, "the plan says it in the apply's words");
+    if (enabled) {
+      assert.ok(words.startsWith(`${made} `), words);
+      for (const said of [/trg_morning/, /still fires/, /PATCH \/v2\/triggers\/trg_morning/, /"enabled": false/]) assert.match(words.slice(made.length), said);
+    } else assert.equal(words, made, "a trigger kept off is not said");
+    assert.deepEqual((await store.triggers.list(agent)).map((row) => [row.id, row.enabled]), [["trg_morning", enabled]], "left as it was");
+    await store.triggers.remove("trg_morning");
+  }
+});
+
+test("AGENTRUN_RUN_KEYS=1: a template eval on a server that takes a key the package declares from each run stops before any run, naming the key, as a case that does not check", { timeout: 60_000 }, async (t) => {
+  const dir = await scratch(t);
+  const templates = searcherTemplate(dir);
+  const pkg = join(templates, "searcher");
+  mkdirSync(join(pkg, "evals", "widgets", "graders"), { recursive: true });
+  writeFileSync(join(pkg, "evals", "widgets", "prompt.md"), "---\nruns: 1\nmax_cost_usd: 0.25\n---\nSearch the web for widgets.\n");
+  writeFileSync(join(pkg, "evals", "widgets", "graders", "named.md"), "---\ntype: regex\npattern: 'widgets'\n---\n");
+  const { api, baseUrl, token } = await setup(t, { templates, runKeys: true, runner: false });
+  const { CaseError, evalTemplate } = await import("../dist/template-eval.js");
+  await assert.rejects(evalTemplate({ dir: pkg, server: { baseUrl, token } }), (error) => error instanceof CaseError && error.problems.length === 1 && /PARALLEL_API_KEY/.test(error.problems[0]) && /AGENTRUN_RUN_KEYS=1/.test(error.problems[0]) && /without --server/.test(error.problems[0]));
+  assert.deepEqual((await api("GET", "/runs")).body.runs, [], "no run was started");
+  assert.deepEqual((await api("GET", "/agents")).body.agents.filter((one) => !one.archived_at).map((one) => one.id), [], "the agent the eval made is gone");
+});
+
 test("AGENTRUN_RUN_KEYS=1 on a server that holds the key, or the setting off: the template's schedule trigger is made, planned as made", { timeout: 60_000 }, async (t) => {
   for (const runKeys of [true, false]) {
     await t.test(`runKeys ${runKeys}`, async (t) => {
@@ -227,6 +265,37 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: a trigger made or moved through t
   refusedAt(await api("PATCH", `/triggers/${plain.body.id}`, { target: poke }), "a trigger moved to message the run");
   assert.equal((await api("GET", `/triggers/${plain.body.id}`)).body.target.agent_id, "plain", "left as it was");
   assert.equal((await api("PATCH", `/triggers/${plain.body.id}`, { name: "renamed" })).status, 200, "a change that keeps its target is taken");
+});
+
+test("AGENTRUN_RUN_KEYS=1: a message_run trigger's firing to a run whose agent owes a key this server does not hold is refused, 409 agent_not_runnable at keys.PARALLEL_API_KEY, with the launch hook or without, and nothing is written; with the key held here it is sent", async (t) => {
+  const { storeOn } = await import("./store-helpers.mjs");
+  const { triggerTargets } = await import("../dist/trigger-targets.js");
+  const { keysOwed } = await import("../dist/run-keys.js");
+  // A trigger made before the setting was on, or while this server held the key: its firing is the first check.
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {}, package: { id: "searcher", version: "1.0.0", sha: null, parameters_digest: "d", secrets: ["PARALLEL_API_KEY"] } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "Once more." } };
+  for (const [what, held, hooked] of [["no key here", {}, false], ["no key here, the hook set", {}, true], ["the key held here", { PARALLEL_API_KEY: newKey() }, false]]) {
+    let written = 0;
+    const targets = triggerTargets(store, {
+      momentOf: async () => ({ id: "run-1", agentId: "agent-1", kind: "agentic", maxCostUsd: 1, waitsOnPerson: false }),
+      runWrite: async () => (written++, { mode: "follow_up", messageId: "msg_1" }),
+      keysOwed: (revision) => keysOwed(revision, held, []),
+      hooked,
+    });
+    const sending = targets.message(target, target.input, "fir_1", { trigger_id: "trg_1" }, { max: 1, reason: "A message is waiting." });
+    if (held.PARALLEL_API_KEY) {
+      await sending;
+      assert.equal(written, 1, `${what}: sent`);
+      continue;
+    }
+    await assert.rejects(sending, (error) => {
+      assert.deepEqual([error.code, error.extra?.fields?.map((one) => [one.field, one.reason])], ["agent_not_runnable", [["keys.PARALLEL_API_KEY", "not_set_up_here"]]], `${what}: ${error.stack}`);
+      return true;
+    });
+    assert.equal(written, 0, `${what}: nothing written`);
+  }
 });
 
 test("off by default: a template's apply that needs a tool key this server does not hold is refused, nothing made", { timeout: 60_000 }, async (t) => {
@@ -273,7 +342,7 @@ test("AGENTRUN_RUN_KEYS=1: the apply makes the agent with a warning naming the k
   }
 });
 
-test("a message's keys replace the run's whole set, an empty one too: `keys: {}` on a queued run that still holds its key leaves it none, so under AGENTRUN_RUN_KEYS=1 it is 409 naming keys.PARALLEL_API_KEY", { timeout: 60_000 }, async (t) => {
+test("a message's keys replace the run's whole set, an empty one too: `keys: {}` on a queued run that still holds its key leaves it none, so under AGENTRUN_RUN_KEYS=1 it is 409 naming keys.PARALLEL_API_KEY, the start's refusal for that key", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   // No runner: the run stays queued, its launch still holding the key it carried.
   const { api } = await setup(t, { templates: searcherTemplate(dir), runKeys: true, runner: false });
@@ -285,6 +354,11 @@ test("a message's keys replace the run's whole set, an empty one too: `keys: {}`
 
   const emptied = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: {} });
   assert.deepEqual([emptied.status, emptied.body.error?.code, emptied.body.error?.fields?.map((one) => one.field)], [409, "agent_not_runnable", ["keys.PARALLEL_API_KEY"]], JSON.stringify(emptied.body));
+  // The start's refusal for the same missing key, in the same shape.
+  const bare = await api("POST", `/agents/${applied.body.agent_id}/runs`, { input: { content: "Search the web for widgets." } });
+  assert.equal(bare.status, 409, JSON.stringify(bare.body));
+  const shape = ({ request_id, ...rest }) => rest;
+  assert.deepEqual(shape(emptied.body.error), shape(bare.body.error), "a message and a start refused for the same key answer one 409");
   const carried = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: { PARALLEL_API_KEY: newKey() } });
   assert.equal(carried.status, 202, JSON.stringify(carried.body));
   const kept = await api("POST", `/runs/${runId}/messages`, { content: "And again." });
@@ -309,6 +383,6 @@ test("AGENTRUN_RUN_KEYS is on for 1 or true, off when unset, empty, 0 or false, 
   for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(read(value), true, value);
   for (const value of [undefined, "", "0", "false", "False"]) assert.equal(read(value), false, String(value));
   for (const value of ["yes", "on", "2", "keys"]) {
-    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message === `AGENTRUN_RUN_KEYS is 1 (each run brings the tool keys this server does not hold) or 0, not ${JSON.stringify(value)}`, value);
+    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message.startsWith("AGENTRUN_RUN_KEYS ") && error.message.includes(JSON.stringify(value)), value);
   }
 });

@@ -1,7 +1,7 @@
 // Named case 2 of the slice (design TDD §5, S2): a parked permission survives a runner swap. The agent asks permission for
 // a tool of its own (a shell); the host's gate parks the run on a person, and the runner lets the session go. Another
-// runner opens it from the records, the agent asks again, the request maps to the same call, the person's approval
-// answers it, and the tool runs once.
+// runner opens it from the records and takes the person's answer on the resume, before the agent starts; the agent asks
+// again, the request maps to that call, and the tool runs once.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -43,7 +43,7 @@ for (const load of [true, false]) {
     await second.session.recover();
     const end = await second.session.turnEnd();
     assert.equal(end.status, 'completed', end.error);
-    assert.deepEqual(asked.map((c) => c.callId), [parked, parked], 'the second request maps to the same call');
+    assert.deepEqual(asked.map((c) => c.callId), [parked, parked], 'the answer is taken on the resume, for the same call');
     assert.deepEqual(lines(nativeLog), ['Run make deploy'], 'approved, it ran once');
     const permissions = fakeEvents(recipe).filter((e) => e.type === 'permission');
     assert.deepEqual(permissions.map((e) => e.kind), ['allow_once'], 'allowed once at the protocol, never always');
@@ -55,7 +55,7 @@ for (const load of [true, false]) {
 }
 
 // The same request in an earlier turn of the same agent process: the parked one's id is the open turn's own, so the
-// runner that picks the run up maps the agent's next ask to it, and the person's approval answers it.
+// runner that picks the run up takes the person's answer for it on the resume, before the agent starts.
 test('a permission parked after the same request in an earlier turn maps to the same call after a swap', async (t) => {
   const dir = scratch();
   const nativeLog = join(dir, 'native.log');
@@ -80,6 +80,6 @@ test('a permission parked after the same request in an earlier turn maps to the 
   await second.session.recover();
   const end = await second.session.turnEnd();
   assert.equal(end.status, 'completed', end.error);
-  assert.deepEqual(asked.slice(2).map((c) => c.callId), [parked], "the agent's next ask maps to the parked call");
+  assert.deepEqual(asked.slice(2).map((c) => c.callId), [parked], 'the answer is taken on the resume, for the parked call');
   assert.deepEqual(lines(nativeLog), ['Run make deploy', 'Run make deploy'], 'approved, the second deploy ran once');
 });

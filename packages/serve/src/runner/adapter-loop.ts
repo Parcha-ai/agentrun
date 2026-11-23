@@ -52,7 +52,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
-import { type HeldRedact, heldRedactor } from "./redact.js";
+import type { HeldRedact } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
@@ -273,6 +273,9 @@ export interface AdapterRunSpec {
    *  raise of its cap, a person's answer) it ends failed at once in these words, saying what it would wait on, every call
    *  still waiting withdrawn in the end's commit (parkClaim). Absent: it parks. */
   readonly neverWaits?: string;
+  /** The session runs on its owner's own sign-in, a plan-billed recipe's claim having laid not every key saved for it
+   *  (cli-run-spec.ts): a trigger's message is refused in these words, never sent into it (steer). Absent: taken. */
+  readonly personOnly?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -419,8 +422,8 @@ export type AdapterRun = PiRun & {
   readonly ledger: RunLedger;
   /** The runner's one redactor (LoopDeps.redact; runner.ts), the same instance: the spec gives it to every place a secret
    *  could reach text (the session's model proxy, the model route's translation, its log lines), and its claim carries the
-   *  run's own tool keys into (claim-secrets.ts). Absent where no runner gave one (a spec built alone). */
-  readonly redact?: HeldRedact;
+   *  run's own tool keys into (claim-secrets.ts). */
+  readonly redact: HeldRedact;
   /** The claim's signal (LoopDeps.signal): aborted on a lost claim or the runner's shutdown, never on a person's stop. A
    *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
    *  no loop gave one (a spec built alone). */
@@ -1412,6 +1415,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
+    // placed, so no turn of it reaches the vendor on that sign-in. Known by its origin's kind as written (an origin whose
+    // source originOf does not know is still a trigger's), or by answering nothing (answers: false, a trigger's message).
+    const sent = command.body as { origin?: { kind?: unknown } | null; answers?: unknown } | null;
+    if (specNow?.personOnly && (sent?.origin?.kind === "trigger" || sent?.answers === false)) return { refused: specNow.personOnly };
     // The session is still new and this is no reopen's message (the claim has yet to send the run's input), or the run's
     // learned workflow runs first, or a message before it still waits for either: it waits for the input, off the runner's
     // delivery, as a computer channel's call does (channelCommand). The runner hands the run's rows on one at a time, each
@@ -1548,12 +1556,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    // A harness that takes no message mid-turn, or a CLI's message that is no steer of the turn in flight (a trigger's that
-    // answers nothing, or the person's answer to the question its last turn ended on, whose session is idle): the API
-    // answered it `follow_up` (it waits for the turn's end), so it is the run's next turn, after any taken before it
-    // (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take is the commit of its submission, once
-    // sent.
-    if (!session.steer || (cliRecord && (followUp || askedLast))) {
+    // A harness that takes no message mid-turn, a trigger's message (it answers nothing) while a turn is open, or a CLI's
+    // message that is no steer of the turn in flight (a trigger's, or the person's answer to the question its last turn
+    // ended on, whose session is idle): the API answered it `follow_up` (it waits for the turn's end), so it is the run's
+    // next turn, after any taken before it (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take
+    // is the commit of its submission, once sent. A trigger's message is never pi's own follow-up: pi runs one as soon as
+    // its turn would end, before this loop reads that end, so one that met a turn ending on ask_person ran in place of the
+    // person's answer and the run ended with its question unasked. Held here, that turn's end parks on the question first,
+    // and the row, untaken, runs as a turn of its own after the answer.
+    if (!session.steer || (followUp && session.state === "open_turn") || (cliRecord && (followUp || askedLast))) {
       if (turnsOver) return { later: "the run has answered and is ending: the message waits for the run's end" };
       afterTurn.push({ commandId: command.id, text, requestId, ...(origin ? { origin } : {}) });
       return { taken: true };
@@ -1814,7 +1825,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: heldRedactor(deps.redact) } : {}), signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.

@@ -139,8 +139,9 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun export AGENT`: Write an agent's current revision as a template package folder, and say what the target sets up again
 - `agentrun files`: create, delete, get, list, upload
-- `agentrun harness`: install, sign-in
+- `agentrun harness`: install, keys, sign-in
 - `agentrun harness-check`: Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money
+- `agentrun harness-keys`: list
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
 - `agentrun local`: create-pairing, create-suggested-agent, delete-composio-subscription, delete-computer, delete-workspace-archil, discard-suggestion, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-suggestion, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-git-hub-repositories, list-mcp-server-names, list-running-computers, list-suggestions, receive-hook-composio, restore-suggestion, rotate-composio-secret, scan-for-suggestions, test-computer, test-workspace-archil

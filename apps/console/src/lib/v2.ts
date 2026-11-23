@@ -172,6 +172,9 @@ type ServedToolKeys = Answer<"listToolKeys">;
 /** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
 export type ToolKey = ServedToolKeys["keys"][number];
 export type ToolKeys = ServedToolKeys;
+/** Settings → Harness keys: each plan-billed recipe's harness, its keys as SecretMeta ("harness:<id>:<KEY>"), never a value. */
+export type HarnessKeys = Answer<"listHarnessKeys">;
+export type HarnessKeysEntry = HarnessKeys["harnesses"][number];
 export type ToolKeyField = ToolKey["fields"][number];
 
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */

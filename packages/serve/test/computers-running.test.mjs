@@ -95,9 +95,10 @@ test("a sandbox an agent's place stands for counts as its computer", async () =>
   assert.deepEqual(runs, [sandbox]);
 });
 
-test("a run gone, or ended, between its row and its read is left out", async () => {
-  const reads = { over: going("2026-11-05T09:00:00.000Z", "ended"), up: going("2026-11-05T09:00:00.000Z") };
-  const { runs } = await runningComputers(storeOf([row("gone", "running", "desk"), row("over", "running", "desk"), row("up", "running", "desk")], { desk: DESKTOP }), async (runId) => reads[runId]);
+test("a run gone, ended or failed for want of its computer between its row and its read is left out", async () => {
+  const reads = { over: going("2026-11-05T09:00:00.000Z", "ended"), failed: { ...going("2026-11-05T09:00:00.000Z", "failed"), status: "failed" }, up: going("2026-11-05T09:00:00.000Z") };
+  const rows = [row("gone", "running", "desk"), row("over", "running", "desk"), row("failed", "running", "desk"), row("up", "running", "desk")];
+  const { runs } = await runningComputers(storeOf(rows, { desk: DESKTOP }), async (runId) => reads[runId]);
   assert.deepEqual(runs, [reads.up]);
 });
 

@@ -179,7 +179,7 @@ function preflightDrift(output: string, expectedSha: string): string[] {
 const HELD = "has an outstanding delegation";
 
 /**
- * An egress gateway for the archil client (parcha-proxy's archil-egress): with one, the helper's mount starts
+ * An egress gateway the operator runs for the archil client: with one, the helper's mount starts
  * `computerd archil-relay` and redirects root's TCP to Archil's 8100 and 32050 to it, and the relay carries each
  * connection to the gateway's lane for its port with a PROXY v2 header naming the original destination. The gateway
  * forwards only to a destination that proves, by certificate, the Archil name the client asked for.
@@ -199,7 +199,7 @@ const LANE = /^[1-9]\d{0,4}$/;
 const ARCHIL_PORTS = new Set([8100, 32050]);
 
 /**
- * Reads `<IPv4 gateway>:<mount lane>:<data lane>`, such as 10.60.0.40:18100:42050, as the helper checks it: an IPv4
+ * Reads `<IPv4 gateway>:<mount lane>:<data lane>`, such as 192.0.2.40:18100:42050, as the helper checks it: an IPv4
  * address and two different ports, neither 8100 nor 32050. Anything else throws, in words.
  */
 export function archilEgressOf(text: string): ArchilEgress {
@@ -208,7 +208,7 @@ export function archilEgressOf(text: string): ArchilEgress {
 	const dataLane = Number(data);
 	const lane = (port: string, n: number) => LANE.test(port) && n <= 65535 && !ARCHIL_PORTS.has(n);
 	if (rest.length > 0 || !IPV4.test(gateway) || !lane(mount, mountLane) || !lane(data, dataLane) || mountLane === dataLane) {
-		throw new Error(`the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>, such as 10.60.0.40:18100:42050, with two different ports, neither 8100 nor 32050; not ${JSON.stringify(text)}`);
+		throw new Error(`the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>, such as 192.0.2.40:18100:42050, with two different ports, neither 8100 nor 32050; not ${JSON.stringify(text)}`);
 	}
 	return { gateway, mountLane, dataLane };
 }
