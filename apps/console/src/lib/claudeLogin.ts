@@ -7,6 +7,8 @@ export const LOGIN_RUNS = "Claude Agent runs on your Claude plan through the Cla
 /** The owner's word, asked before it turns on. */
 export const ONLY_ME = "Only I run agents on this server";
 export const ONLY_ME_WHY = "Runs here would use your Claude plan, which is yours alone.";
+/** Beside Turn on while it waits for the owner's word. */
+export const ONLY_ME_FIRST = `Tick "${ONLY_ME}" to turn it on.`;
 /** The view as the row reads it: a server from before the view named its folders answers with no `folder` or `machine`
  *  (and no `sign_in`), and the row then shows what it showed before them. */
 export type LoginView = Omit<ClaudeLoginView, "folder" | "machine"> & Partial<Pick<ClaudeLoginView, "folder" | "machine">>;

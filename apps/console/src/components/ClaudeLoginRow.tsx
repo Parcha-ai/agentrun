@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { checksFolder, claudeLoginView, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { checksFolder, claudeLoginView, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, machineCredentials, NO_CLI, ONLY_ME, ONLY_ME_FIRST, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -32,6 +32,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const [view, setView] = useState<LoginView | null>(null);
   const [place, setPlace] = useState<ClaudeLoginView["place"]>("agentrun");
   const [onlyMe, setOnlyMe] = useState(false);
+  const onlyMeFirst = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
@@ -157,7 +158,11 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
               {ONLY_ME}
             </label>
             <p className="text-small text-muted-foreground">{ONLY_ME_WHY}</p>
-            <Button type="submit" size="sm" variant="solid" disabled={!onlyMe || busy}>Turn on</Button>
+            {/* Grey until the owner's word is ticked, which it says beside it (and to a screen reader, as its description). */}
+            <div className="flex flex-wrap items-center gap-3">
+              <Button type="submit" size="sm" variant="solid" disabled={!onlyMe || busy} aria-describedby={onlyMe ? undefined : onlyMeFirst}>Turn on</Button>
+              {!onlyMe && <p id={onlyMeFirst} className="text-small text-muted-foreground">{ONLY_ME_FIRST}</p>}
+            </div>
           </form>
         )}
         {on && writable && <Button size="sm" disabled={busy} onClick={() => void act(() => v2.turnOffClaudeLogin(), true)}>Turn off</Button>}
