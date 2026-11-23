@@ -64,8 +64,6 @@ export const AGENT_VARS: Readonly<Record<"inherited" | "reserved" | "proxy", rea
 export type RecipeModel =
   | { readonly billing: "proxy"; readonly wire: "anthropic-messages"; readonly env: string; readonly hostEnv?: "ANTHROPIC_HOST" | "ANTHROPIC_BASE_URL" }
   | { readonly billing: "plan"; readonly maxTurns: number; readonly maxToolCalls: number; readonly hosts?: readonly string[]; readonly id?: string };
-/** A sign-in method's id as an agent lists it (keyMethod's `gemini-api-key`). */
-const SIGN_IN_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** A long flag as signIn.homeArg names one (`--gemini-dir`): its value is the next argument, never after an `=`. */
 const LONG_FLAG = /^--[a-z0-9][a-z0-9-]{0,63}$/;
 /** `items` in a sentence: `a`, `a and b`, `a, b and c`. */
@@ -241,7 +239,9 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
       handed.add(env);
     }
   }
-  if (r.keyMethod !== undefined && (typeof r.keyMethod !== "string" || !SIGN_IN_METHOD.test(r.keyMethod))) say(RECIPE_CODES.invalid, "keyMethod, when given, is the sign-in method's id the agent's initialize lists for its key (gemini-api-key)");
+  // A sign-in method's id: the ACP package's AUTH_METHOD, the one definition, unchecked in form without it (as model.id).
+  const methodId = acpPackage()?.AUTH_METHOD;
+  if (r.keyMethod !== undefined && (typeof r.keyMethod !== "string" || (methodId !== undefined && !methodId.test(r.keyMethod)))) say(RECIPE_CODES.invalid, "keyMethod, when given, is the sign-in method's id the agent's initialize lists for its key (gemini-api-key)");
   else if (r.keyMethod !== undefined && !entries?.length) say(RECIPE_CODES.invalid, "keyMethod is the method the agent signs in with on its keys: name them in keys");
 
   // Rule 5: env, with rule 1 for a key named in it (by its saved name or the one it is handed as).

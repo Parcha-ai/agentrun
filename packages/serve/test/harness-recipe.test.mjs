@@ -765,6 +765,9 @@ test("a recipe's keys and sign-in are checked: keys handed under the name the ag
     // A plan-billed agent runs on its key, the one route a check, a schedule and a shared server take: a sign-in alone is
     // no route of theirs.
     ["a sign-in alone, with no key", recipeOf(undefined, { model: plan, signIn: SIGN_IN }), RECIPE_CODES.invalid],
+    // keyMethod by the ACP package's AUTH_METHOD, the adapter's own definition of a method's id.
+    ["a keyMethod with a space", both({ keyMethod: "gemini api key" }), RECIPE_CODES.invalid],
+    ["a keyMethod read as an option", both({ keyMethod: "-gemini-api-key" }), RECIPE_CODES.invalid],
     ["terms not an https address", both({}, { ...SIGN_IN, terms: "http://vendor.example.invalid/terms" }), RECIPE_CODES.invalid],
     ["terms not an address", both({}, { ...SIGN_IN, terms: "see the vendor's site" }), RECIPE_CODES.invalid],
     ["terms not a string", both({}, { ...SIGN_IN, terms: ["https://vendor.example.invalid/terms"] }), RECIPE_CODES.invalid],
