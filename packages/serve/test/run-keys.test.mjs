@@ -186,7 +186,7 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: a template's schedule trigger, wh
   for (const said of [/PARALLEL_API_KEY/, /AGENTRUN_RUN_KEYS=1/, /keys/, /AGENTRUN_LAUNCH_HOOK_URL/]) assert.match(words, said);
 });
 
-test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trigger the agent already has on, by its name, says that one is kept and still fires, each firing refused 409 and starting no run, and how to turn it off; one kept off is not said", { timeout: 60_000 }, async (t) => {
+test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trigger the agent already has on, by its name, says that one is kept and still fires until turned off, that a firing starting a run of the new revision is refused 409 while one aimed at an earlier revision's run may still spend, and how to turn it off; one kept off is not said", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const { api, store } = await setup(t, { templates: searcherTemplate(dir, MORNING), runKeys: true, runner: false });
   const applied = await api("POST", "/templates/searcher/apply", {});
