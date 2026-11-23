@@ -51,10 +51,13 @@ export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.Proce
 }
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
- *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
-export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
+ *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words).
+ *  `keysCounted`: a run's own process (run-child.ts), whose runner counted its harness's key rows before it made the
+ *  process (run-child-host.ts staysInRunner). The process's store lists no rows (STORE_CALLS has no sealedKeys.all), so
+ *  it never counts them again; its claim's spec opens the claim's own keys and refuses the run if not every one opened. */
+export function resolveRunnerLoop(given: AdapterSpecDeps, options: { readonly keysCounted?: boolean } = {}): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
-    await refuseRecipeTriggerRun(given, harness, launch);
+    if (!options.keysCounted) await refuseRecipeTriggerRun(given, harness, launch);
     // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
     // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
     // gateway the runner's environment names wins, and nothing saved is read over it.

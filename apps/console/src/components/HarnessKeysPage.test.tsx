@@ -104,4 +104,22 @@ describe("HarnessKeysPage", () => {
     const { host } = await mount(true, { list: () => ({ harnesses: [] }) });
     expect(host.textContent).toContain("no harness recipe billed to its vendor's plan");
   });
+
+  it("a read again that fails after a write says so beside the keys last read, and Try again reads them once more", async () => {
+    let fail = false;
+    let list = saved;
+    const { host } = await mount(true, { list: () => { if (fail) throw new Error("the server went away"); return list; } });
+    fail = true;
+    await act(async () => { button(host, "Remove")!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(host.textContent).toContain("The harness keys could not be read");
+    expect(host.querySelector('[data-harness="model-agent"]')).not.toBeNull();
+    fail = false;
+    list = unsaved;
+    await act(async () => { button(host, "Try again")!.click(); });
+    await settle();
+    expect(host.textContent).not.toContain("The harness keys could not be read");
+    expect(host.querySelector('[data-harness="model-agent"]')!.textContent).toContain("not saved");
+  });
 });

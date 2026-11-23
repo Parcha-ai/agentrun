@@ -1310,6 +1310,30 @@ test("a run no person started (a scheduled run, a learned workflow's audit shado
   }
 });
 
+test("a scheduled run on a plan-billed recipe with every key saved for its harness runs in a process of its own, as the CLI's start runs it: the runner counted the rows before it made the process, the run's process (whose store lists no rows) never counts them again, and the vendor hears the saved key", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const lines = [];
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true, childRuns: { log: (line) => void lines.push(line) } });
+  const { owner } = await asOwnerAndToken(server);
+  const key = plantedValue("harness-vendor-key");
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: key })).status, 204);
+  const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  // The schedule's run: the person's launch with the trigger it fired from, so no person started it.
+  const row = await server.store.runs.get(person.run_id);
+  const launch = await server.store.runs.launch(person.run_id);
+  const id = randomUUID();
+  const before = origin.messages().length;
+  await server.store.runs.create({ id, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), trigger: { id: "trg_nightly", firing_key: "k1" } }), sealed: launch.sealed });
+  const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", `${JSON.stringify((await server.api("GET", `/runs/${id}`)).body)}\n${lines.join("\n")}`);
+  const heard = origin.messages().slice(before);
+  assert.ok(heard.length >= 1 && heard.every((r) => r.headers["x-api-key"] === key), "every vendor request of the scheduled run on the saved key");
+});
+
 test("a start runs only on the keys its claim laid: the server's listing holding them saved, or the operator's shell exporting one, never puts it on the keys route", { skip: linux, timeout: 240_000 }, async (t) => {
   const shell = plantedValue("operator-shell-key");
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), MODEL_AGENT_API_KEY: shell });

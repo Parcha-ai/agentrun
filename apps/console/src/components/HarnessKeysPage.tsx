@@ -40,7 +40,7 @@ export function HarnessKeysPage({ v2, writable, whyNot = "sign_in", onChange }: 
   const done = (started: Open | null) => { setOpen((o) => (o === started ? null : o)); load(); onChange?.(); };
 
   if (!view) return loadError
-    ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The harness keys could not be read: {loadError.code}: {loadError.message}</p></Banner>
+    ? <ReadError error={loadError} onRetry={load} />
     : <div className="p-5 md:p-8"><ListSkeleton label="Loading harness keys" rows={2} /></div>;
   return (
     <div className="h-full overflow-auto">
@@ -52,6 +52,8 @@ export function HarnessKeysPage({ v2, writable, whyNot = "sign_in", onChange }: 
         </div>
         <div className={settingsBodyClass}>
           {!writable && <p className="border bg-card p-4 text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
+          {/* A read again (after a write) that failed: said beside the keys last read, which may no longer be so. */}
+          {loadError && <ReadError inline error={loadError} onRetry={load} />}
           {view.harnesses.length === 0 && <p className="border bg-card p-4 text-body" role="status">This server is started with no harness recipe billed to its vendor's plan (--harness-recipe), so there is no key to save here.</p>}
           {view.harnesses.map((h) => (
             <HarnessSection key={h.id} harness={h} writable={writable} open={open?.harness === h.id ? open : null} problem={problem?.harness === h.id ? problem : null}
@@ -75,6 +77,14 @@ export function HarnessKeysPage({ v2, writable, whyNot = "sign_in", onChange }: 
         </div>
       </div>
     </div>
+  );
+}
+
+function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetry: () => void; inline?: boolean }) {
+  return (
+    <Banner tone="error" className={inline ? undefined : "m-8"} actions={<Button type="button" size="xs" onClick={onRetry}>Try again</Button>}>
+      <p className="font-mono">The harness keys could not be read: {error.code}: {error.message}</p>
+    </Banner>
   );
 }
 
