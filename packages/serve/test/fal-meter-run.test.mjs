@@ -97,25 +97,38 @@ test("a fal job booked above its hold that leaves the run within its cap stops n
   assert.equal(view.status, "completed", JSON.stringify(view.error));
 });
 
+const isCharge = (row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? "");
+
+// The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
+// since the last) are checked until a row `matches`, or a failure names `what` that never came. `runOf` gives the run's id
+// once its start has answered.
+async function onTimeline(api, runOf, matches, what) {
+  const deadline = Date.now() + 30_000;
+  let after = 0;
+  while (Date.now() < deadline) {
+    const runId = runOf();
+    if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
+    const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
+    if (page?.rows?.some(matches)) return;
+    after = page?.next_after ?? after;
+  }
+  throw new Error(`not within 30 s: ${what}`);
+}
+
 /** A run whose model sends two ideogram jobs at once (two calls in one message) under a $1 cap, each asking 4 images at
- *  $0.10 (each held at $0.40): the first states 7 images ($0.70) while the second is still running; the second states
- *  `secondImages`. Then, in its next turn, a call that costs nothing. The order is the fake's, never the machine's: the
- *  first answers only once the second has been sent (so both were admitted at their holds), and the second only once the
- *  first's charge is on the run's timeline. */
-async function twoAtOnce(t, secondImages) {
+ *  $0.10 (each held at $0.40): the first states 7 images ($0.70), the second `secondImages`. Then, in its next turn, a
+ *  call that costs nothing. The order is the fake's, never the machine's: the first answers only once the second has been
+ *  sent (so both were admitted at their holds). With `heldFirst` false, the first settles while the second is still
+ *  running, and the second answers only once the first's charge is on the run's timeline; with it true, the second
+ *  settles first, and the first answers only once the second's charge is on the timeline. */
+async function twoAtOnce(t, secondImages, { heldFirst = false } = {}) {
   const { api } = await serve(t, { faux: AT_ONCE });
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   let secondArrived;
   const secondSent = new Promise((done) => { secondArrived = done; });
   let runId;
-  const firstBooked = async () => {
-    for (;;) {
-      const page = runId ? (await api("GET", `/runs/${runId}/timeline`)).body : undefined;
-      if (page?.rows?.some((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? ""))) return;
-      await new Promise((done) => setTimeout(done, 100));
-    }
-  };
+  const charged = (which) => onTimeline(api, () => runId, isCharge, `the ${which} job's charge on the run's timeline`);
   const images = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://v3.fal.media/${i}.png`, width: 1024, height: 1024 }));
   const reply = (args, n) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: `r-${args.input?.prompt}`, result: { images: images(n) }, has_result: true }) }] });
   fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.1, unit: "images", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
@@ -123,9 +136,13 @@ async function twoAtOnce(t, secondImages) {
     description: "Run a fal model.",
     input: { type: "object", properties: {} },
     run: async (args) => {
-      if (args.input?.prompt === "first") return (await secondSent, reply(args, 7));
+      if (args.input?.prompt === "first") {
+        await secondSent;
+        if (heldFirst) await charged("second");
+        return reply(args, 7);
+      }
       secondArrived();
-      await firstBooked();
+      if (!heldFirst) await charged("first");
       return reply(args, secondImages);
     },
   };
@@ -142,7 +159,7 @@ async function twoAtOnce(t, secondImages) {
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   const called = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool).length;
-  const costs = rows.filter((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? "")).map((row) => micro(row.usage?.usd));
+  const costs = rows.filter(isCharge).map((row) => micro(row.usage?.usd));
   return { view, called, costs };
 }
 
@@ -164,6 +181,16 @@ test("a fal job that settles above its hold while another is still held: when th
   assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
 });
 
+test("a fal job that settles at its hold while another is still held: when the other then settles above its hold and takes the run past its cap, the run stops at once", { timeout: 120_000 }, async (t) => {
+  const { view, called, costs } = await twoAtOnce(t, 4, { heldFirst: true });
+  assert.equal(called("run_model"), 2, "both jobs were sent");
+  assert.deepEqual(costs, [micro(0.4), micro(0.7)], "the second settled at its hold before the first settled above its");
+  assert.equal(micro(view.cost.tools_usd), micro(1.1));
+  assert.equal(called("get_model_schema"), 0, "nothing ran after the charge that passed the cap");
+  assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"]);
+  assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
+});
+
 /** Three calls at once under a $1 cap, in one message. ideogram's job, held at $0.40 (4 images at $0.10), states 12 images
  *  ($1.20) and stops the run for good. flux's job passed the tool gate beside it, and the fake answers its price only once
  *  ideogram's result is on the timeline (the gateway answers only after its settle, so after the stop): flux's job is
@@ -175,19 +202,6 @@ async function admittedAfterStop(t) {
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   let runId;
-  // The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
-  // since the last) are checked until a row `matches`, or a failure names `what` that never came.
-  const onTimeline = async (matches, what) => {
-    const deadline = Date.now() + 30_000;
-    let after = 0;
-    while (Date.now() < deadline) {
-      if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
-      const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
-      if (page?.rows?.some(matches)) return;
-      after = page?.next_after ?? after;
-    }
-    throw new Error(`not within 30 s: ${what}`);
-  };
   const schemaCalls = [];
   let waitArrived;
   const waitSent = new Promise((done) => { waitArrived = done; });
@@ -198,7 +212,7 @@ async function admittedAfterStop(t) {
     input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false },
     run: async ({ endpoint_id }) => {
       if (endpoint_id === "fal-ai/ideogram/v3") return price(endpoint_id, 0.1, "images");
-      await onTimeline((row) => row.kind === "tool_result" && /run_model: ok/.test(row.summary ?? ""), "ideogram's result on the run's timeline");
+      await onTimeline(api, () => runId, (row) => row.kind === "tool_result" && /run_model: ok/.test(row.summary ?? ""), "ideogram's result on the run's timeline");
       return price(endpoint_id, 0.5, "megapixels");
     },
   };
@@ -217,7 +231,7 @@ async function admittedAfterStop(t) {
       schemaCalls.push(args.endpoint_id);
       if (args.endpoint_id === "wait") {
         waitArrived();
-        await onTimeline((row) => row.kind === "tool_result" && /run_model failed/.test(row.summary ?? ""), "flux's refusal on the run's timeline");
+        await onTimeline(api, () => runId, (row) => row.kind === "tool_result" && /run_model failed/.test(row.summary ?? ""), "flux's refusal on the run's timeline");
       }
       return { content: [{ type: "text", text: "{}" }] };
     },
