@@ -48,13 +48,23 @@ export function within(promise, ms, what, seen) {
  *  stdio "pipe" is a socket pair, whose other end `ss` names by this end's inode (its peer). */
 function holders(child) {
   try {
+    readdirSync("/proc/self/fd");
+  } catch {
+    return "";
+  }
+  // The holders, apart: without them (no ss, or it fails), the group is still listed.
+  const holding = new Set();
+  let holdersUnknown = "";
+  try {
     const own = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/self/fd/${child.stderr._handle.fd}`))?.[1];
-    const holding = new Set();
-    if (own !== undefined) {
-      for (const line of execFileSync("ss", ["-xpnH"], { encoding: "utf8", timeout: 10_000, maxBuffer: 256 * 1024 * 1024 }).split("\n")) {
-        if (line.trim().split(/\s+/)[7] === own) for (const [, pid] of line.matchAll(/pid=(\d+)/g)) holding.add(pid);
-      }
+    if (own === undefined) throw new Error("its stderr is no socket");
+    for (const line of execFileSync("ss", ["-xpnH"], { encoding: "utf8", timeout: 10_000, maxBuffer: 256 * 1024 * 1024 }).split("\n")) {
+      if (line.trim().split(/\s+/)[7] === own) for (const [, pid] of line.matchAll(/pid=(\d+)/g)) holding.add(pid);
     }
+  } catch (error) {
+    holdersUnknown = ` (not known: ${error.message.split("\n")[0]})`;
+  }
+  try {
     const group = [];
     const held = [];
     for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
@@ -68,7 +78,7 @@ function holders(child) {
         // Gone, or not ours to read.
       }
     }
-    return `\nIn its group (${child.pid}):\n${group.join("\n") || "(none)"}\nHolding its stderr open:\n${held.join("\n") || "(none)"}`;
+    return `\nIn its group (${child.pid}):\n${group.join("\n") || "(none)"}\nHolding its stderr open${holdersUnknown}:\n${held.join("\n") || "(none)"}`;
   } catch {
     return "";
   }
