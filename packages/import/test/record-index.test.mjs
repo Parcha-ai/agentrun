@@ -1,10 +1,10 @@
-// The records an import has read are held in an exact hash index on typed arrays: every key whole, any number of them
-// (a Map stops at 2^24), and a pass with a state still comes out as a fresh pass would.
+// The records an import has read are held in an exact hash index on typed arrays: every key whole, and a pass with a
+// state still comes out as a fresh pass would.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
 import { parseHome, READERS } from "../dist/index.js";
-import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, recordCount, recordIndex } from "../dist/record-index.js";
+import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, recordIndex } from "../dist/record-index.js";
 import { packed, packInto } from "../dist/record-key.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
@@ -21,12 +21,13 @@ test("each key is found with its owner, and only its own: uuids, message keys, a
   for (let i = 0; i < 50_000; i += 1) keys.push(uuidKey(i), `m:msg_01${hex(i, 6)}:req_011C${i}`, `l:msg_${i}`);
   keys.push("", "\0", "x".repeat(5000), "m:msg_日本:req_1", `u:${"A".repeat(8)}-0000-4000-8000-000000000000`, "u:\ud800");
   keys.forEach((key, i) => add(index, key, i % 1000));
-  assert.equal(recordCount(index), keys.length);
   keys.forEach((key, i) => assert.equal(owner(index, key), i % 1000, key));
   // Another owner for a key held already changes nothing.
   add(index, keys[0], 999);
   assert.equal(owner(index, keys[0]), 0);
-  assert.equal(recordCount(index), keys.length);
+  // Nor is it held twice: with its owner's records gone, it is gone.
+  dropOwner(index, 0);
+  assert.equal(owner(index, keys[0]), -1);
   for (const absent of [uuidKey(50_000), "m:msg_01000000:req_011C", "l:msg_50000", "x".repeat(4999), "x".repeat(5001), `u:${"a".repeat(8)}-0000-4000-8000-000000000000`, "u:\ud801", "\0\0"]) {
     assert.equal(owner(index, absent), -1, absent);
   }
@@ -38,7 +39,6 @@ test("dropOwner removes one owner's records and keeps the rest; addAll adds what
   assert.equal(locatorNumber(index, "a.jsonl"), a);
   for (let i = 0; i < 3000; i += 1) add(index, i % 3 === 0 ? uuidKey(i) : `m:msg_${i}:req_${i}`, i % 2 ? a : b);
   dropOwner(index, a);
-  assert.equal(recordCount(index), 1500);
   for (let i = 0; i < 3000; i += 1) assert.equal(owner(index, i % 3 === 0 ? uuidKey(i) : `m:msg_${i}:req_${i}`), i % 2 ? -1 : b);
   const staged = recordIndex(16);
   add(staged, uuidKey(1), a);
@@ -74,7 +74,6 @@ test("from 4 slots, every key is found with its owner across each doubling of th
     for (let j = 0; j < keys.length; j += 1 + (keys.length >> 8)) assert.equal(owner(index, keys[j]), j & 0xffff, `${keys[j]} after doubling ${doublings}`);
   }
   assert.ok(doublings >= 20, `${doublings} doublings`);
-  assert.equal(recordCount(index), keys.length);
   keys.forEach((key, j) => assert.equal(owner(index, key), j & 0xffff, key));
   assert.equal(owner(index, uuidKey(40_001)), -1);
 });

@@ -46,9 +46,6 @@ export function locatorNumber(index: RecordIndex, locator: string): number {
   return n;
 }
 
-/** How many records `index` holds. */
-export const recordCount = (index: RecordIndex): number => index.uuids.count + index.others.count;
-
 // murmur3's finalizer: every bit of the input moves the slot.
 const mix = (h: number): number => {
   h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
