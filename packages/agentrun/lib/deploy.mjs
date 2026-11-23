@@ -478,14 +478,20 @@ async function deploy(ctx) {
   const prior = from.lock.read();
   const base = targetFor(ctx, from, prior, fail);
   if (base === undefined) throw fail(2, `Where to? Pass --to URL (cloud, or an AgentRun's address); a deploy after the first reads it from ${from.lock.file}.`);
-  const lock = prior && prior.target === base ? prior : undefined;
+  let lock = prior && prior.target === base ? prior : undefined;
   // --agent: the target's agent this deploy is for where no lock here names one there, by its id, or `new` for another.
-  // With a lock it may name only the lock's agent: a deploy never moves to another agent on its own.
+  // With a lock it may name only the lock's agent while that agent is there: a deploy never moves to another agent on its
+  // own. A lock whose agent is gone from the target is no lock for this: --agent picks the agent, as with none.
   const picked = values.agent;
   if (picked !== undefined && !picked.trim()) throw fail(2, "--agent takes the id of an agent on the target, or new.");
-  if (picked !== undefined && lock && picked !== lock.agent_id) throw fail(2, `${from.lock.file} names the agent ${lock.agent_id} on ${base}: --agent ${picked} names another. Nothing was sent: leave --agent out to deploy onto ${lock.agent_id}, or remove the lock to deploy to another agent there.`);
   if (prior && !lock) say(io, `The lock names ${prior.target}; this deploy is to ${base}, so it makes the agent there and the lock names it after.`);
   const to = remote(cli, values, env, io, base);
+  if (picked !== undefined && lock && picked !== lock.agent_id) {
+    const { status } = await to.call("GET", `/agents/${enc(lock.agent_id)}`, undefined, [404, 410]);
+    if (status === 200) throw fail(2, `${from.lock.file} names the agent ${lock.agent_id} on ${base}: --agent ${picked} names another. Nothing was written: leave --agent out to deploy onto ${lock.agent_id}, or remove the lock to deploy to another agent there.`);
+    say(io, `The agent ${lock.agent_id} the lock names is gone from ${to.base}: --agent ${picked} picks the agent this deploy is for, and the lock names it after.`);
+    lock = undefined;
+  }
 
   // The lock's agent as the target has it now: gone (deployed anew), edited since (refused unless --force), or the same
   // revision with the same package (up to date: nothing sent that writes, unless --params asks for parameters the lock
@@ -660,7 +666,7 @@ export const DEPLOY = {
     ["--force", "replace an agent edited on the target since the last deploy"],
     ["--params FILE", "the package's parameters, a JSON object"],
     ["--pause-source", "an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off"],
-    ["--agent ID|new", "with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent"],
+    ["--agent ID|new", "with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)"],
     ["", TOKEN],
     ["", "Exit codes: 0 deployed or up to date, 2 refused (bad input, edited on the target, an agent there this package made that no lock names, not confirmed), 3 not runnable yet there (nothing made), 1 the target refused or was not reached."],
   ],
