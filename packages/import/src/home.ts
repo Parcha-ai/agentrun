@@ -60,20 +60,46 @@ export type ParseOptions = {
   calculateCost?: CalculateCost;
   /** Where the readers look for a source's own directory (CLAUDE_CONFIG_DIR, CODEX_HOME). Default: none, the home's. */
   env?: Env;
+  /** Where each locator its reader could not read goes (unopenable, an I/O error midway); the rest are totalled. Without
+   *  it, parseHome throws ReadFailures instead: an unreadable file is never taken for an empty one. */
+  failures?: ReadFailure[];
+};
+
+/** A locator its reader could not read: its key (as SessionTotals'), its file, and the reader's error. */
+export type ReadFailure = { key: string; file: string; source: string; error: unknown };
+
+/** What parseHome throws when a locator could not be read and the caller took no failures list. Its message names no
+ *  path; `failures` holds them. */
+export class ReadFailures extends Error {
+  constructor(readonly failures: ReadFailure[]) {
+    super(`${failures.length} session ${failures.length === 1 ? "file" : "files"} could not be read`);
+    this.name = "ReadFailures";
+  }
+}
+
+/** A session's key: the sha256 of its file's path relative to the home, "/" between its parts, `#<id>` after it when its
+ *  locator names one. */
+const keyOf = (home: string, { file, id }: Locator): { key: string; file: string } => {
+  const path = relative(home, file).split(sep).join("/");
+  return { key: createHash("sha256").update(id === undefined ? path : `${path}#${id}`).digest("hex"), file: path };
 };
 
 type Part = { locator: Locator; read: SessionRead };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
+  const failed: ReadFailure[] = [];
   if (state) state.read = 0;
   for (const source of sources) {
-    const { tops, children } = await readSource(home, source, readers, env, state);
+    const { tops, children, unread } = await readSource(home, source, readers, env, state);
     out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
+    failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
+  if (failed.length && !failures) throw new ReadFailures(failed);
+  failures?.push(...failed);
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
@@ -83,7 +109,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
  *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
@@ -97,6 +123,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: new Map(), copied: new Map() };
     const { owners, copied } = kept ?? { owners: new Map<string, string>(), copied: new Map<string, Set<string>>() };
     let restarted = false;
+    const unread: { locator: Locator; error: unknown }[] = [];
     const read = async (locator: Locator): Promise<SessionRead[]> => {
       const key = locatorKey(locator);
       const cursor = kept?.cursors.get(key);
@@ -113,7 +140,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return this;
         },
       } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch(() => undefined);
+      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) return [];
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;
@@ -126,7 +153,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
     // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
     // again, from nothing.
-    if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children };
+    if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children, unread };
     state!.sources![source] = undefined;
   }
 }
@@ -191,10 +218,9 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       const catalog = await priceWith();
       cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
     }
-    const file = relative(home, first.locator.file).split(sep).join("/");
-    const id = first.locator.id;
+    const { key, file } = keyOf(home, first.locator);
     out.push({
-      key: createHash("sha256").update(id === undefined ? file : `${file}#${id}`).digest("hex"),
+      key,
       file,
       source,
       id: first.read.session.id,
