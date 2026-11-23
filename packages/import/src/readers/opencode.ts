@@ -25,7 +25,7 @@
 // 1.x tables). The reader keeps those requests and names the session they mirror (Mirror), for a total to set the copy
 // aside when it reads that session too.
 import { createHash } from "node:crypto";
-import { lstat, open, readFile, stat } from "node:fs/promises";
+import { lstat, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Env, entries, type Locator, type LocatorSize, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
 import { effortOf as effortName, isObject, mostEffortOf, str } from "../text.js";
@@ -120,6 +120,8 @@ class Reading {
   }
   done(): Found {
     const session = this.session;
+    // Without turns, no answer text: each request is kept for its counts, in the result and the cursor alike.
+    if (!this.keep) for (const answer of this.answers) answer.text = "";
     if (!this.unpriced) session.costUsd = this.cost;
     const times = this.times.sort((a, b) => a - b);
     const first = times[0] ?? this.head.created;
@@ -483,16 +485,10 @@ async function storageSession(file: string, keep: boolean, bytes: { n: number })
   return [v1Session(new Reading(head, keep, false), messages)];
 }
 
-/** Whether `file` is a SQLite database (an empty file is an empty one), not a storage session's JSON. */
-async function isDatabase(file: string): Promise<boolean> {
-  const handle = await open(file, "r");
-  try {
-    const header = Buffer.alloc(16);
-    const { bytesRead } = await handle.read(header, 0, 16, 0);
-    return bytesRead === 0 || header.subarray(0, bytesRead).toString("latin1") === "SQLite format 3\0".slice(0, bytesRead);
-  } finally {
-    await handle.close();
-  }
+/** Whether a locator with no id is a storage session's JSON file (storage/session/<project>/<id>.json), not a database:
+ *  by its name, so a database that does not open is read as one, and its read fails. */
+function isStorage(file: string): boolean {
+  return file.endsWith(".json");
 }
 
 /** OpenCode's databases and JSON storage under `home`, as OpenCode finds them in `env`: its data folder
@@ -556,12 +552,16 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
     const { dbs, storage } = await openCodeFiles(home, env);
     const out: Locator[] = [];
     const known = new Set<string>();
-    for (const file of dbs)
-      for (const id of await sessionIds(file).catch(() => []))
+    for (const file of dbs) {
+      // One that cannot be listed is its own locator, so its read fails and is said: never a database of no sessions.
+      const ids = await sessionIds(file).catch(() => undefined);
+      if (!ids) out.push({ file });
+      for (const id of ids ?? [])
         if (!known.has(id)) {
           known.add(id);
           out.push({ file, id });
         }
+    }
     if (storage)
       for (const { file, id } of await storageSessions(storage))
         if (!known.has(id)) {
@@ -578,7 +578,7 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       if (resumed && cursor.stamp === stamp) return { sessions: structuredClone(cursor.sessions), cursor, read: 0, resumed };
       return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: structuredClone(sessions) }, read, resumed };
     };
-    if (id === undefined && !(await isDatabase(file))) {
+    if (id === undefined && isStorage(file)) {
       const stamp = await storageStamp(file);
       if (resumed && cursor.stamp === stamp) return result(stamp, [], 0);
       const bytes = { n: 0 };
@@ -599,7 +599,7 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
   /** A database session's own (dbSize), not its database's: one live session leaves the others importable, and none
    *  is too large for the size of the rest. A storage session's files together; a database without an id, its file's. */
   async stat({ file, id }) {
-    if (id === undefined && !(await isDatabase(file))) return storageSize(file);
+    if (id === undefined && isStorage(file)) return storageSize(file);
     if (id === undefined) {
       const stats = await stat(file);
       return { bytes: stats.size, mtimeMs: stats.mtimeMs };

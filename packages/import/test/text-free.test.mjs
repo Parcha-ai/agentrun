@@ -35,3 +35,26 @@ test("pi: turns false keeps no answer text in requests or the cursor", async (t)
   const kept = await READERS.pi.read({ file }, undefined, { turns: true });
   assert.equal(kept.sessions[0].requests[0].text, WORDS, "turns true keeps it");
 });
+
+test("OpenCode: turns false keeps no answer text in requests or the cursor, a database's and the JSON storage's", async (t) => {
+  const { join } = await import("node:path");
+  const { buildLegacy, buildV2 } = await import("./fixtures/opencode/fixture.mjs");
+  const dir = await tempHome(t);
+  const db = join(dir, "opencode.db");
+  await buildV2(db);
+  const storage = join(dir, "storage");
+  await buildLegacy(storage);
+  // Answer text the fixtures write: 2.x content and parts, a compaction's summary, and 1.x text parts.
+  const said = ["Looking.", "Done porting.", "Ported the reader.", "Reading the file.", "Fixed."];
+  for (const [locator, kept] of [[{ file: db, id: "ses_C" }, "Done porting."], [{ file: join(storage, "session", "prj_fixture", "ses_A.json") }, "Fixed."]]) {
+    const result = await READERS.opencode.read(locator, undefined, { turns: false });
+    assert.ok(result.sessions[0].requests.length > 0);
+    for (const request of result.sessions[0].requests) assert.equal(request.text, "");
+    for (const words of said) {
+      assert.equal(serialize(result.cursor).includes(Buffer.from(words)), false, `the cursor holds no "${words}"`);
+      assert.equal(serialize(result.sessions).includes(Buffer.from(words)), false, `the sessions hold no "${words}"`);
+    }
+    const full = await READERS.opencode.read(locator, undefined, { turns: true });
+    assert.ok(full.sessions[0].requests.some((request) => request.text.includes(kept)), "turns true keeps it");
+  }
+});

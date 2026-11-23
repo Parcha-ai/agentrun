@@ -195,13 +195,14 @@ test("OpenCode's files under a home: its databases and its JSON storage, never a
   assert.deepEqual(await reader.discover(home, { OPENCODE_DB: own }), [{ file: own, id: "ses_A" }, { file: own, id: "ses_B" }]);
 });
 
-test("discover: the storage's sessions no database holds are their own files'; a database that cannot be read is passed over", async (t) => {
+test("discover: the storage's sessions no database holds are their own files'; a database that cannot be listed is its own locator, whose read fails", async (t) => {
   const home = await tempHome(t);
   const data = join(home, ".local", "share", "opencode");
   await buildLegacy(join(data, "storage"));
   await writeFile(join(data, "opencode.db"), "not a database, not even close to one");
   const fileOf = (id) => join(data, "storage", "session", "prj_fixture", `${id}.json`);
-  assert.deepEqual(await reader.discover(home, {}), [{ file: fileOf("ses_A") }, { file: fileOf("ses_B") }]);
+  assert.deepEqual(await reader.discover(home, {}), [{ file: join(data, "opencode.db") }, { file: fileOf("ses_A") }, { file: fileOf("ses_B") }]);
+  await assert.rejects(reader.read({ file: join(data, "opencode.db") }), "never read as an empty database, nor as storage");
 });
 
 test("a database session's size and last write are its own rows', not its database's; a storage session's, its files' together", async (t) => {

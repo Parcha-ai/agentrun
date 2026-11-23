@@ -52,3 +52,21 @@ test("--known-answer exits 1 with one stderr line per unreadable file, its key a
   for (const [line, key] of [[lines[0], KEYS.top], [lines[1], KEYS.child]]) assert.match(line, new RegExp(`^agentrun-import: cannot read claude-code ${key} \\(EACCES\\)$`));
   for (const text of [PROMPT, "work-fixture", SESSION, dir]) assert.equal(result.stderr.includes(text), false, `stderr holds no ${text}`);
 });
+
+test("an OpenCode database that cannot be opened is a failure, never an OpenCode history of no sessions", async (t) => {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dir = await tempHome(t);
+  const data = join(dir, ".local", "share", "opencode");
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, "opencode.db"), "not a database, not even close to one");
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["opencode"], catalog: false, failures }), []);
+  assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key: sha(".local/share/opencode/opencode.db"), source: "opencode" }]);
+  await assert.rejects(parseHome(dir, { sources: ["opencode"], catalog: false }), (error) => error.failures?.length === 1);
+  // OPENCODE_DB may name a database of any name: one that does not open fails the same way.
+  await writeFile(join(dir, "history.sqlite"), "not a database either");
+  const named = [];
+  await parseHome(dir, { sources: ["opencode"], catalog: false, failures: named, env: { XDG_DATA_HOME: join(dir, "elsewhere"), OPENCODE_DB: join(dir, "history.sqlite") } });
+  assert.deepEqual(named.map(({ key }) => key), [sha("history.sqlite")]);
+});
