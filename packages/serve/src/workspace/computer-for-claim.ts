@@ -1133,25 +1133,29 @@ export async function computerForClaim(
   /** The computer an earlier claim kept at the run's park, ended now by a claim that starts none (the run's computer is
    *  off): deleted, its interval ended, and its mount credential, the parking claim's, taken on and removed
    *  (archil-claim.ts revoke removes only one its claim minted or took on), so the run's folder is its own again before
-   *  its tools touch it. The credential is this claim's from the start, so a revoke this claim does not finish here is
-   *  the run's end's. The delete and the revoke together are bounded (KEPT_DELETE_MS) and end at the run's stop: one
-   *  that fails or does not answer leaves the row ending, for the janitor's next pass. Never throws. */
+   *  its tools touch it. The credential is taken on only once this claim's end holds the row (endKept's compare-and-set):
+   *  a later claim that took the computer back first holds its mount, which this claim's revoke (at its loss, its end)
+   *  then never removes. Once taken on, a revoke this claim does not finish here is the run's end's. The delete and the
+   *  revoke together are bounded (KEPT_DELETE_MS) and end at the run's stop: one that fails or does not answer leaves the
+   *  row ending, for the janitor's next pass. Never throws. */
   const endKeptNow = async (): Promise<void> => {
     const record = kept;
     kept = undefined;
     const settings = store.settings;
     const entry = record && kinds.PROVIDERS.find((one) => one.id === record.provider);
     if (!record || record.ended || !settings || !entry) return;
-    deps.inheritMount?.();
     try {
-      const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
-      await endKept(settings, launch.runId, record, () => bounded(KEPT_DELETE_MS, (async () => {
-        try {
-          if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
-        } finally {
-          await deps.revokeMount?.().catch(() => undefined);
-        }
-      })(), deps.signal));
+      await endKept(settings, launch.runId, record, () => {
+        deps.inheritMount?.();
+        return bounded(KEPT_DELETE_MS, (async () => {
+          try {
+            const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
+            if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
+          } finally {
+            await deps.revokeMount?.().catch(() => undefined);
+          }
+        })(), deps.signal);
+      });
     } catch {
       // Left ending for the janitor.
     }

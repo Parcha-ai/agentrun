@@ -395,16 +395,27 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     asking.set(call.tool, turn.catch(() => undefined));
     return turn;
   };
+  // The computer off, written to the run's journal once. A write that fails (a fenced claim, a journal error) never fails
+  // the call, whose refusal stands: the claim's next refusal of the computer's tools writes it again.
+  const sayOff = async (): Promise<void> => {
+    const turnedOff = offSaid ? undefined : gate.computerOff;
+    if (!turnedOff) return;
+    offSaid = true;
+    try {
+      await onComputerOff?.(turnedOff);
+    } catch {
+      offSaid = false;
+    }
+  };
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
     const off = gate.offRefusal(call.tool, options);
-    if (off) return off;
+    if (off) {
+      await sayOff();
+      return off;
+    }
     current = await storeSettings(store);
     const decision = await gate.decide(call.tool, call.args, options);
-    const turnedOff = offSaid ? undefined : gate.computerOff;
-    if (turnedOff) {
-      offSaid = true;
-      await onComputerOff?.(turnedOff);
-    }
+    await sayOff();
     // A call its setting allows that its tool asks about itself (ToolEntry.asks: email_send past its cap, or to someone
     // outside the run's thread): put to a person with the tool's reason on its card, whatever the setting; where no one
     // can approve, refused in those words. No tool's name is read here: the reason is the tool's.

@@ -244,6 +244,42 @@ test("Mode 2, a resume of a run whose desktop is off, stopped while its kept des
   revoke.letGo();
 });
 
+/** A claim's Archil mount credentials as archil-claim.ts holds them, over the run's `tokens` (by the epoch that minted
+ *  each): its revoke removes the run's tokens of its epoch and earlier only once it took one on (inherit). */
+function archilClaimOf(tokens, epoch) {
+  let inherited = false;
+  return {
+    inheritMount: () => { inherited = true; },
+    revokeMount: async () => {
+      if (!inherited) return;
+      inherited = false;
+      for (const token of [...tokens]) if (token <= epoch) tokens.delete(token);
+    },
+  };
+}
+
+test("Mode 2, a claim whose desktop is off loses its park's kept desktop to a later claim that takes it back: it never takes on the mount credential, so its loss's revoke leaves the later claim's mount in place", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const tokens = new Set([3]);
+  const [b, c] = [archilClaimOf(tokens, 5), archilClaimOf(tokens, 6)];
+  // Claim 6 (its tools allowed again) takes the kept desktop back between claim 5's read of the row and its end of it.
+  const replaceIf = one.store.settings.replaceIf.bind(one.store.settings);
+  let later;
+  one.store.settings.replaceIf = async (key, ...rest) => {
+    if (key === keptKeyOf("run-1") && !later) later = await one.claim(6, { hadComputer: async () => true, ...c });
+    return replaceIf(key, ...rest);
+  };
+  const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, ...b });
+  assert.deepEqual([off.computer, off.off], [undefined, true]);
+  assert.equal(later?.made, "desktop", "claim 6 took the kept desktop back");
+  assert.deepEqual(deletes(one.account), [], "nothing deleted");
+  // Claim 5 lost: archil-claim.ts lost() revokes.
+  await b.revokeMount();
+  assert.deepEqual([...tokens], [3], "the mount credential claim 6's desktop holds stands");
+  await later.release();
+});
+
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
   const one = await server();
   await (await one.claim(3)).park();
