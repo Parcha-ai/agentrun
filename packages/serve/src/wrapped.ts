@@ -29,10 +29,12 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
   };
 }
 
-/** A year read lately is not read again for a minute: a whole home is a long read, and the page asks for it on every open. */
+/** A year read lately is not read again for a minute: a whole home is a long read, and the page asks for it on every open.
+ *  A read still going is shared however long it takes; its minute starts when it ends. */
 const KEEP_MS = 60_000;
 type Read = { wrapped: Wrapped; unread: number };
-const kept = new Map<string, { at: number; read: Promise<Read> }>();
+type Kept = { read: Promise<Read>; at?: number };
+const kept = new Map<string, Kept>();
 
 /** The year's wrappedHome over this machine's home, shared by the reads of the minute, and how many session files it could
  *  not read (one gone since it was listed, or one this user cannot open): the numbers are short by those, and say so. */
@@ -40,10 +42,18 @@ export function readWrapped(year: number, now = Date.now()): Promise<Read> {
   const home = homedir();
   const key = `${home}:${year}`;
   const held = kept.get(key);
-  if (held && now - held.at < KEEP_MS) return held.read;
+  if (held && (held.at === undefined || now - held.at < KEEP_MS)) return held.read;
   const failures: ReadFailure[] = [];
   const read = import("@parcha/agentrun-import").then(async ({ wrappedHome }) => ({ wrapped: await wrappedHome(home, year, { failures }), unread: failures.length }));
-  kept.set(key, { at: now, read });
-  read.catch(() => kept.delete(key));
+  const entry: Kept = { read };
+  kept.set(key, entry);
+  read.then(
+    () => {
+      entry.at = Date.now();
+    },
+    () => {
+      if (kept.get(key) === entry) kept.delete(key);
+    },
+  );
   return read;
 }
