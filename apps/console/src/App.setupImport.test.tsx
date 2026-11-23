@@ -283,8 +283,61 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(await until(host, () => readsAfterRefusal > 0, 3000)).toBe(true);
   }, 15_000);
 
+  /** A server whose reads of the offer answer only when the test says (`release`), or, aborted, fail as a browser's do. */
+  function heldServer() {
+    const log: string[] = [];
+    const sent: unknown[] = [];
+    const held: { signal?: AbortSignal | null; release: (r: Response) => void }[] = [];
+    let answerSetup: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: false, signed_in: false });
+      if (path === "/v2/setup") { log.push("setup"); sent.push(JSON.parse(String(init?.body))); return new Promise<Response>((done) => { answerSetup = done; }); }
+      if (path === "/v2/setup/import") {
+        log.push("import");
+        return new Promise<Response>((release, fail) => {
+          held.push({ signal: init?.signal, release });
+          init?.signal?.addEventListener("abort", () => fail(new DOMException("The operation was aborted.", "AbortError")), { once: true });
+        });
+      }
+      return json(404, missing(path));
+    });
+    return { log, sent, held, answerSetup: (r: Response) => answerSetup(r) };
+  }
+
+  it("sends the setup only once a read of the offer already under way has its answer, and reads none while it is sent", async () => {
+    // A read sent before the password was submitted can still reach the server after the password is saved (a cut
+    // connection's read is sent again): the setup waits for it, so nothing reads between the password and its session.
+    const s = heldServer();
+    const host = await render();
+    await until(host, () => s.held.length);
+    await setPassword(host);
+    await submit(host);
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    expect(s.sent).toEqual([]);
+    await act(async () => { s.held[0]!.release(json(202, { counting: true })); });
+    expect(await until(host, () => s.sent.length)).toBe(1);
+    // Past more than one poll's wait, the setup still unanswered: no read after it was sent.
+    await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
+    expect(s.log).toEqual(["import", "setup"]);
+    await act(async () => { s.answerSetup(json(201, { signed_in: true })); });
+  }, 15_000);
+
+  it("sends the setup after a few seconds when a read of the offer never answers, that read cancelled", async () => {
+    const s = heldServer();
+    const host = await render();
+    await until(host, () => s.held.length);
+    await setPassword(host);
+    await submit(host);
+    expect(await until(host, () => s.sent.length, 6000)).toBe(1);
+    expect(s.held[0]!.signal?.aborted).toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 1500)); });
+    expect(s.log).toEqual(["import", "setup"]);
+    await act(async () => { s.answerSetup(json(201, { signed_in: true })); });
+  }, 15_000);
+
   it.each([
-    ["the server's count failed",[[202, { counting: true }], [200, { projects: null, sessions: null }]]],
+    ["the server's count failed", [[202, { counting: true }], [200, { projects: null, sessions: null }]]],
     ["a read failed after the offer showed", [[202, { counting: true }], [500, { error: { code: "internal", message: "busy", retryable: true } }]]],
   ] as [string, [number, unknown][]][])("says the sessions couldn't be listed, with nothing to tick, when %s", async (_, offer) => {
     const { sent } = server({ offer });
