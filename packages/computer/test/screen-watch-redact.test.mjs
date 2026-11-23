@@ -154,8 +154,7 @@ test("redactWords cuts every endpoint form it cut before, and only those", () =>
 		["host:80", "host:80"],
 		["a.io:", "a.io:"],
 		["a.io: 80", "a.io: 80"],
-		// An IPv4 address is still the last shape's.
-		["no route to 192.0.2.3:5555", "no route to [an endpoint]"],
+		// An IPv4 address with a port is still cut by the last shape, unchanged: screen-watch-hardening.test.mjs covers it.
 	]);
 });
 
