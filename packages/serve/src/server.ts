@@ -35,7 +35,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { RUN_KEYS_ENV } from "./env-switch.js";
-import { declaredKeys, keysOwed, keysOwedRefusal, packageKeysOf, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
+import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -3795,7 +3795,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const undeclared = undeclaredKeys(Object.keys(handed.keys), revision ? await declaredKeys(revision as unknown as Revision) : []);
       if (undeclared.length) throw invalid(undeclared);
     }
-    const owed = options.runKeys && revision ? packageKeysOf(revision).filter((name) => !env[name]) : [];
+    const owed = options.runKeys && revision ? keysOwed(revision, env, []) : [];
     const needsKey = handed.model === undefined && serverKeyMissing(env, target);
     if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined && !needsKey && !owed.length) return undefined;
     const origin = runModelOrigin(env);
@@ -3805,8 +3805,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
       const keys = handed.keys ?? held.keys;
       if (!model && needsKey) throw modelKeyRequired(true);
-      const unpaid = revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
-      if (owed.length && unpaid.length) throw new ApiError("agent_not_runnable", unpaid.map((one) => one.message).join(" "), { fields: unpaid });
+      const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
+      if (unpaid.length) throw keysOwedRefusal(unpaid);
       return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) });
     };
   }

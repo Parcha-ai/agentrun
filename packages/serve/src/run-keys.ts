@@ -7,8 +7,9 @@
 //
 // AGENTRUN_RUN_KEYS=1 (env-switch.ts): an install whose runs bring the tool keys it does not hold. A template's
 // apply then makes its agent though a tool key the template declares is not set here, and says so in a warning; a run of
-// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), and no trigger is made
-// whose firings could not carry it (firingsOwe). Off, nothing changes.
+// that revision that does not carry the key is refused (409 agent_not_runnable, at keys.<NAME>), no trigger is made
+// whose firings could not carry it (firingsOwe), and a firing of one made before is refused the same. Off, nothing
+// changes.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
@@ -96,8 +97,8 @@ export function keysOwed(revision: object, env: NodeJS.ProcessEnv, carried: read
   }));
 }
 
-/** The 409 a run that owes `owed` (keysOwed) gets at its start, and a trigger that could only start or message such runs
- *  gets when it is made or moved (firingsOwe). */
+/** The 409 a run that owes `owed` (keysOwed) gets at its start or a message, and a trigger that could only start or
+ *  message such runs gets when it is made or moved, and at a message_run firing (firingsOwe). */
 export const keysOwedRefusal = (owed: readonly InputIssue[]): ApiError =>
   new ApiError("agent_not_runnable", owed.map((one) => one.message).join(" "), { fields: [...owed], details: { unbound: [], missing: {} } });
 
