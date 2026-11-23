@@ -103,6 +103,28 @@ const SOURCE_PARAMETER: Json = {
   "x-agentrun-serve": "runsource/1",
 };
 
+/** runwindow/1: GET /runs' window on when a run started, [from, to). */
+const FROM_PARAMETER: Json = {
+  name: "from", in: "query", required: false,
+  description: "Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+const TO_PARAMETER: Json = {
+  name: "to", in: "query", required: false,
+  description: "Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400.",
+  schema: { type: "string", format: "date-time" },
+  "x-agentrun-serve": "runwindow/1",
+};
+
+/** runmodel/1: GET /runs' filter on the model a run used. */
+const MODEL_PARAMETER: Json = {
+  name: "model", in: "query", required: false,
+  description: "Only runs that used this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched whole. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400.",
+  schema: { type: "string" },
+  "x-agentrun-serve": "runmodel/1",
+};
+
 /** Why each capability this server turns off answers 501, by the route's capability. */
 export const UNSUPPORTED: Readonly<Record<string, string>> = {
   quotes: "This server has no billing, so it gives no quotes.",
@@ -2200,6 +2222,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
         SOURCE_PARAMETER,
+        FROM_PARAMETER,
+        TO_PARAMETER,
+        MODEL_PARAMETER,
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
     },

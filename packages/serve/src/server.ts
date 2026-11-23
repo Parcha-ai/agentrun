@@ -129,7 +129,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
-import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
+import { FINAL_STATES, type ListedFilter, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
 import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
@@ -154,7 +154,7 @@ import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
-import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { analyticsFilter, analyticsView, statsView, utcOf } from "./stats.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -4073,7 +4073,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return given[0];
   }
 
-  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, source?: string) {
+  /** GET /runs' `from` and `to`, each once: ISO instants with a zone (the server reads no time zone of its own), the window
+   *  [from, to) of the runs' starts, in ms. Either one alone; a `from` after `to` is 400, one equal to it an empty window. */
+  function windowParams(url: URL): { startedFrom?: number; startedBefore?: number } {
+    const instant = (name: "from" | "to"): number | undefined => {
+      const given = url.searchParams.getAll(name);
+      if (given.length === 0) return undefined;
+      // As the analytics' bounds read (stats.ts utcOf): an RFC 3339 date-time that exists, to the ms.
+      const iso = given.length === 1 ? utcOf(given[0]!) : undefined;
+      if (iso === undefined) throw new ApiError("bad_request", `${name} is one RFC 3339 date-time with its zone (2026-11-01T00:00:00Z, or an offset such as +01:00), to the millisecond; once`);
+      return Date.parse(iso);
+    };
+    const from = instant("from"), to = instant("to");
+    if (from !== undefined && to !== undefined && from > to) throw new ApiError("bad_request", "from is at or before to: the window [from, to) of the runs' starts");
+    return { ...(from !== undefined ? { startedFrom: from } : {}), ...(to !== undefined ? { startedBefore: to } : {}) };
+  }
+
+  /** GET /runs' `model`, once: a model as a run's metrics name it, `provider/model`. */
+  function modelParam(url: URL): string | undefined {
+    const given = url.searchParams.getAll("model");
+    if (given.length === 0) return undefined;
+    if (given.length > 1 || !/^[^\u0000-\u001f\u007f]{1,256}$/.test(given[0]!)) throw new ApiError("bad_request", "model is one model as a run's metrics name it (provider/model); once");
+    return given[0];
+  }
+
+  /** GET /runs' own filters: `source`, the window (`from`, `to`) and `model`. */
+  function runsOnly(url: URL): Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> {
+    const source = sourceParam(url), model = modelParam(url);
+    return { ...(source !== undefined ? { source } : {}), ...windowParams(url), ...(model !== undefined ? { model } : {}) };
+  }
+
+  async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, only: Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> = {}) {
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4087,7 +4117,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
     // run's. A run's archive is its own or its agent's.
-    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...(source !== undefined ? { source } : {}), archived };
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), ...only, archived };
     // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
     // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
     // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
@@ -5138,7 +5168,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "listAllRuns": {
         const agent = url.searchParams.get("agent") ?? undefined;
         const revision = url.searchParams.get("revision") ?? undefined;
-        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), sourceParam(url)));
+        return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req), runsOnly(url)));
       }
       case "getRun": {
         const run = await runRead(id, linkOrigin(req));

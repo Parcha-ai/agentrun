@@ -3395,6 +3395,24 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": "Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400."
+      },
+      {
+        "name": "from",
+        "type": "string",
+        "required": false,
+        "description": "Only runs started at or after this instant: an RFC 3339 date-time with its zone (`2026-11-01T00:00:00Z`, or an offset such as `+01:00`, sent as `%2B01:00`), to the millisecond. With `to`, the window [from, to): a run started at `from` is in it. Once per request; a second `from`, one that is no instant with its zone, or one after `to`, is 400."
+      },
+      {
+        "name": "to",
+        "type": "string",
+        "required": false,
+        "description": "Only runs started before this instant: an RFC 3339 date-time with its zone, to the millisecond. A run started at `to` is not in the window. Once per request; a second `to`, or one that is no instant with its zone, is 400."
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "required": false,
+        "description": "Only runs that used this model, named as a run's metrics name it: `provider/model` (`anthropic/claude-sonnet-5`, `openai/gpt-5`, ...), matched whole. A model no run used lists none. Once per request; a second `model`, or an empty one, is 400."
       }
     ],
     "headers": [],

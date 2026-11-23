@@ -21,6 +21,9 @@ export interface Dialect {
   /** True when the JSON object of strings in TEXT column `column` holds the key and the value of the two string parameters
    *  that follow (two `?`): bound, never spliced, so any key reads safely. False when the column is NULL. */
   jsonObjectHas(column: string): string;
+  /** True when the JSON object at `path` (object keys) in TEXT column `column` has the key of the string parameter that
+   *  follows (one `?`): bound, never spliced, so any key reads safely. False when the column, or the path, is NULL. */
+  jsonObjectHasKey(column: string, path: readonly string[]): string;
   /** The length of the JSON array in TEXT column `column`. */
   jsonArrayLength(column: string): string;
   /** The JSON object in TEXT column `column` without its top-level `key`. */
@@ -85,6 +88,7 @@ export const SQLITE: Dialect = {
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
   jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) AS entry WHERE entry.key = ? AND entry.value = ?)`,
+  jsonObjectHasKey: (column, path) => `EXISTS (SELECT 1 FROM json_each(${column}, ${jsonPath(path)}) AS entry WHERE entry.key = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,
   jsonWithout: (column, key) => `json_remove(${column}, ${jsonPath([key])})`,
   firingOrder: "rowid",
