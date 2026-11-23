@@ -19,6 +19,8 @@ import { KeysPage } from "@/components/KeysPage";
 import { HarnessKeysPage } from "@/components/HarnessKeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
+import { DemoBar, DemoPage } from "@/demo/DemoPage";
+import { demoOn, demoUpload, onDemoChange, setDemo } from "@/demo/mode";
 import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
@@ -146,7 +148,7 @@ export function route(h: string = location.hash): Where {
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|harness-keys|tools|email|computers|workspace|webhook|slack))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|harness-keys|tools|email|computers|workspace|webhook|slack|demo))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -210,6 +212,21 @@ export function App() {
   const checking = useRef(false);
   const recheck = useRef<() => Promise<void>>(async () => {});
   const v2 = useMemo(() => createClient({ fetch: connection.fetch, onSignedOut: () => void recheck.current() }), [connection]);
+  // Demo mode (Settings → Demo): the console over sample data, answered in this page (demo/backend), in place of the
+  // server's. Its code and data are loaded only once it is on. The session stays the server's, so signing out still does.
+  const [demo, setDemoNow] = useState(() => demoOn());
+  useEffect(() => onDemoChange(setDemoNow), []);
+  const [demoClient, setDemoClient] = useState<ReturnType<typeof createClient> | null>(null);
+  useEffect(() => {
+    if (!demo) { setDemoClient(null); return; }
+    let live = true;
+    import("@/demo/backend").then(({ createDemo }) => {
+      if (!live) return;
+      const made = createDemo({ real: connection.fetch });
+      setDemoClient({ ...createClient({ fetch: made.fetch, onSignedOut: () => void recheck.current() }), fileUrl: made.fileUrl });
+    }, () => { if (live) setDemo(false); });
+    return () => { live = false; };
+  }, [demo, connection]);
   // The setup code, taken from the address once and removed from it (and from the history entry).
   const [setupCode, setSetupCode] = useState(setupCodeOnce);
   // A setup link opened in this same tab once the page is up changes only the address's fragment: its code is taken
@@ -331,7 +348,8 @@ export function App() {
       }} />
     );
   }
-  return <ConnectionProvider connection={connection}><Console v2={v2} onSignedOut={() => { setSignedOutElsewhere(false); setAuth("sign_in"); }} /></ConnectionProvider>;
+  if (demo && !demoClient) return <p className="p-8 text-center font-mono text-body text-muted-foreground" role="status">Opening the demo…</p>;
+  return <ConnectionProvider connection={connection}><Console v2={demo && demoClient ? demoClient : v2} demo={demo} onSignedOut={() => { setSignedOutElsewhere(false); setAuth("sign_in"); }} /></ConnectionProvider>;
 }
 
 /** Before the console knows who is signed in: a quiet page, or, while the server can't be reached, that said with the
@@ -340,14 +358,15 @@ function Starting() {
   return useLink().state === "offline" ? <Unreached /> : <p className="p-8 text-center font-mono text-body text-muted-foreground" role="status">Connecting…</p>;
 }
 
-type ConsoleProps = { v2: ReturnType<typeof createClient>; onSignedOut: () => void };
+/** `demo`: the client answers from sample data (demo mode), so the console says so and offers the tour. */
+type ConsoleProps = { v2: ReturnType<typeof createClient>; onSignedOut: () => void; demo?: boolean };
 /** A replacement authenticated client tears down its cached pages before their next commit. */
 export function Console(props: ConsoleProps) {
   const clientKey = useMemo(uuid, [props.v2]);
   return <ConsolePage key={clientKey} {...props} />;
 }
 
-function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
+function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // Whether this session may paste, replace or remove a secret: the owner's password session alone (secrets_writable).
   const { writable: secretsWritable, whyNot: secretsWhyNot } = useSecrets(v2);
   const [signOutError, setSignOutError] = useState<string | null>(null);
@@ -504,8 +523,12 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
+  // kept out of what a demo shows.
+  const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
+  const settingsPage: SettingsPage = demo ? "demo" : where.settings ?? "keys";
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -738,6 +761,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       const out = () => void v2.signOutEverywhere().then(onSignedOut, (e) => setSignOutError(e instanceof ClientError ? e.message : "The sign-out did not reach the server. Try again."));
       if (!holdsMove(null, out)) out();
     }} banners={<>
+      {/* Off lands on the switch's page: the address may name a sample run or agent, which the server has not. */}
+      {demo && <DemoBar onOff={() => { setDemo(false); location.hash = "#/settings/demo"; }} />}
       {signOutError && <p className="border-b bg-card px-5 py-3 font-mono text-body text-destructive-text md:px-8" role="alert">Not signed out: {signOutError}</p>}
       {imported && (
         <p className="flex items-center gap-3 border-b bg-card px-5 py-3 font-mono text-body md:px-8" role="status">
@@ -747,8 +772,9 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
       )}
     </>}>
       {where.section === "settings"
-        ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
+        ? <Settings active={settingsPage} offered={settingsShown}>
+            {settingsPage === "demo" ? <DemoPage on={demo} onChange={setDemo} v2={v2} go={go} />
+              : where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
               : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
@@ -802,7 +828,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!externalPlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>

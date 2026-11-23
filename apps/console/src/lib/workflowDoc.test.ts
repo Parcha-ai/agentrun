@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { kybWorkflow } from "@/fixtures/dwf/workflows";
+import { kybWorkflow } from "@/demo/dwf/workflows";
 import { lineCol, lintWorkflow, nodeAtOffset, nodeMeta, parseWithSpans, spanOf } from "./workflowDoc";
 
 describe("parseWithSpans", () => {
