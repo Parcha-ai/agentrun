@@ -97,6 +97,56 @@ secrets over a one-character alphabet (always `7340` and `0`), and model keys ar
 Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
 then picks up again after the restart.
 
+## Fly.io
+
+One Fly Machine with a volume, from [`fly/fly.toml`](fly/fly.toml), set up by one command. Fly gives the Machine no
+Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key.
+
+This setup has not yet run on a real Fly account. It follows Fly's docs and flyctl's source, and its tests run the
+script against a stand-in `fly`. What only a real deploy will show is the volume's owner. A forum answer from Fly
+says a new volume is given to the image's user (uid 1000 here), and the docs don't say. If it is not, the server
+stops before it starts, and `fly logs` has one line: `/data is not writable by uid 1000 ...`.
+
+At Fly's prices on 2026-11-23, in its cheapest regions (`iad` and `ewr`), the Machine (`shared-cpu-1x`, 1 GB) costs
+$6.70 a month and the 10 GB volume $1.50, so $8.20 a month ([pricing](https://docs.fly.io/about/pricing)). The app's
+shared IPv4 address and its IPv6 address are free, and so is the first 10 GB of volume snapshots. Fly needs a card on
+the organization. A personal organization on the Free plan then gets $5 of usage a month.
+
+With [flyctl](https://docs.fly.io/flyctl/install) installed and logged in (`fly auth login`), from a clone of this
+repository:
+
+```sh
+sh deploy/fly/launch.sh <app name>     # a region may follow the name: iad unless given
+```
+
+In order, it:
+
+1. Makes the app (`fly apps create`), unless you have it already.
+2. Makes `AGENTRUN_TOKEN` (`openssl rand -hex 32`) and `AGENTRUN_SEAL_KEY` (`openssl rand -base64 32`) and stages them
+   as Fly secrets, with `AGENTRUN_PUBLIC_URL=https://<app name>.fly.dev/`. It hands them to `fly secrets import` on its
+   input, so neither is printed, written to a file or put on a command line. It makes each one only when Fly has none,
+   by the names `fly secrets list --json` gives. When that list fails, or comes back in a form it can't read, it stops
+   and makes none: a second seal key would leave what the first one sealed unreadable. Fly never shows a secret's value
+   again, so only Fly holds the seal key.
+3. Deploys `fly.toml` with `fly deploy --ha=false`: one Machine, never stopped, so a scheduled agent keeps running. The
+   first deploy makes its 10 GB volume at `/data`. Fly reaches the server on port 7340 and checks `GET /v2/health`.
+4. Prints the address and the setup link from the Machine's log.
+
+Open `https://<app name>.fly.dev/` and paste the setup code. To read it again later:
+`fly logs -a <app name> --no-tail | grep 'Set up this server' | tail -n 1`. When the log no longer has it,
+`curl -sS -X POST https://<app name>.fly.dev/v2/setup/code` prints a new one there. Set your password, then Continue
+with ChatGPT or add a model key in the console.
+
+Run the script again to upgrade to the release `fly.toml` pins. It keeps the app, the secrets and the volume, and
+deploys in the volume's region (from `fly volumes list --json`). Naming another region stops it, since a Machine there
+would start on a new, empty volume. Each deploy replaces the one Machine in place (`fly.toml` pins the rolling strategy). Keep the app to
+one Machine, because the store is SQLite on its one volume: `fly scale count 2` would start a second server on a new,
+empty volume ([scaling](https://docs.fly.io/launch/scale-count)). Fly warns that one Machine with one volume can lose
+data. It snapshots every volume daily and keeps each snapshot 5 days
+([snapshots](https://docs.fly.io/volumes/snapshots)). 1 GB of memory holds a run or two at once. For more, raise
+`memory` in `fly.toml` and run the script again. `fly.toml` sets `AGENTRUN_RUN_USER=same`, as `render.yaml` does and
+for the same reason.
+
 ## One command on a server you rent
 
 On a fresh Linux server (Ubuntu or Debian, x64 or arm64), logged in as root:
@@ -151,6 +201,27 @@ It runs on 1 GB of memory, with room for a run or two at once; 2 GB holds more. 
 written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month before VAT
 ([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
 GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
+
+### A DigitalOcean Droplet in one step
+
+When you create the Droplet (one of the Linux images above, 1 GiB or more), expand **Additional Options**, turn on
+**Startup scripts** and paste [`digitalocean/user-data.sh`](digitalocean/user-data.sh):
+
+```sh
+#!/bin/bash
+set -o pipefail
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+The Droplet runs it as root on its first boot ([user data](https://docs.digitalocean.com/products/droplets/how-to/provide-user-data/)).
+`pipefail` makes a failed download fail the script, which a plain `curl | sh` would hide.
+With `doctl compute droplet create`, pass `--user-data-file deploy/digitalocean/user-data.sh`. Once the Droplet is up,
+log in as root (`ssh root@<its address>`) and wait for the script with `cloud-init status --wait`. The installer's
+output is in `/var/log/cloud-init-output.log`, and `tail -n 20 /var/log/cloud-init-output.log` shows its last lines:
+the address, the SSH tunnel line and the setup link. The line in step 5 reads the code again later.
+
+Don't use App Platform: it has no volumes, and the server keeps everything in `/data`
+([App Platform storage](https://docs.digitalocean.com/products/app-platform/how-to/store-data/)).
 
 ## On Kubernetes, with Helm
 
@@ -212,7 +283,8 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
-| A server you rent (`--vps`) | The installer prints it. Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
+| Fly.io | `launch.sh` prints it. Later: `fly logs -a <app name> --no-tail \| grep 'Set up this server' \| tail -n 1`. Fly never shows `AGENTRUN_TOKEN` again. |
+| A server you rent (`--vps`) | The installer prints it (on a Droplet with the user data, in `/var/log/cloud-init-output.log`). Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
