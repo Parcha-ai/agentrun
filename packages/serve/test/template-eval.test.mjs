@@ -3,7 +3,6 @@
 // case per behaviour, its agent and its grader played by fixtures/faux-template-eval.mjs: no key, no network. Every
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -14,6 +13,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -37,34 +37,6 @@ const untilFile = (path, ended) => new Promise((resolve) => {
   if (existsSync(path)) done();
   ended.then(done, done);
 });
-// A command a test starts that cannot outlive it. It runs in a process group of its own, and on every path (a pass, a
-// failed assertion, the test's timeout) that group (the command and the eval's server and runs) is sent a SIGKILL and
-// the test lets go of its pipes, which a process it started may still hold, so no case keeps this file's process alive
-// past its end. A held eval left going holds for up to its 30-minute run bound, past a CI shard's 24-minute limit. A
-// signal a case sends goes to the command alone.
-function startedCli(t, args, env) {
-  const child = spawn(process.execPath, [CLI, ...args], { stdio: ["ignore", "pipe", "pipe"], env, detached: true });
-  const seen = { out: "", err: "" };
-  child.stdout.on("data", (chunk) => (seen.out += chunk));
-  child.stderr.on("data", (chunk) => (seen.err += chunk));
-  const closed = new Promise((resolve) => child.once("close", (code, signal) => resolve(code ?? signal)));
-  t.after(() => {
-    try {
-      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // The group has ended: nothing is left to stop.
-    }
-    child.stdout.destroy();
-    child.stderr.destroy();
-  });
-  return { child, seen, closed };
-}
-/** `promise`, or a failure naming `what` with the command's stderr so far once `ms` pass. */
-function within(promise, ms, what, seen) {
-  let timer;
-  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${ms / 1000} s. Its stderr so far:\n${seen.err}`)), ms)));
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-}
 const graderInputs = () => readFileSync(process.env.AGENTRUN_TEST_EVAL_GRADER_LOG, "utf8").trim().split("\n").map((line) => JSON.parse(line));
 
 // One eval of every fixture case, on one in-process server, which the tests below read.
@@ -965,10 +937,11 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
 
 test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
   const run = async (args) => {
-    const { seen, closed } = startedCli(t, ["eval-template", ...args], { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" });
-    const code = await within(closed, 120_000, `eval-template ${args.join(" ")}`, seen);
-    return { code, out: seen.out, err: seen.err };
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
   };
   const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
   assert.equal(passed.code, 0, passed.err);
@@ -990,13 +963,13 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
   const holding = join(dir, "holding");
-  const { child: held, seen: heldSeen, closed } = startedCli(t, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
-  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", heldSeen);
-  assert.ok(existsSync(holding), `the held run reached its turn: ${heldSeen.err}`);
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   held.kill("SIGINT");
-  const code = await within(closed, 60_000, "the eval's end after its SIGINT", heldSeen);
-  assert.equal(code, 130, heldSeen.err);
-  assert.match(heldSeen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   // A report path that exists and can't be written: refused before anything runs.
@@ -1004,7 +977,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
   for (const [args, said] of [
-    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
     [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],
