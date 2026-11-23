@@ -140,10 +140,12 @@ export interface RunnerOptions {
   memory?: RunnerMemory;
   /** The census a run's end writes in the place of the secrets its caller handed it, which that end erases
    *  (run-census.ts; RunPatch.census): made just before each final patch this runner writes, while the run's launch
-   *  still holds them, and undefined for a run that holds none. One not made within CENSUS_MS, or that fails, is left
-   *  out: the end then writes the marker "unscanned", and the run's files are withheld from a cut read after it.
-   *  Absent: no census (every such end writes the marker). */
+   *  still holds them, and undefined for a run that holds none. One not made within censusMs, or that fails, is left
+   *  out, said as an error event (step "census", the run's id and why): the end then writes the marker "unscanned", and
+   *  the run's files are withheld from a cut read after it. Absent: no census (every such end writes the marker). */
   census?: (runId: string) => Promise<RunPatch["census"] | undefined>;
+  /** The most a run's end waits for its census. Default CENSUS_MS. */
+  censusMs?: number;
   /** A refused stopped end that withdraws a call (endRefused): the first wait, its cap, and the tries at the cap before
    *  the run ends on its row alone. Defaults END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, END_RETRY_AT_CAP. */
   endRetryBackoffMs?: number;
@@ -278,6 +280,7 @@ export function startRunner(options: RunnerOptions): Runner {
     drainMs = 0,
     memory,
     census,
+    censusMs = CENSUS_MS,
     endRetryBackoffMs = END_RETRY_BACKOFF_MS,
     endRetryCapMs = END_RETRY_CAP_MS,
     endRetryAtCap = END_RETRY_AT_CAP,
@@ -366,15 +369,27 @@ export function startRunner(options: RunnerOptions): Runner {
   let unwatchCommands: (() => void) | undefined;
   let polling = false;
 
-  /** Run `runId`'s census for its end (RunnerOptions.census), as a patch's part: none past CENSUS_MS, or when it fails. */
+  /** Run `runId`'s census for its end (RunnerOptions.census), as a patch's part: none past censusMs, or when it fails.
+   *  Either is said as an error event (step "census") with the run's id and why, so a 403 on the run's files after its
+   *  end can be traced: an error's code or name only, never its message, which may name a file of the run's. */
   const censusFor = async (runId: string): Promise<Pick<RunPatch, "census">> => {
     if (!census) return {};
     let stop = () => {};
+    let why: string | undefined;
     const late = new Promise<undefined>((resolve) => {
-      const timer = setTimeout(() => resolve(undefined), CENSUS_MS);
+      const timer = setTimeout(() => {
+        why = `none within ${censusMs} ms`;
+        resolve(undefined);
+      }, censusMs);
       stop = () => clearTimeout(timer);
     });
-    const made = await Promise.race([census(runId).catch(() => undefined), late]).finally(() => stop());
+    const failed = (error: unknown): undefined => {
+      const code = (error as { code?: unknown } | null)?.code;
+      why = `it failed (${typeof code === "string" ? code : error instanceof Error ? error.name : "unknown"})`;
+      return undefined;
+    };
+    const made = await Promise.race([census(runId).catch(failed), late]).finally(() => stop());
+    if (!made && why !== undefined) emit({ type: "error", runId, step: "census", message: `${why}: the end writes "unscanned", and the run's files are withheld from a cut read after it` });
     return made ? { census: made } : {};
   };
 

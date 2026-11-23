@@ -96,6 +96,8 @@ test("a header in an unlisted scheme has its credential listed alone when the wo
     ["Zoho-oauthtoken", "1000.notasecret", "a hyphenated scheme, with a digit"],
     ["Klaviyo-API-Key", "pk_notasecret01", "a hyphenated scheme, with a digit"],
     ["Api-Key", "notasecretapikeyvalue", "a hyphenated scheme, 20 characters or more"],
+    ["DeepL-Auth-Key", "0notasecret-deepl:fx", "DeepL's scheme, with a digit"],
+    ["Bot", "notsecret42", "under 20 characters, with a digit"],
   ];
   for (const [scheme, token, why] of shaped) {
     const values = handedSecretValues({ mcp: { files: { headers: { "x-auth": `${scheme} ${token}` }, origin: ORIGIN } } });
