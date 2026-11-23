@@ -143,18 +143,24 @@ export function mediaSeconds(bytes: Uint8Array): number | undefined {
 // A voice's length, for a job billed by it whose sender made the file (a talking head): what a decoder plays, never a
 // length a header states, which the sender could write short.
 
-/** An MP3 voice: every frame from its first byte to its last, each its samples over its rate, a last frame cut short
- *  counted whole. Only an ID3v2 tag and the zeros after it may come before the frames, and only an ID3v1 tag after;
- *  any other byte gives no length. A frame count in a Xing, Info or VBRI header is not read: each is its frame. */
+/** Whether the frame at `at` holds a Xing, Info or VBRI header, which a decoder reads as the file's header and does not
+ *  play. */
+const headerFrame = (b: Uint8Array, at: number, frame: Frame): boolean =>
+  tag(b, at + 4 + frame.side, "Xing") || tag(b, at + 4 + frame.side, "Info") || tag(b, at + 36, "VBRI");
+
+/** An MP3 voice: every audio frame from its first byte to its last, each its samples over its rate, a last frame cut
+ *  short counted whole. Only an ID3v2 tag and the zeros after it may come before the frames, and only an ID3v1 tag after;
+ *  any other byte gives no length. A first frame holding a Xing, Info or VBRI header is skipped, as a decoder skips it,
+ *  and the frame count it states is not read; a later frame is audio whatever it holds. */
 function playedMp3Seconds(b: Uint8Array): number | undefined {
   let at = id3End(b);
   while (at < b.length && b[at] === 0) at += 1;
   const end = id3v1Start(b);
   if (at >= end) return undefined;
   let seconds = 0;
-  for (let frame = frameAt(b, at); at < end; frame = frameAt(b, at)) {
+  for (let frame = frameAt(b, at), first = true; at < end; frame = frameAt(b, at), first = false) {
     if (!frame) return undefined;
-    seconds += frame.samples / frame.rate;
+    if (!first || !headerFrame(b, at, frame)) seconds += frame.samples / frame.rate;
     at += frame.bytes;
   }
   return length(seconds);

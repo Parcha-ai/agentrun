@@ -81,19 +81,28 @@ const u32le = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 2
 /** MPEG-1 Layer III frames at 48 kHz, 32 kbit/s, stereo: 1152 samples (24 ms) and 96 bytes each. */
 const frames48 = (n) => Array.from({ length: n }, () => [0xff, 0xfb, (1 << 4) | (1 << 2), 0x00, ...new Array(92).fill(0)]).flat();
 
-test("a voice's MP3 length is every frame walked from its first byte to its last; a frame count its header states is not read", async () => {
+test("a voice's MP3 length is every audio frame walked from its first byte to its last; a frame count its header states is not read", async () => {
   const { voiceSeconds, mediaSeconds } = await load();
   near(voiceSeconds(SAMPLES.mp3Cbr.bytes), SAMPLES.mp3Cbr.seconds, 0.05, "constant bitrate");
-  near(voiceSeconds(SAMPLES.mp3Info.bytes), SAMPLES.mp3Info.seconds, 0.05, "with an Info header, its frames walked");
+  // ffmpeg wrote 86 frames of 36 ms after its Info frame, which holds the header and no audio: a decoder skips it.
+  near(voiceSeconds(SAMPLES.mp3Info.bytes), 86 * 0.036, 1e-9, "with an Info header, the frames after it walked");
   // An Info header that claims 1 frame over a file of 129.
   const forged = Uint8Array.from(SAMPLES.mp3Info.bytes);
   forged.set(u32(1), find(forged, "Info") + 8);
   assert.ok(mediaSeconds(forged) < 0.1, "mediaSeconds takes the header's count");
-  near(voiceSeconds(forged), SAMPLES.mp3Info.seconds, 0.05, "voiceSeconds walks the frames");
-  // A VBRI header that claims 1 frame, on a frame followed by 200 more.
+  near(voiceSeconds(forged), 86 * 0.036, 1e-9, "voiceSeconds walks the frames");
+  // A VBRI header that claims 1 frame, on a frame followed by 200 more: the 200 play, the header's frame does not.
   const vbri = [0xff, 0xfb, 0x90, 0x00, ...new Array(32).fill(0), ...ascii("VBRI"), 0, 1, 0, 0, 0, 0, ...u32(417), ...u32(1), ...new Array(417 - 54).fill(0)];
   const vbriFile = new Uint8Array([...vbri, ...Array.from({ length: 200 }, () => [0xff, 0xfb, 0x90, 0x00, ...new Array(413).fill(0)]).flat()]);
-  near(voiceSeconds(vbriFile), (201 * 1152) / 44_100, 1e-9, "201 frames, not VBRI's 1");
+  near(voiceSeconds(vbriFile), (200 * 1152) / 44_100, 1e-9, "200 frames, not VBRI's 1");
+  // A Xing header frame (after 32 bytes of side information) before 50 frames: the 50. Alone, it plays nothing.
+  const xing = [...frames48(1).slice(0, 36), ...ascii("Xing"), ...u32(1), ...u32(1)];
+  const xingFrame = [...xing, ...new Array(96 - xing.length).fill(0)];
+  near(voiceSeconds(new Uint8Array([...xingFrame, ...frames48(50)])), 50 * 0.024, 1e-9, "50 frames after a Xing frame");
+  assert.equal(voiceSeconds(new Uint8Array(xingFrame)), undefined, "a Xing frame alone");
+  // Only the first frame can be a header: "Info" in a later frame's side information is audio, counted.
+  const late = [...frames48(10), ...frames48(1).slice(0, 36), ...ascii("Info"), ...new Array(56).fill(0), ...frames48(9)];
+  near(voiceSeconds(new Uint8Array(late)), 20 * 0.024, 1e-9, "20 frames, Info in the 11th");
   // An ID3v2 tag and the zeros after it, and an ID3v1 tag at the end, are not frames and not refused.
   const tagged = new Uint8Array([...ascii("ID3"), 3, 0, 0, 0, 0, 2, 44, ...new Array(300).fill(0), 0, 0, 0, ...frames48(50), ...ascii("TAG"), ...new Array(125).fill(0)]);
   near(voiceSeconds(tagged), 50 * 0.024, 1e-9, "50 frames between the tags");
