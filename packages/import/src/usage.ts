@@ -4,13 +4,15 @@
 //   openai     input_tokens holds cached_input_tokens (and a cache write where one is counted): subtracted. output_tokens
 //              holds reasoning_output_tokens, kept as `reasoning` beside it. Codex writes OpenAI's counts.
 //   pi         already split as Usage is, cacheWrite1h included.
+//   gemini     promptTokenCount (input) holds cachedContentTokenCount (cached): subtracted. thoughtsTokenCount is billed as
+//              output, so it is added to it and kept as `reasoning`; toolUsePromptTokenCount is input beside the prompt.
 import { isObject } from "./text.js";
 import type { Usage } from "./types.js";
 
-export type UsageFormat = "anthropic" | "openai" | "pi";
+export type UsageFormat = "anthropic" | "openai" | "pi" | "gemini";
 
 /** Each format's names for input, cache read, cache write and output, and whether its input holds its cache counts. */
-const NAMES: Record<UsageFormat, { input: string; cacheRead: string; cacheWrite: string; output: string; cachedIn: boolean }> = {
+const NAMES: Record<Exclude<UsageFormat, "gemini">, { input: string; cacheRead: string; cacheWrite: string; output: string; cachedIn: boolean }> = {
   anthropic: { input: "input_tokens", cacheRead: "cache_read_input_tokens", cacheWrite: "cache_creation_input_tokens", output: "output_tokens", cachedIn: false },
   openai: { input: "input_tokens", cacheRead: "cached_input_tokens", cacheWrite: "cache_write_input_tokens", output: "output_tokens", cachedIn: true },
   pi: { input: "input", cacheRead: "cacheRead", cacheWrite: "cacheWrite", output: "output", cachedIn: false },
@@ -18,11 +20,25 @@ const NAMES: Record<UsageFormat, { input: string; cacheRead: string; cacheWrite:
 
 const count = (value: unknown): number | undefined => (Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined);
 
+/** Gemini CLI's TokensSummary ({input, output, cached, thoughts?, tool?, total}, from the API's usageMetadata). */
+function geminiUsage(raw: Record<string, unknown>): Usage | undefined {
+  const prompt = count(raw.input);
+  const candidates = count(raw.output);
+  const cached = count(raw.cached ?? 0);
+  const thoughts = count(raw.thoughts ?? 0);
+  const tool = count(raw.tool ?? 0);
+  if (prompt === undefined || candidates === undefined || cached === undefined || thoughts === undefined || tool === undefined || cached > prompt) return undefined;
+  const out: Usage = { input: prompt - cached + tool, output: candidates + thoughts, cacheRead: cached, cacheWrite: 0 };
+  if (count(raw.thoughts) !== undefined) out.reasoning = thoughts;
+  return out;
+}
+
 /** A request's usage as `format` writes it, as Usage; undefined unless input and output are counts (an absent cache
  *  count is 0) and the input left is not negative. The 1h part of the cache write, or the reasoning part of the output,
  *  is kept only when it is a count of at most the whole. */
 export function normalizeUsage(format: UsageFormat, raw: unknown): Usage | undefined {
   if (!isObject(raw)) return undefined;
+  if (format === "gemini") return geminiUsage(raw);
   const names = NAMES[format];
   const usage = { input: count(raw[names.input]), output: count(raw[names.output]), cacheRead: count(raw[names.cacheRead] ?? 0), cacheWrite: count(raw[names.cacheWrite] ?? 0) };
   if (usage.input === undefined || usage.output === undefined || usage.cacheRead === undefined || usage.cacheWrite === undefined) return undefined;

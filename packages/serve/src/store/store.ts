@@ -234,7 +234,7 @@ export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importe
 }
 
 /** The harness an imported run came from. */
-export type ImportSource = "claude-code" | "codex" | "pi";
+export type ImportSource = "claude-code" | "codex" | "pi" | "gemini";
 /** Where an imported run came from: the harness that ran it, and its own session id. `file` is the server's own record of
  *  the session file an import read whole (the sha-256 of its path, never the path, with its size and mtime), so a later
  *  import does not read an unchanged file again; it is internal and never shown on an answer. The unique import index keys
