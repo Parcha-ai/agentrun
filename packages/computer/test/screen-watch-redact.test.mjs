@@ -126,7 +126,7 @@ test("redactWords cuts every URL form it cut before, and only those", () => {
 test("redactWords cuts every endpoint form it cut before, and only those", () => {
 	assertCuts([
 		["failed to connect to 'live.phone-harness.com:22220'", "failed to connect to '[an endpoint]'"],
-		["adb connect emulator-5554.local:5555 ok", "adb connect [an endpoint] ok"],
+		["adb connect emulator-5554.example:5555 ok", "adb connect [an endpoint] ok"],
 		["a.b.co:1", "[an endpoint]"],
 		["X.IO:65535", "[an endpoint]"],
 		["a-.io:80", "[an endpoint]"],
@@ -155,7 +155,7 @@ test("redactWords cuts every endpoint form it cut before, and only those", () =>
 		["a.io:", "a.io:"],
 		["a.io: 80", "a.io: 80"],
 		// An IPv4 address is still the last shape's.
-		["no route to 10.1.2.3:5555", "no route to [an endpoint]"],
+		["no route to 192.0.2.3:5555", "no route to [an endpoint]"],
 	]);
 });
 
@@ -195,7 +195,7 @@ test("redactWords cuts a JWT from the first eyJ of its run, glued to a word char
 
 test("redactWords cuts every login form it cut before, and only those", () => {
 	assertCuts([
-		["fetch of user:hunter2@db.internal failed", "fetch of [a login] failed"],
+		["fetch of user:hunter2@db.example.net failed", "fetch of [a login] failed"],
 		["first.last+tag-x:pw@mail.example.org said no", "[a login] said no"],
 		["a URL's own login goes with it: ftp://ana:s3cret@files.example/x", "a URL's own login goes with it: [a URL]"],
 		["user:pa:ss@host", "[a login]"],
