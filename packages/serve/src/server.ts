@@ -55,6 +55,7 @@ import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
+import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
@@ -407,6 +408,10 @@ export type ServeOptions = {
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (exa-keyless.ts). */
   fauxExa?: string;
+  /** With `faux` only: the URL of a fake MCP server (a test's, on loopback) that web_search's and web_fetch's keyless
+   *  Firecrawl ask in place of Firecrawl's endpoint (firecrawl-keyless.ts). A URL, not a module: it is passed as given.
+   *  Under `faux` with none, keyless Firecrawl is never asked. */
+  fauxFirecrawl?: string;
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
@@ -542,6 +547,8 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
+  // A URL, so never resolved as a path.
+  if (options.fauxFirecrawl) env[FAUX_FIRECRAWL_ENV] = options.fauxFirecrawl;
   // The mountinfo the server itself reads (fauxMountinfo in serve), also when its own environment names it: a CLI server
   // in a container hands it to the runner beside it, whose environment drops every faux variable it inherited.
   const mountinfo = options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV];
@@ -1762,8 +1769,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // a 500: the revision ledger its `learning_usd` and `all_in_usd` share is read from takes the champion with no record
     // skipped (as before the purge), so a revision a purged run wrote may be the one it counts as serving, for this read
     // alone. Figures only: no text is read or shown. Every write that asks the gate still fails closed (decideCheck
-    // throws, so no promote lands; recordPromotion trims nothing).
+    // throws, so no promote lands; recordPromotion trims nothing). Such a read says so: `cost.degraded`.
+    let degraded = false;
     const all = await runAllInOverStore(store, runId, own, (agentId, records) => refusedFor(agentId, records).catch((error: unknown): Refused => {
+      degraded = true;
       const line = `learning: run ${runId}: its costs were read without the purge gate's answer: ${error instanceof Error ? error.message : String(error)}`;
       if (log) log(logLine("learning", { line }));
       else process.stderr.write(`agentrun-serve: ${line}\n`);
@@ -1772,7 +1781,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd, ...(degraded ? { degraded: true } : {}) } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,

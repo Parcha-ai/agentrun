@@ -440,7 +440,7 @@ test("a web: fixture answers a matching query and a fetched URL from the case, a
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
   const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
   assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
-  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.ok(["native", "firecrawl-keyless", "parallel"].includes(robot.provider), robot.provider);
   assert.deepEqual(outage, { error: "Parallel's search answered 503" });
   assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
   const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);

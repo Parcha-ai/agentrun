@@ -97,7 +97,7 @@
       },
       {
         "name": "web_fetch",
-        "summary": "Read one public web page through Parallel's extract where PARALLEL_API_KEY is set, else (or when Parallel answers no page) fetched through the guarded direct fetch: its Page plus via, \"parallel\" or \"direct\"; a URL the guarded fetch refuses is refused, never sent to Parallel.",
+        "summary": "Read one public web page through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one), else (or when Firecrawl answers no page) fetched through the guarded direct fetch: its Page plus via, \"firecrawl-keyless\" or \"direct\"; a URL the guarded fetch refuses is refused, never sent to a third party.",
         "nodes": true,
         "calls": true,
         "available": true,
@@ -109,7 +109,7 @@
       },
       {
         "name": "web_search",
-        "summary": "Search the web through Exa's keyless endpoint (mcp.exa.ai, no key; only the query leaves this server), {query, n?} -> {provider: \"exa-keyless\", query, results: [{url, title, snippet, published?}]}, or {error} (a 429 when Exa's free rate limit is reached).",
+        "summary": "Search the web through Firecrawl's keyless endpoint (mcp.firecrawl.dev, no key; only the query leaves this server), with Exa's keyless endpoint behind it, {query, n?} -> {provider: \"firecrawl-keyless\", query, results: [{url, title, snippet, published?}]}, or {error} when both free limits are reached.",
         "nodes": true,
         "calls": false,
         "available": true,

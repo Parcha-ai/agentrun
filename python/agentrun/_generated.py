@@ -1595,12 +1595,12 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -2101,12 +2101,12 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 
 
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -3271,6 +3271,7 @@ class Cost(_CostRequired, total=False):
     learning_usd: float | None
     tools_usd: float | None
     all_in_usd: float | None
+    degraded: Literal[True]
     plan: CostPlan
 
 
@@ -9174,7 +9175,7 @@ class GetToolSettingsResponse(TypedDict):
 
 
 class _GetToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired, total=False):
@@ -9182,7 +9183,7 @@ class GetToolSettingsResponseWebSearch(_GetToolSettingsResponseWebSearchRequired
 
 
 class _GetToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class GetToolSettingsResponseWebFetch(_GetToolSettingsResponseWebFetchRequired, total=False):
@@ -9244,12 +9245,12 @@ class PutToolSettingsBodyAskPerson(TypedDict, total=False):
 
 
 class PutToolSettingsBodyWebFetch(TypedDict, total=False):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
 
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -9325,7 +9326,7 @@ class PutToolSettingsResponse(TypedDict):
 
 
 class _PutToolSettingsResponseWebSearchRequired(TypedDict):
-    provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
 
 
 class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired, total=False):
@@ -9333,7 +9334,7 @@ class PutToolSettingsResponseWebSearch(_PutToolSettingsResponseWebSearchRequired
 
 
 class _PutToolSettingsResponseWebFetchRequired(TypedDict):
-    provider: Literal["kernel", "parallel"]
+    provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
 
 
 class PutToolSettingsResponseWebFetch(_PutToolSettingsResponseWebFetchRequired, total=False):

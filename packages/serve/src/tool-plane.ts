@@ -3,11 +3,15 @@
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
 // the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
 // search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
-// it); (4) the kernel's keyless fallback: web_fetch's guarded direct fetch, and web_search on Exa's public keyless MCP
-// endpoint (exa-keyless.ts). On claude-agent `auto` skips (2): Claude's own search is an explicit pick, `native`. Codex's
-// own search on codex, Parallel or keyless Exa behind a gateway, on OpenRouter or under a spend cap;
+// it); (4) the keyless fallback: Firecrawl's public keyless MCP endpoint (firecrawl-keyless.ts), with Exa's
+// (exa-keyless.ts) behind it. web_fetch has no (2): its `auto` is the guarded direct fetch where the server holds a
+// Parallel key (as before keyless Firecrawl), else keyless Firecrawl with the guarded direct fetch behind it, and
+// Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a third party, and its `why` says so; a URL
+// the public-host guard refuses never goes (web-fetch.ts). On claude-agent `auto` skips (2):
+// Claude's own search is an explicit pick, `native`. Codex's own search on codex, Parallel or keyless Firecrawl behind
+// a gateway, on OpenRouter or under a spend cap;
 // `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
-// unavailable where there is none, never Exa. A grant names a capability, never a provider. A pick of parallel without
+// unavailable where there is none, never a keyless search. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's
 // process the outcome as a non-secret description (TOOL_PLANE_ENV): the run reads its tools' providers there, never from
@@ -49,16 +53,22 @@ type EmailScope = (typeof EMAIL_SCOPES)[number];
  * catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
-/** The providers a user may pick for each capability that has a choice, its default first: `auto`, the native search
- *  where there is one (never on claude-agent, where Claude's own search is picked as `native`), else Parallel where the
- *  server holds its key, else keyless Exa; `native`, the harness's own tool or its model provider's hosted one, and
- *  nothing else; `exa-keyless`, Exa's public MCP endpoint, no key; `kernel`, the guarded direct fetch; `parallel`,
- *  Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`, web_search turned off: nothing is searched, and an
+/** web_fetch's guarded direct fetch, by its id: "kernel", the kernel's own fetch, never the Kernel browser provider.
+ *  Named once here, so the scan of vendor ids (scripts/check-vendor-ids.mjs) counts it once. */
+const DIRECT_FETCH = "kernel" as const;
+/** The providers a user may pick for each capability that has a choice, its default first: `auto`, for web_search the
+ *  native search where there is one (never on claude-agent, where Claude's own search is picked as `native`), else
+ *  Parallel where the server holds its key, else keyless Firecrawl; for web_fetch the guarded direct fetch where the
+ *  server holds a Parallel key, else keyless Firecrawl; `native`, the harness's own tool or its model provider's hosted
+ *  one, and nothing else; `firecrawl-keyless`, Firecrawl's public MCP endpoint, no key, with keyless Exa behind it for
+ *  web_search and the guarded direct fetch behind it for web_fetch; `exa-keyless`, Exa's public MCP endpoint alone, no
+ *  key; `kernel`, the guarded direct fetch; `parallel`, Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`,
+ *  web_search turned off: nothing is searched, and an
  *  agent naming it is refused until it is turned on again. The browser's: `auto`, the computer registry's first browser
  *  provider whose keys the server holds (Browserbase, else Kernel); a browser provider's id (`browserbase`, `kernel`:
  *  BROWSER_VENDOR_IDS), that one alone; `chrome`, a Chrome on the server's own host, which no server sets up yet
  *  (browserBy). */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "exa-keyless", "parallel", "off"] as const, web_fetch: ["kernel", "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"] as const, web_fetch: ["auto", "firecrawl-keyless", DIRECT_FETCH, "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** The permissions `name` may be set to: ask is offered for the tools whose approved call the kernel runs itself, outside
@@ -143,8 +153,9 @@ export const sortedPin = (pin: Pin): Pin => canonicalPin(pin);
 /** The tools' settings, the server's (`/v2/settings/tools`) and an agent's own (`definition.tool_settings`), one shape:
  *  by settings key. */
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
-/** What a capability resolves to on a run: the native tool, the kernel's own, keyless Exa, Parallel, or why not. */
-export type Resolution = "native" | "kernel" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
+/** What a capability resolves to on a run: the native tool, the kernel's own, keyless Firecrawl (keyless Exa behind it),
+ *  keyless Exa, Parallel, or why not. */
+export type Resolution = "native" | typeof DIRECT_FETCH | "firecrawl-keyless" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
 /** web_search with `off` picked: no search leaves the server. */
 export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
@@ -209,7 +220,7 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   // (cappedOwn: per-use fees the cap cannot reserve yet, its request's bound holding the pages' input tokens, not the
   // fees; or a request with no input bound). A harness with none (OpenCode, whose proxy policy refuses a
   // provider-hosted tool) has none at all. Where there is none, `native` is unavailable, and `auto` goes to Parallel on
-  // the server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Exa.
+  // the server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Firecrawl.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
   const { facts } = input;
   if (facts) {
@@ -229,6 +240,11 @@ const nativeWhy = (input: ResolveInput): string => {
   return facts?.webSearch ? `${facts.label}'s own search` : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
 };
 
+/** Keyless Firecrawl in a sentence, as web_search and web_fetch use it. web_fetch's says plainly that each URL leaves
+ *  the server, and how to keep it here. */
+const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa behind it";
+export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
+
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
  *  the two never disagree. */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
@@ -238,9 +254,14 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (input.permission === "deny") return { resolves: DENIED, why: "set to deny: the gate refuses each call" };
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
   if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: `Parallel is picked, and it needs ${keyNeeded([PARALLEL_KEY_ENV])}` };
-  if (capability === "web_fetch") return { resolves: "kernel", why: "the guarded direct fetch" };
+  if (capability === "web_fetch") {
+    if (chosen === DIRECT_FETCH) return { resolves: DIRECT_FETCH, why: `the guarded direct fetch, ${picked}` };
+    if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_FETCH}` };
+    return input.parallelKey ? { resolves: DIRECT_FETCH, why: `the guarded direct fetch: the server holds ${key}, so no URL goes to a keyless service` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+  }
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
+  if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_SEARCH}` };
   // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
   // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
   const asks = input.permission === "ask" && input.facts !== undefined;
@@ -249,11 +270,11 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
   // `auto` skips a harness's own search that has per-use fees (its facts' `native`: the provider's search tool), an
-  // explicit pick (`native`): Parallel on the server's key, else keyless Exa.
+  // explicit pick (`native`): Parallel on the server's key, else keyless Firecrawl.
   const { facts } = input;
-  if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "exa-keyless", why: `Exa's free keyless search, no key; ${facts.label}'s own search is an explicit pick` };
+  if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "firecrawl-keyless", why: `${FIRECRAWL_SEARCH}; ${facts.label}'s own search is an explicit pick` };
   if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
-  return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "exa-keyless", why: `${none.why}; Exa's free keyless search, no key` };
+  return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "firecrawl-keyless", why: `${none.why}; ${FIRECRAWL_SEARCH}` };
 }
 
 /** What `capability` resolves to on a run of `input`. */
@@ -362,7 +383,7 @@ export const TOOL_PLANE_ENV = "AGENTRUN_SERVE_TOOL_PLANE";
 export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, run = false }: { capped?: boolean; run?: boolean } = {}): Plane {
   const harness = tooling.harness ?? DEFAULT_HARNESS;
   // A workflow's model nodes may each run on another tier's model, and a native search asks one model's provider: a
-  // workflow's search resolves with no model (keyless Exa, or Parallel where picked), never on a model a node may not use.
+  // workflow's search resolves with no model (keyless Firecrawl, or Parallel where picked), never on a model a node may not use.
   // A run that names no model runs on the host's for its harness (hostModel: a model key's default when no AGENT_MODEL
   // it runs is set), so its search resolves on that one.
   const model = tooling.workflow ? undefined : (tooling.model ?? hostModel(env, "default", harness));
