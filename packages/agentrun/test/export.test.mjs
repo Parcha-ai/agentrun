@@ -95,6 +95,32 @@ test("demo: agentrun export writes the agent as a package folder readPackage tak
   assert.match(again.err, /not empty/);
 });
 
+test("agentrun export refuses a --out not named as the package, writes nothing and names the folder that validates; that folder exports and validates", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const { data, api } = await serve(t, dir, env);
+  const cli = cliOf(env, data);
+  // The package is named after the agent's name here, not its id: the folder the id suggests is not the package's.
+  const made = await api("POST", "/agents", { definition: { id: "triage-2", name: "Inbox triage", instructions: "Sort each message you are given.", tools: ["read"], skills: [], learning: false } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const wrong = join(dir, "triage-2");
+  const refused = cli(["export", "triage-2", "--out", wrong]);
+  assert.equal(refused.code, 2, `${refused.err}${refused.out}`);
+  const printed = JSON.parse(refused.out);
+  assert.equal(printed.name, "inbox-triage");
+  assert.equal(printed.folder, null);
+  const right = join(dir, "inbox-triage");
+  assert.ok(refused.err.includes("inbox-triage") && refused.err.includes(right), refused.err);
+  assert.match(refused.err, /[Nn]othing was written/);
+  assert.equal(existsSync(wrong), false, "nothing written");
+
+  // The folder it names, given with a trailing slash, is written and passes validate.
+  const exported = cli(["export", "triage-2", "--out", `${right}/`]);
+  assert.equal(exported.code, 0, exported.err);
+  assert.equal(JSON.parse(exported.out).folder, right);
+  const validated = cli(["template", "validate", right]);
+  assert.equal(validated.code, 0, validated.err);
+});
+
 test("agentrun export writes nothing and exits 2 when the report blocks the export, or the server does not export the agent", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch();
   const { data, api } = await serve(t, dir, env);
