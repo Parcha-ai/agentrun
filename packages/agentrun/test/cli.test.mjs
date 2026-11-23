@@ -28,13 +28,15 @@ function scratch(t) {
   return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") } };
 }
 
-/** A port nothing listens on. */
-async function closedPort() {
-  const server = createServer();
+/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
+ *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). `connections()` counts them. The CLI must run
+ *  beside it (`run`, not a blocking spawnSync) whenever it may connect. */
+async function dropping(t) {
+  let connections = 0;
+  const server = createServer((socket) => (connections++, socket.destroy()));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, connections: () => connections };
 }
 
 /** The server on `data`, with a faux model; resolves once it wrote DIR/.server.json. */
@@ -92,8 +94,15 @@ function run(env, args, { input, extra = {}, timeout } = {}) {
   });
 }
 
+/** The CLI run to its end, blocking this process (spawnSync), its output kept in `seen`. `.beside` runs it without
+ *  blocking, for a call that reaches a listener in this process. */
 function cliOf(env, seen) {
-  return (args, { input, extra = {} } = {}) => {
+  const beside = async (args, options) => {
+    const done = await run(env, args, options);
+    seen.push(done.out, done.err);
+    return done;
+  };
+  return Object.assign((args, { input, extra = {} } = {}) => {
     // maxBuffer: `server openapi` prints the whole document, past spawnSync's 1 MiB default.
     const run = spawnSync(process.execPath, [BIN, ...args], { env: { ...env, ...extra }, input, encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
     // A spawn that failed (a timeout, or output past maxBuffer: the CLI killed, its stdout cut short) is the test's failure,
@@ -101,7 +110,7 @@ function cliOf(env, seen) {
     assert.ifError(run.error);
     seen.push(run.stdout, run.stderr);
     return { code: run.status, out: run.stdout, err: run.stderr, json: () => JSON.parse(run.stdout) };
-  };
+  }, { beside });
 }
 
 test("CLI capture API commands resolve their documented noun and verb through the public bin", async (t) => {
@@ -230,10 +239,12 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.equal(oauthRaw.code, 2, oauthRaw.err);
   for (const run of [oauthCommand, oauthRaw]) assert.ok(!`${run.out}${run.err}`.includes("not-a-secret"), "the refused value is in no output");
   // 3: nothing answers.
-  const port = await closedPort();
-  const unreachable = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
-  assert.equal(unreachable.code, 3);
-  assert.match(unreachable.err, /Cannot reach the server/);
+  const nobody = await dropping(t);
+  const unreachable = await cli.beside(["agents", "list", "--base-url", nobody.base], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(unreachable.code, 3, unreachable.err);
+  assert.match(unreachable.err, /Cannot reach the server at .+ \(UND_ERR_SOCKET\)/);
+  const reached = nobody.connections();
+  assert.ok(reached >= 1, "the request reached the listener");
   // 4: no token for a server named by URL, and a token the server refuses.
   const noToken = cli(["agents", "list", "--base-url", written.base_url]);
   assert.equal(noToken.code, 4);
@@ -242,8 +253,9 @@ test("demo: the CLI creates an agent, starts a capped run, reads it, lists runs 
   assert.notEqual(server.token, "fake-test-key");
   assert.equal(wrong.code, 4);
   // The local server's token is never sent to another address.
-  const elsewhere = cli(["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`, ...data]);
-  assert.equal(elsewhere.code, 4);
+  const elsewhere = await cli.beside(["agents", "list", "--base-url", nobody.base, ...data]);
+  assert.equal(elsewhere.code, 4, elsewhere.err);
+  assert.equal(nobody.connections(), reached, "nothing was sent to the other address");
 
   for (const text of seen) assert.ok(!text.includes(server.token), "no output holds the token");
   server.child.kill("SIGTERM");
@@ -255,19 +267,21 @@ test("a stale DIR/.server.json is said plainly, exit 3; a server started with it
   const { dir, env } = scratch(t);
   const cli = cliOf(env, []);
   const record = join(dir, ".server.json");
-  const port = await closedPort();
+  const nobody = await dropping(t);
   const gone = spawnSync(process.execPath, ["-e", ""]).pid;
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: gone, token_file: join(dir, ".token") }), { mode: 0o600 });
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: gone, token_file: join(dir, ".token") }), { mode: 0o600 });
   writeFileSync(join(dir, ".token"), "ar_local_test_token_0123456789abcdef\n", { mode: 0o600 });
   const dead = cli(["agents", "list", "--data", dir]);
   assert.equal(dead.code, 3);
   assert.equal(dead.err, `The server recorded in ${record} (pid ${gone}) is not running; start it with \`npx @parcha/agentrun\` or set AGENTRUN_BASE_URL.\n`);
-  // A pid that is alive (another process took it) but no server at the address: the same.
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: process.pid, token_file: join(dir, ".token") }));
-  const silent = cli(["agents", "list", "--data", dir]);
-  assert.equal(silent.code, 3);
+  assert.equal(nobody.connections(), 0, "a dead pid is said before anything is sent");
+  // A pid that is alive (another process took it) but no server answers at the address: the same.
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: process.pid, token_file: join(dir, ".token") }));
+  const silent = await cli.beside(["agents", "list", "--data", dir]);
+  assert.equal(silent.code, 3, silent.err);
   assert.match(silent.err, /is not running/);
-  writeFileSync(record, JSON.stringify({ base_url: `http://127.0.0.1:${port}/v2`, pid: process.pid }));
+  assert.ok(nobody.connections() >= 1, "the request reached the listener");
+  writeFileSync(record, JSON.stringify({ base_url: nobody.base, pid: process.pid }));
   const envToken = cli(["agents", "list", "--data", dir]);
   assert.equal(envToken.code, 4);
   assert.match(envToken.err, /set AGENTRUN_API_KEY/);
@@ -430,13 +444,13 @@ test("learning approve, which takes the owner's console session and refuses ever
   assert.doesNotMatch(cli(["learning"]).out, /approve/);
 });
 
-test("with no server at the address, the hint names --base-url for a server on another port", async (t) => {
+test("with no server answering at the address, the hint names --base-url for a server on another port", async (t) => {
   const { env } = scratch(t);
-  const port = await closedPort();
-  const down = await run(env, ["agents", "list", "--base-url", `http://127.0.0.1:${port}/v2`], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
-  assert.equal(down.code, 3);
+  const nobody = await dropping(t);
+  const down = await run(env, ["agents", "list", "--base-url", nobody.base], { extra: { AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(down.code, 3, down.err);
   assert.match(down.err, /--base-url/);
-  assert.match(down.err, /ECONNREFUSED/);
+  assert.match(down.err, /UND_ERR_SOCKET/);
 });
 
 test("a reader that closes stdout early (| head) ends the command quietly, exit 0, no EPIPE on stderr", async (t) => {
