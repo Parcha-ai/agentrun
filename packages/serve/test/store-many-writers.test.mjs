@@ -324,3 +324,51 @@ test("a firing recorded while another holds the trigger's last room waits, then 
   assert.ok(outcome instanceof TriggerFull, `then found no room: ${outcome}`);
   assert.equal((await store.triggers.pending()).length, 1, "one firing due, as the room allows");
 });
+
+test("an owner's save over a server the API token saved, in flight, holds the token's removal until it commits: the removal then finds the token's mark gone and removes nothing", ONLY, async (t) => {
+  const { PgConnection } = await import("../dist/store/postgres/connection.js");
+  const { store, file } = await storeOn(t);
+  const { store: owner } = await storeOn(t, { file, role: "runner" });
+  const tokens = { record: "mcp.source/notes" };
+  const server = { name: "notes", url: "https://mcp.example.com/notes", auth: "none", tools: [], sealed: null };
+  const saved = await store.mcp.putIfCredential(server, null, tokens);
+  await store.settings.put(tokens.record, { source: "url", toolkit: null, of: saved.createdAt, by: "token" });
+  const mark = { auth: "none", sealed: false, changedAt: null };
+  const watcher = await watcherOf(t);
+  // The owner's save, held inside its own transaction once its row is written: its drop of the token's mark (McpOwnersMark)
+  // and its commit not yet made. The real store's statements on both sides, on two sessions.
+  const written = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  t.after(() => resume.resolve());
+  let holding = true;
+  const original = PgConnection.prototype.transaction;
+  t.mock.method(PgConnection.prototype, "transaction", function (callback, options) {
+    if (!holding) return original.call(this, callback, options);
+    return original.call(this, (tx) => callback({
+      ...tx,
+      step: async (statement) => {
+        const result = await tx.step(statement);
+        if (holding && statement.sql.trimStart().startsWith("UPDATE mcp_servers")) {
+          holding = false;
+          written.resolve((await tx.get("SELECT pg_backend_pid() AS pid")).pid);
+          await resume.promise;
+        }
+        return result;
+      },
+    }), options);
+  });
+  const save = owner.mcp.putIfCredential({ ...server, url: "https://owners.example.com/notes" }, mark, undefined, tokens);
+  const ownerPid = await written.promise;
+  // The token's DELETE (the route's removal: Mcp.removeIfCredential with its mark), while the owner's row is written and
+  // its record still says the token saved it. Without the server's lock its statement's snapshot would read that record,
+  // wait only on the row, and delete the owner's save once it committed.
+  const removal = store.mcp.removeIfCredential("notes", mark, tokens);
+  const seen = await whileHeld(removal, ownerPid, watcher);
+  resume.resolve();
+  assert.equal(seen.settled, "waits", "the token's removal waited for the owner's save in flight");
+  assert.equal(await removal, undefined, "then removed nothing: the route answers 412");
+  assert.equal((await save)?.url, "https://owners.example.com/notes");
+  assert.equal((await store.mcp.server("notes"))?.url, "https://owners.example.com/notes", "the owner's save stands");
+  const record = await store.settings.get(tokens.record);
+  assert.deepEqual([record.of, record.by], [saved.createdAt, undefined], "its record is the owner's");
+});

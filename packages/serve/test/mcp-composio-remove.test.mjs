@@ -3,8 +3,9 @@
 // that lands on another credential than the one the request was allowed against (412) answers nothing to send; a preset
 // whose key does not open is answered `unusable`, not as no preset at all; a server that is no preset answers nothing.
 // The token's removal lands only while the row is still the token's, checked in the removal's own statement: an owner's
-// save landing between any read and that statement keeps the row, and nothing is answered to send to Composio. A save
-// writes its row and its record in its server's turn, so the token's mark never lands on a row the owner saved between.
+// save landing between any read and that statement keeps the row, and nothing is answered to send to Composio. An owner's
+// save writes its row first and drops the token's mark in the same transaction, under the server's lock, so the token's
+// statement never finds the owner's row still marked.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -111,10 +112,10 @@ test("a Composio server the token saved, its key read from COMPOSIO_API_KEY: the
   const tokens = storedSource({ source: "composio", toolkit: "hackernews" }, row, false, true);
   await store.settings.put(mcpSourceKey("hn"), tokens);
   await store.settings.put(composioMadeKey("hn"), storedMade({ user: "per_run", auth_config: null, accounts: [], per_run: true, key_env: "COMPOSIO_API_KEY" }, row));
-  // The owner's save over it, as each one lands: the record's mark dropped first, then its row written (its key kept).
+  // The owner's save over it, as each one lands: its row written (its key kept), then the token's mark dropped from the
+  // record in the same transaction (McpOwnersMark).
   const seam = beforeTheStatement(store, async () => {
-    await store.settings.put(mcpSourceKey("hn"), ownersRecord(tokens));
-    assert.ok(await store.mcp.rewrite({ ...row, instructions: "The owner's." }, row));
+    assert.ok(await store.mcp.rewrite({ ...row, instructions: "The owner's." }, row, { record: mcpSourceKey("hn") }));
   });
   let answered;
   await assert.rejects(async () => (answered = await registry.remove("hn", credentialMark(row), true)), (error) => error.code === "precondition_failed");
