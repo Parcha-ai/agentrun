@@ -80,7 +80,8 @@ export type SdkInbox = {
   learning_workflows?: LearnedWorkflow[];
   /** The runs that wrote what the receipt delivers (each of learning_workflows at the learning commit it was read at,
    *  the check's draft at the seed; SnapLearned.run): a start sent again whose writer was purged since is 410 purged
-   *  (receipt), however the purge rewrote the agent's learning. */
+   *  (receipt), however the purge rewrote the agent's learning. Every start writes it (none: []); a receipt that pins
+   *  learning without it is refused (503 unavailable), its writers unknown. */
   learning_writers?: string[];
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
@@ -393,7 +394,7 @@ export class SdkRuns {
           expires_at: now + (cli ? SDK_MAX_OPEN_MS : SDK_OPEN_MS),
           batches: [],
           learning_workflows: workflows,
-          ...(writers.length ? { learning_writers: writers } : {}),
+          learning_writers: writers,
           ...(check ? { learning_check: check } : {}),
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
@@ -438,7 +439,10 @@ export class SdkRuns {
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
     // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
-    const writers = await Promise.all((inbox.learning_writers ?? []).map((id) => this.store.runs.get(id)));
+    // A receipt that pins learning and names no writers (an earlier release's) has none to check: refused, never answered.
+    if (!inbox.learning_writers && (workflows.length > 0 || inbox.learning_check))
+      throw new ApiError("unavailable", "The pinned SDK learning names no runs that wrote it, so it cannot be checked against purges. Start a new run to receive a fresh seed.");
+    const writers = await Promise.all(inbox.learning_writers?.map((id) => this.store.runs.get(id)) ?? []);
     const purged = writers.find((row) => row && row.purgedAt !== null);
     if (purged) throw purgedRun(purged);
     const shown = secretsShown(this.secrets(), { local: true });

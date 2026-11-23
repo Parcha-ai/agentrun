@@ -321,8 +321,12 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
   const audits = ledger ? { oid: ledger.oid, bytes: ledger.bytes } : deletes.has(AUDITS_FILE) ? undefined : before?.audits;
 
   const list = before?.workflows ?? [];
+  // A workflow's writer: the run whose merge wrote its workflow.json last, bytes changed or not, as the merge's marker
+  // names it (learn/store.ts runMarkerText) and a rebuilt snapshot reads it (snapshotOfRead).
+  const wrote = new Set([...writes.keys(), ...deletes]);
+  const writerOf = (name: string, was: string | null): string | null => (runId && wrote.has(viewFile(name)) ? runId : was);
   const hit = new Set(changed.map(folderOf).filter((name): name is string => name !== undefined));
-  const workflows = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1 }));
+  const workflows = list.filter((item) => !hit.has(item.name)).map((item) => ({ ...item, order: item.order + 1, run: writerOf(item.name, item.run) }));
   for (const name of hit) {
     const old = list.find((item) => item.name === name);
     const prefix = `${WORKFLOWS_DIR}/${name}/`;
@@ -339,7 +343,7 @@ export function nextSnapshot(before: Snapshot | undefined, change: Omit<FolderCh
     const item = learnedItem(name, [...files.values()], links, (path) => writes.get(path)?.text, {
       order: 0,
       history: touched.has(key) ? foldNewer(old?.history, commit) : (old?.history ?? { at: commit.at }),
-      run: runId && touched.has(viewFile(name)) ? runId : (old?.run ?? null),
+      run: writerOf(name, old?.run ?? null),
     }, keyText === undefined && old ? { description: old.description, status: old.status, ...(old.retired_from ? { retired_from: old.retired_from } : {}) } : undefined);
     if (item) workflows.push(item);
   }

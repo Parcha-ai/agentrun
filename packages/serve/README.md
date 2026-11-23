@@ -3794,9 +3794,9 @@ stays in every total.
   meanwhile; a run of the agent in flight merges nothing, as after a reset; every other run's history and diffs are
   kept. The log and a workflow's revisions leave out its merges, known by the run the log names for each (its newest 200
   changes). The workflows it wrote alone leave main with the rebuild, so their files read `404`; a workflow still at a commit
-  whose `workflow.json` a purged run changed last (by the commits' run trailers over the whole history, past those 200)
+  whose `workflow.json` a purged run wrote last (as its merge's marker names it, bytes changed or not, over the whole history, past those 200)
   is refused by every read too: its file read is `410 purged`, a champion read by its digest reads no commit, a later merge's diff shows its files as added (never the purged text), an SDK start sent again whose receipt
-  delivered it is `410 purged`, and no run lays or serves it, so the agent takes the run as when no champion serves. A
+  delivered it is `410 purged` (a receipt that names no writers, an earlier release's, is `503 unavailable`: start a new run), and no run lays or serves it, so the agent takes the run as when no champion serves. A
   second `DELETE` finds the purge marked and only finishes removing the old history, if a purge was cut short, and moves
   the promotion records with the marker's commit map. It covers
   the agent's one learning store, local or on code.storage.
