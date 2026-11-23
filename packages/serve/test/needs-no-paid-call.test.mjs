@@ -10,60 +10,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
-import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { checked, needsBox } from "./needs-box.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
 const RUN_MODEL = "mcp:fal/run_model";
-const HELLO = { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 const JOB = 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a title card"},"submission_key":"card-20261121-1"}';
 
-/** The `sh` the check runs: the names after `sh -c <script> sh`. */
-const checked = (argv) => (argv[0] === "sh" && argv[1] === "-c" && argv[3] === "sh" ? argv.slice(4) : undefined);
-
-/** Docker's stand-in, for any provider id the runner loads: a box over the run's folder whose PATH has `has`. */
-function dockerBox(has) {
-  const made = [];
-  const released = [];
-  const execs = [];
-  const provider = {
-    id: "docker",
-    version: "0",
-    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
-    check: () => [],
-    prepareImage: async () => ({ ok: true, value: "agentrun/computer:prepared" }),
-    list: async () => ({ ok: true, value: [] }),
-    async create(spec) {
-      const ref = { id: `c${made.length + 1}`, name: `c${made.length + 1}` };
-      made.push({ ref, computer: fakeComputer(spec.mount.path, { exec: (params) => {
-        const missing = (checked(params.argv) ?? []).filter((name) => !has.includes(name));
-        return { exitCode: 0, stdout: Buffer.from(missing.map((name) => `${name}\n`).join("")), stderr: new Uint8Array(0), timedOut: false, truncated: false };
-      } }) });
-      return { ok: true, value: ref };
-    },
-    async connect(ref) {
-      const one = made.find((each) => each.ref.id === ref.id);
-      const client = {
-        async call(method, params, options) {
-          if (method === "exec.run") execs.push(params.argv);
-          return one.computer.client.call(method, params, options);
-        },
-        close() {},
-      };
-      return { ok: true, value: { client, hello: HELLO, close: async () => {} } };
-    },
-    async attach(ref) {
-      const one = made.find((each) => each.ref.id === ref.id);
-      if (!one) return { ok: false, error: { code: "not_found", message: `no fake computer has the id ${ref.id}` } };
-      const read = await one.computer.readBack();
-      return { ok: true, value: { ...ref, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
-    },
-    async release(ref) {
-      released.push(ref.id);
-      return { ok: true, value: undefined };
-    },
-  };
-  return { made, released, execs, load: async () => provider };
-}
 
 /** One capped run of an agent that needs hyperframes, on a box that has `has`: the run's read, the fake fal's calls, the box. */
 async function filmRun(t, has) {
@@ -73,7 +25,7 @@ async function filmRun(t, has) {
   writeFileSync(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n");
   chmodSync(join(bin, "docker"), 0o755);
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: `${bin}:${process.env.PATH}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE"]);
-  const box = dockerBox(has);
+  const box = needsBox(has);
   const { api } = await serve(t, { faux: FAUX, computers: { load: box.load } });
   const fake = await startFakeMcp({});
   t.after(() => fake.close());

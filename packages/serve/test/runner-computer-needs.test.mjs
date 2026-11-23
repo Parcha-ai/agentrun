@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { checked, needsBox } from "./needs-box.mjs";
+import { until } from "./runner-support.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
@@ -28,82 +29,9 @@ const { viewOverStore } = await import("../dist/store-view.js");
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30, interruptBackoffMs: 20 };
-const HELLO = { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 const MEDIA = ["chrome", "ffmpeg", "ffprobe", "hyperframes"];
 after(closeOpenSessions);
 
-const until = async (done, what, ms = 60_000) => {
-  const end = Date.now() + ms;
-  for (;;) {
-    const value = await done();
-    if (value) return value;
-    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-};
-
-/** The `sh` a stand-in box runs for the check: the names after `sh -c <script> sh`. */
-const checked = (argv) => (argv[0] === "sh" && argv[1] === "-c" && argv[3] === "sh" ? argv.slice(4) : undefined);
-
-/** A folder only the image's own PATH names: an exec given no PATH inherits it (as computerd's default does), one given
- *  the shell's fixed PATH does not search it. */
-const IMAGE_ONLY_DIR = "/opt/media/bin";
-
-/** Docker's stand-in: a box over the run's folder whose PATH has `has`, and `imageOnly` in IMAGE_ONLY_DIR, found only by
- *  an exec whose PATH names that folder or that gives none. Each exec.run's argv is kept in `execs`, its env in `envs`;
- *  `fails`, when set, is what an exec.run answers instead (a box that cannot be asked). */
-function box(has, imageOnly = []) {
-  const made = [];
-  const released = [];
-  const execs = [];
-  const envs = [];
-  const docker = { made, released, execs, envs, fails: undefined };
-  docker.provider = {
-    id: "fake",
-    version: "0",
-    capabilities: () => ({ lifetime: "janitor", maxLifetimeMs: 86_400_000 }),
-    check: () => [],
-    prepareImage: async () => ({ ok: true, value: "agentrun/computer:prepared" }),
-    list: async () => ({ ok: true, value: [] }),
-    async create(spec) {
-      const ref = { id: `c${made.length + 1}`, name: `c${made.length + 1}` };
-      made.push({ ref, computer: fakeComputer(spec.mount.path, { exec: (params) => {
-        const names = checked(params.argv) ?? [];
-        const path = params.env?.PATH;
-        const searchesImageOnly = path === undefined || path.split(":").includes(IMAGE_ONLY_DIR);
-        const missing = names.filter((name) => !has.includes(name) && !(searchesImageOnly && imageOnly.includes(name)));
-        return { exitCode: 0, stdout: Buffer.from(missing.map((name) => `${name}\n`).join("")), stderr: new Uint8Array(0), timedOut: false, truncated: false };
-      } }) });
-      return { ok: true, value: ref };
-    },
-    async connect(ref) {
-      const one = made.find((each) => each.ref.id === ref.id);
-      const client = {
-        async call(method, params, options) {
-          if (method === "exec.run") {
-            execs.push(params.argv);
-            envs.push(params.env);
-            if (docker.fails) return docker.fails;
-          }
-          return one.computer.client.call(method, params, options);
-        },
-        close() {},
-      };
-      return { ok: true, value: { client, hello: HELLO, close: async () => {} } };
-    },
-    async attach(ref) {
-      const one = made.find((each) => each.ref.id === ref.id);
-      if (!one) return { ok: false, error: { code: "not_found", message: `no fake computer has the id ${ref.id}` } };
-      const read = await one.computer.readBack();
-      return { ok: true, value: { ...ref, spec: { image: "i", user: "1000:1000", network: "none", ...(read.ok ? { mount: read.value } : {}) } } };
-    },
-    async release(ref) {
-      released.push(ref.id);
-      return { ok: true, value: undefined };
-    },
-  };
-  return docker;
-}
 
 async function opened(t, { needs = MEDIA, has = MEDIA, imageOnly = [], computer: given } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-computer-needs-"));
@@ -120,7 +48,7 @@ async function opened(t, { needs = MEDIA, has = MEDIA, imageOnly = [], computer:
   const launch = { input: { content: "Render it." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
-  const docker = box(has, imageOnly);
+  const docker = needsBox(has, { imageOnly, id: "fake" });
   const computerDeps = { kinds: KINDS, providers: { docker: () => docker.provider }, spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }), check: { readBackOf } };
   const ends = [];
   const start = async (fetch) => {
@@ -134,7 +62,7 @@ async function opened(t, { needs = MEDIA, has = MEDIA, imageOnly = [], computer:
   const settled = (states) => until(async () => {
     const now = await server.runs.get(RUN);
     return states.includes(now.state) && now.runner === null && states.includes(ends.at(-1)) && now;
-  }, `the run is released ${states.join(" or ")}`);
+  }, `the run is released ${states.join(" or ")}`, 60_000);
   const served = () => viewOverStore(server, RUN, { origin: "https://run.test", serverSecrets: () => [] });
   return { docker, start, settled, served };
 }
