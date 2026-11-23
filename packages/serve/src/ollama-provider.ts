@@ -214,6 +214,15 @@ export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly Oll
   return known ? known.models : listing;
 }
 
+/** The models the Ollama `env` names has, asked again now: its kept listing dropped first, so a tag removed since it was
+ *  kept is gone from the answer (model.ts chooseModel, once the host's default no longer answers). A listing already
+ *  under way for the address is awaited, never doubled. */
+export async function ollamaRelisted(env: NodeJS.ProcessEnv): Promise<readonly OllamaListed[]> {
+  const base = baseOf(env);
+  if (base === undefined) return [];
+  kept.delete(base);
+  return ollamaModels(env);
+}
 /** The models the Ollama `env` names had when last asked (ollamaModels): none where it was never asked. Synchronous, for
  *  the host's default model (model.ts hostModel), which a listing primes before it is read. */
 export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
