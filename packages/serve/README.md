@@ -1563,7 +1563,8 @@ saved earlier is dropped when the server starts, and claude-agent runs on the mo
 Start Ollama (`ollama serve`, or its app) and the server lists its models itself, with no key, no gateway and no
 restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, and the console names it
-`<tag> · local (Ollama)`. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
+`<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
+tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
 lists no models and slows nothing: the listing has 2 seconds in all, and follows no redirect.
 
@@ -1575,6 +1576,9 @@ lists no models and slows nothing: the listing has 2 seconds in all, and follows
 - Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the model's trained context up to
   65,536 tokens (65,536 where `/api/show` names none). The model's context window here is the same number, so pi
   compacts before Ollama would cut the prompt.
+- Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
+  answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
+  model, so the tags never reach the answer.
 - Tools: a model whose capabilities include `tools` takes them natively. Any other takes them as text: the tools are
   described in its prompt, and a call written in its answer comes back as a real call.
 - Cost: $0, booked as a known cost. Its requests never count toward the [limit on free

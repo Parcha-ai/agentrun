@@ -1,4 +1,5 @@
 import { isPlanModel, PLAN_PROVIDER } from "@/lib/chatgpt";
+import type { RunUsage } from "@/lib/v2";
 
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. `routePrefix` is
  *  exactly the one the server names (`models.route_prefix`, null with no gateway), never one read off an id, so a gateway
@@ -17,6 +18,15 @@ export function modelLabel(id: string, routePrefix: string | null | undefined): 
 const LOCAL_PROVIDER = "ollama";
 /** Whether `id` names a model on this machine's Ollama: $0, with no limit on its requests. */
 const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
+
+/** The model a run ran on, as the server booked it (GET /v2/runs/{id}/usage, its `tokens` lines): the one most of its
+ *  requests went to (a side call's or a subagent's model aside), as `provider/model` where the server routed it itself
+ *  (`ollama/qwen3:8b`), else the id as booked (behind a gateway, which names no provider). Undefined before any request. */
+export function runModel(usage: Pick<RunUsage, "lines"> | undefined): string | undefined {
+  let top: NonNullable<RunUsage["lines"]>[number] | undefined;
+  for (const line of usage?.lines ?? []) if (line.meter === "tokens" && line.model && (line.requests ?? 0) > (top?.requests ?? 0)) top = line;
+  return top ? (top.provider ? `${top.provider}/${top.model}` : top.model!) : undefined;
+}
 
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
  *  the server's `reason`, when it doesn't). `needs`, on one that runs nothing here for want of a key: what would give it a

@@ -285,10 +285,16 @@ function streamChat(model: Model<string>, context: TranscriptContext, options?: 
     };
     let calls = 0;
     let ended: ChatLine | undefined;
+    // A model without the thinking capability gets no split from Ollama: its content's opening <think> is split here.
+    const split = model.reasoning ? undefined : thinkSplit();
+    const content = (delta: string) => {
+      if (!split) return add("text", delta);
+      for (const [kind, part] of split(delta)) add(kind, part);
+    };
     const read = (line: ChatLine) => {
       if (line.error) throw new Error(line.error);
       add("thinking", line.message?.thinking ?? "");
-      add("text", line.message?.content ?? "");
+      content(line.message?.content ?? "");
       for (const call of line.message?.tool_calls ?? []) {
         close();
         const args = call.function?.arguments;
@@ -312,6 +318,7 @@ function streamChat(model: Model<string>, context: TranscriptContext, options?: 
       for (const line of lines) if (line.trim()) read(JSON.parse(line) as ChatLine);
     }
     if ((rest + decoder.decode()).trim()) read(JSON.parse(rest) as ChatLine);
+    for (const [kind, part] of split?.(undefined) ?? []) add(kind, part);
     close();
     if (!ended) throw new Error("Ollama's answer ended before it was done");
     const input = count(ended.prompt_eval_count);
@@ -329,6 +336,52 @@ function streamChat(model: Model<string>, context: TranscriptContext, options?: 
     stream.end(output);
   });
   return stream;
+}
+
+const OPEN = "<think>";
+const CLOSE = "</think>";
+
+/**
+ * The content of a model Ollama splits no thinking out of, split as Ollama's own thinking parser splits a thinking
+ * model's: where the answer opens with `<think>` (after any whitespace), what follows is thinking up to `</think>`, then
+ * the rest is text, whitespace at the start of each left out. Any other answer is text as it came. Takes each delta in
+ * turn, and `undefined` at the end for what it held back (a tag still incomplete); answers the parts to add, in order.
+ */
+function thinkSplit(): (delta: string | undefined) => Array<["text" | "thinking", string]> {
+  let state: "opening" | "thinking" | "after" | "text" = "opening";
+  let held = "";
+  return (delta) => {
+    const parts: Array<["text" | "thinking", string]> = [];
+    const end = delta === undefined;
+    let input = held + (delta ?? "");
+    held = "";
+    if (state === "opening") {
+      const start = input.trimStart();
+      if (start.startsWith(OPEN)) [state, input] = ["thinking", start.slice(OPEN.length).trimStart()];
+      else if (OPEN.startsWith(start) && !end) return (held = input), parts;
+      else state = "text";
+    }
+    if (state === "thinking") {
+      const at = input.indexOf(CLOSE);
+      if (at < 0) {
+        // A tail that may begin `</think>` waits for the next delta, unless this is the end.
+        let keep = 0;
+        if (!end) for (let n = Math.min(CLOSE.length - 1, input.length); n > 0; n--) if (CLOSE.startsWith(input.slice(-n))) { keep = n; break; }
+        held = input.slice(input.length - keep);
+        if (input.length > keep) parts.push(["thinking", input.slice(0, input.length - keep)]);
+        return parts;
+      }
+      if (at > 0) parts.push(["thinking", input.slice(0, at)]);
+      [state, input] = ["after", input.slice(at + CLOSE.length)];
+    }
+    if (state === "after") {
+      input = input.trimStart();
+      if (!input) return parts;
+      state = "text";
+    }
+    if (input) parts.push(["text", input]);
+    return parts;
+  };
 }
 
 /** A count Ollama reports, or 0 where it reports none (a cached prompt reports no prompt_eval_count). */

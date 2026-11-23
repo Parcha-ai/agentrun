@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
 import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
-const { providerModels } = await import("../dist/model.js");
+const { hostModel, providerModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { listOllama, ollamaBase, OLLAMA_NUM_CTX } = await import("../dist/ollama-provider.js");
 
@@ -94,6 +94,19 @@ test("a model whose /api/show names no context length runs at 64k", async (t) =>
   assert.equal(ollama.got.chat.at(-1).options?.num_ctx, 65_536);
 });
 
+test("a model without the thinking capability that opens its answer with <think> has that part as thinking, up to </think>, as Ollama splits it for a thinking model", async (t) => {
+  const texts = ["<think>\n\n</think>\nThe answer.", "<think>\nWeighing it.</think>\n\nThe answer.", "<thinking>kept</thinking> as said.", "A <think> later stays.", "<think>x"];
+  const ollama = await fakeOllama(t, { reply: (_body, n) => ({ text: texts[(n - 1) % texts.length] }) });
+  const models = await providerModels({ OLLAMA_HOST: ollama.host });
+  const ask = async (id) => (await models.completeSimple(models.getModel("ollama", id), { messages: [{ role: "user", content: "Hi.", timestamp: 0 }] })).content.map((block) => [block.type, block.text ?? block.thinking]);
+  assert.deepEqual(await ask(PLAIN), [["text", "The answer."]], "an empty think block: no thinking, and no tag in the answer");
+  assert.deepEqual(await ask(PLAIN), [["thinking", "Weighing it."], ["text", "The answer."]]);
+  assert.deepEqual(await ask(PLAIN), [["text", "<thinking>kept</thinking> as said."]], "<think> alone, no other tag form");
+  assert.deepEqual(await ask(PLAIN), [["text", "A <think> later stays."]], "only where the answer opens with it");
+  assert.deepEqual(await ask(PLAIN), [["thinking", "x"]], "a tag cut across two chunks (the fake sends each answer in two halves), and none closed by the end");
+  assert.deepEqual(await ask(TOOLS), [["text", "<think>\n\n</think>\nThe answer."]], "a thinking model's content is Ollama's own split: left as it is");
+});
+
 test("a model without the tools capability gets its tools as text, no `tools` field, and a call in its text comes back a real call; a tools model gets native tools", async (t) => {
   const ollama = await fakeOllama(t, {
     reply: (body) => body.model === PLAIN
@@ -143,6 +156,25 @@ test("a run on an Ollama model books $0, and its requests never count toward the
   assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the limit");
 });
 
+test("a run on the host default books the Ollama model it ran on: its usage line names ollama and the tag, as the run page reads it", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const ollama = await fakeOllama(t);
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api } = await serve(t, { faux: undefined });
+  const named = agent("local");
+  delete named.definition.model;
+  assert.equal((await api("POST", "/agents", named)).status, 201);
+  const started = await api("POST", "/agents/local/runs", { input: { content: "Hi." }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.status, "completed", JSON.stringify(view.error));
+  assert.equal(view.cost.tokens.requests, 1, "the run view's request count, which the run header reads the usage again on");
+  assert.equal(ollama.got.chat[0].model, TOOLS, "it ran on the default");
+  const lines = (await api("GET", `/runs/${started.body.run_id}/usage`)).body.lines.filter((line) => line.meter === "tokens");
+  assert.deepEqual(lines.map((line) => [line.provider, line.model, line.requests, line.usd]), [["ollama", TOOLS, 1, 0]], "provider/model is the id the console labels: ollama/<tag>");
+});
+
 test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models; any key wins", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, KEYS);
   const ollama = await fakeOllama(t);
@@ -161,7 +193,9 @@ test("with no key and Ollama up, the default is the first Ollama model that call
   for (const harness of caps.harnesses.filter((h) => h.id !== "pi")) {
     assert.ok(!(harness.models ?? []).some((id) => id.startsWith("ollama/")), `${harness.id} never runs pi's local models`);
     assert.ok(!String(harness.default_model ?? "").startsWith("ollama/"), `${harness.id} has no local default`);
+    assert.equal(hostModel({ OLLAMA_HOST: ollama.host }, "default", harness.id), undefined, `${harness.id}: its facts run no Ollama model, so the host gives it none`);
   }
+  assert.equal(hostModel({ OLLAMA_HOST: ollama.host }, "default", "pi"), `ollama/${TOOLS}`);
 
   withEnv(t, { OPENROUTER_API_KEY: `not-a-secret-${"ollama-default"}` });
   const keyed = await serve(t, { faux: undefined });
@@ -212,7 +246,7 @@ test("OLLAMA_HOST https://host: https's own port", () => assert.equal(ollamaBase
 test("OLLAMA_HOST with a path keeps it", () => assert.equal(ollamaBase({ OLLAMA_HOST: "https://gpu.example.test/ollama/" }), "https://gpu.example.test/ollama"));
 
 test("OLLAMA_HOST plain http to another machine is refused, and a refused Ollama is never asked", async () => {
-  for (const refused of ["http://10.0.0.5:11434", "10.0.0.5:11434", "ollama.example.test", "http://user:pw@127.0.0.1:11434", "ftp://127.0.0.1:11434"]) {
+  for (const refused of ["http://10.0.0.5:11434", "10.0.0.5:11434", "ollama.example.test", "http://someone@127.0.0.1:11434", "ftp://127.0.0.1:11434"]) {
     assert.throws(() => ollamaBase({ OLLAMA_HOST: refused }), /OLLAMA_HOST/, refused);
     let asked = 0;
     const counting = async () => (asked += 1, new Response("{}"));

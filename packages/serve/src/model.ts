@@ -150,12 +150,14 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
   return row ? rowModel(row, harness, env) : env[DEFAULT_MODEL_ENV] || localDefault(env, harness);
 }
 
-/** The default with no key held: on pi, the first model of the Ollama here that calls tools (ollama-provider.ts
- *  ollamaToolsModel, from its last listing, which chooseModel asks for first); none behind a gateway, under the faux
- *  model, or on any other harness. A model that takes no tools is never a default: a run on it would have none. */
+/** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
+ *  ollamaToolsModel, from its last listing, which chooseModel asks for first), where `harness` runs it (harnessRuns, its
+ *  entry's facts: pi any model, an adapter its wire's vendor's alone); none behind a gateway or under the faux model. A
+ *  model that takes no tools is never a default: a run on it would have none. */
 function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
-  if (harness !== DEFAULT_HARNESS || env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL) return undefined;
-  return ollamaToolsModel(env);
+  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL) return undefined;
+  const model = ollamaToolsModel(env);
+  return model && harnessRuns(env, model, harness) ? model : undefined;
 }
 /** The plan's model a run that names none takes: GPT-6.1 Sol where the plan lists it, else the plan's first. */
 const planModel = (env: NodeJS.ProcessEnv): string => {
