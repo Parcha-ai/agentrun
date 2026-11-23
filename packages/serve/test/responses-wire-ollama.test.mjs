@@ -32,7 +32,7 @@ delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
 
 const PLAIN = "synth-plain:1b";
 const TOOLS = "synth-tools:2b";
-const SECRET = "sk-responses-wire-0123456789abcdef";
+const SECRET = "not-a-secret-responses-wire-0123456789";
 const redact = (text) => text.split(SECRET).join("[redacted]");
 
 const READ = { type: "function", name: "read", description: "Read a file.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
