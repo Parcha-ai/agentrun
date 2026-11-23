@@ -4,7 +4,7 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { endsInScheme, redactSecrets, valueMatcher } from "./learn/secrets.js";
+import { endsInScheme, redactSecrets, secretShapes, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
 import { savedGatewayIn } from "./model-gateway.js";
@@ -92,19 +92,19 @@ export const answerPasses = { count: 0 };
  *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run with no
  *  whitespace past a piece is cut at the end of a JSON string in it, or, a run of a JSON array's numbers only, after a
  *  comma (runCut), so compact JSON reads in pieces too. A run of more than ANSWER_PIECE characters with neither is no
- *  person's text and is shown as "[redacted]", unread. A value split across a cut, or a form only found across pieces,
- *  still shows to one valueMatcher pass over the joined output (with the head of each run left unread, where the rest of
- *  a value split before it would be), and then the whole answer is "[redacted]", as redactSecrets does with a text that
- *  still holds a value. */
+ *  person's text and is shown as "[redacted]", unread, from where its run starts. A value or a secret shape split across
+ *  a cut, or a form only found across pieces, still shows to one pass over the joined output (heldIn: valueMatcher and
+ *  secretShapes; with the head of each run left unread, where the rest of a value split before it would be), and then
+ *  the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
 export function redactedAnswer(text: string, secrets: readonly string[]): string {
   if (!text) return text;
   answerPasses.count++;
   const { out, seen } = inPieces(text, secrets);
-  return valueMatcher(secrets)(seen) ? "[redacted]" : out;
+  return heldIn(seen, secrets) ? "[redacted]" : out;
 }
 
 /** `text`, a call's result as a grader's read shows it (timeline calls, tool_result_text), with no held secret in it:
- *  read in pieces as redactedAnswer reads an answer, then one valueMatcher pass over what the pieces show. Only the head
+ *  read in pieces as redactedAnswer reads an answer, then one pass over what the pieces show (heldIn). Only the head
  *  the reader is shown is read: pieces stop once they show more than `shown` characters and the longest held value's
  *  widest form (6 times it, plus 16) in characters other than whitespace is read past them, so a value whose start they
  *  show ends inside what was read, split by whitespace or not; the caller cuts to `shown`. So no redaction pass reads
@@ -112,28 +112,52 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
 export function redactedCall(text: string, secrets: readonly string[], shown: number): string {
   if (!text) return text;
   const { out, seen } = inPieces(text, secrets, shown);
-  return valueMatcher(secrets)(seen) ? "[redacted]" : out;
+  return heldIn(seen, secrets) ? "[redacted]" : out;
+}
+
+/** Whether the joined pieces still hold a held value or a secret shape: one a cut split, each piece's own redacted. */
+function heldIn(seen: string, secrets: readonly string[]): boolean {
+  return valueMatcher(secrets)(seen) || secretShapes(seen).length > 0;
 }
 
 /** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
- *  what the valueMatcher pass after them reads, the same with the head of each run left unread put back before its
- *  "[redacted]". With `enough`, no piece is read once the pieces show more than `enough` characters and `hold`
- *  characters other than whitespace are read past those. */
+ *  what the pass after them reads (heldIn), the same with the head of each unread run, redacted by itself, put back
+ *  before its "[redacted]". A run runCut cut that then goes on past a piece with no place to cut is unread from its
+ *  start, the pieces of it already read taken back, so no piece shows the head of a value or a shape the cut split. With
+ *  `enough`, no piece is read once the pieces show more than `enough` characters and `hold` characters other than
+ *  whitespace are read past those. */
 function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY): { out: string; seen: string } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
   const out: string[] = [];
   const seen: string[] = [];
   let shown = 0;
   let past = 0;
+  // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
+  let run: { from: number; at: number } | undefined;
   for (let from = 0; from < text.length && (shown <= enough || past < hold); ) {
     const to = pieceEnd(text, from);
     const raw = text.slice(from, to);
-    const unread = raw.length > ANSWER_PIECE;
-    const part = unread ? "[redacted]" : redactSecrets(raw, secrets, Buffer.byteLength(raw));
     if (shown > enough) past += raw.replace(/\s+/g, "").length;
-    out.push(part);
-    seen.push(unread ? `${raw.slice(0, hold)}${part}` : part);
-    shown += part.length;
+    if (raw.length > ANSWER_PIECE) {
+      const start = run?.from ?? from;
+      if (run) {
+        for (const part of out.splice(run.at)) shown -= part.length;
+        seen.splice(run.at);
+      }
+      const head = text.slice(start, start + hold);
+      out.push("[redacted]");
+      seen.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
+      shown += "[redacted]".length;
+      run = undefined;
+    } else {
+      const part = redactSecrets(raw, secrets, Buffer.byteLength(raw));
+      // A piece that ends inside a run (runCut's): its run goes on in the next piece.
+      if (to < text.length && /\S/.test(text[to - 1] ?? "") && /\S/.test(text[to] ?? "")) run ??= { from, at: out.length };
+      else run = undefined;
+      out.push(part);
+      seen.push(part);
+      shown += part.length;
+    }
     from = to;
   }
   return { out: out.join(""), seen: seen.join("") };
@@ -166,9 +190,9 @@ function runEnd(text: string, at: number): number {
 }
 
 /** Where a run with no whitespace in text[from, to) may be cut, or -1: after the last quote in it that ends a JSON
- *  string (no backslash before it; a comma, colon or closing bracket after it), as no secret shape holds a quote there;
- *  or, a run of a JSON array's numbers only, after its last comma, as no shape is digits alone. A held value cut there
- *  still shows to the valueMatcher pass over the joined pieces, and withholds the text whole. */
+ *  string (no backslash before it; a comma, colon or closing bracket after it); or, a run of a JSON array's numbers
+ *  only, after its last comma. A held value or a secret shape cut there (a URL's password may hold both) still shows to
+ *  the pass over the joined pieces (heldIn), and withholds the text whole. */
 function runCut(text: string, from: number, to: number): number {
   for (let at = text.lastIndexOf('"', to - 1); at >= from; at = at > 0 ? text.lastIndexOf('"', at - 1) : -1) {
     if (text[at - 1] !== "\\" && /[,:\]}]/.test(text[at + 1] ?? "")) return at + 1;

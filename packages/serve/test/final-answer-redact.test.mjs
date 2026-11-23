@@ -212,6 +212,17 @@ test("compact JSON past a piece with no whitespace is read in pieces cut at its 
       assert.equal(redactedAnswer(text, secrets), text);
     }
   }
+  // A URL's password may hold a quote and a comma, where a run is cut: the joined pieces are read for every secret shape,
+  // so one cut there withholds the text whole.
+  const url = `"${"x".repeat(8100)}https://alice:prefix",rest@host.example/${"z".repeat(3000)}`;
+  assert.ok(!/\s/.test(url) && url.indexOf('",rest') < 8192 && url.length > 8192);
+  assert.equal(redactedAnswer(url, []), "[redacted]");
+  assert.equal(refusal.redactedCall(url, [], 120_000), "[redacted]");
+  // A run cut at a quote that goes on past a piece with no place to cut is unread from its start: no piece of it shows,
+  // so neither does the head of a password the cut split.
+  const unread = `say "${"x".repeat(8100)}https://alice:prefix",${"r".repeat(9000)}@host end`;
+  assert.equal(redactedAnswer(unread, []), "say [redacted] end");
+  assert.equal(refusal.redactedCall(unread, [], 120_000), "say [redacted] end");
   const holding = JSON.stringify({ ids: [...ids.slice(0, 1000), CUT_KEY, ...ids.slice(1000)] });
   assert.equal(refusal.redactedCall(holding, [CUT_KEY], 120_000), holding.replace(CUT_KEY, "[redacted]"));
   assert.equal(redactedAnswer(holding, [CUT_KEY]), holding.replace(CUT_KEY, "[redacted]"));
