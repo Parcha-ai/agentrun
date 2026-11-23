@@ -654,6 +654,53 @@ test("local: a save whose checkout a purge overtook (main moved between the save
   assert.equal(readFileSync(join(gitDirOf(store.data), "..", "corrections.md"), "utf8"), "- clean\n", "the working tree is main's: the save checked main out again");
 });
 
+test("local: a git past the script's deadline is killed with the script, its whole group: the call fails at the deadline, never waits on the pipes a stuck git holds open", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  const head = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
+  // A git in front of the script's: armed, its ls-tree (a read's, writing to the script's stdout) says its pid and
+  // hangs, holding the script's stdout and stderr open.
+  const bin = mkdtempSync(join(tmpdir(), "learn-git-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const arm = join(bin, "arm");
+  const pidFile = join(bin, "pid");
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = ls-tree ] && [ -f "${arm}" ]; then rm -f "${arm}"; echo $$ > "${pidFile}"; exec sleep 30; fi\ndone\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  localStoreHooks.env = { PATH: `${bin}:/usr/bin:/bin` };
+  localStoreHooks.timeoutMs = 500;
+  t.after(() => {
+    localStoreHooks.env = undefined;
+    localStoreHooks.timeoutMs = undefined;
+  });
+  writeFileSync(arm, "");
+  const started = Date.now();
+  await assert.rejects(store.read(head), /did not finish in 0\.5 s/);
+  assert.equal(existsSync(arm), false, "the read's ls-tree was the stuck git");
+  assert.ok(Date.now() - started < 10_000, `the call ended near its deadline, not when the stuck git let go (${Date.now() - started} ms)`);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  for (let i = 0; i < 50 && alive(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(alive(), false, "the stuck git is gone: its group was killed with the script");
+});
+
+test("local: every git the script runs flushes what it commits (core.fsync=committed): a save reported done survives a crash", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  const dir = mkdtempSync(join(tmpdir(), "learn-trace-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const trace = join(dir, "trace.json");
+  localStoreHooks.env = { GIT_TRACE2_EVENT: trace };
+  t.after(() => {
+    localStoreHooks.env = undefined;
+  });
+  const first = await save(store, null, [{ path: "corrections.md", text: "- one\n" }]);
+  await save(store, first.saved, [{ path: "corrections.md", text: "- one\n- two\n" }]);
+  const starts = readFileSync(trace, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((event) => event.event === "start" && !event.sid.includes("/") && event.argv[1] !== "--version");
+  // The script's own gits (a git's children inherit its -c settings), past the version check that writes nothing.
+  assert.ok(starts.length > 0, "the trace saw the script's gits");
+  const unflushed = starts.filter(({ argv }) => !argv.some((arg, i) => arg === "-c" && argv[i + 1] === "core.fsync=committed"));
+  assert.deepEqual(unflushed.map(({ argv }) => argv.join(" ")), [], "every git runs with core.fsync=committed");
+});
+
 test("local: a purge on a folder an earlier release wrote leaves none of its diff files (.agentrun/diffs, kept outside git): no file in the folder holds the run's text", async (t) => {
   const store = await STORES.local(t);
   const { forgetRunText } = await learn();
