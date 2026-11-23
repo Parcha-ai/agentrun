@@ -10,17 +10,19 @@ import { freeApplyHash, freeHarness, freeModels, runsFree, freeModelFor, webTool
 import { type HarnessInfo, modelLabel } from "@/lib/models";
 import { type Problem, problem } from "@/lib/problem";
 import { titleOf } from "@/lib/templatePackages";
+import { templatePick } from "@/lib/templates";
 import { cn } from "@/lib/utils";
 import type { TemplateView } from "@/lib/v2";
 
-/** `fit`: the hardware-fit card (what this machine can run, and a pull), shown where the server has no local model. Until
- *  it lands its slot stays, empty, under the line that points to it. */
-type Props = { v2: Pick<Client, "listTemplates">; harnesses: readonly HarnessInfo[]; tools: unknown; freeRequests?: number; routePrefix?: string | null; go: (hash: string) => void; fit?: ReactNode };
+/** `fit`: the hardware-fit card (the Free local model card: what this machine can run, and a pull), shown where the server
+ *  has no local model. `localModel`: the model a pull there just ended with (`ollama/<tag>`); Use free then opens Apply on
+ *  it, as the first screen's templates run on it (templatePick), though the server's default is another free model. */
+type Props = { v2: Pick<Client, "listTemplates">; harnesses: readonly HarnessInfo[]; tools: unknown; freeRequests?: number; routePrefix?: string | null; go: (hash: string) => void; fit?: ReactNode; localModel?: string | null };
 
 /** The Free shelf: what runs for $0 on this server. Its free models (this machine's Ollama first), what its web tools go
  *  through in the server's own words, and the templates that run free, each a click from its Apply screen on the free
  *  model. All of it from capabilities and GET /v2/templates. */
-export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go, fit }: Props) {
+export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go, fit, localModel }: Props) {
   const models = freeModels(harnesses, routePrefix);
   const harness = freeHarness(harnesses) ?? "pi";
   const web = webTools(tools, harness);
@@ -72,7 +74,7 @@ export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go,
           ) : <p className="px-4 py-3 text-body text-muted-foreground">This server resolves no web tool on {harness} yet.</p>}
         </Shelf>
 
-        <FreeAgents v2={v2} harnesses={harnesses} routePrefix={routePrefix} go={go} />
+        <FreeAgents v2={v2} harnesses={harnesses} routePrefix={routePrefix} go={go} localModel={localModel} />
       </div>
     </section>
   );
@@ -88,8 +90,9 @@ function Shelf({ label, icon, children }: { label: string; icon?: ReactNode; chi
 }
 
 /** The templates that run free (lib/freeShelf.ts runsFree), each with Use free: its Apply screen, the agent on the free
- *  model there (apply's overrides.model). */
-function FreeAgents({ v2, harnesses, routePrefix, go }: Pick<Props, "v2" | "harnesses" | "routePrefix" | "go">) {
+ *  model there (apply's overrides.model): the tag a pull here just ended with where the template runs on its harness,
+ *  else the template's free default. */
+function FreeAgents({ v2, harnesses, routePrefix, go, localModel }: Pick<Props, "v2" | "harnesses" | "routePrefix" | "go" | "localModel">) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -100,6 +103,7 @@ function FreeAgents({ v2, harnesses, routePrefix, go }: Pick<Props, "v2" | "harn
     return () => { live = false; };
   }, [v2, tries]);
   const free = templates?.filter((t) => runsFree(t, harnesses)) ?? [];
+  const pulled = templatePick(harnesses.map((h) => ({ ...h, available: h.available !== false })), localModel);
   return (
     <Shelf label="Agents that run free" icon={<LayoutTemplate className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />}>
       {error && !templates ? <div className="p-4"><ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" /></div>
@@ -108,7 +112,7 @@ function FreeAgents({ v2, harnesses, routePrefix, go }: Pick<Props, "v2" | "harn
         : (
           <ul className="grid gap-3 p-4 md:grid-cols-2">
             {free.map((t) => {
-              const model = freeModelFor(t, harnesses);
+              const model = pulled?.model && (!t.harness?.length || t.harness.includes(pulled.harness)) ? pulled.model : freeModelFor(t, harnesses);
               return (
                 <li key={t.id}>
                   <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-background px-4 py-3">

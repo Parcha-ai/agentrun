@@ -505,6 +505,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // The model a pull here just ended with (`ollama/<tag>`): the first screen's templates run on it, not on the server's
   // default, which may be another of the Ollama's tools models.
   const [localModel, setLocalModel] = useState<string | null>(null);
+  // A pull's end, on the first screen's card or #/free's: the capabilities read again, and templates run on its tag.
+  const localReady = (tag: string) => { setLocalModel(`ollama/${tag}`); void readCaps(); };
   const tryIt = async (t: Template) => {
     const on = templatePick(editorCaps.harnesses, localModel);
     if (!on) return "This server has no model to run it on yet.";
@@ -774,7 +776,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
                   modelSetup={caps && (caps.models.ready === false || planShown || localShown) ? <>
-                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onReady={(tag) => { setLocalShown(true); setLocalModel(`ollama/${tag}`); void readCaps(); }} onDone={() => setLocalShown(false)} />}
+                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onReady={(tag) => { setLocalShown(true); localReady(tag); }} onDone={() => setLocalShown(false)} />}
                     {(caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
                   </> : undefined} /> : undefined} />
@@ -785,7 +787,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         : where.section === "templates"
         ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.model ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.model} go={go} />
         : where.section === "free"
-        ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go} />
+        ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go}
+            fit={<LocalModelCard v2={v2} onReady={localReady} />} localModel={localModel} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
