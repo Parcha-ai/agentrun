@@ -312,26 +312,33 @@ export function lineNotes(line: UsageLine): string[] {
 }
 
 /** Which attempt at its turn a usage line's work was made in, in words: said only on a run whose lines differ by it (one
- *  made in a second attempt, or in an attempt that was cut and worked again). Null on every line of a run whose lines are
- *  all a first attempt's and billable, where there is nothing to tell apart. */
+ *  made in a second attempt, or of requests an attempt sent and never finished). Null on every line of a run whose lines
+ *  are all a first attempt's and billable, where there is nothing to tell apart. A line that is not billable is of model
+ *  requests its attempt sent and was cut before they answered, which the attempt that took the turn over sent again;
+ *  what the cut attempt had finished (its answered requests, its paid calls) was reused, and is on a billable line. */
 export function attemptWords(line: Pick<UsageLine, "attempt" | "billable">, lines: readonly Pick<UsageLine, "attempt" | "billable">[]): string | null {
   if (!lines.some((other) => !other.billable || (other.attempt ?? 1) > 1)) return null;
   const nth = line.attempt === null ? "An attempt with no number kept" : `Attempt ${line.attempt}`;
-  return line.billable ? nth : `${nth}: cut and worked again`;
+  return line.billable ? nth : `${nth}: requests cut before they answered, sent again`;
 }
 
-/** What a run's redone work cost: the lines of an attempt that was cut (its runner drained, crashed or lost its lease, or
- *  its turn was tried again) and whose turn another attempt worked again, so each of its requests and paid calls was
- *  made twice. `usd` is the server's own sum (`infra_usd`), null when one such line's cost is not known; `share`, its part
- *  of the run's cost, null where either is not one figure. Null for a run with no such line. */
-export type Redo = { usd: number | null; lines: number; of: number; share: number | null };
+/** What a run's repeated requests cost: the lines of model requests an attempt sent and never finished (its runner
+ *  drained, crashed or lost its lease, or its turn was tried again), which the attempt that took the turn over sent
+ *  again. `usd` is the server's own sum (`infra_usd`), null when one such line's cost is not known. `bound`: one of those
+ *  lines is a ceiling (a request cut before its usage was known counts at what was held for it), so the sum is one too,
+ *  said "at most". `share`, its part of the run's cost: null where either is not one exact figure. Null for a run with
+ *  no such line. */
+export type Redo = { usd: number | null; bound: boolean; lines: number; of: number; share: number | null };
 export function redoOf(usage: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null | undefined): Redo | null {
   const lines = usage?.lines ?? [];
   const cut = lines.filter((line) => !line.billable);
   if (!usage || !cut.length) return null;
   const [usd, total] = [usage.infra_usd, usage.total?.usd ?? null];
-  return { usd, lines: cut.length, of: lines.length, share: usd !== null && total !== null && total > 0 ? Math.min(1, usd / total) : null };
+  const bound = cut.some((line) => line.upper_bound === true);
+  return { usd, bound, lines: cut.length, of: lines.length, share: usd !== null && !bound && total !== null && total > 0 && usage.total?.upper_bound !== true ? Math.min(1, usd / total) : null };
 }
+/** A run's repeated requests' cost in words: "$0.0312", "at most $0.0312" (a ceiling), "Unknown". */
+export const redoWords = (redo: Pick<Redo, "usd" | "bound">) => (redo.usd === null ? "Unknown" : `${redo.bound ? "at most " : ""}${usd(redo.usd)}`);
 
 /** Reads a span's conversation off a trace: the call that started it ("" for the run's own), from the request the span
  *  is or ran under. Null where the trace does not say. The trace says it only where each request is a span of a pi run
@@ -354,8 +361,8 @@ export type Finding = { id: string; title: string; detail: string; span?: string
  *  conversation wrote the cache, the largest result (it becomes input to every request after it), and time spent
  *  between calls. (Calls repeated with the same arguments are not found: the trace keeps one field of a call's
  *  arguments, not all of them.)
- *  Each is a figure of the trace, never advice. `more.usage`: the run's cost by line, where it was read: what its redone
- *  work cost (redoOf) is then said after what failed. */
+ *  Each is a figure of the trace, never advice. `more.usage`: the run's cost by line, where it was read: what its
+ *  repeated requests cost (redoOf) is then said after what failed. */
 export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number, more: { usage?: Pick<RunUsage, "lines" | "infra_usd" | "total"> | null } = {}): Finding[] {
   const { spans } = trace;
   const totals = traceTotals(trace, now);
@@ -368,7 +375,10 @@ export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now:
     out.push({ id: "failed", bad: true, span: failed[0]!.id, title: failed.length === 1 ? `1 call failed: ${failed[0]!.name}` : `${failed.length} calls failed`, detail: failed.length === 1 ? `At ${offset(at(failed[0]!.started_at) - traceWindow(spans, now).from)}.${spans.some((s) => at(s.started_at) > at(failed[0]!.started_at)) ? " The run went on after it." : " Nothing ran after it."}` : names.slice(0, 4).join(", ") + (names.length > 4 ? ` and ${names.length - 4} more` : "") });
   }
   const redo = redoOf(more.usage);
-  if (redo) out.push({ id: "redo", title: redo.usd !== null ? `${usd(redo.usd)} went on work done twice` : "Work was done twice, at a cost not known", detail: `${redo.lines} of the run's ${redo.of} cost line${redo.of === 1 ? "" : "s"} ${redo.lines === 1 ? "is" : "are"} of an attempt that was cut and worked again${redo.share !== null ? `: ${percent(redo.share)} of the run's cost` : ""}.` });
+  if (redo) {
+    const said = redoWords(redo);
+    out.push({ id: "redo", title: redo.usd !== null ? `${said[0]!.toUpperCase()}${said.slice(1)} went on requests sent twice` : "Requests were sent twice, at a cost not known", detail: `${redo.lines} of the run's ${redo.of} cost line${redo.of === 1 ? "" : "s"} ${redo.lines === 1 ? "is" : "are"} of requests an attempt sent and was cut before they answered, which the next attempt sent again${redo.share !== null ? `: ${percent(redo.share)} of the run's cost` : ""}.` });
+  }
   const call = longest("tool");
   if (call) out.push({ id: "slowest-call", span: call.id, title: `Slowest call: ${call.name}`, detail: `${duration(spanMs(call, now)!)}${ofWall(spanMs(call, now)!)}${call.status === "waiting" ? " · waiting for a person" : ""}` });
   const request = longest("model");

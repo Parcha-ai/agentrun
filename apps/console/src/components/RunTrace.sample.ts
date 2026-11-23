@@ -109,9 +109,9 @@ export const USAGE_CLI: RunUsage = {
   reason: null,
 };
 
-/** A run one turn of which was worked twice: its first attempt made two requests before its runner was cut, and a second
- *  attempt worked the turn again to its end. The cut attempt's line is not billable, and `infra_usd` is its cost:
- *  $0.0312 of the run's $0.4587 (0.0312 + 0.4125 + 0.015). */
+/** A run one turn of which two attempts worked: the first sent two requests and was cut before they answered, and the
+ *  second, which took the turn over, sent them again and finished it. The cut requests' line is not billable, and
+ *  `infra_usd` is its cost: $0.0312 of the run's $0.4587 (0.0312 + 0.4125 + 0.015). */
 export const USAGE_REDO: RunUsage = {
   ...USAGE_CLI,
   total: { usd: 0.4587 },

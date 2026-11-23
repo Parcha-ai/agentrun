@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_REDO } from "@/components/RunTrace.sample";
-import { attemptWords, between, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, between, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -323,31 +323,42 @@ describe("the table's filter and order", () => {
   });
 });
 
-describe("work a run did twice", () => {
+describe("requests a run sent twice", () => {
   it("says the attempt a cost line was made in only where the run's lines differ by it", () => {
     expect(USAGE_CLI.lines!.map((line) => attemptWords(line, USAGE_CLI.lines!))).toEqual([null, null, null]);
-    expect(USAGE_REDO.lines!.map((line) => attemptWords(line, USAGE_REDO.lines!))).toEqual(["Attempt 1: cut and worked again", "Attempt 2", "Attempt 2"]);
+    expect(USAGE_REDO.lines!.map((line) => attemptWords(line, USAGE_REDO.lines!))).toEqual(["Attempt 1: requests cut before they answered, sent again", "Attempt 2", "Attempt 2"]);
     // A run made before attempts were kept reads each line's attempt as null: said as that, never as a first attempt.
     expect(attemptWords({ attempt: null, billable: true }, [{ attempt: null, billable: true }, { attempt: 2, billable: true }])).toBe("An attempt with no number kept");
   });
-  it("sums what the cut attempts cost as the server did, with its share of the run's cost; none where no attempt was cut", () => {
+  it("sums what the repeated requests cost as the server did, with its share of the run's cost; none where no request was repeated", () => {
     expect(redoOf(USAGE_CLI)).toBeNull();
     expect(redoOf(null)).toBeNull();
     const redo = redoOf(USAGE_REDO)!;
     // $0.0312 of $0.4587.
-    expect([redo.usd, redo.lines, redo.of]).toEqual([0.0312, 1, 3]);
+    expect([redo.usd, redo.bound, redo.lines, redo.of]).toEqual([0.0312, false, 1, 3]);
     expect(redo.share).toBeCloseTo(0.068, 3);
+    expect(redoWords(redo)).toBe("$0.0312");
     // One cut line's cost not known: the sum is not known either, never what is left of it; nor is its share.
-    expect(redoOf({ ...USAGE_REDO, infra_usd: null })).toEqual({ usd: null, lines: 1, of: 3, share: null });
+    expect(redoOf({ ...USAGE_REDO, infra_usd: null })).toEqual({ usd: null, bound: false, lines: 1, of: 3, share: null });
+    expect(redoWords({ usd: null, bound: false })).toBe("Unknown");
     // The run's own cost not one figure: no share of it.
     expect(redoOf({ ...USAGE_REDO, total: { usd: null, so_far_usd: 0.4 } })!.share).toBeNull();
+  });
+  it("says a ceiling as at most, with no share: a request cut before its usage was known counts at what was held for it", () => {
+    // The cut line's $0.0312 is the hold, not what was spent: so is the sum of such lines.
+    const held = { ...USAGE_REDO, lines: [{ ...USAGE_REDO.lines![0]!, upper_bound: true as const }, ...USAGE_REDO.lines!.slice(1)] };
+    const redo = redoOf(held)!;
+    expect([redo.usd, redo.bound, redo.share, redoWords(redo)]).toEqual([0.0312, true, null, "at most $0.0312"]);
+    expect(findings(TRACE, TRACE_END, { usage: held })[1]).toEqual({ id: "redo", title: "At most $0.0312 went on requests sent twice", detail: "1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again." });
+    // An exact sum against a run's cost that is itself a ceiling: no share either.
+    expect(redoOf({ ...USAGE_REDO, total: { usd: 0.4587, upper_bound: true } })!.share).toBeNull();
   });
   it("is one of the things that stand out, after what failed, where the run's cost by line was read", () => {
     expect(findings(TRACE, TRACE_END).map((f) => f.id)).not.toContain("redo");
     expect(findings(TRACE, TRACE_END, { usage: USAGE_CLI }).map((f) => f.id)).not.toContain("redo");
     const found = findings(TRACE, TRACE_END, { usage: USAGE_REDO });
     expect(found.map((f) => f.id).slice(0, 2)).toEqual(["failed", "redo"]);
-    expect(found[1]).toEqual({ id: "redo", title: "$0.0312 went on work done twice", detail: "1 of the run's 3 cost lines is of an attempt that was cut and worked again: 7% of the run's cost." });
-    expect(findings(TRACE, TRACE_END, { usage: { ...USAGE_REDO, infra_usd: null } })[1]!.title).toBe("Work was done twice, at a cost not known");
+    expect(found[1]).toEqual({ id: "redo", title: "$0.0312 went on requests sent twice", detail: "1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again: 7% of the run's cost." });
+    expect(findings(TRACE, TRACE_END, { usage: { ...USAGE_REDO, infra_usd: null } })[1]!.title).toBe("Requests were sent twice, at a cost not known");
   });
 });

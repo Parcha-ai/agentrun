@@ -8,7 +8,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -399,8 +399,9 @@ function lineParts(lines: readonly UsageLine[]) {
   return lines.map((line) => {
     const tone = line.meter === "browser_time" || line.meter === "compute_time" ? BROWSER_TONE
       : line.meter === "tokens" ? MODEL_TONES[Math.min(seen.tokens++, MODEL_TONES.length - 1)]! : TOOL_TONES[Math.min(seen.tools++, TOOL_TONES.length - 1)]!;
-    // Two lines of one name differ by the attempt they were made in: the part says which, where the run's lines do.
-    const attempt = attemptWords(line, lines) !== null && line.attempt !== null ? ` · attempt ${line.attempt}` : "";
+    // Two lines of one name differ by the attempt they were made in, and two of one attempt by whether their requests
+    // were sent again: the part says both, where the run's lines differ by either.
+    const attempt = attemptWords(line, lines) === null ? "" : `${line.attempt !== null ? ` · attempt ${line.attempt}` : ""}${line.billable ? "" : " · sent again"}`;
     return { word: `${lineName(line)}${attempt}`, tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
   });
 }
@@ -481,8 +482,8 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
       <p className="mt-2 max-w-prose text-small text-muted-foreground">The run's cost as the server booked it: a line for each model, each vendor that charged for a tool, and each browser provider.</p>
       {redo && (
         <p className="mt-3 max-w-prose text-small" data-redo>
-          <span className="font-semibold">Redone work: {redo.usd !== null ? dollars(redo.usd) : "Unknown"}{redo.share !== null ? ` · ${percent(redo.share)}` : ""}.</span>{" "}
-          <span className="text-muted-foreground">An attempt at a turn was cut (its runner drained, crashed or lost its lease, or the turn was tried again) and another worked the turn again, so its requests and paid calls were made twice. Their lines say so, and their cost is in the run's.</span>
+          <span className="font-semibold">Requests sent twice: {redoWords(redo)}{redo.share !== null ? ` · ${percent(redo.share)}` : ""}.</span>{" "}
+          <span className="text-muted-foreground">An attempt at a turn was cut (its runner drained, crashed or lost its lease, or the turn was tried again) and another took over. Model requests it had sent and not finished were sent again; its answered requests and finished paid calls were reused. The repeated requests' lines say so, and their cost is in the run's.</span>
         </p>
       )}
       {lines.length > 0 && <CostLines lines={lines} />}
