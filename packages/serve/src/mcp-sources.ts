@@ -10,7 +10,8 @@
 // The record also says who saved the row: `by: "token"` when the API token saved it (a request the secret-write gate read,
 // server.ts), for the gate's check that the token deletes only a server it saved (mcp-secret-writes.ts). A row the owner
 // saved has no mark, and stays the owner's: the token's save over it leaves it unmarked, and the owner's save over the
-// token's row drops the mark before it writes the row.
+// token's row drops the mark in the store's transaction that writes the row, once the row is written (McpOwnersMark): an
+// owner's save refused leaves the mark, and the server the token's.
 import type { InputIssue } from "./errors.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject } from "./validate.js";
@@ -47,7 +48,9 @@ export const storedSource = (record: SourceRecord, row: { createdAt: number }, s
  *  No record, one written for another row, or one with no mark: the owner's. */
 export const savedByToken = (value: unknown, createdAt: number | undefined): boolean => isObject(value) && createdAt !== undefined && value.of === createdAt && value.by === "token";
 
-/** A stored record as it stands once the owner saves over the token's row: the same, without the token's mark. */
+/** A stored record as it stands once the owner saves over the token's row: the same, without the token's mark. The store
+ *  writes it so in the owner's write's own transaction (store/sqlite/store.ts dropTokensMark); tests write it to stand for
+ *  that save. */
 export const ownersRecord = (value: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(value).filter(([field]) => field !== "by"));
 
 /** Whether the stored value `value` was written for another server row than the one created at `createdAt`: a record left

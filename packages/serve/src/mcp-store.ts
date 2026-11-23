@@ -5,7 +5,7 @@
 // (mcp-oauth.ts) keep the SDK tool-probe, validation and sign-in flow over these. The store never opens a credential;
 // only this process (and a runner) does, with the seal key.
 import {
-  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, openMcpCredential, type OpenedMcpCredential,
+  type Mcp, type McpCredential, type McpCredentialMark, type McpOauth, type McpOwnersMark, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, openMcpCredential, type OpenedMcpCredential,
   sealColumn, sealedAt, sealMcpCredential, unsealColumn,
 } from "./store/index.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -50,15 +50,16 @@ export async function saveMcpServer(
 /** saveMcpServer, only while the server's credential is still `expected` (its mark as the writer read it: null, no
  *  server by that name), compared and written in one statement (Mcp.putIfCredential). Undefined, writing nothing, when
  *  another save, a sign-in or a removal changed it since. `tokens`: the API token's save, which writes over a saved row
- *  only while that row still carries the token's mark, compared in the same statement. */
+ *  only while that row still carries the token's mark, compared in the same statement. `owns`: the owner's save, which
+ *  drops the token's mark in the transaction that writes the row, once it is written (McpOwnersMark). */
 export async function saveMcpServerIfCredential(
   store: { mcp: Pick<Mcp, "putIfCredential"> },
   sealKey: Buffer,
   server: McpServerSave,
   expected: McpCredentialMark,
-  { githubMcpOrigin = GITHUB_MCP_ORIGIN, tokens }: { githubMcpOrigin?: string; tokens?: McpTokensMark } = {},
+  { githubMcpOrigin = GITHUB_MCP_ORIGIN, tokens, owns }: { githubMcpOrigin?: string; tokens?: McpTokensMark; owns?: McpOwnersMark } = {},
 ): Promise<McpServerRow | undefined> {
-  return store.mcp.putIfCredential(serverWrite(sealKey, server, githubMcpOrigin), expected, tokens);
+  return store.mcp.putIfCredential(serverWrite(sealKey, server, githubMcpOrigin), expected, tokens, owns);
 }
 
 /** The store's write of `server`: its credential sealed, its info and instructions bounded. */
@@ -79,19 +80,19 @@ function serverWrite(sealKey: Buffer, server: McpServerSave, githubMcpOrigin: st
 
 /** Rewrites a server's row the owner read, its sealed credential kept as it is (store.mcp.rewrite): written iff the
  *  credential is still `seen`; undefined, writing nothing, when it changed meanwhile or the row went. Bounded and
- *  github_app-guarded as saveMcpServer. */
+ *  github_app-guarded as saveMcpServer. `owns`: as saveMcpServerIfCredential's. */
 export async function rewriteMcpServer(
   store: { mcp: Pick<Mcp, "rewrite"> },
   server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number },
   seen: Uint8Array | null,
-  { githubMcpOrigin = GITHUB_MCP_ORIGIN }: { githubMcpOrigin?: string } = {},
+  { githubMcpOrigin = GITHUB_MCP_ORIGIN, owns }: { githubMcpOrigin?: string; owns?: McpOwnersMark } = {},
 ): Promise<McpServerRow | undefined> {
   if (server.auth === "github_app" && !githubMcpUrl(server.url, githubMcpOrigin)) throw new Error(`The MCP server ${server.name} is not kept: ${GITHUB_MCP_ONLY}.`);
   return store.mcp.rewrite({
     name: server.name, url: server.url, auth: server.auth, protocol: server.protocol ?? null, tools: server.tools, prices: server.prices ?? null,
     serverInfo: boundedServerInfo(server.serverInfo), instructions: boundedInstructions(server.instructions),
     ...(server.listedAt !== undefined ? { listedAt: server.listedAt } : {}), ...(server.updatedAt !== undefined ? { updatedAt: server.updatedAt } : {}),
-  }, seen);
+  }, seen, owns);
 }
 
 /** The server's row goes; what it held as it went (its address, its credential opened, as openServerCredential does), or

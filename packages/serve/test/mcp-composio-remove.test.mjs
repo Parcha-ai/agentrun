@@ -141,8 +141,8 @@ test("a save writes its row and its record in its server's turn: the owner's sav
     return turn.call(this, name, work);
   };
   const putIf = store.mcp.putIfCredential;
-  store.mcp.putIfCredential = async function (row, expected, tokens) {
-    const written = await putIf.call(this, row, expected, tokens);
+  store.mcp.putIfCredential = async function (row, expected, tokens, ...owns) {
+    const written = await putIf.call(this, row, expected, tokens, ...owns);
     if (armed && !tokens) wrote();
     return written;
   };
@@ -165,6 +165,32 @@ test("a save writes its row and its record in its server's turn: the owner's sav
   assert.equal(row?.url, owners.url, "the owner's save stands");
   await assert.rejects(registry.remove("hn", credentialMark(row), true), (error) => error.code === "precondition_failed", "the token's mark is not on the owner's row");
   assert.equal((await store.mcp.server("hn"))?.url, owners.url);
+});
+
+test("the owner's save over the token's server makes it the owner's as its row is written: the token's removal landing right after that write, before anything else of the save, is refused (412), and the owner's server stays", async (t) => {
+  const { store, registry } = await servers(t);
+  registry.loopback = true;
+  const [fake, owners] = [await startFakeMcp(), await startFakeMcp({ name: "owners-mcp" })];
+  t.after(() => Promise.all([fake.close(), owners.close()]));
+  await registry.save("hn", { url: fake.url }, undefined, undefined, undefined, undefined, undefined, undefined, true);
+  // The token's removal, let through against the token's row (the owner's save over it keeps its credential's mark: none).
+  const row = await store.mcp.server("hn");
+  // The seam: right after the owner's row write returns (a write with no token's mark to compare), the token's removal
+  // runs to its end before the owner's save goes on. A delete takes no name's turn, so nothing else orders the two.
+  let removal;
+  const putIf = store.mcp.putIfCredential;
+  store.mcp.putIfCredential = async function (...args) {
+    const written = await putIf.apply(this, args);
+    if (args[2] === undefined && written && removal === undefined) {
+      removal = registry.remove("hn", credentialMark(row), true).then(() => "removed", (error) => error.code);
+      await removal;
+    }
+    return written;
+  };
+  t.after(() => (store.mcp.putIfCredential = putIf));
+  assert.equal((await registry.save("hn", { url: owners.url }))?.name, "hn");
+  assert.equal(await removal, "precondition_failed", "the token's removal never takes the row the owner wrote");
+  assert.equal((await store.mcp.server("hn"))?.url, owners.url, "the owner's server stays");
 });
 
 test("a preset whose key does not open here is `unusable`, and a server that is no preset answers nothing", async (t) => {

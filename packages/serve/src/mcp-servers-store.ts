@@ -20,7 +20,7 @@ import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
-import { mcpSourceKey, ownersRecord, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
+import { mcpSourceKey, type RecordedRow, recordedForAnother, savedByToken, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
 import { serverGate, type ToolSettingsMap } from "./tool-plane.js";
@@ -28,7 +28,7 @@ import { toolEffect } from "./tool-gate.js";
 import { HARNESSES } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
 import { droppedWords, mcpGrantNameProblem, mcpToolName } from "./tool-names.js";
-import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpServerRow, type Settings, type Store } from "./store/index.js";
+import { type McpCredential, type McpCredentialMark, type Mcp, type McpOauth, type McpOwnersMark, type McpServerRow, type Settings, type Store } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
 import { MCP_ALLOW_LOOPBACK_ENV, restartToAllow } from "./start-switches.js";
 
@@ -387,22 +387,25 @@ export class McpServersOverStore {
         if (moved || (made && stands && (!stood || stood.user !== stands.user || Boolean(stood.per_run) !== Boolean(stands.per_run) || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
       // Who saved the row (mcp-sources.ts `by`): the token marks a row it makes, and keeps the mark on its own; the owner's
-      // row stays the owner's under the token's save; the owner's save over the token's row drops the mark first, so the
-      // token's delete never takes the row the owner is saving.
+      // row stays the owner's under the token's save. The owner's save over a saved row drops the token's mark in the
+      // store's transaction that writes the row, once it is written (`owns`, McpOwnersMark): a save refused (412) leaves
+      // the row and its record as they were, so the server stays the token's; one that lands is the owner's with no
+      // moment between its row and its record, so the token's write or delete, which compares the mark in its own
+      // statement, never takes the row the owner saved.
       const recorded = was ? await this.store.settings.get(mcpSourceKey(name)) : undefined;
       const wasToken = was !== undefined && savedByToken(recorded, was.createdAt);
       const mark = byToken && (was === undefined || wasToken);
-      if (wasToken && !byToken) await this.store.settings.put(mcpSourceKey(name), ownersRecord(recorded as Record<string, unknown>));
+      const owns = !byToken && was !== undefined ? { record: mcpSourceKey(name) } : undefined;
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
         // onto another one's, nor over a row another save moved meanwhile (a Composio save over it, whose cleanup removed the
         // MCP server at the address read; Composio's share an origin). It writes no credential column, so it never drops or
         // replaces one.
-        ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url)
+        ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url, owns)
         // A new credential, or none: written only while the row's credential is still `against`, and the token's over a
         // saved row only while that row still carries its mark (savedByToken), both in the store's one statement: the
         // check and the write are one step, so an owner's save that lands after the gate's read is never written over.
-        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name) } } : {}) }));
+        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name) } } : {}), ...(owns ? { owns } : {}) }));
       if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark));
       // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
       else if (mark && !wasToken) await this.store.settings.put(mcpSourceKey(name), storedSource({ source: "url", toolkit: null }, saved, false, true));
@@ -506,10 +509,10 @@ export class McpServersOverStore {
   /** Writes the owner's change over the row it read (`was`), its credential left as it is, by a compare-and-set on that
    *  credential (store.mcp.rewrite). A lost one (a run kept a refreshed set meanwhile) reads the row again and re-applies the
    *  change onto it, while `still` holds of it, at most REWRITE_TRIES writes; then it is refused in words, nothing written. */
-  private async rewriteKeeping(name: string, was: McpServerRow, fields: (row: McpServerRow) => Parameters<typeof rewriteMcpServer>[1], doing: "save" | "refresh", still: (row: McpServerRow) => boolean): Promise<McpServerRow> {
+  private async rewriteKeeping(name: string, was: McpServerRow, fields: (row: McpServerRow) => Parameters<typeof rewriteMcpServer>[1], doing: "save" | "refresh", still: (row: McpServerRow) => boolean, owns?: McpOwnersMark): Promise<McpServerRow> {
     let row = was;
     for (let tries = 1; ; tries++) {
-      const saved = await rewriteMcpServer(this.store, fields(row), row.sealed, { githubMcpOrigin: this.appOrigin });
+      const saved = await rewriteMcpServer(this.store, fields(row), row.sealed, { githubMcpOrigin: this.appOrigin, ...(owns ? { owns } : {}) });
       if (saved) return saved;
       const fresh = await this.store.mcp.server(name);
       if (!fresh) throw notFound(name);
@@ -528,8 +531,8 @@ export class McpServersOverStore {
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check).
    *  `byToken`: the API token removes it, which it may only while the row is one the token saved (savedByToken): its
    *  credential and its mark are compared in the deleting statement itself (Mcp.removeIfCredential), never in a read
-   *  before it, so an owner's save that lands after the gate's check (it drops the mark before it writes) is never
-   *  removed, and nothing is sent to Composio for it. */
+   *  before it, so an owner's save that lands after the gate's check (it drops the mark in the transaction that writes
+   *  its row) is never removed, and nothing is sent to Composio for it. */
   async remove(name: string, checkedAgainst?: McpCredentialMark, byToken = false): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
     // The credential the row goes against: the gate's, else (a token's removal the gate did not read) the one read here.
