@@ -21,8 +21,9 @@ const METADATA = new Set(["target_branch", "commit_message", "author", "committe
 
 /** A fake code.storage org `name`, its key's public half `publicKey` (PEM or KeyObject). `fetch` is what the adapter
  *  is handed; `calls` every request it made ({ method, path, repo, search, redirect: the fetch's redirect mode });
- *  `repos` the store, by id. */
-export function codeStorageFake({ name = "example-org", publicKey } = {}) {
+ *  `repos` the store, by id. `caseless`: repository ids named without regard to case (two ids differing only by case
+ *  are one repository, kept by its lowercase id), as an API may name them. */
+export function codeStorageFake({ name = "example-org", publicKey, caseless = false } = {}) {
   const key = publicKey === undefined ? undefined : publicKey instanceof KeyObject ? publicKey : createPublicKey(publicKey);
   /** id -> { commits: Map<sha, commit>, main: sha | null } */
   const repos = new Map();
@@ -154,7 +155,7 @@ export function codeStorageFake({ name = "example-org", publicKey } = {}) {
     calls.push({ method, path, repo: claim?.repo, search: url.search, redirect: init.redirect });
     if (!claim) return fail(401, "unauthorized");
     const can = (scope) => claim.scopes.includes(scope);
-    const id = claim.repo;
+    const id = caseless ? claim.repo.toLowerCase() : claim.repo;
     const repo = repos.get(id);
     const q = url.searchParams;
     if (method === "POST" && path === "repos") {

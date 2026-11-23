@@ -606,6 +606,30 @@ for (const [kind, make] of Object.entries(STORES)) {
       assert.doesNotMatch(fakeText(store.fake), /BRAVO/);
     }
   });
+
+  // The lead's second read on #3415 (P2-1), red before its fix: a history whose commits do not chain (one left out
+  // between two, or the oldest naming a parent) is a history read short. Rebuilt from, the purged run's merges left out
+  // would keep its bytes, and a commit left out would lose another run's files: the purge refuses, retryable.
+  test(`${kind}: a purge refuses a history that does not chain (a commit left out between two, or the oldest naming a parent): retryable, main and every tree as they were`, async (t) => {
+    const store = await make(t);
+    const { forgetRunText } = await learn();
+    await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+    const live = await store.head();
+    const before = await everything(store);
+    const whole = (await store.log(live)).map(({ sha }) => sha);
+    assert.ok(whole.length >= 3, JSON.stringify(whole));
+    for (const [why, cut] of [["a commit left out between two", (log) => log.filter((_, i) => i !== 1)], ["the oldest left out", (log) => log.slice(0, -1)]]) {
+      // The store as it is, but for a whole-history log that comes back cut.
+      const short = { ...store, log: async (ref, options) => {
+        const log = await store.log(ref, options);
+        return log && !options?.path && !options?.limit ? cut(log) : log;
+      } };
+      await assert.rejects(forgetRunText(short, "run_bravo"), (error) => error.name === "FolderUnreadable", why);
+      assert.equal(await store.head(), live, why);
+    }
+    assert.equal(await everything(store), before, "every tree as it was");
+    assert.deepEqual((await store.log(live)).map(({ sha }) => sha), whole);
+  });
 }
 
 test("local: a save whose checkout a purge overtook (main moved between the save's compare and swap and its checkout) leaves the working tree at main as it stands, never at the save's own older commit", async (t) => {
@@ -662,6 +686,60 @@ test("local: a purge whose checkout fails (an index.lock left behind) is not don
   assert.doesNotMatch(corrections(), /BRAVO/);
   assert.match(corrections(), /ALPHA line/);
   assert.equal(existsSync(join(git, "agentrun-tidy")), false);
+});
+
+/** What a store answers at commits of a history a purge moved main off (`old`: its head; `merge`: the purged run's
+ *  merge), main at `now`: nothing held, so no read, log or diff, and no save seeded from one or the same as one. */
+async function unheld(store, { old, merge, now }) {
+  for (const sha of [old, merge]) {
+    assert.equal(await store.read(sha), undefined, `no read at ${sha}`);
+    assert.equal(await store.read(sha, ["corrections.md"]), undefined, `no read of a path at ${sha}`);
+    assert.equal(await store.log(sha), undefined, `no log at ${sha}`);
+    assert.equal(await store.diff(sha), undefined, `no diff at ${sha}`);
+  }
+  const write = [{ path: "workflows/z/README.md", text: "z\n" }];
+  assert.deepEqual(await save(store, now, write, { seed: merge }), { refused: { absent: [], same: [], seed: merge } });
+  assert.deepEqual(await save(store, now, write, { same: [{ commit: old, path: "corrections.md" }] }), { refused: { absent: [], same: ["corrections.md"] } });
+  assert.ok(((await store.read(now)) ?? []).length > 0, "main reads as ever");
+  assert.equal(await store.head(), now);
+}
+
+// The lead's second read on #3415 (P3 a), red before its fix: between a rewrite moving main and its tidy, the old
+// history's commits are still objects in the folder, so a tidy that failed (an index.lock left behind) left the purged
+// run's commits, and a champion promoted at one, readable until a purge was sent again. While the tidy mark is there,
+// the folder holds a commit only when main reaches it.
+test("local: a purge whose tidy fails leaves the old history unheld until a purge sent again tidies: no read, log or diff at its commits, no save seeded from one or the same as one", async (t) => {
+  const store = await STORES.local(t);
+  const { forgetRunText } = await learn();
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+  const git = gitDirOf(store.data);
+  const old = await store.head();
+  const merge = (await store.log(old)).find(({ message }) => message.includes("Run-Id: run_bravo")).sha;
+  writeFileSync(join(git, "index.lock"), "");
+  await assert.rejects(forgetRunText(store, "run_bravo"), /working tree/);
+  assert.equal(existsSync(join(git, "agentrun-tidy")), true, "the tidy mark stays");
+  const now = await store.head();
+  assert.notEqual(now, old, "main moved to the rewritten history");
+  // The objects are there still: git itself reaches them.
+  assert.equal(spawnSync("git", ["--git-dir", git, "cat-file", "-e", `${merge}^{commit}`]).status, 0, "the purged run's merge is an object still");
+  await unheld(store, { old, merge, now });
+  rmSync(join(git, "index.lock"));
+  assert.equal((await forgetRunText(store, "run_bravo")).nothing, "purged");
+  assert.equal(existsSync(join(git, "agentrun-tidy")), false);
+  await unheld(store, { old, merge, now });
+});
+
+test("code.storage: a purge whose old repository's delete fails leaves the old history unheld: the agent reads its next generation alone, no read, log or diff at the old commits, no save seeded from one or the same as one", async () => {
+  const { forgetRunText } = await learn();
+  let refuse = true;
+  const store = await wrappedStore((inner) => async (url, init) => (refuse && init?.method === "DELETE" && repoOf(init) === `agentrun-${SRV}-agent-one-g0` ? new Response(JSON.stringify({ error: "unavailable" }), { status: 503, headers: { "content-type": "application/json" } }) : inner(url, init)));
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE");
+  const old = await store.head();
+  const merge = (await store.log(old)).find(({ message }) => message.includes("Run-Id: run_bravo")).sha;
+  await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable");
+  assert.ok(store.fake.repos.has(`agentrun-${SRV}-agent-one-g0`), "the old repository is there still");
+  await unheld(store, { old, merge, now: await store.head() });
+  refuse = false;
 });
 
 test("local: a purge through hand commits of a corrections.md far past its cap (20,000 lines, then the same lines reversed) finishes in a 256 MB heap and takes the run's line out", () => {
@@ -735,6 +813,85 @@ test("code.storage: round 2 (4): a purge whose history listing comes back 404 re
   assert.equal(await store.head(), live, "main never moved");
   assert.equal(await everything(store), before, "every tree as it was");
   assert.deepEqual((await store.log(live)).map(({ sha }) => sha), history, "the whole history is still there");
+});
+
+// The lead's second read on #3415 (P2-1), red before its fix: a listing page that says has_more with no cursor to read
+// the rest by is a listing cut short. Read as the whole, a commit's short file listing in a purge's rebuild drops other
+// runs' files, and a short history leaves the purged run's early merges (its bytes stay). The store unavailable,
+// retryable.
+test("code.storage: a listing that says has_more with no cursor (a commit's files, main's history) is the store unavailable, never a short answer: the read, the log and a purge refuse, retryable, main and every tree as they were", async () => {
+  const { forgetRunText } = await learn();
+  let cut;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    const response = await inner(url, init);
+    if (!cut || !response.ok || !new URL(url).pathname.endsWith(`/repos/${cut}`)) return response;
+    const page = await response.json();
+    const list = cut === "files" ? "entries" : "commits";
+    const short = page[list].length < 2 ? page : { ...page, [list]: page[list].slice(0, 1), ...(page.paths ? { paths: page.paths.slice(0, 1) } : {}), has_more: true, next_cursor: null };
+    return new Response(JSON.stringify(short), { status: response.status, headers: { "content-type": "application/json" } });
+  });
+  await merged(store, "ALPHA", "BRAVO", "CHARLIE", "DELTA");
+  const live = await store.head();
+  const before = await everything(store);
+  for (const which of ["files", "commits"]) {
+    cut = which;
+    await assert.rejects(which === "files" ? store.read(live) : store.log(live), (error) => error.name === "FolderUnreadable", `${which}: the read refused`);
+    await assert.rejects(forgetRunText(store, "run_bravo"), (error) => error.name === "FolderUnreadable", `${which}: the purge refused`);
+    cut = undefined;
+    assert.equal(await store.head(), live, which);
+  }
+  assert.equal(await everything(store), before, "every tree as it was");
+});
+
+// The lead's second read on #3415 (P2-2), red before its fix: agent ids differing only by case (`Foo`, `foo`) named
+// repositories differing only by case, so an API naming repositories without regard to case keeps both agents'
+// learning in one (and one's purge or erasure takes the other's). The plain form takes lowercase letters, digits,
+// dashes and underscores alone; any other id is the hash form, its readable part lowercased (the hash, over the id as
+// it is, keeps it its own).
+test("code.storage: agent ids differing only by case name repositories that differ without regard to case: on an API naming them caselessly, Foo's learning is not foo's and Foo's erasure leaves foo's; an id with a capital is refused by the guard", async () => {
+  const { agentrunRepo, codeStorageLearningStore, repoIdOf, RepoIdRefused } = await import("../dist/learn/code-storage.js");
+  const ids = ["Foo", "foo", "FOO", "fOo"].map((agent) => repoIdOf(SRV, agent));
+  for (const id of ids) assert.equal(id, id.toLowerCase(), id);
+  assert.equal(new Set(ids.map((id) => id.toLowerCase())).size, ids.length, JSON.stringify(ids));
+  assert.equal(ids[1], `agentrun-${SRV}-foo-g0`, "a lowercase id keeps the plain form");
+  assert.match(ids[0], new RegExp(`^agentrun-${SRV}-h-foo-[0-9a-f]{24}-g0$`));
+  assert.throws(() => agentrunRepo(`agentrun-${SRV}-Foo-g0`), RepoIdRefused);
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const fake = codeStorageFake({ name: "example-org", publicKey, caseless: true });
+  FAKES.push(fake);
+  const settings = { name: "example-org", key: privateKey.export({ type: "pkcs8", format: "pem" }), apiUrl: "https://api.example-org.code.storage.invalid", fetch: fake.fetch, serverId: async () => SRV };
+  const [upper, lower] = ["Foo", "foo"].map((agent) => codeStorageLearningStore(settings, agent));
+  assert.match((await save(upper, null, [{ path: "corrections.md", text: "- Foo's line\n" }])).saved ?? "", HEX);
+  assert.equal(await lower.head(), null, "foo has learned nothing");
+  const two = (await save(lower, null, [{ path: "corrections.md", text: "- foo's line\n" }])).saved;
+  assert.match(two ?? "", HEX);
+  await upper.remove({ erase: true });
+  assert.equal(await upper.head(), null);
+  assert.equal(await lower.head(), two, "Foo's erasure left foo's learning");
+});
+
+// The lead's second read on #3415 (P3 c), red before its fix: a failure's words carry up to 300 characters of what the
+// API answered, into errors and logs, so an API echoing the request's bearer token put the token there. The token
+// sent is cut from them, "[token]" in its place.
+test("code.storage: an API failure that echoes the bearer token sent (in a JSON error or plain text) says [token] in its words, never the token", async () => {
+  const sent = [];
+  let echo;
+  const store = await wrappedStore((inner) => async (url, init) => {
+    if (!echo) return inner(url, init);
+    const bearer = String(init?.headers?.authorization ?? "").replace(/^Bearer /, "");
+    sent.push(bearer);
+    const said = `the token ${bearer} is refused`;
+    return echo === "json" ? new Response(JSON.stringify({ error: said }), { status: 500, headers: { "content-type": "application/json" } }) : new Response(said, { status: 500, headers: { "content-type": "text/plain" } });
+  });
+  for (const kind of ["json", "text"]) {
+    echo = kind;
+    sent.length = 0;
+    const error = await store.head().then(() => assert.fail("the call failed"), (failure) => failure);
+    assert.equal(error.name, "FolderUnreadable", kind);
+    assert.ok(sent.length > 0 && sent.every((token) => token.length > 100), kind);
+    for (const token of sent) assert.ok(!error.message.includes(token.slice(0, 40)), `${kind}: ${error.message}`);
+    assert.match(error.message, /the token \[token\] is refused/, kind);
+  }
 });
 
 test("code.storage: a purge killed mid-build leaves the live repository untouched; the retry deletes the half-built next generation by its exact id and finishes", async () => {
@@ -958,7 +1115,7 @@ test("code.storage: every repository id the whole suite sent is agentrun-<12 hex
   assert.ok(sent.length > 50, `the suite's calls: ${sent.length}`);
   assert.deepEqual(sent.filter((call) => call.redirect !== "error"), [], "every fetch passes redirect: \"error\"");
   for (const call of sent) assert.match(String(call.repo), GUARD, JSON.stringify(call));
-  for (const call of sent) assert.match(String(call.repo), /^agentrun-[0-9a-f]{12}-[A-Za-z0-9_-]+$/, JSON.stringify(call));
+  for (const call of sent) assert.match(String(call.repo), /^agentrun-[0-9a-f]{12}-[a-z0-9_-]+$/, JSON.stringify(call));
   assert.deepEqual(sent.filter((call) => /^repos\/?$/.test(call.path) && call.method === "GET"), [], "no repository listing");
   assert.deepEqual([...new Set(sent.filter((call) => call.method === "DELETE").map((call) => call.path))], ["repos/delete"]);
 });
