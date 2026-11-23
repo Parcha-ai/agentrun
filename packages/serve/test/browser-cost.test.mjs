@@ -448,6 +448,88 @@ test("after a reopen, a kept session's down time is held once: its first call fi
   for (const figure of [...held, spentNow() + paidHolds() - base]) assert.ok(figure <= cap, `${figure} is over the cap of ${cap}`);
 });
 
+test("a kept session's reserve held again at one stretch is asked only once its old one is given back, on a ledger whose give-backs land late", async (t) => {
+  // The reopen above, on a ledger whose settle lands 20 ms after it is asked (a write, in real time): the re-held reserve
+  // must not be asked while the old one (a stretch and 15 min down, $0.039) is still held there, or the ledger judges
+  // the new stretch beside the old one and the charge that booked it (about $0.116 of a $0.10 cap).
+  t.mock.timers.enable({ apis: ["Date"], now: T0 + 900_000 });
+  const inner = await toolLedger(0.1);
+  await inner.spend(0.02);
+  const events = [];
+  const paid = {
+    admit: (request) => (events.push(["asked", request.id]), inner.admit(request)),
+    settle: async (id, usd, options) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const docs = { Inventory: "inventory", Sessions: "sessions" };
+  await spend.reopened({ snapshot: async (token) => (token === "inventory" ? { rows: { k: { tag: "ar-kept", conversationId: 1 } } } : { sessions: [{ tag: "ar-kept", spent: { chargedThrough: new Date(T0).toISOString() } }] }) }, docs, undefined);
+  await spend.ledgerIdle();
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    t.mock.timers.tick(3_000);
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-kept", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 903, usd: 903 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await spend.ledgerIdle();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  const out = await tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  await spend.ledgerIdle();
+  const reserves = events.filter(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#")).map(([, id]) => id);
+  assert.equal(reserves.length, 2, `the reopen's reserve, then the one held again: ${JSON.stringify(events)}`);
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id === reserves[0] && back);
+  const askedAgain = events.findIndex(([what, id]) => what === "asked" && id === reserves[1]);
+  assert.ok(givenBack >= 0 && givenBack < askedAgain, `the old reserve is given back before the new one is asked: ${JSON.stringify(events)}`);
+  assert.ok(Math.abs(inner.heldUsd() - 0.009) < 1e-9, `the ledger holds the reserve at one stretch: ${inner.heldUsd()}`);
+});
+
+/** A new session's first charge (3 s at Browserbase, under no call), committed and seen by `spend`'s watch. */
+async function firstCharge(spend) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const entries = [];
+  await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) });
+  listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+  await spend.ledgerIdle();
+}
+
+test("capped, a new session's reserve the cap refuses is said and pauses the run in the cap's words; it is never held", async (t) => {
+  // $0.095 spent of a $0.10 cap: the session's first charge (3 s, owed) is booked, and its reserve, one stretch ($0.009),
+  // has no room. Starting a session is a choice, so the reserve is not owed; refused, its next stretch is held nowhere.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.1);
+  await paid.spend(0.095);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  const said = logs.filter((line) => line.includes("event=browser_reserve_refused"));
+  assert.equal(said.length, 1, JSON.stringify(logs));
+  assert.match(said[0], /ar-new/);
+  assert.match(said[0], /spend_cap_reached/);
+  assert.equal(paused.length, 1, `the run is paused once: ${JSON.stringify(paused)}`);
+  assert.equal(paused[0].code, "spend_cap_reached");
+  assert.match(paused[0].refuse, /spend_cap_reached/);
+  assert.equal(paid.heldUsd(), 0, "no reserve is held");
+  assert.ok(Math.abs(paid.spentUsd() - 0.0951) < 1e-9, `the charge is booked: ${paid.spentUsd()}`);
+});
+
+test("capped with room, a new session's reserve is held, and nothing is said or paused", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(5);
+  const logs = [];
+  const paused = [];
+  await firstCharge(browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) }));
+  assert.deepEqual([logs, paused], [[], []]);
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `its reserve, one stretch: ${paid.heldUsd()}`);
+});
+
 // ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
 
 /** pi 1.5's observeCommits as the Session runs it: an `advance` that throws is reported, the observer is detached and

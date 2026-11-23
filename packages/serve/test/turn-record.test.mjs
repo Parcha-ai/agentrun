@@ -16,6 +16,8 @@ import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const WEB_HOLD = new URL("./fixtures/faux-web-hold.mjs", import.meta.url).pathname;
+/** The faux model priced on output only ($100 per million tokens): a request's hold is above $0. */
+const OUTPUT_PRICED = new URL("./fixtures/faux-output-priced.mjs", import.meta.url).pathname;
 const TERMINAL = ["completed", "failed", "cancelled"];
 const ADAPTERS = ["claude-agent", "codex"];
 const ALL = ["pi", ...ADAPTERS];
@@ -138,6 +140,33 @@ for (const harness of ADAPTERS) {
     assert.ok(cut >= 0 && cut < ended, `the cut request is booked before the run's end: ${JSON.stringify(entries.map((entry) => [entry.kind, entry.data?.rule]))}`);
     assert.equal(entries[cut].data.bookedUsd, 0, JSON.stringify(entries[cut].data));
     assert.equal(view.cost?.usd, 0.0005, `the answer's cost, and the cut request's $0: ${JSON.stringify(view.cost)}`);
+  });
+
+  // The same on a priced model (output at $100 per million tokens), whose hold is above $0: the cut request is booked at
+  // what the cap held for it, never at $0 and never at the $0.002 the harness says for it, so the $0 above is the free
+  // model's figure and not a booking that skipped the hold.
+  test(`${harness}: on a priced model, a cancel that cuts a request in flight books it at its hold before the run's end`, { timeout: 90_000 }, async (t) => {
+    const signal = join(await scratch(t), "admitted");
+    const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS), faux: OUTPUT_PRICED });
+    const runId = await start(api, harness, `Answer, then hold a request the cancel cuts and books (signal ${signal}).`, { input: "hi", max_cost_usd: 10 });
+    await until("the second request is admitted", async () => existsSync(signal));
+    await until("the answer's row is in, under the cap", async () => (await rowsOf(api, runId)).some((r) => r.kind === "final_answer" && r.text === "Done."));
+    const seen = [(await api("GET", `/runs/${runId}`)).body.status];
+    assert.equal(seen[0], "working", "under the cap until the cancel");
+    const cancel = await api("POST", `/runs/${runId}/cancel`, {});
+    assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true], JSON.stringify(cancel.body));
+    seen.push(cancel.body.status);
+    await watch(api, runId, terminal, "the cancel ends the run", { seen });
+    await endsAs(api, runId, seen, "cancelled");
+    const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+    const cut = entries.findIndex((entry) => entry.kind === RUNNER_RECORDS.turn && entry.data?.rule === "lost:cut");
+    const ended = entries.findIndex((entry) => entry.kind === KINDS.end);
+    assert.ok(cut >= 0 && cut < ended, `the cut request is booked before the run's end: ${JSON.stringify(entries.map((entry) => [entry.kind, entry.data?.rule]))}`);
+    const booking = entries[cut];
+    assert.equal(entries.filter((entry) => entry.kind === RUNNER_RECORDS.turn).length, 2, "the answer and the cut request, each booked once");
+    const admitted = entries.find((entry) => entry.kind === RUNNER_RECORDS.request && entry.conversationId === booking.conversationId && entry.data?.turn === booking.data.turn);
+    assert.ok(typeof admitted?.data?.heldUsd === "number" && admitted.data.heldUsd > 0, `its hold is above $0: ${JSON.stringify(admitted?.data)}`);
+    assert.equal(booking.data.bookedUsd, admitted.data.heldUsd, `booked at the hold the cap admitted it at: ${JSON.stringify({ booked: booking.data, admitted: admitted.data })}`);
   });
 }
 
