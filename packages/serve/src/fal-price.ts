@@ -322,7 +322,8 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
         basis: unpriced && priced.length ? `${basis}; not counting what could not be priced` : basis,
         ...(unpriced ? { unpriceable: unpriced.why } : {}),
         chargeOf(reply) {
-          if (!reply) return null;
+          // A reply lost after the call left: each job at the hold it was sent at, unknown when one had no price.
+          if (!reply) return unpriced ? null : holdUsd;
           const body = bodyOf(reply);
           if (tool !== "submit_jobs") return chargeOfJob(quotes[0]!, body);
           // submit_jobs: each job by its own entry of the reply, matched by the index the call gave it.

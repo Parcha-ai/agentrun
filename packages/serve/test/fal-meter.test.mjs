@@ -188,14 +188,20 @@ test("a reply that carries no job was never billed: booked $0; a job that failed
   assert.deepEqual(await timedOut.turns(), [0.03], "a timeout is booked at its hold");
 });
 
-test("a reply lost after the job left is booked as an unknown charge, counted at its hold", async (t) => {
-  const run = await setup(t, { gate: (_url, message) => (message?.method === "tools/call" && message.params?.name === "run_model" ? { status: 500, body: { error: "upstream" } } : undefined) });
+test("a reply lost after the job left is booked at its hold, the price it was sent at; unknown only for a job that had none", async (t) => {
+  const lost = (_url, message) => (message?.method === "tools/call" && message.params?.name === "run_model" ? { status: 500, body: { error: "upstream" } } : undefined);
+  const run = await setup(t, { gate: lost });
   const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
   assert.equal(result.isError, true);
-  assert.deepEqual(await run.turns(), [null], "unknown, never $0");
+  assert.deepEqual(await run.turns(), [0.03], "$0.03 an image, 1 image: its hold, never $0");
   const cost = await run.cost();
-  assert.equal(cost.usd, null, `the run's tool cost is unknown: ${JSON.stringify(cost)}`);
-  assert.equal(cost.unpriced, 1);
+  assert.equal(cost.usd, 0.03, `the run's tool cost is the hold: ${JSON.stringify(cost)}`);
+
+  const open = await setup(t, { capUsd: null, gate: lost });
+  const unpriced = await open.call("run_model", { endpoint_id: "fal-ai/whisper", input: { audio_url: "https://media.example/a.mp3" } });
+  assert.equal(unpriced.isError, true);
+  assert.deepEqual(await open.turns(), [null], "no price to settle at: unknown, never $0");
+  assert.equal((await open.cost()).usd, null);
 });
 
 test("a unit that can't be known before the job runs: refused unsent under a cap, in words; with no cap it runs, booked as an unknown charge", async (t) => {
