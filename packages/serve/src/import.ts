@@ -762,8 +762,8 @@ const subagentMarks = (children: readonly Session[]): EntryLike[] =>
     child.turns.flatMap((turn) => {
       if (turn.role !== "assistant") return [];
       const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      // A failed request's counts are its own, zeros included, as its answer's are (entryOf).
-      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
+      // A failed request's counts are its own, zeros included, as its answer's are (entryOf); so are a folded one's.
+      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite, ...(turn.folded ? { folded: true } : {}) }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
     }),
   );
 
@@ -978,6 +978,8 @@ const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
         totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+        // Its zeros are counted in a later request of the session (the source wrote a total): known, never unmetered.
+        ...(turn.folded ? { folded: true } : {}),
       },
       // A failed request's zero counts are its counts, as a live run's failed request's are.
       ...(turn.error !== undefined ? { stopReason: "error", errorMessage: turn.error } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),

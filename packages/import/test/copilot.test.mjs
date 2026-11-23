@@ -84,13 +84,15 @@ test("Copilot CLI: a full read: the person's turns, one request per model call, 
   assert.deepEqual(requests[0].calls, [{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "ls" } }]);
   const result = session.turns.find((turn) => turn.role === "toolResult");
   assert.deepEqual([result.callId, result.name, result.text, result.isError], ["call-1", "bash", "exit 1", true]);
-  // Each model's tokens on its last request; input is what neither the cache read nor wrote (5000 - 3000 - 500).
+  // Each model's tokens on its last request; input is what neither the cache read nor wrote (5000 - 3000 - 500). A request
+  // before it, of the same model and process, is folded into it: zeros, known.
   assert.deepEqual(requests.map((turn) => turn.usage ?? null), [
-    null,
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     { input: 1500, output: 300, cacheRead: 3000, cacheWrite: 500, reasoning: 100 },
     { input: 800, output: 50, cacheRead: 0, cacheWrite: 0 },
     { input: 400, output: 20, cacheRead: 0, cacheWrite: 0 },
   ]);
+  assert.deepEqual(requests.map((turn) => turn.folded ?? false), [true, false, false, false]);
   const [totals] = await parseHome(home, { sources: ["copilot"] });
   assert.deepEqual(totals, {
     key: sha(`.copilot/session-state/${SID}/events.jsonl`),
@@ -108,7 +110,9 @@ test("Copilot CLI: a full read: the person's turns, one request per model call, 
 
 test("Copilot CLI: a session with no shutdown (still running, or killed) has its requests at unknown tokens, cost null", async (t) => {
   const home = await tempHome(t);
-  await writeJsonl(copilotFile(home), FIRST.slice(0, -1));
+  const file = await writeJsonl(copilotFile(home), FIRST.slice(0, -1));
+  const requests = (await readSession(file, "copilot")).turns.filter((turn) => turn.role === "assistant");
+  assert.deepEqual(requests.map((turn) => [turn.usage ?? null, turn.folded ?? false]), [[null, false], [null, false], [null, false]], "unknown, none folded");
   const [totals] = await parseHome(home, { sources: ["copilot"] });
   assert.deepEqual([totals.tokens.input, totals.tokens.output, totals.cost, totals.calls, totals.turns], [0, 0, null, 3, 1]);
 });

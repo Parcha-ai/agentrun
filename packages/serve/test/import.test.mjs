@@ -1249,7 +1249,7 @@ test("a pi import keeps each request's usage as pi wrote it, its model, its thin
   assert.ok(Math.abs(runs[0].costUsd - 0.005) < 1e-12, "its cost as before");
 });
 
-test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens on its model's last request, the request before it unmetered", async (t) => {
+test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens on its model's last request, the request before it folded into it (known, priced with it); with no shutdown, each request unmetered", async (t) => {
   const { store, runs } = await importedOne(t, (home, project) => {
     copilotSession(home, project, 40);
     copilotSession(home, project, 41, { shutdown: false });
@@ -1257,11 +1257,17 @@ test("a Copilot CLI session imports as a run from copilot: its shutdown's tokens
   assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.importedFrom.session, r.state]), [["copilot", sessionId(40), "completed"], ["copilot", sessionId(41), "completed"]]);
   const { metrics, answers, kinds } = await metricsOf(store, runs[0].id);
   assert.deepEqual(kinds, ["pi.user", "pi.assistant", "pi.tool-result", "pi.assistant"]);
-  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output, metrics.model, metrics.tools], [2, 1, 300, 1000, 200, 60, "github-copilot/claude-sonnet-5", { bash: { calls: 1, errors: 0 } }]);
+  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.cacheRead, metrics.cacheWrite, metrics.output, metrics.model, metrics.tools], [2, 0, 300, 1000, 200, 60, "github-copilot/claude-sonnet-5", { bash: { calls: 1, errors: 0 } }]);
   assert.deepEqual(answers.map(tokensIn), [["claude-sonnet-5", 0, 0, 0, 0], ["claude-sonnet-5", 300, 1000, 200, 60]]);
-  // No shutdown (a killed or still-open process): each request unmetered, never 0 tokens.
+  // The estimate is the carrier's alone at the catalog's github-copilot/claude-sonnet-5 rates (2, 10, 0.2, 2.5 per
+  // million): 300 * 2 + 60 * 10 + 1000 * 0.2 + 200 * 2.5 = 1900 millionths.
+  const stored = await store.runs.get(runs[0].id);
+  assert.ok(Math.abs(stored.metrics.costUsdEst - 0.0019) < 1e-12, `estimate ${stored.metrics.costUsdEst}`);
+  assert.equal(stored.costUsd, null, "Copilot records no cost: the estimate is read as one");
+  // No shutdown (a killed or still-open process): each request unmetered, never 0 tokens, and no estimate.
   const none = await metricsOf(store, runs[1].id);
   assert.deepEqual([none.metrics.requests, none.metrics.unmetered, none.metrics.input, none.metrics.output], [2, 2, 0, 0]);
+  assert.equal((await storedMetrics(store, runs[1].id)).costUsdEst, undefined);
 });
 
 test("a session whose source gives no counts imports its requests as unmetered, never as 0 tokens; a Codex request still ends at its call's result", async (t) => {

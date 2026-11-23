@@ -14,8 +14,10 @@ export type Usage = { input: number; output: number; cacheRead: number; cacheWri
 
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
  *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `key`, the source's own id of
- *  the request (Claude Code's message id with its request id, Codex's response id); `error`, why it failed. A note is a
- *  line the harness itself wrote in the conversation: no request, nor the person's. */
+ *  the request (Claude Code's message id with its request id, Codex's response id); `error`, why it failed. `folded`:
+ *  its usage (zeros) is counted in a later request of the same session, where its source wrote a total, not each
+ *  request's own (Droid): its zeros are no unknown. A note is a line the harness itself wrote in the conversation: no
+ *  request, nor the person's. */
 export type Turn = (
   | { role: "user"; text: string; at: number }
   | { role: "note"; author: string; text: string; at: number }
@@ -30,6 +32,7 @@ export type Turn = (
       effort?: string;
       usage?: Usage;
       error?: string;
+      folded?: true;
     }
   | {
       role: "toolResult";

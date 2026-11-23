@@ -75,11 +75,12 @@ Copilot writes no request's tokens to disk: `assistant.usage` is ephemeral. Its 
 across processes (`session.usage_checkpoint`, a shutdown with `usageAccountingWatermarks`) writes the session's whole
 total there, so a shutdown counts only what it adds to the ones before it; an older CLI's counts its own process. A
 model's tokens go on the last request of that model since the process started or resumed the session, or on a request
-of their own when there is none (a compaction's model). So:
+of their own when there is none (a compaction's model). That model's other requests in the process are `folded` into
+it: zeros, known, never unknown. So:
 
 - A session with no shutdown (still running, killed, or left with `/new`) has tokens 0 and cost `null`.
-- Copilot bills premium requests and AI credits and writes no dollar cost. `cost` is the catalog's list price only when
-  each request's tokens are known, which for Copilot means each model ran one request in its process; else `null`.
+- Copilot bills premium requests and AI credits and writes no dollar cost. `cost` is the catalog's list price of the
+  requests that carry the tokens, and `null` when a request's tokens are unknown or its model is not in the catalog.
 - `events.N.jsonl` archives (written only with `COPILOT_SESSION_EVENT_LOG_ROTATION_BYTES`) and the pre-0.0.342
   `history-session-state` folder are not read. A rotated session's tokens still come whole from its last shutdown;
   the requests in its archives are not counted.

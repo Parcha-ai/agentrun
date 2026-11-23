@@ -14,9 +14,10 @@
 // writes the session's whole total there, so only what a shutdown adds to the totals read before it counts; an older
 // CLI's shutdown counts its own process alone. A model's tokens go on the last request of that model since the process
 // started (since session.start or session.resume), or on a request of their own when it has none there (a compaction's
-// model). A session with no shutdown (still running, or killed) has its requests at unknown tokens. The CLI writes no
-// price in dollars (it bills premium requests and AI credits), so the cost is the catalog's, which needs each request's
-// tokens: unknown (null) unless each request's model ran no other request in its process.
+// model); that model's other requests in the process are folded into it (`folded`: zeros, known). A session with no
+// shutdown (still running, or killed) has its requests at unknown tokens. The CLI writes no price in dollars (it bills
+// premium requests and AI credits), so the cost is the catalog's: the carriers' tokens at list price, unknown (null)
+// when a request is at unknown tokens.
 //
 // Each persisted event counts once ("u:" its id), each message once ("m:" its messageId). A model call is one request:
 // a response split into chunks (each chunk a message of its own, chunkIndex > 0 after the first) joins the request of
@@ -48,6 +49,7 @@ const combine = (a: Usage, b: Usage | undefined, op: (x: number, y: number) => n
   return out;
 };
 const plus = (a: Usage, b: Usage | undefined) => combine(a, b, (x, y) => x + y);
+const none = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 const less = (a: Usage, b: Usage | undefined) => combine(a, b, (x, y) => Math.max(0, x - y));
 const most = (a: Usage, b: Usage | undefined) => combine(a, b, Math.max);
 
@@ -79,6 +81,12 @@ function shutdown(data: Record<string, unknown>, at: number, { state, add }: Rea
     }
     const turn = state.answers[index]!;
     turn.usage = turn.usage ? plus(turn.usage, usage) : usage;
+    delete turn.folded;
+    // The model's other requests in this process: their tokens are in the carrier's, so theirs are known zeros.
+    for (const i of own.segment) {
+      const other = state.answers[i]!;
+      if (i !== index && other.model === model && !other.usage) Object.assign(other, { usage: none(), folded: true as const });
+    }
   }
 }
 
