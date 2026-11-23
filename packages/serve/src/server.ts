@@ -63,7 +63,7 @@ import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
@@ -84,7 +84,7 @@ import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
-import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
@@ -135,6 +135,7 @@ import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, ty
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
+import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -233,8 +234,9 @@ import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
-import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
+import { runningComputers } from "./computers-running.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
@@ -578,6 +580,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  it is this process's finding, never a store's, so another runner on a shared store never inherits it. A runner in
    *  its own process takes its own operator's opt-in from its own environment (runner/main.ts runnerLoopback). */
   localInstall: boolean;
+  /** The OLLAMA_HOST its runner beside it asks (ollama-provider.ts ollamaHostOf): this server's own, else the default
+   *  address where this is one owner's own machine; none on a shared one that names none (runner/beside.ts ollamaHost). */
+  ollamaHost: string | undefined;
   /** This server's own addresses (McpServersOverStore.own): where it listens, and its public address when that is on
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
    *  never reach this server, as its own reads never do. */
@@ -726,6 +731,7 @@ export const ROUTES: readonly Route[] = [
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  { method: "GET", pattern: /^\/computers\/running$/, name: "listRunningComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
   { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
@@ -946,9 +952,10 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG"] as const;
 
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
- *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
- *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
+ *  saved key is one of those; the rest of the environment is the server's start's), and the models the Ollama here
+ *  listed when last asked (ollamaListing). Held to tell whether a write, or a new listing, needs the offers probed again,
+ *  never shown. */
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir, ollamaListing(env)];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -1174,17 +1181,18 @@ function integerParam(value: string | null, name: string, max: number): number {
 /** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
 export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
 
-/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
- *  it may. One owner's own server on their own machine: it listens on loopback alone, with no public address; its store
- *  is the SQLite one in its data directory (no AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside
- *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
- *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
- *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
-export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+/** Why `options` on `data` is not one owner's own server on their own machine, each reason in words; none when it is. One
+ *  owner's own: it listens on loopback alone, with no public address; its store is the SQLite one in its data directory (no
+ *  AGENTRUN_STORE_URL, which servers elsewhere share); its runs run beside it as its own user (`ownUser`:
+ *  runIsolationOf's `process`), never under --no-runner or a user of their own; and one person starts them, as Claude
+ *  Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one API token. What --harness-sign-in
+ *  starts under (harnessSignInRefusal), and where the Ollama at this machine's default address is a model of the person
+ *  who starts runs (ollama-provider.ts ollamaHostOf). */
+export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string[] {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
-  const why = [
+  return [
     ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
@@ -1193,6 +1201,13 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
     ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
     ...(ownUser ? [] : ["runs each run as a user of its own (unset AGENTRUN_RUN_USER=slot, or set AGENTRUN_RUN_USER=same)"]),
   ];
+}
+
+/** Why `options` on `data` may not run a recipe on its owner's own sign-in (--harness-sign-in), in words; undefined when
+ *  it may: one owner's own server on their own machine alone (whyNotOwnMachine). A check, a schedule and a shared server
+ *  run on a key (HARNESS.md#sign-in). */
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+  const why = whyNotOwnMachine(options, data, ownUser);
   return why.length ? `${HARNESS_SIGN_IN_NOT_LOCAL}: --harness-sign-in runs a recipe on its owner's own sign-in on one owner's own machine alone, and this server ${why.join("; ")}. Start it without --harness-sign-in: its plan-billed recipes run on keys.` : undefined;
 }
 
@@ -1213,11 +1228,15 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
+  const { runsAsOwnUser } = await import("./runner/run-child-host.js");
+  const ownUser = runsAsOwnUser(process.env);
   if (options.harnessSignIn) {
-    const { runsAsOwnUser } = await import("./runner/run-child-host.js");
-    const refused = harnessSignInRefusal(options, data, runsAsOwnUser(process.env));
+    const refused = harnessSignInRefusal(options, data, ownUser);
     if (refused) throw new Error(refused);
   }
+  // The Ollama this server asks, and its runner beside it: OLLAMA_HOST, else the default address on one owner's own machine
+  // alone (ollamaHostOf). Read once, at the start: a refused one is said once, here, in the base rule's words.
+  const ollamaHost = ollamaHostOf(process.env, whyNotOwnMachine(options, data, ownUser).length === 0);
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1253,7 +1272,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1280,8 +1299,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, boxAllow, templates } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1302,7 +1321,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data), ...harnessRecipesEnv(options.harnessRecipes ?? [], data, { signIn: options.harnessSignIn === true }) , ...(ollamaHost ? { OLLAMA_HOST: ollamaHost } : {}) };
+  // A refused OLLAMA_HOST lists nothing (ollama-provider.ts baseOf): said once, at the start, in the base rule's words,
+  // which never hold the value (a user or password in it stays unsaid).
+  const ollamaRefused = ollamaHostRefused(base);
+  if (ollamaRefused) log ? log(logLine("ollama_host_refused", { line: ollamaRefused })) : void process.stderr.write(`agentrun-serve: ${ollamaRefused}\n`);
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
   // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
@@ -1509,6 +1532,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let probes = 0;
   const probe = async (why: string) => {
     const mine = ++probes;
+    // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
+    if (asksOllama(env)) await ollamaModels(env);
     const from = offersInputs(env);
     const started = performance.now();
     const next = await harnessOffers(offersEnvOf(env));
@@ -1529,6 +1554,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     log: (what, error) => log?.(logLine(what, { error: error.message })),
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
+  /** Whether the offers held now were made from `inputs` (offersInputs). */
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i]);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1538,9 +1565,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    const inputs = offersInputs(env);
-    if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
+    if (offersMadeFrom(offersInputs(env))) recompose();
     else await probe("key");
+  };
+  /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
+   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
+  const ollamaNow = async () => {
+    if (!asksOllama(env)) return;
+    void ollamaModels(env);
+    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
   };
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
@@ -1755,10 +1789,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
-    return shellOf(body.computer ?? computerOfPlace(resolvePlace(body.place, fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : []))));
+    return shellOf(settingOfDefinition(body)?.computer ?? computerOfPlace(fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
   };
-  /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
-  const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown.
@@ -2109,6 +2141,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
   const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
+  /** A run as GET /v2/runs/{run_id} answers it, its links at `origin`. */
+  const runRead = async (runId: string, origin: string): Promise<Record<string, unknown> | undefined> => {
+    const view = await viewOverStore(store, runId, runReadDepsFor(origin));
+    return view && { ...view, ...(await runComputerRead(store, runId, view, { context: ctx })), ...(await allInViewOf(runId, view)) };
+  };
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):
   // a run's files through the server's read-only Workspace of its folder (serverRunWorkspace, no runner claim), its view
@@ -4434,13 +4471,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
-      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off. Its sessions at this
+      // server's other ports go too (page.ts sessionsAtEveryPort: a browser sends a host's cookies to every port), each
+      // name cleared; a cookie this server did not make (another server's on the same host) is left as it is.
       case "/auth/sign-out": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
-        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        const ended = sessionsAtEveryPort(req).filter(({ value }) => me.valid(value));
+        for (const { value } of ended) me.revoke(value);
         viewers.recheck();
-        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+        const names = new Set([ownerCookieName(req), ...ended.map(({ name }) => name)]);
+        return send(res, 200, { signed_out: true }, { "set-cookie": [...names].map((name) => ownerCookie(req, "", 0, name)) });
       }
       // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
       case "/auth/sign-out-everywhere": {
@@ -4532,6 +4573,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
       const runnerShell = shellTools(await shellOf({ kind: "none" }));
       await planNow();
+      await ollamaNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
@@ -5131,9 +5173,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun": {
-        const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
-        if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, { ...view, ...(await runComputerOf(id, view)), ...(await allInViewOf(id, view)) });
+        const run = await runRead(id, linkOrigin(req));
+        if (!run) throw new ApiError("not_found", `no run ${id}`);
+        return send(res, 200, run);
       }
       case "getTimeline":
         await needRun(id);
@@ -5183,12 +5225,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
-        // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,
-        // as it deletes that agent; a run of an agent made here is the profile's refusal, in its words, as before.
-        if (options.apiOnly) {
-          const agent = await store.agents.get(row.agentId);
-          if (!agent || !ownedElsewhere(agent)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
-        }
+        // API-only (api-only.ts) purges a run wherever its token may delete the run's whole agent, which is any agent:
+        // another system's, and one made here once archived. One run is less than all of them, so it is served alike.
         await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -5361,6 +5399,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComputer":
         await attach.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "listRunningComputers": {
+        const origin = linkOrigin(req);
+        return send(res, 200, await runningComputers(store, (runId) => runRead(runId, origin)), { "cache-control": "no-store" });
+      }
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer":
@@ -6148,7 +6190,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
   const mcp = mcpEndpoint({ route, authorized: (header, req) => bearer(header, req), authFailed, version: VERSION });
 
-  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
     res.end(text);
@@ -6721,6 +6763,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     attachHub,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
+    ollamaHost,
     own: mcpServers.own,
     ...(fauxGitHub ? { fauxGitHub: { api: fauxGitHub.url, ...(fauxGitHub.web ? { web: fauxGitHub.web } : {}) } } : {}),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started

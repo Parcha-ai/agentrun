@@ -12,7 +12,7 @@
 import { callComputer, callIssues, type ChannelOptions, type ChannelStore, sendRow, TAKE_MS } from "./computer-channel.js";
 import { type ComputerCallOptions, type ComputerCallStore, computerHoldOf, entriesOf, runOver } from "./computer-commands.js";
 import { COMPUTER_RELEASE, COMPUTER_START, heldIn, type HeldState, holdIssues } from "./computer-held.js";
-import { computerOfPlace, type ComputerSetting, type PlaceView } from "./computer-setting.js";
+import { type Definition, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, invalid } from "./errors.js";
 import { runComputerField } from "./run-computer.js";
 import { readLaunchBody } from "./run-launch.js";
@@ -53,8 +53,7 @@ export async function heldField(store: HeldStore, runId: string, options: HeldOp
  *  read at most once, and not at all for a run that neither can be taken over nor holds. `view` is the run read so far. */
 export async function runComputerRead(store: HeldStore & Pick<Store, "agents">, runId: string, view: Record<string, unknown>, options: HeldOptions = {}): Promise<{ computer?: Record<string, unknown> }> {
   const run = await store.runs.get(runId);
-  const body = run ? ((await store.agents.revision(run.revisionId))?.body as { computer?: ComputerSetting; place?: PlaceView } | undefined) : undefined;
-  const setting = body?.computer ?? (body?.place ? computerOfPlace(body.place) : undefined);
+  const setting = run ? settingOfDefinition(((await store.agents.revision(run.revisionId))?.body ?? {}) as Definition)?.computer : undefined;
   if (!setting) return {};
   const error = view.error as { code?: unknown; message?: unknown } | null | undefined;
   const read = { id: runId, status: String(view.status), ...(error && typeof error.code === "string" ? { error: { code: error.code, message: String(error.message ?? "") } } : {}) };

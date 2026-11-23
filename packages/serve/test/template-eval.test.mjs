@@ -138,7 +138,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.match(targeted, /<target field="summary" untrusted>\nSUMMARY-MARKER all fine\n<\/target>/);
   for (const input of [plain, targeted]) {
     assert.doesNotMatch(input, /BAD-MARKER|summary-marker"|answer\.schema\.json|passes a grader of every type/);
-    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success: Successfully wrote to notes\/out\.md\n/);
+    // The file the run wrote, whole ahead of its calls, and the call that wrote it pointing there.
+    assert.match(input, /<files untrusted>\n[^]*<file path="notes\/out\.md" bytes="17">\nthe team's notes\n\n<\/file>\n[^]*<\/files>\n\n<tool-calls untrusted>\n/);
+    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success \[the file notes\/out\.md is in <files>, whole unless marked cut\]: Successfully wrote to notes\/out\.md\n/);
   }
   assert.ok(!plain.includes("SUMMARY-MARKER\".") && !targeted.includes("GOOD-MARKER\"."), "one rubric each");
 });
