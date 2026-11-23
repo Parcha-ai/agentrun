@@ -49,8 +49,10 @@ export type Answer = Extract<Turn, { role: "assistant" }>;
  *  `parent` are the source's own (Claude Code's uuid and parentUuid, pi's id and parentId), absent where the source's
  *  records name none (Codex, whose prompt only grows); `hash`, of what the record put in the conversation (two records of
  *  the same content hash the same); `compact`, a compaction or summary boundary; `sidechain`, a record of a sidechain
- *  (Claude Code's isSidechain); `request`, the index among the session's assistant turns of the request it opens. */
-export type ChainRecord = { id?: string; parent?: string; hash?: string; compact?: true; sidechain?: true; request?: number };
+ *  (Claude Code's isSidechain); `copy`, a record an earlier file of the import holds (a moved or resumed session's
+ *  file repeats them): in the chain, but no event of this file's; `request`, the index among the session's assistant
+ *  turns of the request it opens. */
+export type ChainRecord = { id?: string; parent?: string; hash?: string; compact?: true; sidechain?: true; copy?: true; request?: number };
 export type Ended = "completed" | "failed" | "stopped";
 
 /** The longest gap between two records counted as time at work, as WakaTime counts it: a longer gap is a session left

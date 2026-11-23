@@ -77,7 +77,12 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
   const uuid = str(value.uuid);
   const link = chain && uuid ? linkOf(value, uuid) : undefined;
   if (link) chain!.push(link);
-  if (uuid && seen.has(`u:${uuid}`)) return false;
+  if (uuid && seen.has(`u:${uuid}`)) {
+    // A copy is in the chain (a later record's runs through it), but happened in the earlier file: a compaction it
+    // repeats is no evidence for a break in this one.
+    if (link) link.copy = true;
+    return false;
+  }
   if (uuid) seen.add(`u:${uuid}`);
   if ((value.type !== "user" && value.type !== "assistant") || !isObject(value.message)) return;
   if (value.isMeta === true || value.isCompactSummary === true || value.isVisibleInTranscriptOnly === true) return;

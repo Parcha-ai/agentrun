@@ -327,3 +327,38 @@ test("--cache never compares two sessions: a thread's first turn is its turn 1 w
   assert.equal(lines.length, 3);
   for (const line of lines.slice(0, 2)) assert.deepEqual(line.breaks, []);
 });
+
+test("a moved session's copy of an old compaction is no evidence for its boundary break; a compaction of its own is", async (t) => {
+  // The session in its first folder: a compaction, then two turns. Moved, its file in the second folder copies all of
+  // that (the same uuids), then goes on with a turn that reads little.
+  const first = linear([{ read: 1000, i: 10 }]);
+  first.push(...compaction("a0", 20), ...linear([{ read: 1000, i: 30 }, { read: 1100, i: 40 }], 1, "cs"));
+  const cases = [
+    ["copied only", [], "a2", "unknown"],
+    ["compacted again after the move", [{ ...compaction("a2", 45)[0], uuid: "cb2" }, { ...compaction("a2", 45)[1], uuid: "cs2", parentUuid: "cb2" }], "cs2", "compaction"],
+  ];
+  for (const [name, own, parent, cause] of cases) {
+    const home = await tempHome(t);
+    const earlier = await writeJsonl(claudeFile(home, SESSION, "-work-a"), first);
+    await utimes(earlier, new Date(at(0)), new Date(at(0)));
+    await writeJsonl(claudeFile(home, SESSION, "-work-b"), [...first, ...own, ...linear([{ read: 50, write: 1000, i: 50 }], 3, parent)]);
+    const result = run(home, "--cache", "--sources", "claude-code");
+    assert.equal(result.status, 0, result.stderr);
+    const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+    assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[4, cause]], name);
+  }
+});
+
+test("a copied compaction between two turns of a file's own is no evidence either", async (t) => {
+  const home = await tempHome(t);
+  const earlier = await writeJsonl(claudeFile(home), [...linear([{ read: 1000, i: 10 }]), ...compaction("a0", 20)]);
+  await utimes(earlier, new Date(at(0)), new Date(at(0)));
+  // Another session's file: its own turn, then the first file's compaction copied, then its own turn again.
+  const own = linear([{ read: 1000, i: 40 }], 10);
+  await writeJsonl(claudeFile(home, RESUMED), [...own, ...compaction("a0", 20), ...linear([{ read: 50, write: 1000, i: 50 }], 11, "a10")]);
+  const result = run(home, "--cache", "--sources", "claude-code");
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  lines.pop();
+  assert.deepEqual(lines.flatMap(({ breaks }) => breaks.map(({ turn, cause }) => [turn, cause])), [[2, "unknown"]]);
+});

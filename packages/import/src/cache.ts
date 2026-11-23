@@ -105,7 +105,7 @@ function causeOf(lastIndex: number, last: Pick<Answer, "model" | "at">, index: n
   const from = lastIndex < 0 ? -1 : opens.get(lastIndex);
   const to = opens.get(index);
   if (from === undefined || to === undefined) return { cause: "unknown" };
-  if (chain.slice(from + 1, to).some((record) => record.compact)) return { cause: "compaction" };
+  if (chain.slice(from + 1, to).some((record) => record.compact && !record.copy)) return { cause: "compaction" };
   if (from < 0) return { cause: "unknown" };
   const was = chain[from]!;
   const now = chain[to]!;
@@ -239,6 +239,6 @@ function headOf(session: Pick<SessionOf, "turns" | "chain" | "model">): { head?:
   const opens = chain.findIndex(({ request }) => request === index);
   const answer = answers[index]!;
   // Only whether a compaction came before it: the chain's ids are this file's alone.
-  const compacted = opens > 0 && chain.slice(0, opens).some(({ compact }) => compact);
+  const compacted = opens > 0 && chain.slice(0, opens).some(({ compact, copy }) => compact && !copy);
   return { head: { turns: [{ role: "assistant", text: "", calls: [], at: answer.at, ...(answer.model ? { model: answer.model } : {}), usage: answer.usage! }], chain: [...(compacted ? [{ compact: true as const }] : []), { request: 0 }], ...(session.model ? { model: session.model } : {}) }, skipped: index };
 }
