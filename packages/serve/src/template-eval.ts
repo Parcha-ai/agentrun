@@ -962,7 +962,8 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
         return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
       }
     }
-    if (Date.now() > deadline) {
+    // At the deadline, not only past it: the claim read's bound ends at the deadline, and may end in its very millisecond.
+    if (Date.now() >= deadline) {
       await api("POST", `/runs/${runId}/cancel`, {});
       return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
     }
