@@ -346,8 +346,9 @@ test("no OTEL_* setting reaches a run: the run environment and a CLI's have none
   assert.deepEqual(Object.getOwnPropertyNames(cli).filter((name) => name.startsWith("OTEL_")), [], "a CLI harness's environment has none");
   // A run's own process: on its pipe, read back as that process reads it, and the exporter configured from it.
   const pipe = encode(otelPair(server));
-  const read = "const { otelEnv, exporterConfig } = await import(process.argv[1]); process.stdout.write(JSON.stringify({ env: Object.keys(process.env).filter((n) => n.startsWith('OTEL_')), config: exporterConfig(otelEnv()) }));";
-  const child = spawnSync(process.execPath, ["--import", new URL("../dist/secrets.js", import.meta.url).pathname, "--input-type=module", "-e", read, new URL("../dist/otel/tracer.js", import.meta.url).pathname], {
+  const tracerUrl = JSON.stringify(new URL("../dist/otel/tracer.js", import.meta.url).href);
+  const read = `const { otelEnv, exporterConfig } = await import(${tracerUrl}); process.stdout.write(JSON.stringify({ env: Object.keys(process.env).filter((n) => n.startsWith('OTEL_')), config: exporterConfig(otelEnv()) }));`;
+  const child = spawnSync(process.execPath, ["--import", new URL("../dist/secrets.js", import.meta.url).pathname, "--input-type=module", "-e", read], {
     input: pipe, encoding: "utf8", timeout: 30_000,
     env: { PATH: process.env.PATH, AGENTRUN_SECRETS_FD: "0", AGENTRUN_SECRETS_LEN: String(pipe.length), AGENTRUN_TELEMETRY: "0" },
   });
