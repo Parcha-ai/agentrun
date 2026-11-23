@@ -2673,7 +2673,8 @@ gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agen
 auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
 the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
 target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
-trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
+trigger off (`disabled: {reason: "auto_paused"}`); a firing tried again (a busy server) counts once, when it fails,
+however many tries it took. A firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
 upgrade of the cron library or of the time zone data), or whose `every_s` a hand edit of its row put out of range, is
@@ -3282,9 +3283,12 @@ trigger's title and input origin, and the firing reads `started` with it, so the
 The run starts on the trigger's target, as the run this server would start for the firing:
 
 - Its cap is the target's `max_cost_usd`, which the host's `max_cost_usd` may lower and never raise. A target capped at
-  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the host's,
-  else the agent's default.
+  0.5 runs at 0.5 when the host sends 10, and at 0.2 when the host sends 0.2. A target with no cap takes the agent's
+  default in its place, which the host's may lower the same way: on an agent with a $5 default, the host's 500 runs at
+  5 and its 1 at 1.
 - Its effort is the target's when the target sets one, else the host's `effort`, else the agent's.
+- It runs on the agent's current revision and holds no computer: `revision`, `hold` or `hold_minutes` in the host's
+  body is refused with 422 `not_allowed`, naming the field.
 - The rest of the host's body is taken as on any start: its `model_key`, `keys` and `mcp_auth` are sealed for the run.
 - Its input is the host's, followed by the trigger's last completed result when its source hands one on (a schedule
   does), as a run this server starts for it is.
@@ -3297,15 +3301,19 @@ firing over again, and until its run starts, the overlap check cannot see it.
 
 The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
-another agent's triggers) is refused with 422.
+another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
+by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
 
 A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
 then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
 `timeout` (no answer in 10 s) or `unreachable` (no connection). No answer, no connection, a 5xx or a 429 leaves the
 firing due with `retry_at`, tried again on the trigger's backoff under the same `webhook-id`; any other answer, a
-redirect included (it is not followed), fails it at once. Each try counts toward the trigger's failure streak, which
-turns the trigger off after 5 in a row, and a firing that fails sends `trigger.failed`. A host whose start lands while
-its firing waits on a retry (it answered too late) has that run made the firing's, `started`.
+redirect included (it is not followed), fails it at once. A firing counts once toward the trigger's failure streak,
+when it fails, however many tries it took: 5 failed firings in a row turn the trigger off, and a firing that fails
+sends `trigger.failed`. A host whose start lands while its firing waits on a retry (it answered too late) has that run
+made the firing's, `started`, while its trigger has room for it. A start that lands just as the server records the
+hook's answer keeps the firing `started` with its run: the answer doesn't set it back to `sent`, fail it or count it.
 
 A firing the server's stop cuts short stays due and is handed again at the next start, under the same `webhook-id`. A
 `message_run` target starts no run and is unchanged.

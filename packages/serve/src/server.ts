@@ -263,6 +263,9 @@ const IMPORT_STARTS = 3;
 const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
+/** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
+ *  target fixes them. */
+const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
 /** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
 const REFUSED_SWEEP_MS = 2_000;
 const PAGE_ROWS = 500;
@@ -3751,6 +3754,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // launch secrets over it. The firing is its key, so it takes no Idempotency-Key, whose check across a restart is the run's origin.
     if (body.trigger_firing !== undefined) {
       if (req.headers["idempotency-key"] !== undefined) throw invalid([{ field: "trigger_firing", reason: "not_allowed", message: "A run for a trigger firing is keyed by the firing, and a second start answers its run: send it without Idempotency-Key." }]);
+      // It starts on its trigger's target as a firing here would: on the agent's current revision, holding no computer.
+      const fixed = HANDED_FIXED.filter((field) => body[field] !== undefined);
+      if (fixed.length) throw invalid(fixed.map((field) => ({ field, reason: "not_allowed", message: `A run for a trigger firing starts on its trigger's target, on the agent's current revision and holding no computer: send it without ${field}.` })));
       const { trigger_firing: given, ...rest } = body;
       const firing = await triggers.handedStart(given, agentId);
       if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };

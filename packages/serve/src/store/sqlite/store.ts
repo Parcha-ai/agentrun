@@ -1109,7 +1109,7 @@ class SqliteStore implements Store {
           const at = now();
           await d.lockRow(tx, "triggers", "id", triggerId);
           const was = await tx.get<FiringRecord>(`SELECT ${FIRING_COLUMNS} FROM trigger_firings WHERE trigger_id = ? AND key = ?`, triggerId, key);
-          if (!was || (change.noRun && was.run_id !== null)) return undefined;
+          if (!was || (change.from !== undefined && was.status !== change.from)) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as

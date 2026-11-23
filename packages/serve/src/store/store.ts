@@ -739,9 +739,9 @@ export interface FiringChange {
    *  in the firing's retry_at column, which only a due firing holds otherwise, and is never read back as a retry. Any
    *  other status keeps none. */
   readonly startBy?: number;
-  /** Written only while the firing has no run, read in the settle's own transaction: one its host's run started
-   *  meanwhile (triggers.ts handedRan) is left as it is, and nothing is written. */
-  readonly noRun?: boolean;
+  /** Written only while the firing's status is this one, read in the settle's own transaction: a firing whose host's run
+   *  started it meanwhile (triggers.ts handedRan) is left as it is, and nothing is written. */
+  readonly from?: FiringStatus;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -912,8 +912,8 @@ export interface Triggers {
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
-   *  undefined when the firing is gone (its trigger deleted), or has a run and the change is `noRun`'s. `paused`: this
-   *  failure turned the trigger off. */
+   *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
+   *  turned the trigger off. */
   settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
   /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
   pending(): Promise<FiringRow[]>;

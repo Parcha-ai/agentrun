@@ -170,11 +170,12 @@ function carriedEntryBytes(entry: unknown): number {
  *  the run; `keys`: the keys' names). Its effort is taken only when the target sets none. */
 export type HostStart = { readonly body: Json; readonly sealed?: StartOptions["sealed"]; readonly keys?: StartOptions["keys"] };
 
-/** A handed run's cap: the target's, which a host's own may lower and never raise; with none on the target, the host's,
- *  else the agent's default (startRun's). A host's value that is no number is passed on, for the run's checks to refuse. */
-function handedCap(target: number | undefined, host: unknown): unknown {
-  if (target === undefined || host === undefined) return target ?? host;
-  return typeof host === "number" ? Math.min(target, host) : host;
+/** A handed run's cap: its bound (the target's cap, else the agent's default on the revision the run starts on), which a
+ *  host's own may lower and never raise; with no bound, the host's. A host's value that is no number is passed on, for
+ *  the run's checks to refuse. */
+function handedCap(bound: number | undefined, host: unknown): unknown {
+  if (bound === undefined || host === undefined) return bound ?? host;
+  return typeof host === "number" ? Math.min(bound, host) : host;
 }
 
 /** The trigger-facing run policy: the subset of the trigger engine's deps this module owns. The engine's other deps (an
@@ -236,17 +237,20 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const content = isObject(given) ? given.content : undefined;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...(given as Json), content: `${content}${handed}` } : given;
-      // The target's cap (a host's may lower it), else the agent's default as it stands now: a run a trigger starts is
-      // never uncapped (capped), but a connected agent's, which its own CLI's limits keep and AgentRun can't cap
-      // (NATIVE_CAP_UNSUPPORTED). The effort is the target's when it sets one, else the host's, else the agent's.
+      // The target's cap, else the agent's default as it stands now on the revision the run starts on, either of which a
+      // host's may lower and never raise: a run a trigger starts is never uncapped (capped), but a connected agent's,
+      // which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP_UNSUPPORTED). The effort is the target's when
+      // it sets one, else the host's, else the agent's.
       const native = Boolean(nativeOf(entry.revision?.body));
       const { max_cost_usd: hostCap, ...overlay } = host?.body ?? {};
-      const cap = handedCap(target.max_cost_usd, hostCap);
+      const body = { ...overlay, ...(input !== undefined ? { input } : {}) };
+      const agentCap = target.max_cost_usd === undefined && typeof hostCap === "number" ? ((await deps.start.pinnedOf(entry, body))?.revision.body as { maxCostUsd?: number } | undefined)?.maxCostUsd : undefined;
+      const cap = handedCap(target.max_cost_usd ?? agentCap, hostCap);
       const run = await startRun(
         store,
         deps.start,
         entry,
-        { ...overlay, ...(input !== undefined ? { input } : {}), ...(cap !== undefined ? { max_cost_usd: cap } : {}), ...(target.effort ? { effort: target.effort } : {}) },
+        { ...body, ...(cap !== undefined ? { max_cost_usd: cap } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
         { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}), ...(host?.sealed ? { sealed: host.sealed } : {}), ...(host?.keys ? { keys: host.keys } : {}) },
       );
