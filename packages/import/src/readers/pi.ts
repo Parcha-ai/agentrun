@@ -58,9 +58,10 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
     // A request cut before its end has only the start of its counts: unknown, as a live run's.
     const tokens = message.stopReason === "aborted" ? undefined : normalizeUsage("pi", message.usage);
+    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
     add({
       role: "assistant",
-      text,
+      text: keep ? text : "",
       calls,
       at: when,
       ...(cost !== undefined ? { costUsd: cost } : {}),
