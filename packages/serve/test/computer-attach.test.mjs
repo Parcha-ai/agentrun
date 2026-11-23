@@ -144,8 +144,14 @@ test("a paired computer is listed as its hello says, the live one's while attach
   const hub = (attached, holder) => ({ online: () => attached, since: () => (attached ? liveSince : undefined), hello: () => (attached ? live : undefined), claimed: () => (holder ? { "agentrun.run": holder } : undefined), deadline: () => (holder ? deadline : undefined) });
   assert.deepEqual(pairedView(row, hub(false), ["desktop"]), {
     id: "cmp-abc", name: "desk", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: null, arch: "arm64", screen: null, groups: HELLO.groups, features: {},
-    driver: "0.2.0", online: false, held_by_run: null, held_until: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
+    driver: "0.2.0", online: false, held_by_run: null, held_until: null, held_on: null, hold_note: null, pairing: "pairing-x", created_at: new Date(0).toISOString(), seen_at: new Date(1000).toISOString(),
   });
+  // Routed to a runner, the route names the run, its runner and its hold's end, and a relayed socket is online.
+  const route = { runner: "runner-b", incarnation: "inc-1", run: "run-2", until: 9000, refused: null };
+  const relayed = pairedView(row, hub(false), ["desktop"], null, route, true);
+  assert.deepEqual({ online: relayed.online, held_by_run: relayed.held_by_run, held_until: relayed.held_until, held_on: relayed.held_on, hold_note: relayed.hold_note }, { online: true, held_by_run: "run-2", held_until: new Date(9000).toISOString(), held_on: "runner-b", hold_note: null });
+  const noted = pairedView(row, hub(false), ["desktop"], "apart words", { runner: null, incarnation: null, run: null, until: null, refused: "a note" });
+  assert.deepEqual({ online: noted.online, held_by_run: noted.held_by_run, held_on: noted.held_on, hold_note: noted.hold_note, runs_refused: noted.runs_refused }, { online: false, held_by_run: null, held_on: null, hold_note: "a note", runs_refused: "apart words" });
   const held = pairedView(row, hub(true, "run-1"), ["desktop"]);
   assert.deepEqual({ os_version: held.os_version, device: held.device, screen: held.screen, features: held.features, driver: held.driver, online: held.online }, { os_version: "11 24H2", device: live.device, screen: live.screen, features, driver: "0.2.1", online: true });
   assert.deepEqual({ held_by_run: held.held_by_run, held_until: held.held_until }, { held_by_run: "run-1", held_until: deadline.toISOString() });

@@ -31,8 +31,9 @@
 // and a test's stand-ins are passed in.
 //
 // A paired computer (a person's own, attached-computers.ts) is one more provider of the registry for the claim, by its
-// id: claimed through the hub of the server's process (the computer package's attachedProvider), released by ending the
-// run's hold, never made or deleted.
+// id: claimed through the hub of the server's process (the computer package's attachedProvider), or through a runner's
+// relay hub once the server moved the box's socket there (dial-relay.ts), released by ending the run's hold, never made
+// or deleted.
 //
 // A persistent setting (the agent's own computer, agent-computer.ts) is made once under the agent's owner (this server's
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
@@ -47,7 +48,7 @@ import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "..
 import { missingNeeds, needsNoSandboxWords, needsWords } from "../computer-needs.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
-import type { Store } from "../store/index.js";
+import type { Claim, Store } from "../store/index.js";
 import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgentComputer, keepAgentComputer, liveHolderOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
@@ -1054,7 +1055,9 @@ export async function computerForClaim(
         madeBy = entry;
         return own;
       }
-      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub) : await vendorProvider(entry, keys, configuration);
+      // Under a runner of its own process, through its relay: the box is routed under the run's claim (launch.claim, a
+      // store Claim from each claim's launch), so a claim another runner superseded is Fenced at the route.
+      const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
       const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.

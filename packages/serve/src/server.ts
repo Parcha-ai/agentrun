@@ -224,6 +224,7 @@ import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, 
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
+import { PAIRED_ROUTE_MS, readRoute } from "./workspace/paired-route.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { archilRoute, type ArchilRoutesOptions, createArchilRoutes, liveRunsOnDisk } from "./archil-routes.js";
@@ -450,8 +451,9 @@ export type ServeOptions = {
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
-   *  computer's socket is held here, where no run reaches it, so a pairing code, the pair answer and each paired computer
-   *  say so and how to start the server instead (attached-computers.ts RUNNER_APART_WORDS). */
+   *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
+   *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
+   *  run reaches it, and what to do instead (attached-computers.ts RUNNER_APART_WORDS). */
   runnerApart?: boolean;
   /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
    *  protocol's by default. */
@@ -1389,12 +1391,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
   // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
   const reach = liveReachOf(process.env, seal.key);
+  // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
+  // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+  const relayedNow = async (): Promise<boolean> => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined);
+  const attachLog = (event: string, fields: Record<string, string>) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`));
   const attach = createAttachRoutes({
-    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
+    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true, relayed: relayedNow,
     relay: { runners: store.runners, reach },
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
-    log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
+    log: attachLog,
   });
+  // With its runner apart, a paired computer's socket goes where its route says (workspace/paired-route.ts): the tick
+  // moves a socket in the wrong place, every PAIRED_ROUTE_MS (nothing while no computer is paired).
+  const routeTick = options.runnerApart === true && options.apiOnly !== true
+    ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
+    : undefined;
+  routeTick?.unref();
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -1673,11 +1685,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
-    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
+    // Each with its route (who holds it, on which runner, and why a route was refused), and online while relayed.
+    paired: { rows: () => store.pairedComputers.list(), viewOf: async (row, serves, runsRefused) => pairedView(row, attachHub, serves, runsRefused, await readRoute(store.settings, row.id), attach.relayedTo(row.id) !== undefined) },
     runnerApart: options.runnerApart === true,
-    // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
-    relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
+    relayed: relayedNow,
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1703,11 +1714,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A key as the runner reads it: the secrets this process was started with (withSecrets "own"), else the saved one. */
   const runnerKeys = () => keyReader(store, sealKey, own(withSecrets(process.env, "own")));
   // A paired computer is one more provider of the registry (workspace/attached-computers.ts), ready while its driver is
-  // attached to this process's hub.
+  // attached: to this process's hub, or relayed to the runner that holds a run of it.
   const computerReady = async (setting: { kind: string; provider?: string; image?: string; gpu?: { type: string; count: number } }) => {
     const paired = await store.pairedComputers.list();
     const row = paired.find((one) => one.id === setting.provider);
-    const offline = row ? pairedRefusal(row, attachHub) : undefined;
+    const offline = row ? pairedRefusal(row, { online: (id) => attachHub.online(id) || attach.relayedTo(id) !== undefined }) : undefined;
     if (offline) return { refused: offline };
     return computerReadiness(setting, await modeNow(), withPaired(claimRegistry(), paired), runnerKeys(), dockerAnswers, boxAllow, (provider) => (Object.hasOwn(hostWhy, provider) ? hostWhy[provider] : undefined));
   };
@@ -6691,6 +6702,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
+    clearInterval(routeTick);
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
     await mcpStopped;
