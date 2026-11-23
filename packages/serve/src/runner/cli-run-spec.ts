@@ -51,7 +51,7 @@ import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
-import { computerTurnedOff, hadComputer, offForRun, recordComputerOff } from "./computer-journal.js";
+import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
@@ -395,9 +395,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
-  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none.
+  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none, and
+  // ends the one a park kept (turnedOff).
   const offAlready = await computerTurnedOff(deps.journal(claim), context);
-  const computer = offAlready ? offForRun(offAlready, (words) => run.phase?.(words)) : await deps.computerForClaim(
+  const computer = await deps.computerForClaim(
     { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
@@ -409,7 +410,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer), as the pi
     // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount). Its
     // screen's recording (computer.record) goes in the run's recordings folder, as the pi spec's does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);

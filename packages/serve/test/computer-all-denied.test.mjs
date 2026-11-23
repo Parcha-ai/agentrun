@@ -160,16 +160,21 @@ test("pi: a later claim of a run whose phone an earlier claim's deny turned off 
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-all-denied-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const phone = fakeComputer(root);
-  const claimed = { n: 0 };
+  // What each claim told computerForClaim was off; one told so answers none, as computer-for-claim.ts does (ending the
+  // desktop or phone a park kept there: workspace-computer-kept.test.mjs).
+  const claimed = [];
   const composer = phoneComposer(phone);
   const counting = (given) => {
     const made = composer(given);
-    return { ...made, computerForClaim: (...args) => { claimed.n += 1; return made.computerForClaim(...args); } };
+    return { ...made, computerForClaim: (launch, store, deps) => {
+      claimed.push(deps.turnedOff);
+      return deps.turnedOff ? { computer: undefined, off: true, release: async () => {} } : made.computerForClaim(launch, store, deps);
+    } };
   };
   // The earlier claim's deny, as its gate wrote it on the run's root; the phone allowed (no setting) since.
   const earlier = (harness) => harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: OFF_KIND, data: { computer: "phone" } }), bg);
   const { spec, workFolder } = await specFor(t, { body: { tools: ["read"], computer: PHONE }, computer: counting, journal: earlier });
-  assert.equal(claimed.n, 0, "the claim asked for no phone");
+  assert.deepEqual(claimed, ["phone"], "the claim told computerForClaim the phone is off, so it starts none");
   const names = toolNames(spec);
   assert.deepEqual(COMPUTER_TOOLS.filter((name) => names.includes(name)), [], `no phone tool is handed: ${JSON.stringify(names)}`);
   assert.doesNotMatch(spec.session.system.join("\n"), /phone-computer/, "the phone's skill is named to no one");

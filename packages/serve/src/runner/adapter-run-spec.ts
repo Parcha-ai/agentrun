@@ -86,7 +86,7 @@ import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
-import { computerTurnedOff, hadComputer, offForRun, recordComputerOff, type RunComputerHold } from "./computer-journal.js";
+import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold } from "./computer-journal.js";
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
@@ -562,9 +562,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
-  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none.
+  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none, and
+  // ends the one a park kept, its mount with it, before the run's tools touch its folder (turnedOff).
   const offAlready = await computerTurnedOff(deps.journal(claim), context);
-  const computer = offAlready ? offForRun(offAlready, (words) => run.phase?.(words)) : await deps.computerForClaim(
+  const computer = await deps.computerForClaim(
     { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
     deps.store,
     // revokeMount removes the run's Archil mount credential when the computer is released (and if a start fails after a mint);
@@ -575,7 +576,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
     // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A
     // recording of its screen (computer.record) goes in the run's recordings folder, beside its folder, said on its timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2

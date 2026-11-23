@@ -15,9 +15,7 @@ import { HOST_PHASE } from "../timeline/index.js";
 import {
   COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, ENDS, holdIn, holdWords, STATES, takeEndedWords,
 } from "../computer-commands.js";
-import { computerStillOffWords } from "../refusal-words.js";
 import type { JournalReads } from "../store/store.js";
-import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
 import { held } from "./held.js";
 import { KINDS } from "./journal-kinds.js";
@@ -44,14 +42,6 @@ export async function computerTurnedOff(journal: JournalReads, context: Context)
  *  what computerTurnedOff reads back at a later claim. */
 export async function recordComputerOff(harness: Pick<Harness, "commit">, kind: string): Promise<void> {
   await harness.commit(async (tx) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.computerOff, data: { computer: kind } })), BACKGROUND_CONTEXT);
-}
-
-/** The claim's computer once an earlier claim's deny turned the run's `kind` computer off (computerTurnedOff): none is
- *  started or rented, the run's timeline says why (`say`), and its kind's skill is not named to the model. The claim's
- *  gate starts off too (adapter-run-spec.ts adapterRunGate turnedOff). */
-export function offForRun(kind: string, say: ((words: string) => void) | undefined): ClaimComputer {
-  say?.(computerStillOffWords(kind));
-  return { computer: undefined, off: true, release: async () => {} };
 }
 
 /** One root entry, as the run's journal takes it. */

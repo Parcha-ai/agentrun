@@ -21,6 +21,7 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../dist/workspace/computer-deps.js";
 import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
+import { computerStillOffWords } from "../dist/refusal-words.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { memoryIntervals } from "./memory-intervals.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -138,8 +139,8 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const account = vendor(root, groups, machine);
   const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
-  const mounts = { revoked: 0, inherited: 0 };
-  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
+  const mounts = { revoked: 0, inherited: 0, steps: [] };
+  const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1, mounts.steps.push("revoke")), inheritMount: () => void (mounts.inherited += 1, mounts.steps.push("inherit")), now: () => clock.now };
   const claim = (epoch, extra = {}) => {
     store.runs.take("run-1", epoch);
     return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
@@ -180,6 +181,29 @@ test("a desktop parked and resumed within 10 minutes is the same computer: attac
   await resumed.release();
   assert.deepEqual(deletes(one.account), ["c1"], "the run's end lets it go");
   assert.equal(one.mounts.revoked, 1);
+});
+
+test("Mode 2, a resume of a run whose desktop an earlier claim's deny turned off: the desktop its park kept is deleted and its mount revoked at once, so the run's folder is its own again, and the claim goes on with none", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const said = [];
+  const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, onComputerNote: (words) => void said.push(words) });
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true], "the claim has no computer");
+  assert.deepEqual(creates(one.account), ["c1"], "none made");
+  assert.deepEqual(deletes(one.account), ["c1"], "the kept desktop deleted now, not at the end of its 10 minutes");
+  // archil-claim.ts revoke removes only a credential its claim minted or took on: the parking claim's is taken on first.
+  assert.deepEqual(one.mounts.steps, ["inherit", "revoke"], "its mount credential taken on, then revoked");
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true, "its row ended: nothing left for the janitor");
+  assert.deepEqual(said, [computerStillOffWords("desktop")]);
+  await resumed.release();
+  assert.deepEqual(deletes(one.account), ["c1"], "the run's end lets nothing more go");
+});
+
+test("a claim of a run whose desktop is off, with nothing kept: none is made, nothing deleted or revoked", async () => {
+  const one = await server({ mode: 2 });
+  const resumed = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true });
+  assert.deepEqual([resumed.computer, resumed.off], [undefined, true]);
+  assert.deepEqual([creates(one.account), deletes(one.account), one.mounts.steps], [[], [], []]);
 });
 
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {

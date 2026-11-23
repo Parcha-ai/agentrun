@@ -213,7 +213,7 @@ export async function deleteKept(provider: Pick<ComputerProvider, "release">, ke
 }
 
 /** `work`, or its timeout in words after `ms`: a delete that hangs is left to finish on its own. */
-async function bounded(ms: number, work: Promise<void>): Promise<void> {
+export async function bounded(ms: number, work: Promise<void>): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`its delete did not answer within ${ms / 1000} s; the next pass tries again`)), ms);

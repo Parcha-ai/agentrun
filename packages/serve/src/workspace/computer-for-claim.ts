@@ -54,12 +54,12 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
-import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { bounded, deleteKept, endKept, KEEP_MS, KEPT_DELETE_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
-import { computerDeniedWords } from "../refusal-words.js";
+import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
@@ -211,6 +211,10 @@ export interface ComputerForClaimDeps {
    *  claim's Archil mount credential (Mode 2): the credential is this claim's to remove now (archil-claim.ts inherit),
    *  since this claim mints none. Absent: nothing was minted (Mode 1). */
   readonly inheritMount?: () => void;
+  /** The kind of the run's computer an earlier claim's deny turned off for the run (runner/computer-journal.ts
+   *  computerTurnedOff): this claim starts none, says so, and ends at once the one a park kept, its mount with it.
+   *  Absent: the computer is on. */
+  readonly turnedOff?: string;
   /** The clock a kept computer's time is read by (computer-kept.ts), and its computers' intervals are written on
    *  (computer-intervals.ts). Default Date.now. */
   readonly now?: () => number;
@@ -232,8 +236,8 @@ export interface ComputerForClaimDeps {
 export interface ClaimComputer {
   readonly computer?: RunComputer;
   /** The agent's computer was not started: every tool it serves the run is set to deny (tool-gate.ts computerDenied), or
-   *  an earlier claim's deny turned it off for the run (runner/computer-journal.ts offForRun). The run goes on without it,
-   *  and its kind's skill is not named to the model. */
+   *  an earlier claim's deny turned it off for the run (ComputerForClaimDeps.turnedOff). The run goes on without it, and
+   *  its kind's skill is not named to the model. */
   readonly off?: true;
   readonly hold?: RunHold;
   readonly held?: HeldComputer;
@@ -1126,6 +1130,39 @@ export async function computerForClaim(
     },
   };
 
+  /** The computer an earlier claim kept at the run's park, ended now by a claim that starts none (the run's computer is
+   *  off): deleted, its interval ended, and its mount credential, the parking claim's, taken on and removed
+   *  (archil-claim.ts revoke removes only one its claim minted or took on), so the run's folder is its own again before
+   *  its tools touch it. Its delete is bounded (KEPT_DELETE_MS); one that fails or hangs leaves the row ending, for the
+   *  janitor's next pass. Never throws. */
+  const endKeptNow = async (): Promise<void> => {
+    const record = kept;
+    kept = undefined;
+    const settings = store.settings;
+    const entry = record && kinds.PROVIDERS.find((one) => one.id === record.provider);
+    if (!record || record.ended || !settings || !entry) return;
+    try {
+      const provider = await vendorProvider(entry, await side.keysOf(entry.id), {});
+      await endKept(settings, launch.runId, record, async () => {
+        try {
+          await bounded(KEPT_DELETE_MS, (async () => {
+            if (await deleteKept(provider, record)) await writes.ended(entry.id, record.id);
+          })());
+        } finally {
+          deps.inheritMount?.();
+          await deps.revokeMount?.().catch(() => undefined);
+        }
+      });
+    } catch {
+      // Left ending for the janitor.
+    }
+  };
+  // The run's computer turned off by an earlier claim's deny: none is started, and the one a park kept goes now.
+  if (deps.turnedOff) {
+    deps.onComputerNote?.(computerStillOffWords(deps.turnedOff));
+    await endKeptNow();
+    return { computer: undefined, off: true, release: noop };
+  }
   const setting = await settingOf(launch, store);
   // Programs it needs (computer.needs) are checked in a sandbox's box alone: a setting that needs them and is any other
   // kind is refused before anything is rented, never run without them.
@@ -1139,6 +1176,7 @@ export async function computerForClaim(
   const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds)));
   if (denied) {
     deps.onComputerNote?.(computerDeniedWords(denied));
+    await endKeptNow();
     return { computer: undefined, off: true, release: noop };
   }
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
