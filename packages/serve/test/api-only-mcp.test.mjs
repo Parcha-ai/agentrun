@@ -326,6 +326,27 @@ test("API-only: the token's Composio save over a Composio server it did not save
   assert.equal(own.status, 200, JSON.stringify(own.body));
 });
 
+test("API-only: the token's Composio save naming an auth config another saved server made uses it and takes nothing from that server's record: the owner's server still made it, and the token's delete of its own removes it nowhere", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t);
+  const store = s.server.store;
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  // The owner's: its record without the token's mark (a server saved before this server was API-only, say).
+  await store.settings.put(mcpSourceKey("mail"), ownersRecord(await store.settings.get(mcpSourceKey("mail"))));
+  const owners = await store.settings.get(composioMadeKey("mail"));
+  const config = owners.auth_config;
+  assert.equal(config?.made, true, "the owner's server made its auth config here");
+  const named = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, auth_config_id: config.id });
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "the owner's record is unchanged: its delete still removes the auth config it made");
+  assert.deepEqual((await store.settings.get(composioMadeKey("notes"))).auth_config, { id: config.id, made: false }, "the token's server uses it, and made none");
+  const from = s.composio.calls.length;
+  const deleted = await s.token("DELETE", "/settings/mcp-servers/notes");
+  assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+  assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method === "DELETE" && call.path.includes(config.id)), [], "the auth config the owner's server stands on is not removed");
+  assert.deepEqual(await store.settings.get(composioMadeKey("mail")), owners, "and the owner's record still says its server made it");
+});
+
 test("API-only, AGENTRUN_MCP_TOKEN_ORIGINS unset: the token's per_run save is 422 url not_an_option naming the variable, any other auth the secret-write refusal (403); no list or read (404); the address gets nothing", async (t) => {
   withEnv(t, {}, [ORIGINS_ENV]);
   const elsewhere = await startFakeMcp();
