@@ -143,6 +143,66 @@ test("a rewrite lands only on the row as its writer read it: the same credential
   assert.deepEqual((await store.mcp.rewrite(listing, now))?.tools, [{ name: "listed_again" }]);
 });
 
+test("every save moves a server's last edit, even in the millisecond of the row a refresh read: the refresh's rewrite over a repricing save then writes nothing, and the save's prices stand", async (t) => {
+  // The clock never moves: each save lands in the same millisecond as the row before it.
+  const { store } = await storeOn(t);
+  const mark = (row) => ({ auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null });
+  const saves = [
+    ["a save", (row, prices) => store.mcp.put({ ...SERVER, auth: "none", sealed: null, prices })],
+    ["a save over the credential it read", (row, prices) => store.mcp.putIfCredential({ ...SERVER, auth: "none", sealed: null, prices }, mark(row))],
+    ["a save keeping the credential", (row, prices) => store.mcp.rewrite({ ...SERVER, auth: "none", prices }, { sealed: row.sealed, url: row.url, auth: row.auth, updatedAt: row.updatedAt })],
+  ];
+  await store.mcp.put({ ...SERVER, auth: "none", sealed: null });
+  let price = 0.1;
+  for (const [what, save] of saves) {
+    const read = await store.mcp.server("github");
+    price += 0.1;
+    const saved = await save(read, { create_issue: price });
+    assert.ok(saved.updatedAt > read.updatedAt, `${what}: its last edit moves past the one read, ${saved.updatedAt} after ${read.updatedAt}`);
+    // The refresh writes what it listed with the prices it read, keeping the last edit it read.
+    const refresh = { ...SERVER, auth: "none", tools: [{ name: "listed_again" }], prices: read.prices, updatedAt: read.updatedAt };
+    assert.equal(await store.mcp.rewrite(refresh, { sealed: read.sealed, url: read.url, auth: read.auth, updatedAt: read.updatedAt }), undefined, `${what}: the refresh writes nothing`);
+    assert.deepEqual(await store.mcp.server("github"), saved, `${what}: the save and its prices stand`);
+  }
+  // A refresh that lands keeps the last edit it read: it is not an edit.
+  const read = await store.mcp.server("github");
+  const listed = await store.mcp.rewrite({ ...SERVER, auth: "none", tools: [{ name: "listed_again" }], prices: read.prices, updatedAt: read.updatedAt }, { sealed: read.sealed, url: read.url, auth: read.auth, updatedAt: read.updatedAt });
+  assert.equal(listed?.updatedAt, read.updatedAt, "a refresh keeps the last edit");
+});
+
+test("a refresh listing while the owner reprices the server in the same millisecond never writes the old prices back: the owner's prices stand", async (t) => {
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  // The clock never moves: the owner's save lands in the millisecond of the row the refresh read.
+  const { store } = await storeOn(t);
+  const env = { AGENTRUN_SEAL_KEY: Buffer.from(randomBytes(32)).toString("base64") };
+  const registry = (over = store) => {
+    const made = mcpServersOverStore(over, env, "test");
+    made.attach("http://127.0.0.1:9", "http://127.0.0.1:9", true); // key-gate: loopback-rule a local install's own address in a test, never an endpoint
+    return made;
+  };
+  await registry().save("fake", { url: fake.url, auth: { type: "none" } });
+  const read = await store.mcp.server("fake");
+  // The owner's repricing save lands after the refresh read the row and listed, before its write.
+  let owned;
+  const mcp = new Proxy(store.mcp, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key === "rewrite") return async (...args) => {
+        if (!owned) owned = await registry().save("fake", { url: fake.url, auth: { type: "none" }, prices: { add: 0.05 } });
+        return value.apply(target, args);
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const raced = new Proxy(store, { get: (target, key) => (key === "mcp" ? mcp : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  await registry(raced).refresh("fake");
+  assert.ok(owned, "the owner's save landed during the refresh");
+  const row = await store.mcp.server("fake");
+  assert.deepEqual(row.prices, { add: 0.05 }, "the owner's prices stand");
+  assert.ok(row.updatedAt > read.updatedAt, "the owner's save is the last edit, past the row the refresh read");
+});
+
 test("a run's pin is its revision's, written with the revision at its save: every run of it reads that pin, a revision saved with none has no pin row", async (t) => {
   const { store, clock } = await storeOn(t);
   const pin = { github: { url: SERVER.url, tools: [{ name: "create_issue", inputSchema: { type: "object" } }], prices: { create_issue: 0.01 } } };
