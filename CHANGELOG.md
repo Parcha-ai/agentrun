@@ -54,7 +54,7 @@ Console and CLI
 
 Tests and CI
 
-- The launch-hook, API-only and doctor fakes count only their own requests (#3471); a template test's child no longer holds its file open past its timeout (#3469); a shard suite ended by a signal says so, and no test signals pid 0 (#3468); the web-fetch tests drop their wall-clock bounds (#3465); CI runs eleven shards on timings from five main runs (#3443). beta.53's notes gained the SDK run start's fields (#3474).
+- The launch-hook, API-only and doctor fakes count only their own requests (#3471); a template test's child no longer holds its file open past its timeout (#3469); a shard suite ended by a signal says so, and no test signals pid 0 (#3468); the web-fetch tests drop their wall-clock bounds (#3465); CI runs eleven shards on timings from five main runs (#3443); the runner-hosts tests and examples use reserved address ranges (#3491). beta.53's notes gained the SDK run start's fields (#3474).
 
 ## 0.1.0-beta.53 (2026-11-22)
 
