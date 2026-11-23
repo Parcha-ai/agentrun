@@ -12,10 +12,10 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGER_FIRINGS_CLAIM, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
-  type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
+  type Claim, type Command, type FiringClaim, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark, type McpOwnersMark,
@@ -160,9 +160,12 @@ const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
  *  retry_at, not passed at the `?` it binds (the triggers' clock). It holds its trigger's room as a run in progress
  *  (activeKeys, waiting's free, held) and stays in the history (prune). */
 const holdsRoom = (f: string): string => `(${f}.status = 'sent' AND ${f}.run_id IS NULL AND ${f}.retry_at IS NOT NULL AND ${f}.retry_at >= ?)`;
+/** Firing `f` is due and a server's claim on it (Triggers.claim) has not lapsed at the `?` it binds (the triggers' clock):
+ *  that server is mid-hand on it. */
+const claimedAt = (f: string): string => `(${f}.status = 'due' AND ${f}.claimed_until IS NOT NULL AND ${f}.claimed_until >= ?)`;
 /** Firing `f` is one of its trigger's runs in progress: started with run `r` (the alias of its LEFT JOINed run) not ended,
- *  or holding the room (holdsRoom, its one `?`). */
-const inProgress = (f: string, r: string): string => `((${f}.status = 'started' AND ${r}.state NOT IN (${FINAL})) OR ${holdsRoom(f)})`;
+ *  holding the room (holdsRoom), or claimed (claimedAt): two `?`, both the triggers' clock. */
+const inProgress = (f: string, r: string): string => `((${f}.status = 'started' AND ${r}.state NOT IN (${FINAL})) OR ${holdsRoom(f)} OR ${claimedAt(f)})`;
 /** An ended run, not imported, whose stored cost is unknown: null with no bound beside it (cost_upper_bound 0, never NULL).
  *  What Runs.healCost writes over and Runs.costUnknown lists. */
 const COST_UNKNOWN = `cost_usd IS NULL AND cost_upper_bound = 0 AND state IN (${FINAL}) AND imported_from IS NULL AND ended_at IS NOT NULL`;
@@ -471,6 +474,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('triggers')")).some((column) => column.name === "template_id")) {
       if (role === "runner") throw new StoreAwaitsServer("add each trigger's package mark");
       await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
+    }
+    // An earlier build of this version kept no claim on a firing (schema.ts TRIGGER_FIRINGS_CLAIM): the server adds the
+    // columns, nullable, every firing made before reading as unclaimed. A runner never reads firings, so it does not wait.
+    const firingColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('trigger_firings')")).map((column) => column.name));
+    if (role === "server" && !firingColumns.has("claimed_until")) {
+      await connection.write(TRIGGER_FIRINGS_CLAIM.map((sql) => ({ sql })), { full: true });
     }
     // An earlier build of version 13 kept each runner's relay in a table of its own (runner_relays), which the server's
     // open below drops for runners (schema.ts RUNNERS). A runner says it is there, and where its relay answers, through
@@ -1196,18 +1205,45 @@ class SqliteStore implements Store {
       waiting: async (clockNow) =>
         (await db.all<FiringRecord & { free: number | boolean }>(
           `SELECT ${FIRING_COLUMNS.split(", ").map((c) => `f.${c}`).join(", ")},
-             (t.max_active_runs IS NULL OR (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
-               WHERE s.trigger_id = f.trigger_id AND ${inProgress("s", "r")}) < t.max_active_runs) AS free
+             (CASE WHEN t.max_active_runs IS NULL
+               THEN NOT EXISTS (SELECT 1 FROM trigger_firings c WHERE c.trigger_id = f.trigger_id AND c.key <> f.key AND ${claimedAt("c")})
+               ELSE (SELECT COUNT(*) FROM trigger_firings s LEFT JOIN runs r ON r.id = s.run_id
+                 WHERE s.trigger_id = f.trigger_id AND s.key <> f.key AND ${inProgress("s", "r")}) < t.max_active_runs END) AS free
            FROM trigger_firings f JOIN triggers t ON t.id = f.trigger_id
            WHERE f.status = 'due' AND f.waits_on IS NOT NULL ORDER BY f.at, f.${d.firingOrder}`,
-          clockNow,
+          clockNow, clockNow, clockNow,
         // A comparison reads 1 on SQLite and true on Postgres.
         )).map((r) => ({ ...firingOf(r), free: r.free === 1 || r.free === true })),
       soonest: async () => (await db.get<{ at: number | null }>("SELECT MIN(next_at) AS at FROM triggers WHERE enabled = 1 AND next_at IS NOT NULL"))?.at ?? null,
       activeKeys: async (triggerId, clockNow) =>
         (await db.all<{ key: string }>(
-          `SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
+          `SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow, clockNow,
         )).map((r) => r.key),
+      claim: async (triggerId, key, { by, until, now: clockNow, alone }) =>
+        db.transaction(async (tx): Promise<FiringClaim> => {
+          // Under the trigger's row, as every write of its firings: two servers' claims of its firings, each counting the
+          // other's, land one after the other.
+          await d.lockRow(tx, "triggers", "id", triggerId);
+          const trigger = await tx.get<{ max_active_runs: number | null }>("SELECT max_active_runs FROM triggers WHERE id = ?", triggerId);
+          const firing = await tx.get<{ status: FiringStatus; run_id: string | null; retry_at: number | null; claimed_until: number | null; claimed_by: string | null }>(
+            "SELECT status, run_id, retry_at, claimed_until, claimed_by FROM trigger_firings WHERE trigger_id = ? AND key = ?", triggerId, key,
+          );
+          if (!trigger || !firing || !(firing.status === "due" || (firing.status === "sent" && firing.run_id === null && firing.retry_at !== null))) return { gone: true };
+          if (firing.claimed_until !== null && firing.claimed_until >= clockNow && firing.claimed_by !== by) return { taken: { until: firing.claimed_until } };
+          if (firing.status === "due" && (trigger.max_active_runs !== null || alone)) {
+            const max = trigger.max_active_runs;
+            // With a cap, every other firing in progress; with none, every other claimed.
+            const others = max !== null
+              ? await tx.all<{ key: string }>(`SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND f.key <> ? AND ${inProgress("f", "r")} ORDER BY f.at DESC, f.${d.firingOrder} DESC`, triggerId, key, clockNow, clockNow)
+              : await tx.all<{ key: string }>(`SELECT f.key FROM trigger_firings f WHERE f.trigger_id = ? AND f.key <> ? AND ${claimedAt("f")} ORDER BY f.at DESC, f.${d.firingOrder} DESC`, triggerId, key, clockNow);
+            if (others.length > 0 && (max === null || others.length >= max)) return { full: { on: others[0]!.key, active: others.length, max } };
+          }
+          await tx.run("UPDATE trigger_firings SET claimed_until = ?, claimed_by = ? WHERE trigger_id = ? AND key = ?", until, by, triggerId, key);
+          return { claimed: true };
+        }),
+      unclaim: async (triggerId, key, by) => {
+        await db.write([{ sql: "UPDATE trigger_firings SET claimed_until = NULL, claimed_by = NULL WHERE trigger_id = ? AND key = ? AND claimed_by = ?", params: [triggerId, key, by] }]);
+      },
       held: async (triggerId, clockNow) =>
         (await db.get<{ key: string }>(
           `SELECT f.key FROM trigger_firings f WHERE f.trigger_id = ? AND ${holdsRoom("f")} ORDER BY f.at DESC, f.${d.firingOrder} DESC LIMIT 1`, triggerId, clockNow,

@@ -86,6 +86,12 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
 export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
+/** A firing's claim (Triggers.claim): the server mid-hand on it (claimed_by, its own id) until claimed_until, on the
+ *  triggers' clock. Other servers count a due firing so claimed as a run in progress, and leave it to the server that
+ *  holds it. Null when none holds it. In STORE_DDL, and added at a server open to a store an earlier build of this version
+ *  made, as TRIGGERS_TEMPLATE_ID is (a firing made before reads as unclaimed). A runner never reads firings, so it does
+ *  not wait for the columns. */
+export const TRIGGER_FIRINGS_CLAIM = ["ALTER TABLE trigger_firings ADD COLUMN claimed_until INTEGER", "ALTER TABLE trigger_firings ADD COLUMN claimed_by TEXT"];
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -563,6 +569,8 @@ export const STORE_DDL: readonly string[] = [
     ${json("attrs", true)},
     shown INTEGER,
     waits_on TEXT,
+    claimed_until INTEGER,
+    claimed_by TEXT,
     PRIMARY KEY (trigger_id, key)
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS trigger_firings_retry ON trigger_firings (status, retry_at)`,

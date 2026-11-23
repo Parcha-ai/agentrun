@@ -752,6 +752,12 @@ export interface FiringChange {
    *  its run started, or another start moved it, meanwhile. */
   readonly startByWas?: number;
 }
+/** What a claim of a firing found (Triggers.claim). Only `claimed` wrote anything. */
+export type FiringClaim =
+  | { readonly claimed: true }
+  | { readonly gone: true }
+  | { readonly taken: { readonly until: number } }
+  | { readonly full: { readonly on: string; readonly active: number; readonly max: number | null } };
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
 export type FiringStreak = { readonly reset: true } | { readonly failure: true; readonly pauseAt: number };
@@ -933,14 +939,25 @@ export interface Triggers {
    *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
   /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there at
-   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeKeys) than its max_active_runs, or no
-   *  max_active_runs (cleared while the firing waited: the engine's own check decides). One read for all of them. */
+   *  `now` (the triggers' clock): fewer of its trigger's other runs in progress (activeKeys) than its max_active_runs, or,
+   *  with no max_active_runs (none set, or cleared while the firing waited: the engine's own check decides), no other of
+   *  its firings claimed (claim). One read for all of them. */
   waiting(now: number): Promise<(FiringRow & { readonly free: boolean })[]>;
+  /** Firing `key` claimed by server `by` until `until` (the triggers' clock), mid-hand on it, read and written in one
+   *  transaction under its trigger's row: `gone` unless it is due, or sent with no run and a startBy; `taken` while
+   *  another server's claim on it has not lapsed at `now` (by its time); a due one is `full` when its trigger's other
+   *  firings in progress (activeKeys, a claimed one among them) already fill its max_active_runs, or, with none and
+   *  `alone`, while another of its firings is claimed (`on`: one of them, the newest). Else claimed, or its own claim
+   *  moved on. A due firing claimed counts as a run in progress (activeKeys, waiting's free) until its claim lapses or
+   *  unclaim. */
+  claim(triggerId: string, key: string, claim: { readonly by: string; readonly until: number; readonly now: number; readonly alone: boolean }): Promise<FiringClaim>;
+  /** Firing `key`'s claim let go, while server `by` holds it. */
+  unclaim(triggerId: string, key: string, by: string): Promise<void>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
   /** The keys of the trigger's firings in progress at `now` (the triggers' clock), in no order: started with a run not
-   *  ended (a run reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its
-   *  startBy. max_active_runs counts them. */
+   *  ended (a run reopened later does not count), held, a firing its launch hook's host took with no run yet up to its
+   *  startBy, or a due firing a server's claim holds (claim). max_active_runs counts them. */
   activeKeys(triggerId: string, now: number): Promise<string[]>;
   /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
    *  startBy not passed): its key, or undefined. */

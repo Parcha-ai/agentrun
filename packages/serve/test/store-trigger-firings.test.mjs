@@ -1,9 +1,18 @@
 // A trigger's firings in the store (one retry policy): recorded once per key, a due firing's room bounded, each settle
 // one transaction with its trigger's streak (a failure counts toward auto-pause, a run started resets it), the history
 // kept to its size with a sender's keys kept for their day, and a trigger's active runs read from its started firings.
+// A firing's claim (claimed_until, claimed_by): on SQLite a store an earlier build of this version made gets the columns
+// at the server's open (the version kept); on Postgres, migration trigger_firing_claim adds them where they are missing.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { SCHEMA_VERSION } from "../dist/store/schema.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { storeOn, T0 } from "./store-helpers.mjs";
+import { client, dropSchema, freshSchema, PG_URL, postgresOnly, sqliteOnly } from "./store-target.mjs";
 
 // Read off the module, so a store without it fails each test at its own assertion rather than the file at its load.
 const storeModule = await import("../dist/store/store.js");
@@ -180,4 +189,129 @@ test("a settle with holdsAt is written only while the firing holds its trigger's
   await store.triggers.settle("trg-1", "fir-held", { status: "started", runId: "run-1" });
   assert.equal(await pushOut("fir-held", startBy), undefined, "a started firing holds by its run, never by a start_by");
   assert.deepEqual([(await store.triggers.firing("trg-1", "fir-held")).status, (await store.triggers.firing("trg-1", "fir-held")).runId], ["started", "run-1"]);
+});
+
+test("a firing's claim: one server's at a time until it lapses, counted as a run in progress while the firing is due, and let go by the server that holds it", async (t) => {
+  const { store } = await withTrigger(t, { maxActiveRuns: 1 });
+  await store.triggers.record("trg-1", [due("fir-x", "webhook"), due("fir-w", "webhook")]);
+  const claim = (key, by, at, alone = false) => store.triggers.claim("trg-1", key, { by, until: at + 60_000, now: at, alone });
+
+  assert.deepEqual(await claim("fir-x", "one", T0), { claimed: true });
+  assert.deepEqual(await claim("fir-x", "one", T0 + 1_000), { claimed: true }, "its own claim moved on");
+  assert.deepEqual(await claim("fir-x", "two", T0 + 2_000), { taken: { until: T0 + 61_000 } }, "another server's, until it lapses");
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", T0 + 2_000), ["fir-x"], "a claimed due firing is in progress");
+  assert.deepEqual(await claim("fir-w", "two", T0 + 2_000), { full: { on: "fir-x", active: 1, max: 1 } }, "it fills max_active_runs 1 for another: nothing written");
+  await store.triggers.settle("trg-1", "fir-w", { waitsOn: "fir-x", retryAt: null, reason: "full" });
+  assert.deepEqual((await store.triggers.waiting(T0 + 2_000)).map((f) => [f.key, f.free]), [["fir-w", false]], "a firing waiting on it has no room while the claim holds");
+
+  // Lapsed at its time: another server takes it, and the room is counted by the claim alone.
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", T0 + 61_001), [], "lapsed: no longer in progress");
+  assert.deepEqual((await store.triggers.waiting(T0 + 61_001)).map((f) => f.free), [true]);
+  assert.deepEqual(await claim("fir-x", "two", T0 + 61_001), { claimed: true }, "lapsed: another server takes it");
+
+  await store.triggers.unclaim("trg-1", "fir-x", "one");
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", T0 + 62_000), ["fir-x"], "an unclaim by a server that no longer holds it lets nothing go");
+  await store.triggers.unclaim("trg-1", "fir-x", "two");
+  assert.deepEqual(await store.triggers.activeKeys("trg-1", T0 + 62_000), [], "let go by the server that holds it");
+  assert.deepEqual(await claim("fir-w", "one", T0 + 62_000), { claimed: true }, "room again");
+});
+
+test("a firing's claim with no max_active_runs and `alone` is full while another of its firings is claimed; a sent firing with no run is claimed, never counted by it; any other firing is gone", async (t) => {
+  const { store } = await withTrigger(t);
+  await store.triggers.record("trg-1", [due("fir-a", "webhook"), due("fir-b", "webhook"), due("fir-sent", "webhook"), due("fir-done", "webhook")]);
+  const claim = (key, by, alone = true) => store.triggers.claim("trg-1", key, { by, until: T0 + 60_000, now: T0, alone });
+  assert.deepEqual(await claim("fir-a", "one"), { claimed: true });
+  assert.deepEqual(await claim("fir-b", "two"), { full: { on: "fir-a", active: 1, max: null } }, "alone: another firing claimed");
+  assert.deepEqual((await store.triggers.waiting(T0)).length, 0);
+  await store.triggers.settle("trg-1", "fir-b", { waitsOn: "fir-a", retryAt: null, reason: "mid-hand" });
+  assert.deepEqual((await store.triggers.waiting(T0)).map((f) => f.free), [false], "no cap: no room while another is claimed");
+  assert.deepEqual(await claim("fir-b", "two", false), { claimed: true }, "not alone (a source that starts a run per firing): claimed beside it");
+
+  await store.triggers.settle("trg-1", "fir-sent", { status: "sent", reason: "handed", keepAttrs: true, startBy: T0 + 600_000 });
+  assert.deepEqual(await claim("fir-sent", "one"), { claimed: true }, "a sent firing with no run: claimed, whatever else is");
+  assert.deepEqual(await claim("fir-sent", "two"), { taken: { until: T0 + 60_000 } });
+  await store.triggers.settle("trg-1", "fir-done", { status: "skipped", reason: "x" });
+  assert.deepEqual(await claim("fir-done", "one"), { gone: true });
+  assert.deepEqual(await claim("fir-none", "one"), { gone: true });
+  assert.deepEqual(await store.triggers.claim("trg-none", "fir-a", { by: "one", until: T0 + 60_000, now: T0, alone: true }), { gone: true });
+});
+
+test("a store an earlier build of this version made (no trigger_firings claim) opens at its version: the server adds the columns, its firings reading unclaimed; a runner opens it as it was", sqliteOnly("an earlier build's store file"), async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "store-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "store.sqlite");
+  const first = await openSqliteStore({ file, role: "server", now: () => T0 });
+  await first.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} });
+  await first.triggers.create({ id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: null, catchupWindowS: 3600, maxActiveRuns: 1 });
+  await first.triggers.record("trg-1", [due("fir-old", "webhook")]);
+  await first.close();
+  const columnsOf = () => {
+    const check = new DatabaseSync(file, { readOnly: true });
+    try {
+      const columns = check.prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('trigger_firings') WHERE name IN ('claimed_until', 'claimed_by') ORDER BY name").all();
+      return { columns: columns.map((column) => ({ ...column })), version: check.prepare("SELECT schema_version FROM store_meta").get().schema_version };
+    } finally {
+      check.close();
+    }
+  };
+  // The store as the build before the claim made it: the same version, its firings with no claim columns.
+  const db = new DatabaseSync(file);
+  try {
+    for (const column of columnsOf().columns) db.exec(`ALTER TABLE trigger_firings DROP COLUMN ${column.name}`);
+  } finally {
+    db.close();
+  }
+  const runner = await openSqliteStore({ file, role: "runner" });
+  await runner.close();
+  assert.deepEqual(columnsOf(), { columns: [], version: SCHEMA_VERSION }, "a runner never reads firings: it opens the store, and adds nothing");
+  const second = await openSqliteStore({ file, role: "server", now: () => T0 });
+  try {
+    assert.deepEqual(columnsOf(), { columns: [{ name: "claimed_by", type: "TEXT", notnull: 0 }, { name: "claimed_until", type: "INTEGER", notnull: 0 }], version: SCHEMA_VERSION }, "the server adds both, nullable, the version kept");
+    assert.deepEqual(await second.triggers.activeKeys("trg-1", T0), [], "a firing made before reads unclaimed");
+    assert.deepEqual(await second.triggers.claim("trg-1", "fir-old", { by: "one", until: T0 + 60_000, now: T0, alone: false }), { claimed: true });
+    assert.deepEqual(await second.triggers.activeKeys("trg-1", T0), ["fir-old"]);
+  } finally {
+    await second.close();
+  }
+});
+
+test("migration trigger_firing_claim adds trigger_firings.claimed_until and claimed_by where they are missing: a schema a build before it left keeps its firings, each reading unclaimed", postgresOnly("the Postgres migrations"), async (t) => {
+  const { migrationsIn, openPostgresStore } = await import("../dist/store/index.js");
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const first = await openPostgresStore({ url: PG_URL, schema });
+  await first.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {} });
+  await first.triggers.create({ id: "trg-1", agentId: "agent-1", name: "nightly", enabled: true, source: { kind: "schedule" }, target, nextAt: null, catchupWindowS: 3600, maxActiveRuns: 1 });
+  await first.triggers.record("trg-1", [due("fir-old", "webhook")]);
+  await first.close();
+  const migrations = migrationsIn();
+  const own = migrations.find((one) => one.name === "trigger_firing_claim");
+  assert.ok(own, "a migration named trigger_firing_claim ships");
+  assert.ok(!own.breaking, "additive: a runner beside it never reads firings");
+  // The schema as the build before it left it: the columns gone, the migration (and any after it) unrecorded.
+  const c = await client(schema);
+  try {
+    await c.query("ALTER TABLE trigger_firings DROP COLUMN claimed_until, DROP COLUMN claimed_by");
+    await c.query("DELETE FROM schema_migrations WHERE version >= $1", [own.version]);
+    await c.query("UPDATE store_meta SET schema_version = $1 WHERE singleton = 1", [own.version - 1]);
+  } finally {
+    await c.end();
+  }
+  const second = await openPostgresStore({ url: PG_URL, schema });
+  try {
+    assert.deepEqual(await second.triggers.activeKeys("trg-1", T0), [], "a firing made before reads unclaimed");
+    assert.deepEqual(await second.triggers.claim("trg-1", "fir-old", { by: "one", until: T0 + 60_000, now: T0, alone: false }), { claimed: true });
+    assert.deepEqual(await second.triggers.activeKeys("trg-1", T0), ["fir-old"]);
+  } finally {
+    await second.close();
+  }
+  const check = await client(schema);
+  try {
+    const { rows } = await check.query("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'trigger_firings' AND column_name IN ('claimed_until', 'claimed_by') ORDER BY column_name", [schema]);
+    assert.deepEqual(rows, [{ column_name: "claimed_by", data_type: "text", is_nullable: "YES" }, { column_name: "claimed_until", data_type: "bigint", is_nullable: "YES" }], "text and bigint, nullable");
+    const { rows: meta } = await check.query("SELECT schema_version FROM store_meta WHERE singleton = 1");
+    assert.equal(Number(meta[0].schema_version), migrations.at(-1).version, "store_meta at the last migration's version");
+  } finally {
+    await check.end();
+  }
 });
