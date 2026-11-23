@@ -811,7 +811,8 @@ async function browserReturnsRefused(authorizeUrl, error) {
 }
 
 const ADMIN_OFF = /^Your ChatGPT workspace's admin has turned off open-source apps \(External access → OSS → Use ChatGPT plan\)/;
-const FREE = /a Free ChatGPT plan can't be used here/;
+// Never that Free can't be used (OpenAI changes plan access): that it may be the reason.
+const FREE = /a Free ChatGPT plan may be the reason; with a paid plan, start it again\.$/;
 
 test("a workspace whose admin turned off open-source apps says so, whether OpenAI refuses at the sign-in page or at the code", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
@@ -843,7 +844,7 @@ test("a ChatGPT plan that can't be used here says so: a grant without the plan's
   const first = await plan.startSignIn();
   await browserReturns(first.authorize_url);
   await until(() => plan.view().state !== "pending", "the sign-in ends");
-  assert.match(plan.view().problem ?? "", /^This ChatGPT plan can't be used here/);
+  assert.equal(plan.view().problem, "This ChatGPT plan can't be used here: OpenAI's sign-in gave AgentRun no use of it. Free plans usually can't; sign in with a paid one.");
   // A refusal at the sign-in page, or of the code, whose reason OpenAI does not name: it says what it knows.
   const second = await plan.startSignIn();
   await browserReturnsRefused(second.authorize_url, "access_denied");

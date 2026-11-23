@@ -135,9 +135,10 @@ const tag = (value: unknown): string => String(value ?? "").replace(/[^A-Za-z0-9
 const WORKSPACE_DENIED = "3p_delegated_access_policy_denied";
 const ADMIN_OFF = "Your ChatGPT workspace's admin has turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
 /** A grant without DIRECT_SCOPE: OpenAI signed the account in but gave no use of its plan by apps. */
-const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in gave AgentRun no use of it. A Free plan can't be used; sign in with a paid one.";
-/** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in ends in one, and nothing tells it apart. */
-const FREE_OR_AGAIN = "a Free ChatGPT plan can't be used here; with a paid plan, start it again.";
+const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in gave AgentRun no use of it. Free plans usually can't; sign in with a paid one.";
+/** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in has ended in one, and nothing tells it
+ *  apart. It never says Free can't be used: OpenAI changes which plans can. */
+const FREE_OR_AGAIN = "a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
 /** The words for OpenAI's refusal `code` at its sign-in page. */
 const deniedWords = (code: string): string => (tag(code) === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in (${tag(code) || "no reason given"}): ${FREE_OR_AGAIN}`);
 
