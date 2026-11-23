@@ -225,8 +225,7 @@ const groupAlive = (group) => {
   }
 };
 
-// SKIP (follow-up #2078): the run's background-process watchers do not see the run's process on the runner
-test.skip("the watchers reach only this run's own processes: another run's id, live in its own box, is the tool's own no-such answer, and nothing of it is read or signalled", { timeout: 150_000 }, async (t) => {
+test("the watchers reach only this run's own processes: another run's id, live in its own box, is the tool's own no-such answer, and nothing of it is read or signalled", { timeout: 150_000 }, async (t) => {
   const server = await serve(t, { faux: PROBE, fauxDocker: true });
   const { api } = server;
   assert.equal((await api("PUT", "/settings/tools", { bash: { permission: "ask" } })).status, 200);
