@@ -248,8 +248,43 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(sent).toEqual([{ password: PASSWORD }]);
   });
 
+  it("asks for no offer while the password is being set, and asks again when the server refuses it", async () => {
+    // The server holds the password before this browser holds the session its answer sets: a read in between comes from a
+    // stranger, and is answered 404, which every browser logs as an error. The setup here answers only when the test says so.
+    const sent: unknown[] = [];
+    let setting = false;
+    let readsWhileSetting = 0;
+    let readsAfterRefusal = 0;
+    let refused = false;
+    let answer: (r: Response) => void = () => {};
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: false, signed_in: false });
+      if (path === "/v2/setup") { sent.push(JSON.parse(String(init?.body))); setting = true; return new Promise<Response>((done) => { answer = done; }); }
+      if (path === "/v2/setup/import") {
+        if (setting) { readsWhileSetting += 1; return json(404, missing(path)); }
+        if (refused) readsAfterRefusal += 1;
+        return json(202, { counting: true });
+      }
+      return json(404, missing(path));
+    });
+    const host = await render();
+    await until(host, () => /Looking for this machine's/.test(host.textContent ?? ""));
+    await setPassword(host);
+    await submit(host);
+    await until(host, () => sent.length);
+    // Past more than one poll's wait, the setup still unanswered: no read.
+    await act(async () => { await new Promise((r) => setTimeout(r, 2500)); });
+    expect(readsWhileSetting).toBe(0);
+    // A refused setup (a wrong code) leaves setup open: the offer is read again.
+    setting = false;
+    refused = true;
+    await act(async () => { answer(json(403, { error: { code: "forbidden", message: "that is not the setup code in the server's log", retryable: false } })); });
+    expect(await until(host, () => readsAfterRefusal > 0, 3000)).toBe(true);
+  }, 15_000);
+
   it.each([
-    ["the server's count failed", [[202, { counting: true }], [200, { projects: null, sessions: null }]]],
+    ["the server's count failed",[[202, { counting: true }], [200, { projects: null, sessions: null }]]],
     ["a read failed after the offer showed", [[202, { counting: true }], [500, { error: { code: "internal", message: "busy", retryable: true } }]]],
   ] as [string, [number, unknown][]][])("says the sessions couldn't be listed, with nothing to tick, when %s", async (_, offer) => {
     const { sent } = server({ offer });
