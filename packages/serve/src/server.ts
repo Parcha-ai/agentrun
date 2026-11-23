@@ -3750,9 +3750,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** The person a start's request came from (run-launch.ts StartedBy): the owner's password session, else the API token.
-   *  None for an accounts-off console session, whose launch link names no owner: a plan-billed recipe's run is refused it
-   *  at its claim (runner/harness-loops.ts refuseRecipeRunNoPerson). */
-  const startedByOf = (req: IncomingMessage): StartedBy | undefined => (byOwnerSession(req) ? "owner_session" : tokenUsed.has(req) ? "token" : undefined);
+   *  None for an accounts-off console session, whose launch link names no owner, though its page sends the token beside
+   *  the cookie (answerPage): a plan-billed recipe's run is refused it at its claim (runner/harness-loops.ts
+   *  refuseRecipeRunNoPerson). */
+  const startedByOf = (req: IncomingMessage): StartedBy | undefined => (byOwnerSession(req) ? "owner_session" : byConsoleSession(req) ? undefined : tokenUsed.has(req) ? "token" : undefined);
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);

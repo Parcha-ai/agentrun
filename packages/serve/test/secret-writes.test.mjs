@@ -9,7 +9,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { test } from "node:test";
-import { asOwner, call, cookieOf, serve, withEnv } from "./support.mjs";
+import { asOwner, call, cookieOf, launchOf, serve, withEnv } from "./support.mjs";
 
 const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const json = { "content-type": "application/json" };
@@ -156,6 +156,26 @@ test("accounts off on loopback, the API token gets no console session: a cookie 
   const { cookie } = await launchSession("127.0.0.1", server.port, server.launchCode); // key-gate: loopback, the server under test
   assert.equal((await save({ cookie })).status, 204, "the launch link's console saves it");
   assert.ok(!cookie.includes(server.token), "its cookie is not the token");
+});
+
+test("who started a run (its launch's started_by): the owner's password session, else the token; nobody for the accounts-off console, though the server sends its request on as the token", async (t) => {
+  withEnv(t, SEAL);
+  const run = (n) => ({ external: { source: "host", kind: "expert", id: `started-${n}`, version: 1 }, definition: { name: `Started ${n}`, description: "Answers.", instructions: "Answer.", skills: [], tools: [] }, input: { content: "Say ready." } });
+  const startedBy = async (server, n, headers) => {
+    const started = await call(server.port, { method: "POST", path: "/v2/runs", headers: { ...json, ...headers }, body: run(n) });
+    assert.equal(started.status, 202, started.text);
+    return launchOf(server.data, started.json.run_id)?.started_by;
+  };
+  const off = await serve(t, { runner: false });
+  const bearer = { authorization: `Bearer ${off.token}` };
+  assert.equal(await startedBy(off, 1, bearer), "token", "the token alone, as a script sends it");
+  // The console sends the launch link's cookie alone, and the server lays the token's Bearer on it (answerPage): still
+  // no owner named.
+  const { cookie, origin } = await launchSession("127.0.0.1", off.port, off.launchCode); // key-gate: loopback, the server under test
+  assert.equal(await startedBy(off, 2, { cookie, origin }), undefined, "the accounts-off console names no person");
+  const on = await serve(t, { runner: false, accounts: true, openSetup: true });
+  assert.equal(await startedBy(on, 3, await ownerSession(on)), "owner_session");
+  assert.equal(await startedBy(on, 4, { authorization: `Bearer ${on.token}` }), "token");
 });
 
 test("the test client sends a secret write from the owner's session on either kind of server: the launch link's console with accounts off, the password's with accounts on", async (t) => {

@@ -89,9 +89,10 @@ export interface RunLaunch {
   readonly trigger?: RunTrigger;
   /** The owner's own request that started the run: under the API token (`token`) or the owner's signed-in session
    *  (`owner_session`), stamped by the start routes alone (runs-over-store.ts startRun, startInline) from the request.
-   *  Absent for every run the owner did not start: a schedule's or trigger's, a learned workflow's audit shadow or replay,
-   *  and a start on a server with no owner's account. A plan-billed recipe runs on its owner's sign-in only for a run
-   *  that carries it (runner/harness-loops.ts refuseRecipeRunNoPerson). */
+   *  Absent wherever there is no such record: a schedule's or trigger's run, a learned workflow's audit shadow or replay,
+   *  a start from the console of a server with no owner's account, and an imported run or one made before launches kept
+   *  it. A plan-billed recipe runs on its owner's sign-in only for a run that carries it (runner/harness-loops.ts
+   *  refuseRecipeRunNoPerson). */
   readonly startedBy?: StartedBy;
   /** When the caller says the run started (an SDK start's `started_at`, ms), served as the run's created_at; the run's
    *  row keeps when it arrived. Absent: created_at is the arrival. */

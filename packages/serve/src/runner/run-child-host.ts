@@ -1041,8 +1041,8 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
-  // plan-billed one's run its owner did not start (a schedule's, a trigger's, an audit's, a replay's) never runs on its
-  // owner's sign-in.
+  // plan-billed one's run with no record of who started it (a schedule's, a trigger's, an audit's, a replay's, an
+  // imported one's) never runs on its owner's sign-in.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
   refuseRecipeRunNoPerson(deps.env ?? {}, harness, launch);
   if (runsInRunner(harness, launch)) return true;

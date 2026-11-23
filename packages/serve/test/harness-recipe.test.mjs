@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -1006,7 +1006,7 @@ test("where each run is a user of its own, a run on a recipe's harness is refuse
   assert.equal(await host.staysInRunner(deps, "pi", launch, "run-own", { kind: "uid", helper: "/nonexistent/agentrun-runas", first: 0, slots: 1 }), false);
 });
 
-test("a run the owner did not start (a schedule's, a trigger's, a learned workflow's audit shadow or replay, a start no owner's session or token made) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine: it runs on keys saved for its harness, never the owner's sign-in", async (t) => {
+test("a run with no record of who started it (a schedule's, a trigger's, a learned workflow's audit shadow or replay, a start no owner's session or token made) on a plan-billed recipe is refused at its claim on every path, even on its owner's own machine: it runs on keys saved for its harness, never the owner's sign-in", async (t) => {
   const [host, loops, { harnessRecipesEnv }] = await Promise.all([import("../dist/runner/run-child-host.js"), import("../dist/runner/harness-loops.js"), import("../dist/harness-table.js")]);
   const data = join(await scratch(t), "agents");
   const own = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }))], data, { signIn: true });
@@ -1023,7 +1023,7 @@ test("a run the owner did not start (a schedule's, a trigger's, a learned workfl
   const refusedFor = (error) => {
     assert.equal(error.name, "ClaimRefused", error.stack);
     assert.equal(error.message, host.RECIPE_SIGN_IN_PERSON_ONLY);
-    assert.match(error.message, /never on its owner's own sign-in/);
+    assert.match(error.message, /^This run carries no record of who started it .*on its owner's own sign-in only for a run its owner started/);
     return true;
   };
   for (const [launch, id] of [[scheduled, "run-nightly"], [shadow, "run-audit"], [replay, "run-replay"], [unmarked, "run-unmarked"]]) {
@@ -1185,4 +1185,13 @@ test("an agent on its owner's sign-in that prints its token as it dies leaves it
     ["the store's bytes", bytes.toString("latin1")],
   ];
   for (const [place, text] of where) assert.ok(!text.includes(TOKEN), `the sign-in's token is not in ${place}`);
+  // Nor any file in the data directory but the sign-in's own folder: the run's folder, its recordings, its logs.
+  const home = SIGN_IN_HOME(leaking.data);
+  const files = readdirSync(leaking.data, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name))
+    .filter((file) => file !== home && !file.startsWith(`${home}/`));
+  assert.ok(files.some((file) => file.includes(`${run.run_id}`)), `the run's own files were scanned: ${files.length} files`);
+  const holding = files.filter((file) => readFileSync(file).toString("latin1").includes(TOKEN));
+  assert.deepEqual(holding.map((file) => file.slice(leaking.data.length)), [], "the sign-in's token is in no file of the data directory but its own folder");
 });

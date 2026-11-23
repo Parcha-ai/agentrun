@@ -35,15 +35,16 @@ export class NeverFits extends ClaimRefused {
   override name = "NeverFits";
 }
 
-/** The words a run its owner did not start on a plan-billed harness recipe is refused in (harness-recipe-entry.ts
+/** The words a run on a plan-billed harness recipe with no record of who started it is refused in (harness-recipe-entry.ts
  *  serverRoute): such a run takes keys saved for that harness, never its owner's own sign-in, and none are saved yet. */
-export const RECIPE_SIGN_IN_PERSON_ONLY = "A run its owner did not start (a scheduled or triggered run, a learned workflow's audit or replay) on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and this server saves no harness's keys yet: start this run yourself, or run the agent on a harness billed through this server's model proxy.";
+export const RECIPE_SIGN_IN_PERSON_ONLY = "This run carries no record of who started it (a scheduled or triggered run, a learned workflow's audit or replay, an imported run or one from before this server kept that record), and a harness recipe billed to its vendor's plan runs on its owner's own sign-in only for a run its owner started. Any other run goes on keys saved for that harness, and this server saves no harness's keys yet: start a new run yourself, or run the agent on a harness billed through this server's model proxy.";
 
-/** Refuses at its claim a run on a plan-billed recipe's harness (harness-table.ts recipeHarness) that its owner's request
- *  did not start: one whose launch has no startedBy (server.ts startedByOf, the owner's password session or the API
- *  token). That is a schedule's or a trigger's run, the runner's own (an audit's shadow, a replay) and any start the
- *  server made for no request, so a run the owner never asked for never goes on their sign-in. On every path a claim
- *  takes (run-child-host.ts staysInRunner, and here). */
+/** Refuses at its claim a run on a plan-billed recipe's harness (harness-table.ts recipeHarness) whose launch carries no
+ *  record of who started it (no startedBy: server.ts startedByOf, the owner's password session or the API token). That
+ *  is a schedule's or a trigger's run, the runner's own (an audit's shadow, a replay), any start the server made for no
+ *  request, and an imported run or one made before launches kept the record, a person's message to it included, so a
+ *  run the owner is not on record as starting never goes on their sign-in. On every path a claim takes
+ *  (run-child-host.ts staysInRunner, and here). */
 export function refuseRecipeRunNoPerson(env: NodeJS.ProcessEnv, harness: string, launch: Pick<RunLaunch, "startedBy">): void {
   if (launch.startedBy === undefined && recipeHarness(env, harness) === "plan") throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
 }
