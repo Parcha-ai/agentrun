@@ -167,14 +167,14 @@ export const droid: Reader<"droid", FileCursor> = {
       if (model) session.model = modelOf(model);
       if (!usage) return { locator, session, requests };
       // New requests, never the read's own (its state holds them): the total on the last, at the session's model, the
-      // others 0.
+      // others 0 and folded into it.
       const last = requests.at(-1);
       const at = session.endedAt ? Date.parse(session.endedAt) : 0;
       const total = (request?: Answer): Answer => {
         const priced = model ? session.model : (request?.model ?? session.model);
         return { ...(request ?? { role: "assistant", text: "", calls: [], at }), ...(priced ? { model: priced } : {}), usage: { ...usage } };
       };
-      const counted: Answer[] = last ? requests.map((request) => (request === last ? total(request) : { ...request, usage: none() })) : [total()];
+      const counted: Answer[] = last ? requests.map((request) => (request === last ? total(request) : { ...request, usage: none(), folded: true as const })) : [total()];
       const swap = new Map<unknown, Answer>(requests.map((request, i) => [request, counted[i]!]));
       session.turns = session.turns.map((turn) => swap.get(turn) ?? turn);
       if (!last && options?.turns !== false) session.turns.push(counted[0]!);

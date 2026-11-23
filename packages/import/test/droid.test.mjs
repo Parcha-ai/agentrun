@@ -59,11 +59,15 @@ test("a full read: the session's id, model and title, one call per assistant mes
   const answers = session.turns.filter((turn) => turn.role === "assistant");
   assert.deepEqual(answers.map((turn) => turn.usage), [{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, { input: 300, output: 40, cacheRead: 5000, cacheWrite: 12, reasoning: 25 }]);
   assert.equal(answers[0].calls[0].name, "Read");
+  assert.deepEqual(answers.map((turn) => turn.folded), [true, undefined], "the first request's zeros are counted in the last's total");
   const [line] = await parseHome(home, { sources: ["droid"], catalog: false });
   // tokenUsage alone: inclusiveTokenUsage (its Workers' with it) would count them twice.
   assert.deepEqual(line.tokens, { input: 300, output: 40, cacheRead: 5000, cacheWrite: 12, cacheWrite1h: 0 });
   assert.equal(line.reasoning, 25);
   assert.deepEqual([line.turns, line.calls, line.subagents, line.cost], [1, 2, 0, null]);
+  // The working directory is the session's whatever turns is (serve's plan reads without turns); totals hold none.
+  assert.equal((await READERS.droid.read({ file }, undefined, { turns: false })).sessions[0].session.cwd, "/work/fixture");
+  assert.equal(JSON.stringify(line).includes("/work/fixture"), false, "the totals hold no working directory");
 });
 
 test("no settings file: the calls still count, tokens 0 and cost null (nothing to price)", async (t) => {

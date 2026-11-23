@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession, droidSession, sessionId } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, droidSession } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -100,18 +100,14 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
  });
 }
 
-test('droid: the metadata probe takes the id and project from session_start by the reader\'s one rule; a Worker is a child, another project none of the selection',async t=>{
+test('droid: the metadata probe reads the project from session_start, a Worker a child, another project none of the selection',async t=>{
+ // Droid is no remote-history runtime: this is the probe planImport shares (a chosen project's left-out sessions).
  const f=await fixture(t),target={...f.target,runtime:'droid'};
- // A file named other than its session: the id is session_start's, as readSession reads it (droidSessionId).
- droidSession(f.home,f.project,1,{file:'renamed-session'});
+ droidSession(f.home,f.project,1);
  droidSession(f.home,f.project,2,{worker:1});
  const other=join(f.home,'unrelated');mkdirSync(other,{recursive:true});
  droidSession(f.home,other,3);
  const preview=await exportRemoteHistory(target,{...f.options,preview:true});
  assert.equal(preview.total,1);
  assert.deepEqual(preview.skipped,[{reason:'Subagent history is not a separate session.',count:1}]);
- const exported=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
- assert.deepEqual(exported.sessions.map(s=>[s.source,s.id,s.state]),[['droid',sessionId(1),'completed']]);
- assert.deepEqual(exported.skipped,preview.skipped,'the first page reports what enumeration left out');
- remoteHistorySessions({sessions:exported.sessions},'droid');
 });

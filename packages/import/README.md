@@ -68,8 +68,9 @@ counted once by its `id` (a fork copies its source's records). A Worker, whose `
 
 Droid writes no request's tokens. The `<session id>.settings.json` beside the transcript holds the session's running
 total (`tokenUsage`, its own calls alone; `inclusiveTokenUsage` is not read, as the Workers count on their own) and its
-latest `model`, read whole on each read. That total goes on the session's last request, the others 0, or on a request
-of its own when the transcript holds none. So:
+latest `model`, read whole on each read. That total goes on the session's last request, the others 0 and marked
+`folded: true` (their tokens are counted in that later request: known, not unknown), or on a request of its own when
+the transcript holds none. So:
 
 - A session with no settings file, or one with no `tokenUsage`, is unmetered: its requests have no usage, and cost
   `null`.

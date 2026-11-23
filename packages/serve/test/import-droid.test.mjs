@@ -47,22 +47,33 @@ async function metricsOf(store, runId) {
   return { metrics: counted, costUsdEst, answers: entries.filter((e) => e.kind === "pi.assistant").map((e) => e.model[0]) };
 }
 
+/** The catalog's list price of `provider/id` for these tokens, from pi-ai's catalog itself (USD per million). */
+async function listPrice(provider, id, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 }) {
+  const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const { cost } = builtinModels().getModels().find((m) => m.provider === provider && m.id === id);
+  return (input * cost.input + output * cost.output + cacheRead * cost.cacheRead + cacheWrite * cost.cacheWrite) / 1e6;
+}
+
 test("a Droid home imports as source droid: one run per session, its Worker in it, the settings' total once on the last request", { timeout: 60_000 }, async (t) => {
   const { data, store, close, report, runs } = await importedDroid(t, (home, project) => {
     droidSession(home, project, 1);
     droidSession(home, project, 2, { worker: 1, prompt: "Find the config." });
   });
   assert.equal(report.agents.length, 1);
-  assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.importedFrom.session, r.state, r.costUsd ?? null]), [["droid", sessionId(1), "completed", null]], "the Worker is no run of its own");
+  assert.deepEqual(runs.map((r) => [r.importedFrom.source, r.importedFrom.session, r.state]), [["droid", sessionId(1), "completed"]], "the Worker is no run of its own");
   const revisions = await store.agents.revisions(report.agents[0].id);
   assert.equal(revisions[0].body.harness, undefined, "Droid's harness is pi's, the default, never stored");
   // The stored metrics count the Worker's requests with the session's (its transcript holds the session's own): each
-  // session's total once (100/20/400/30), on its last request. serve's meter reads a request of no input as one whose
-  // tokens are unknown: the other two are unmetered, and with them the catalog leaves the run unpriced.
+  // session's total once (100/20/400/30), on its last request. The others are folded into it: known, never unmetered.
   const { costUsdEst, ...metrics } = (await store.runs.get(runs[0].id)).metrics;
-  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.output, metrics.cacheRead, metrics.cacheWrite], [4, 2, 200, 40, 800, 60]);
+  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input, metrics.output, metrics.cacheRead, metrics.cacheWrite], [4, 0, 200, 40, 800, 60]);
   assert.deepEqual(metrics.models, { "anthropic/claude-sonnet-5": 4 });
-  assert.equal(costUsdEst, undefined, "a run with an unmetered request has no estimate");
+  // Droid writes no cost: the catalog's estimate, each session's carrier priced alone (the folded requests at nothing).
+  const carrier = await listPrice("anthropic", "claude-sonnet-5", { input: 100, output: 20, cacheRead: 400, cacheWrite: 30 });
+  assert.ok(carrier > 0);
+  assert.equal(costUsdEst, Math.round(2 * carrier * 1e6) / 1e6);
+  assert.equal((await store.runs.get(runs[0].id)).costUsd ?? null, null, "the stored cost is the source's, and Droid wrote none");
+  assert.equal(runs[0].costUsd, costUsdEst, "a read shows the estimate");
   const answers = (await runEntries(store, runs[0].id, ctx)).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0]);
   assert.deepEqual(answers.map((a) => [a.usage.input, a.usage.output]), [[0, 0], [100, 20]], "the session's own: the total on its last request");
 
@@ -97,7 +108,7 @@ test("a Droid turn that ended on a provider that never answered imports as faile
   const { store, runs } = await importedDroid(t, (home, project) => droidSession(home, project, 5, { failed: true }));
   assert.equal(runs[0].state, "failed");
   const { metrics, answers } = await metricsOf(store, runs[0].id);
-  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input], [3, 2, 100], "the failed request carries the total; the two before it are unmetered");
+  assert.deepEqual([metrics.requests, metrics.unmetered, metrics.input], [3, 0, 100], "the failed request carries the total, the two before it folded into it");
   assert.deepEqual([answers.at(-1).stopReason, answers.at(-1).errorMessage], ["error", "model_provider_unavailable"]);
 });
 
