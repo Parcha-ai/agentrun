@@ -80,7 +80,10 @@ test("a cursor: an unchanged session is not read again, a changed one is, and a 
   assert.ok(first.read > 0);
   const again = await reader.read(locator, first.cursor, { turns: false });
   assert.deepEqual([again.resumed, again.read], [true, 0]);
-  assert.deepEqual(again.sessions, first.sessions);
+  // Resumed from a turns: false cursor: the same counts and ids, no prompt, title or working directory (the cursor keeps
+  // none).
+  const { firstPrompt: _p, titleText: _t, sourceTitle: _s, cwd: _c, ...rest } = first.sessions[0].session;
+  assert.deepEqual(again.sessions, [{ ...first.sessions[0], session: rest }]);
   // A cursor of a read that kept turns is no place for one that keeps none to go on from.
   const kept = await reader.read(locator, (await reader.read(locator)).cursor, { turns: false });
   assert.equal(kept.resumed, false);

@@ -116,3 +116,9 @@ test("an OpenCode home: a database session's key is the sha256 of relpath#id, a 
   assert.deepEqual(lines, expected);
   for (const leak of ["ses_", "Port the reader", "/fixture/", dir]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
+
+test("pi-ai, which the bin imports statically, is a dependency of the package: npx runs the bin with no install of its own", async () => {
+  const manifest = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.ok(manifest.dependencies?.["@earendil-works/pi-ai"], "a dependency");
+  assert.equal(manifest.peerDependencies?.["@earendil-works/pi-ai"], undefined, "not a peer");
+});

@@ -552,6 +552,13 @@ async function storageSize(file: string): Promise<LocatorSize | null> {
   return size;
 }
 
+/** A session read as a turns: false cursor keeps it: no prompt, title or working directory (counts, ids and paths alone),
+ *  so a read resumed from it gives none of them, as a line source's does. */
+function withoutText(found: Found): Found {
+  const { firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = found.session;
+  return structuredClone({ ...found, session: session as Found["session"] });
+}
+
 export const opencode: Reader<"opencode", OpenCodeCursor> = {
   source: "opencode",
   name: "OpenCode",
@@ -586,7 +593,7 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
     const resumed = cursor !== undefined && cursor.source === "opencode" && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino;
     const result = (stamp: string, sessions: Found[], read: number): ReadResult<"opencode", OpenCodeCursor> => {
       if (resumed && cursor.stamp === stamp) return { sessions: structuredClone(cursor.sessions), cursor, read: 0, resumed };
-      return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: structuredClone(sessions) }, read, resumed };
+      return { sessions, cursor: { source: "opencode", dev: stats.dev, ino: stats.ino, keep, stamp, sessions: keep ? structuredClone(sessions) : sessions.map(withoutText) }, read, resumed };
     };
     if (id === undefined && isStorage(file)) {
       const stamp = await storageStamp(file);

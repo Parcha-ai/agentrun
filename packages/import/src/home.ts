@@ -39,7 +39,8 @@ export type SessionTotals = {
 
 /** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
- *  second pass reads only what was written since. Its contents are the package's; `read` is the last pass's bytes. */
+ *  second pass reads only what was written since. It holds no session text (its reads are turns: false: counts, ids and
+ *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. */
 export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
 
 /** One source's part of a HomeState. */
@@ -153,7 +154,18 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         },
       } as Set<string>;
       const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
-      if (!result) return [];
+      if (!result) {
+        // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
+        // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
+        // copy) skipped them, though the fresh pass counts them there: the source is read again.
+        if (kept && cursor !== undefined) {
+          kept.cursors.delete(key);
+          for (const [record, owner] of owners) if (owner === key) owners.delete(record);
+          copied.delete(key);
+          if ([...copied.values()].some((owners) => owners.has(key))) restarted = true;
+        }
+        return [];
+      }
       for (const [record, owner] of mine) owners.set(record, owner);
       if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
       if (cursor !== undefined && !result.resumed) restarted = true;
@@ -187,7 +199,7 @@ const ownOf = ({ read }: Part, mirrored: (request: Answer) => boolean) => ownReq
 async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, mirrored: (request: Answer) => boolean): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
-  const sessions = new Map<string, { parts: Part[]; children: Part[] }>();
+  const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
   const named: { part: Part; parent: string }[] = [];
   for (const part of tops) {
     const { session } = part.read;
@@ -219,9 +231,10 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     if (held) held.children.push(part);
     else untied.push(part);
   }
-  for (const part of untied) sessions.set(`\0${locatorKey(part.locator)}`, { parts: [part], children: [] });
+  // A subagent whose session is not under the home: a line of its own, but its prompts are its parent agent's.
+  for (const part of untied) sessions.set(`\0${locatorKey(part.locator)}`, { parts: [part], children: [], untied: true });
   const out: SessionTotals[] = [];
-  for (const { parts, children: subagents } of sessions.values()) {
+  for (const { parts, children: subagents, untied } of sessions.values()) {
     // A session whose every file holds only records an earlier file holds (copies) is no session: its records count where
     // they were first read. serve's import leaves such a file out the same way.
     if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.requests.length === 0) && subagents.length === 0) continue;
@@ -256,7 +269,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       tokens,
       reasoning,
       cost: cost ?? null,
-      turns: parts.reduce((n, { read }) => n + read.session.users, 0),
+      turns: untied ? 0 : parts.reduce((n, { read }) => n + read.session.users, 0),
       calls,
       subagents: subagents.length,
     });

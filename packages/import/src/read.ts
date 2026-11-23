@@ -83,7 +83,7 @@ export async function childrenOf(home: string, source: string, { env, readers }:
  *  listing shows. A locator whose session is not there throws. */
 export async function readSession(locator: Locator | string, source: string, { readers, ...options }: ReadOptions & { readers?: Readers } = {}): Promise<Session> {
   const at = typeof locator === "string" ? { file: locator } : locator;
-  const { sessions } = await readerOf(source, readers).read(at, undefined, options);
+  const { sessions } = await readerOf(source, readers).read(at, undefined, { ...options, keepsCursor: false });
   const found = at.id === undefined ? sessions[0] : sessions.find(({ locator }) => locator.id === at.id);
   if (!found) throw new Error(`no session ${at.id ?? ""} in ${at.file}`);
   const session = found.session as Session;

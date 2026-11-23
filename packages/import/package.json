@@ -42,15 +42,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --test-concurrency=8 'test/*.test.mjs'"
   },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": {
-      "optional": true
-    }
-  },
-  "devDependencies": {
+  "dependencies": {
     "@earendil-works/pi-ai": "1.5.2"
   },
   "repository": {

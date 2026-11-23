@@ -3,7 +3,7 @@ import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries, type Locator, rememberUser } from "../reader.js";
-import { argsOf, effortOf, isObject, personsWords, str, textOf } from "../text.js";
+import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -139,10 +139,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   if (value.type !== "response_item") return;
   if (payload.type === "message" && payload.role === "user") {
     const text = wordsOf(payload.content);
-    // Without turns, a prompt is held for its count alone once one before it names the session (its first prompt and
-    // title words, rememberUser's): no later prompt's text stays in the cursor.
-    const named = !keep && codex.held.some(({ turn }) => turn.role === "user" && personsWords(turn.text) !== undefined);
-    if (text) codex.held.push({ index: turns.length, turn: { role: "user", text: named ? "" : text, at } });
+    if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
     if (text) {
@@ -219,6 +216,8 @@ const spec: LineSource<"codex", Own> = {
     return ordered;
   },
   idOf: (file) => basename(file, ".jsonl"),
+  // A turns: false cursor keeps each held prompt for its count alone: a read resumed from it gives no first prompt.
+  forget: (own) => ({ ...own, held: own.held.map(({ index, turn }) => ({ index, turn: { ...turn, text: "" } as Turn })) }),
 };
 
 /** The thread a session_meta payload names as the one it ran under. */

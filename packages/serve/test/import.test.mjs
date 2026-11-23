@@ -1817,6 +1817,33 @@ test("a response a resumed session's file copies counts once across the import, 
   assert.ok(report.skipped.some((s) => s.why === "holds only records of sessions imported already"));
 });
 
+test("a store imported before requests were keyed by message and request id (a bare message id) still holds them: a later file that copies its requests under new uuids counts none of them again", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  // No requestId in the fixture's records: the store holds each answer's bare message id, as an earlier import kept it.
+  const original = claudeSession(home, project, 102);
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  // The same requests again, as a file today writes them: a request id beside each message id, and new record uuids.
+  const records = readFileSync(original, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  writeSession(
+    join(dirname(original), `${sessionId(103)}.jsonl`),
+    records.map((r) => ({ ...r, ...(r.sessionId ? { sessionId: sessionId(103) } : {}), ...(r.uuid ? { uuid: `again-${r.uuid}` } : {}), ...(r.type === "assistant" ? { requestId: `req_${r.message.id}` } : {}) })),
+  );
+  await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
+  const runs = await rowsOf(store);
+  const first = await storedMetrics(store, runs.find((run) => run.importedFrom.session === sessionId(102)).id);
+  assert.equal(first.requests, 2);
+  // Its prompts are records of their own (new uuids); its requests are the stored run's, counted there alone.
+  const again = await storedMetrics(store, runs.find((run) => run.importedFrom.session === sessionId(103)).id);
+  assert.deepEqual([again.requests, again.input, again.output], [0, 0, 0], "no request counted twice");
+});
+
 test("a session's subagents are no runs of their own: their requests, tokens and tool calls are the session's, its model and transcript its own", async (t) => {
   const { data, store, runs } = await importedOne(t, (home, project) => {
     claudeSession(home, project, 95);
@@ -2675,4 +2702,30 @@ test("an OpenCode subagent's own subagent's request run through Claude Code coun
   const metrics = await storedMetrics(store, run.id);
   assert.deepEqual([metrics.requests, metrics.input, metrics.output], [3, 10, 4], "the mirrored request counts in the Claude Code run alone");
   assert.equal((await store.runs.get(run.id)).costUsd, 0.6875);
+});
+
+test("an OpenCode run in the store seeds nothing into Claude Code's records: a later Claude Code import keeps a request whose message id an OpenCode answer's key shares", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  // Its answer's key is the bare message id Claude Code's first request has: a store's bare id (l:) is only a Claude
+  // Code run's.
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, key: "msg_1_1" }] }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opencode = options(h, { sources: ["opencode"] });
+  await runImport(store, await planImport(opencode, store), opencode);
+  const alone = await openData(join(root, "alone"));
+  t.after(async () => await alone.close());
+  claudeSession(h.at, project, 1);
+  const claude = options(h, { sources: ["claude-code"] });
+  await runImport(alone, await planImport(claude, alone), claude);
+  await runImport(store, await planImport(claude, store), claude);
+  const requestsOf = async (s) => {
+    const run = (await rowsOf(s)).find((r) => r.importedFrom.source === "claude-code");
+    return (await storedMetrics(s, run.id)).requests;
+  };
+  assert.ok((await requestsOf(alone)) > 0);
+  assert.equal(await requestsOf(store), await requestsOf(alone), "the Claude Code run counts what it counts in a store with no OpenCode run");
 });

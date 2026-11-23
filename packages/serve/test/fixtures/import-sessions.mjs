@@ -478,7 +478,7 @@ CREATE TABLE session_part (message_id text NOT NULL, session_id text NOT NULL, o
 /** OpenCode 2.x sessions in one opencode.db under `home` (~/.local/share/opencode), returned. Each session: its `id`,
  *  `cwd`, when its rows were last updated (`updated`, ms; an hour ago by default), and its `answers` after one prompt,
  *  each with its tokens and cost; one with `mirrors` ran on the claude-agent provider, which runs Claude Code: the
- *  request is also that Claude Code session's. A session with a `parent` is that session's subagent. One with `pad`
+ *  request is also that Claude Code session's. A session with a `parent` is that session's subagent; an answer's `key`, its message row's id. One with `pad`
  *  holds a part of that many zero bytes more (its size, never read). `file`: the database elsewhere (OPENCODE_DB's,
  *  XDG_DATA_HOME's). */
 export function openCodeDb(home, sessions, { file = join(home, ".local", "share", "opencode", "opencode.db") } = {}) {
@@ -494,12 +494,12 @@ export function openCodeDb(home, sessions, { file = join(home, ".local", "share"
     session.run(id, parent, cwd, title, JSON.stringify(SONNET), start, updated);
     message.run(`${id}_m0`, id, "user", 0, start, updated, JSON.stringify({ text: prompt, files: [], agents: [], time: { created: start } }));
     if (pad) db.prepare("INSERT INTO session_part VALUES (?, ?, 0, 'text', NULL, ?, ?, zeroblob(?))").run(`${id}_m0`, id, start, updated, pad);
-    answers.forEach(({ input, output, cost, mirrors, text = `Done ${input}.` }, i) => {
+    answers.forEach(({ input, output, cost, mirrors, text = `Done ${input}.`, key }, i) => {
       const created = start + (i + 1) * 1000;
       const model = mirrors ? AGENT : SONNET;
       const content = [{ type: "text", text, ...(mirrors ? { native: { sessionID: mirrors, messageID: `u${i}` } } : {}) }];
       const data = { agent: "build", model, finish: "stop", cost, tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created, completed: created + 500 }, content };
-      message.run(`${id}_m${i + 1}`, id, "assistant", i + 1, created, updated, JSON.stringify(data));
+      message.run(key ?? `${id}_m${i + 1}`, id, "assistant", i + 1, created, updated, JSON.stringify(data));
     });
   }
   db.close();

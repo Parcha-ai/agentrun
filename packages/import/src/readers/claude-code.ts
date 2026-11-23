@@ -105,8 +105,9 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       if (usage) held.usage = usage;
       return;
     }
-    // A request an earlier file of the import holds: counted there, never again; its calls' results are copies too.
-    if (key && seen.has(`m:${key}`)) {
+    // A request an earlier file of the import holds: counted there, never again; its calls' results are copies too. A
+    // store imported before requests were keyed by message and request id holds the bare message id ("l:", serve's).
+    if (key && (seen.has(`m:${key}`) || (str(message.id) && seen.has(`l:${message.id}`)))) {
       for (const call of calls) own.copied.add(call.id);
       return false;
     }
@@ -213,6 +214,8 @@ const spec: LineSource<"claude-code", Own> = {
     return turns;
   },
   idOf: (file) => basename(file, ".jsonl"),
+  // A turns: false cursor keeps no title: a read resumed from it gives none.
+  forget: (own) => ({ ...own, titles: { summaries: [], uuids: new Set() } }),
 };
 
 export const claudeCode = lineReader(spec);
