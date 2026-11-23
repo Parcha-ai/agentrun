@@ -110,6 +110,23 @@ const CASES = [
     hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
     exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "key: [redacted] end"])),
   },
+  // A held value with no whitespace in it, split inside its run at a piece's hard edge: a run of a JSON array's numbers
+  // past a piece is cut after its last comma (runCut), here the value's own. Only the view with whitespace gone reads it
+  // across the line break the raw pieces are joined with.
+  (() => {
+    const value = "31415926,1414213562373xQ9kZ";
+    // "[" and 1,167 numbers of 6 digits, each with its comma: 8,170 characters, so the value's comma, at 8,178, is the
+    // last comma in the first 8,192 characters, and its digits after it run to 8,192.
+    const before = `[${Array.from({ length: 1167 }, (_, i) => 100000 + i).join(",")},`;
+    const text = `${before}${value},${Array.from({ length: 200 }, (_, i) => 200000 + i).join(",")}]`;
+    return {
+      name: "a held value with no whitespace in it, split mid-run at a piece's hard edge, withholds an answer and a call's result whole",
+      text,
+      values: [value],
+      hides: [value.slice(0, 8), value.slice(9)],
+      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: text.replace(value, "[redacted]") },
+    };
+  })(),
   ...[[], [CUT_KEY]].map((values) => ({
     name: `the ftp password of 3,000 characters with '",' in it where a call's read stops, ${values.length} held`,
     text: `${"y ".repeat(59_000)}ftp://${login("alice", "prefix")}${"p".repeat(3000)}",${"q".repeat(1000)}@host/${"r".repeat(9000)} end`,
