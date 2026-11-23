@@ -1171,7 +1171,7 @@ export class Triggers {
       firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
       input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
     };
-    const handed: Handed | HookFailed = await handToHost(hook, sent, this.stopping.signal).catch((error: unknown) => (error instanceof HookFailed ? error : Promise.reject(error)));
+    const handed: Handed | HookFailed = await handToHost(hook, sent, this.stopping.signal, () => this.clock.now()).catch((error: unknown) => (error instanceof HookFailed ? error : Promise.reject(error)));
     if (this.closed || "stopped" in handed) return;
     // handedRan starts the firing with its run once: the host's own start may have already.
     const linked = await this.deps.runOf(firing.key);

@@ -10,7 +10,36 @@ import { test } from "node:test";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const REVIEW = new URL("../../serve/templates/code-review/", import.meta.url).pathname;
-const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8" });
+const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8", timeout: 120_000 });
+
+// A command this file starts that cannot outlive its test. It runs in a process group of its own, and on every path (a
+// pass, a failed assertion, the test's timeout) that group (the command and the eval it started) is sent a SIGKILL and
+// this file lets go of its pipes, which a process it started may still hold, so no case keeps this file's process alive
+// past its end. A held eval left running holds for up to its 30-minute run bound, past a CI shard's 24-minute limit.
+// Each wait is bounded and fails with the command's stderr so far. A signal a case sends goes to the command alone.
+function started(t, args, env) {
+  const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const seen = { out: "", err: "" };
+  child.stdout.on("data", (chunk) => (seen.out += chunk));
+  child.stderr.on("data", (chunk) => (seen.err += chunk));
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve(code ?? signal)));
+  const closed = new Promise((resolve) => child.once("close", (code, signal) => resolve(code ?? signal)));
+  t.after(() => {
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // The group has ended: nothing is left to stop.
+    }
+    child.stdout.destroy();
+    child.stderr.destroy();
+  });
+  return { child, seen, exited, closed };
+}
+function within(promise, ms, what, seen) {
+  let timer;
+  const late = new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what}: not within ${ms / 1000} s. Its stderr so far:\n${seen.err}`)), ms)));
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
 
 test("template validate checks a package folder as the server does", (t) => {
   const ok = validate(REVIEW);
@@ -57,25 +86,25 @@ test("template eval runs a package's cases on a server of its own and exits as t
 
 for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun ${spelling.join(" ")} passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report`, { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const holding = join(dir, "holding");
-  const child = spawn(process.execPath, [BIN, ...spelling, EVALPKG, "--case", "held", "--faux", EVAL_FAUX, "--report", join(dir, "stopped.json")], { env: { ...evalEnv(dir), AGENTRUN_TEST_EVAL_HOLD: holding }, stdio: ["ignore", "pipe", "pipe"] });
-  let err = "";
-  child.stderr.on("data", (chunk) => (err += chunk));
-  child.stdout.resume();
-  const closed = new Promise((resolve) => child.on("close", resolve));
+  const { child, seen, exited, closed } = started(t, [...spelling, EVALPKG, "--case", "held", "--faux", EVAL_FAUX, "--report", join(dir, "stopped.json")], { ...evalEnv(dir), AGENTRUN_TEST_EVAL_HOLD: holding });
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   // The held run writes the file once it is in its turn, and holds there until it is stopped.
-  await new Promise((resolve) => {
-    const done = () => (watcher.close(), resolve());
-    const watcher = watch(dirname(holding), (_, name) => name === basename(holding) && existsSync(holding) && done());
-    if (existsSync(holding)) done();
-    closed.then(done, done);
-  });
-  assert.ok(existsSync(holding), `the held run reached its turn: ${err}`);
+  let watcher;
+  t.after(() => watcher?.close());
+  await within(new Promise((resolve) => {
+    watcher = watch(dirname(holding), (_, name) => name === basename(holding) && existsSync(holding) && resolve());
+    if (existsSync(holding)) resolve();
+    exited.then(resolve);
+  }), 120_000, "the held run reaching its turn", seen);
+  watcher.close();
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   // A job runner's SIGTERM to this command's process alone, never its group: the eval hears it only if it is passed on.
   child.kill("SIGTERM");
-  assert.equal(await closed, 130, err);
-  assert.match(err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  assert.equal(await within(exited, 60_000, "the command's end after its SIGTERM", seen), 130, seen.err);
+  // Its output closes once it has ended: nothing it started still holds it.
+  await within(closed, 15_000, "the command's output closing after its end", seen);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.ok(!existsSync(join(dir, "stopped.json")));
 });
 
@@ -146,14 +175,11 @@ test("template install imports a package from GitHub through the server and prin
     rmSync(dir, { recursive: true, force: true });
   });
   const env = { ...evalEnv(dir), AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "tok" };
-  const install = (...args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN, "template", "install", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (status) => resolve({ status, out, err }));
-  });
+  const install = async (...args) => {
+    const { seen, closed } = started(t, ["template", "install", ...args], env);
+    const status = await within(closed, 120_000, `template install ${args.join(" ")}`, seen);
+    return { status, out: seen.out, err: seen.err };
+  };
   const source = `${id}@main`;
 
   const preview = await install(source, "--dry-run");

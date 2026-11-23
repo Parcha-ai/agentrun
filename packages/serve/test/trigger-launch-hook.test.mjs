@@ -4,7 +4,7 @@
 // firing's (started, counted by the overlap check), on its trigger's target (its cap, its effort, its previous result);
 // a 2xx with no such run records it sent; any other answer, or none within the bound, is a failed try under the
 // trigger's retry policy, hook_failed with its cause. The hook's receiver here is a server on 127.0.0.1 that checks the
-// signature as any receiver would.
+// signature as any receiver would (trigger-support.mjs hookServer).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, firings, made, schedule, until } from "./trigger-support.mjs";
+import { fakeClock, firings, hookServer, made, portProbe, schedule, until } from "./trigger-support.mjs";
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
 const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
@@ -24,35 +24,6 @@ const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { openRunLaunch } = await import("../dist/store/index.js");
-
-/** A host's hook on 127.0.0.1: each request kept (its headers and body), answered by `answer`. One the sender cut short
- *  (its bound passed mid-body, or the test's end) is answered 400, never left to throw in the test. */
-async function hookServer(t, answer) {
-  const got = [];
-  const server = createServer(async (req, res) => {
-    let sent;
-    try {
-      const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
-      const body = Buffer.concat(chunks);
-      got.push({ method: req.method, headers: req.headers, body });
-      sent = JSON.parse(body.toString("utf8"));
-    } catch {
-      if (!res.headersSent && !res.destroyed) res.writeHead(400).end();
-      return;
-    }
-    // An answer that throws (its server stopped under it) fails its test by what it leaves undone, not here.
-    await Promise.resolve(answer(res, sent, got.length)).catch(() => {
-      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => {
-    server.closeAllConnections();
-    server.close(() => resolve());
-  }));
-  return { url: `http://127.0.0.1:${server.address().port}/agentrun/firings`, got };
-}
 
 const answerJson = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" });
@@ -76,8 +47,8 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.equal(hook.got.length, 1, "one POST for the one firing");
   const [{ method, headers, body }] = hook.got;
   assert.equal(method, "POST");
-  assert.equal(verify(secret, headers, body, Date.now()), undefined, "signed with the setting's secret");
-  assert.equal(verify(mintSecret(), headers, body, Date.now()), "bad_signature", "and no other");
+  assert.equal(verify(secret, headers, body, clock.now()), undefined, "signed with the setting's secret, stamped on the triggers' clock");
+  assert.equal(verify(mintSecret(), headers, body, clock.now()), "bad_signature", "and no other");
   assert.equal(headers["webhook-id"], firing.key, "the firing's id is the message's id");
   const sent = JSON.parse(body.toString("utf8"));
   assert.deepEqual(Object.keys(sent).sort(), ["agent_id", "fired_at", "firing_id", "input", "revision_id", "trigger_id"]);
@@ -88,6 +59,41 @@ test("a schedule trigger's firing is handed to the host, signed with the setting
   assert.equal(sent.fired_at, "2026-06-01T00:10:00Z");
   assert.match(sent.input.content, /^Say hello\./);
   assert.deepEqual(await runsOf(api, "nightly"), [], "the install started no run for the firing");
+});
+
+// The counts above guard a paid run: a firing handed twice is a second run on the host's money. Each counts the
+// install's POSTs alone; a probe a dev tool on the box sends to a new listener is no hand-off.
+test("the host's hook counts the install's POSTs alone: a port probe's GET / before the firing and while it is handed is answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const during = [];
+  const hook = await hookServer(t, async (res) => {
+    during.push(await portProbe(hook.url));
+    answerJson(res, 200, {});
+  });
+  const before = await portProbe(hook.url);
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [firing] = await firings(api, created.body.id, 1);
+  assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
+  assert.deepEqual([before, during], [404, [404]], "each probe answered 404");
+});
+
+test("a hook URL with a query (?token=…) is still the hook's path: its POST is the hand-off, and a port probe's GET / is still answered 404 and never counted", { timeout: 120_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  const hook = await hookServer(t, (res) => answerJson(res, 200, {}));
+  const { api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: `${hook.url}?token=x`, secret: mintSecret() } });
+  await made(api, "nightly");
+  const created = await api("POST", "/triggers", schedule("nightly", { every_s: 600, start_at: "2026-06-01T00:10:00Z" }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  clock.to("2026-06-01T00:10:00Z");
+  const [firing] = await firings(api, created.body.id, 1);
+  assert.deepEqual([firing.status, firing.run_id], ["sent", null], JSON.stringify(firing));
+  assert.equal(await portProbe(hook.url), 404, "a port probe answered 404");
+  assert.deepEqual(hook.got.map((one) => [one.method, one.headers["webhook-id"]]), [["POST", firing.key]], "the firing's one POST, and no probe");
 });
 
 test("the host starts the firing's run through the API with trigger_firing: the run is the trigger's, the firing started, and the overlap check counts it", { timeout: 120_000 }, async (t) => {
@@ -307,13 +313,13 @@ for (const [restart, hooked] of [["the hook still set", true], ["the hook since 
   const second = await serve(t, { data, triggerClock: clock, runner: false, ...(hooked ? { launchHook: { url: hook.url, secret } } : {}) });
   const read = async () => (await second.api("GET", `/triggers/${id}/firings`)).body.firings[0];
   assert.ok(await until(async () => (await read()).status === "started"), JSON.stringify(await read()));
-  assert.deepEqual([(await read()).run_id, posts(hook).length], [runId, 1], "started with the host's run, never handed again");
+  assert.deepEqual([(await read()).run_id, hook.got.length], [runId, 1], "started with the host's run, never handed again");
 
   clock.to("2026-06-01T00:20:00Z");
   const [next] = await firings(second.api, id, 2);
   assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
   assert.match(next.reason, new RegExp(runId), "skipped naming the host's run");
-  assert.equal(posts(hook).length, 1, "the time its run overlapped was never handed to the host");
+  assert.equal(hook.got.length, 1, "the time its run overlapped was never handed to the host");
 });
 
 test("a firing that waited on its trigger's max_active_runs is handed when its room comes, 30 minutes after its fired_at, and its host gets its 10 minutes from that answer", { timeout: 180_000 }, async (t) => {
@@ -670,13 +676,22 @@ test("a host start that lands after the hook's bound, while its firing waits on 
     await held;
     late = await hostStart(api, sent.agent_id, sent.trigger_id, sent.firing_id, sent.input);
   });
+  // The POST's bound is a signal this test holds, cut by hand once the host has the POST: no wait on the wall clock.
+  const bounds = [];
+  const bound = () => {
+    const cut = new AbortController();
+    bounds.push(cut);
+    return cut.signal;
+  };
   // No runner: the host's run stays queued, so it is still active at the next time.
-  ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret(), timeoutMs: 300 } }));
+  ({ api } = await serve(t, { triggerClock: clock, runner: false, launchHook: { url: hook.url, secret: mintSecret(), timeoutMs: 300, bound } }));
   await made(api, "nightly");
   const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const id = created.body.id;
   clock.to("2026-06-01T00:10:00Z");
+  assert.ok(await until(() => hook.got.length === 1), "the host has the POST");
+  bounds[0].abort();
   const waiting = await tried(api, id, 1);
   release();
   assert.ok(await until(() => late !== undefined), "the host's start answered");
@@ -692,7 +707,7 @@ test("a host start that lands after the hook's bound, while its firing waits on 
   const [next] = await firings(api, id, 2);
   assert.deepEqual([next.status, next.run_id], ["skipped", null], JSON.stringify(next));
   assert.match(next.reason, new RegExp(late.body.run_id), "the overlap check counts the host's run");
-  assert.equal(posts(hook).length, 1, "neither its retry nor the overlapping time was handed again");
+  assert.equal(hook.got.length, 1, "neither its retry nor the overlapping time was handed again");
 });
 
 test("a host start for a firing that waits on its retry is refused while its trigger has no room: with max_active_runs 1, a later firing's run took the place, so the late start is not_due naming the cap and the count never passes 1", { timeout: 120_000 }, async (t) => {
@@ -773,16 +788,22 @@ async function tried(api, id, n) {
   }, 10_000);
   return read();
 }
-/** The hook's POSTs: a firing handed is one each try. */
-const posts = (hook) => hook.got.filter((got) => got.method === "POST");
 
 test("a hook that fails is a failed try under the trigger's retry policy: a 5xx or no answer keeps the firing due with retry_at and hook_failed with its cause, handed again under the same webhook-id; past the backoff table it fails, one failure in the trigger's streak however many tries it took, and trigger.failed is sent", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
   const clock = fakeClock("2026-06-01T00:00:00Z");
-  // The first try is answered 500, the second not within its bound, every other 503.
+  // The first try is answered 500, the second not at all, every other 503.
   const hook = await hookServer(t, (res, _sent, n) => (n === 2 ? undefined : answerJson(res, n === 1 ? 500 : 503, { error: "down" })));
   const receiver = await hookServer(t, (res) => answerJson(res, 200, {}));
-  const { api } = await serve(t, { triggerClock: clock, webhookPrivateTargets: true, launchHook: { url: hook.url, secret: mintSecret(), timeoutMs: 300 } });
+  // Each POST's bound is a signal this test holds: the silent try's is cut by hand once its host has the POST, so nothing
+  // waits on the wall clock.
+  const bounds = [];
+  const bound = (ms) => {
+    const cut = new AbortController();
+    bounds.push({ ms, cut });
+    return cut.signal;
+  };
+  const { api } = await serve(t, { triggerClock: clock, webhookPrivateTargets: true, launchHook: { url: hook.url, secret: mintSecret(), timeoutMs: 300, bound } });
   assert.equal((await api("PUT", "/settings/webhook", { url: receiver.url })).status, 201);
   await made(api, "nightly");
   const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
@@ -799,14 +820,19 @@ test("a hook that fails is a failed try under the trigger's retry policy: a 5xx 
     const at = Date.parse(firing.retry_at);
     assert.ok(await until(() => clock.timer !== null && clock.timer.at <= at), `the timer armed for its retry_at, ${firing.retry_at}`);
     clock.to(firing.retry_at);
+    if (i === 0) {
+      assert.ok(await until(() => hook.got.length === 2), "the silent host has the second try");
+      assert.deepEqual(bounds.map((one) => one.ms), [300, 300], "each POST bounded by the hook's timeoutMs, through the signal the test holds");
+      bounds[1].cut.abort();
+    }
     firing = await tried(api, id, i + 2);
     assert.match(firing.reason, cause, JSON.stringify(firing));
   }
   assert.deepEqual([firing.key, firing.status, firing.run_id, firing.error?.code], [first.key, "failed", null, "hook_failed"], "past the backoff table it fails");
   const after = (await api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([after.enabled, after.failures_in_a_row, after.disabled], [true, 1, null], "its five tries are one failure: the trigger stays on");
-  assert.deepEqual(posts(hook).map((got) => got.headers["webhook-id"]), Array(5).fill(first.key), "each try handed under the firing's webhook-id");
-  const failed = await until(() => posts(receiver).map((got) => JSON.parse(got.body.toString("utf8"))).find((message) => message.type === "trigger.failed"));
+  assert.deepEqual(hook.got.map((got) => got.headers["webhook-id"]), Array(5).fill(first.key), "each try handed under the firing's webhook-id");
+  const failed = await until(() => receiver.got.map((got) => got.sent).find((message) => message.type === "trigger.failed"));
   assert.ok(failed, "trigger.failed sent");
   assert.deepEqual([failed.data.firing_key, failed.data.error.code, failed.data.auto_paused], [first.key, "hook_failed", false]);
   assert.match(failed.data.error.message, /^hook_failed \(503\)/);
@@ -829,7 +855,7 @@ test("a hook that answers another non-2xx (a 4xx, a redirect) fails the firing a
   const [moved] = await firings(api, id, 2);
   assert.deepEqual([moved.status, moved.error?.code], ["failed", "hook_failed"], JSON.stringify(moved));
   assert.match(moved.reason, /^hook_failed \(302\): the launch hook answered 302: a redirect is not followed/);
-  assert.equal(posts(hook).length, 2, "one POST each, never tried again");
+  assert.equal(hook.got.length, 2, "one POST each, never tried again");
   const after = (await api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([after.enabled, after.failures_in_a_row], [true, 2], "each a failure in the streak");
   assert.deepEqual(await runsOf(api, "nightly"), [], "no run started here");
