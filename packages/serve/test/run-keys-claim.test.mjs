@@ -108,6 +108,16 @@ test("a run's journal cut is of its own keys alone, names included, and goes wit
   assert.ok(redact.carried("run_theirs"), "the other run's stay");
 });
 
+test("a carried key of 8 characters, the shortest a run may bring, is cut from what its run writes, as written and as base64", () => {
+  const redact = heldRedactor((text) => text);
+  const k8 = `k-${randomBytes(3).toString("hex")}`;
+  assert.equal(k8.length, 8);
+  redact.carry("run_short", [k8]);
+  const written = JSON.stringify(cutDeep({ said: `the key is ${k8}`, encoded: Buffer.from(k8).toString("base64") }, redact.carried("run_short"), true));
+  assert.ok(!written.includes(k8), "cut as written");
+  assert.ok(!written.includes(Buffer.from(k8).toString("base64")), "cut as base64");
+});
+
 test("a carried key all of digits, written as a JSON number, is cut too: its digits in the number, or the same number written otherwise", () => {
   const redact = heldRedactor((text) => text);
   // Two keys of digits alone: one the number shows as written, one whose leading zero a number drops.
