@@ -73,22 +73,26 @@ function redactWith(text: string, values: readonly string[], max: number, shapes
  *  An array whose values changed since is derived again, never served a stale set: what a caller adds is always cut. */
 const DERIVED = new WeakMap<readonly string[], { readonly values: readonly string[]; readonly derived: Needles }>();
 
-/** What the matcher looks for of a set of values, whatever the text: each value and its path spellings, its forms found
- *  as they stand (as written, as JSON writes it, its plain needles and percent forms), its hex and folded needles, and
- *  the needles the whole-text check reads (redact/match.ts Needles). */
+/** What the matcher looks for of a set of values, whatever the text: each value, each string of a held JSON value
+ *  that holds a line break (multiLineFields) and their path spellings, their forms found as they stand (as written, as
+ *  JSON writes it, their plain needles and percent forms), their hex and folded needles, the needles the whole-text
+ *  check reads (redact/match.ts Needles), and the parts of each of many lines (partsOf), as written and squeezed. */
 function derivedOf(values: readonly string[]): Needles {
   const kept = DERIVED.get(values);
   if (kept && kept.values.length === values.length && kept.values.every((value, at) => value === values[at])) return kept.derived;
-  const given = withPathSpellings(values.filter((v) => v.length > 0));
+  const held = values.filter((v) => v.length > 0);
+  const whole = [...held, ...held.flatMap(multiLineFields)];
+  const given = withPathSpellings(whole);
   const needles = new Map(given.filter(longEnough).map((v) => [v, needlesOf(v)]));
+  const parts = [...new Set(whole.flatMap(partsOf))];
   const derived: Needles = {
-    forms: [...new Set(given.flatMap((v) => {
+    forms: [...new Set([...given.flatMap((v) => {
       const of = needles.get(v);
       return [v, asJson(v), ...(of ? [...of.plain, ...percentForms(v)] : [])];
-    }).filter((form) => form.length > 0))],
+    }), ...parts].filter((form) => form.length > 0))],
     hexes: [...needles.values()].map((of) => of.hex),
     folds: [...needles.values()].flatMap((of) => of.folded),
-    plain: [...new Set([...needles.values()].flatMap((of) => of.plain))],
+    plain: [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])],
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
@@ -203,6 +207,48 @@ function needlesOf(value: string): { plain: string[]; hex: string; folded: strin
 }
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
+
+/** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
+ *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */
+const LINE_MIN = 40;
+const ARMOR_BEGIN = /^-----BEGIN [^-]*-----$/;
+const ARMOR_END = /^-----END [^-]*-----$/;
+
+/** The parts of a held value of many lines that a reader may print without the rest (`head -n 11 key.pem`, a body
+ *  with its armor stripped), each held as itself, found as it stands and cut in place, and found in each view: each
+ *  line of its body of LINE_MIN characters or more, and its body with its line breaks gone. Its body is its lines but
+ *  a first "-----BEGIN …-----" and a last "-----END …-----", its armor. A value of one line has none: it is matched
+ *  whole. */
+function partsOf(value: string): string[] {
+  const lines = value.split(/\r\n|\r|\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length < 2) return [];
+  const body = lines.slice(ARMOR_BEGIN.test(lines[0]!) ? 1 : 0, ARMOR_END.test(lines.at(-1)!) ? -1 : lines.length);
+  return [...body.filter((line) => line.length >= LINE_MIN), body.join("")].filter(longEnough);
+}
+
+/** The strings of a held JSON value (an object or an array, as it parses) that hold a line break, each held as itself
+ *  (trimmed), as any held value: a service account's private key, printed alone (`jq -r .private_key`). Its other
+ *  strings are not: a service account's type, project, email and public URLs are no secret, and would be cut wherever a
+ *  text names them. */
+function multiLineFields(value: string): string[] {
+  const head = value.trimStart()[0];
+  if (head !== "{" && head !== "[") return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      if (/[\r\n]/.test(node)) out.push(node.trim());
+    } else if (Array.isArray(node)) for (const item of node) walk(item);
+    else if (node !== null && typeof node === "object") for (const item of Object.values(node)) walk(item);
+  };
+  walk(parsed);
+  return out.filter(longEnough);
+}
 
 /** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
  *  hex, and each hex identifier in a value folded: in any case, its separators dropped or moved (foldedOf). Values
