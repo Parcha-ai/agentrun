@@ -304,11 +304,13 @@ test("on a CLI slower than the check's timeout, a run's check asks twice and the
   const { claudeLoginStatus } = await import("@parcha/agentrun-harness-claude");
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-slow-"));
   const cli = join(dir, "claude");
-  const seen = join(dir, "calls");
-  writeFileSync(cli, `#!${process.execPath}\nrequire("node:fs").appendFileSync(${JSON.stringify(seen)}, "x");\nsetTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(SIGNED_IN))}), 5000);\n`, { mode: 0o755 });
+  // A CLI that never answers: each check ends at its timeout however slowly the child starts, and the calls are counted here.
+  writeFileSync(cli, "#!/bin/sh\nexec /bin/sleep 60\n", { mode: 0o755 });
+  const ended = [];
+  const status = (at, login) => claudeLoginStatus(at, login, { timeoutMs: 300 }).catch((error) => { ended.push(error.name); throw error; });
   const started = Date.now();
-  await loginBeforeRun(nextLogin(), cli, (at, login) => claudeLoginStatus(at, login, { timeoutMs: 300 }));
-  assert.equal(readFileSync(seen, "utf8"), "xx");
-  assert.ok(Date.now() - started < 4_000, "two timeouts, not two answers");
+  await loginBeforeRun(nextLogin(), cli, status);
+  assert.deepEqual(ended, ["LoginStatusTimeout", "LoginStatusTimeout"]);
+  assert.ok(Date.now() - started < 30_000, "two timeouts, not a wait for an answer");
 });
 
