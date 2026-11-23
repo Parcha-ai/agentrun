@@ -25,7 +25,7 @@
 // 1.x tables). The reader keeps those requests and names the session they mirror (Mirror), for a total to set the copy
 // aside when it reads that session too.
 import { createHash } from "node:crypto";
-import { lstat, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { type Env, entries, type Locator, type LocatorSize, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
 import { effortOf as effortName, isObject, mostEffortOf, str } from "../text.js";
@@ -415,15 +415,23 @@ function copiedThrough(db: Db, row: Row): number {
   return num(before?.seq) ?? -1;
 }
 
+/** A file or folder gone (deleted while read, or never made): none. Any other error (no access, I/O) is the read's: a
+ *  session is never read short of what it holds. */
+const gone = (error: unknown): undefined => {
+  const code = isObject(error) ? error.code : undefined;
+  if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+  throw error;
+};
 /** The JSON files in `dir`, never through a link, in name order (OpenCode's ids sort by time). */
 async function jsonFiles(dir: string): Promise<string[]> {
-  return (await entries(dir))
+  return ((await readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => join(dir, entry.name))
     .sort();
 }
+/** One JSON record's file: none when it is gone or is no JSON object (a malformed record is passed over). */
 const readJson = async (file: string, bytes?: { n: number }): Promise<Row | undefined> => {
-  const text = await readFile(file, "utf8").catch(() => undefined);
+  const text = await readFile(file, "utf8").catch(gone);
   if (bytes && text !== undefined) bytes.n += Buffer.byteLength(text);
   const value = json(text);
   return isObject(value) ? value : undefined;
@@ -438,8 +446,9 @@ async function storageSessions(dir: string): Promise<{ file: string; id: string 
   const sessions: { info: Row; file: string }[] = [];
   for (const project of await entries(join(dir, "session"))) {
     if (!project.isDirectory()) continue;
-    for (const file of await jsonFiles(join(dir, "session", project.name))) {
-      const info = await readJson(file);
+    for (const file of await jsonFiles(join(dir, "session", project.name)).catch(() => [])) {
+      // One that cannot be read is listed by its name (OpenCode's <id>.json), so its read fails and is said.
+      const info = await readJson(file).catch((): Row => ({ id: basename(file, ".json") }));
       if (info && str(info.id)) sessions.push({ info, file });
     }
   }
@@ -527,7 +536,8 @@ async function storageSize(file: string): Promise<LocatorSize | null> {
   const own = await stat(file).catch(() => null);
   if (!own) return null;
   const dir = storageOf(file);
-  const info = await readJson(file);
+  // A file or folder that cannot be read leaves the size as far as it goes: the read says it.
+  const info = await readJson(file).catch(() => undefined);
   const size: LocatorSize = { bytes: own.size, mtimeMs: own.mtimeMs, ...(info && str(info.parentID) ? { parent: info.parentID as string } : {}) };
   const add = async (path: string) => {
     const stats = await stat(path).catch(() => null);
@@ -535,9 +545,9 @@ async function storageSize(file: string): Promise<LocatorSize | null> {
     size.bytes += stats.size;
     size.mtimeMs = Math.max(size.mtimeMs, stats.mtimeMs);
   };
-  for (const message of await jsonFiles(join(dir, "message", basename(file, ".json")))) {
+  for (const message of await jsonFiles(join(dir, "message", basename(file, ".json"))).catch(() => [])) {
     await add(message);
-    for (const part of await jsonFiles(join(dir, "part", basename(message, ".json")))) await add(part);
+    for (const part of await jsonFiles(join(dir, "part", basename(message, ".json"))).catch(() => [])) await add(part);
   }
   return size;
 }

@@ -105,3 +105,29 @@ test("a read that fails partway leaves the state as it was: a retry with the sam
   assert.equal(fresh[0].calls, 2);
   assert.deepEqual(retry, fresh);
 });
+
+test("an OpenCode storage session with a file or folder that cannot be read is a failure, never a session of fewer messages; a malformed record is passed over", { skip }, async (t) => {
+  const { join } = await import("node:path");
+  const { buildLegacy } = await import("./fixtures/opencode/fixture.mjs");
+  const dir = await tempHome(t);
+  const storage = join(dir, ".local", "share", "opencode", "storage");
+  await buildLegacy(storage);
+  // The fixture's malformed parts ("[]", "{not json") are no failure.
+  const clean = [];
+  const whole = await parseHome(dir, { sources: ["opencode"], catalog: false, failures: clean });
+  assert.deepEqual(clean, []);
+  assert.deepEqual(whole.map(({ id }) => id), ["ses_A"]);
+  const key = sha(".local/share/opencode/storage/session/prj_fixture/ses_A.json");
+  for (const path of ["part/msg_A2/prt_A2c.json", "message/ses_A/msg_A3.json", "part/msg_A2", "message/ses_A", "session/prj_fixture/ses_A.json"]) {
+    const at = join(storage, path);
+    await chmod(at, 0);
+    try {
+      const failures = [];
+      const rows = await parseHome(dir, { sources: ["opencode"], catalog: false, failures });
+      assert.deepEqual(failures.map(({ key, source }) => ({ key, source })), [{ key, source: "opencode" }], path);
+      assert.equal(rows.some(({ id }) => id === "ses_A"), false, `${path}: no totals of part of the session`);
+    } finally {
+      await chmod(at, path.endsWith(".json") ? 0o644 : 0o755);
+    }
+  }
+});
