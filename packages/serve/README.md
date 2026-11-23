@@ -1361,9 +1361,8 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store (the runner's
-redactor keeps the value in memory to cut it), and the run reports the turn
-ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
+**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
+reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
 tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
 turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
 answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
@@ -1399,9 +1398,9 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
-  each claim for its tools alone, and erased from the store by the write that ends its turn; the runner's redactor
-  keeps each value in memory to cut it. Since no read after that could cut them, the runner cuts them from everything
-  the run writes, as it writes it.
+  each claim for its tools alone, and erased from the store by the write that ends its turn. Since no read after that
+  could cut them, the runner cuts them from everything the run writes, as it writes it. To cut them, the runner's
+  redactor keeps each value in memory for as long as the runner runs, as it does a run's `model_key`.
 - A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
   going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
   none once its last turn ended.
@@ -1410,15 +1409,21 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 hold (409, as before). With `1`, a template's apply makes its agent though a tool key it declares is not set here, with
 a warning, and each run of that agent must bring the key in `keys`: without it, the run is 409 `agent_not_runnable` at
 `keys.<NAME>` before anything is made, and so is a message that would start a turn. Keys the server holds are still
-used by runs that bring none. A trigger's firing brings no keys, so no trigger is made whose firings would start or
-message such runs without them: the apply skips the template's triggers with a warning at `triggers.<N>`
-(`not_set_up_here`, the apply still 201), unless the [launch hook](#launch-hook) is set, which hands each firing to
-your backend to start the run with its keys; `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409
-`agent_not_runnable` naming the keys for a trigger that would start runs of the agent with no hook, or message one of
-its runs, hook or not. `MONID_API_KEY` stays the server's even with
-the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
-grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
-bring its own monid key to use in place of the server's.
+used by runs that bring none.
+
+A trigger's firing brings no keys, so no trigger is made whose firings would start or message such runs without them.
+The apply skips the template's triggers with a warning at `triggers.<N>` (`not_set_up_here`, the apply still 201),
+unless the [launch hook](#launch-hook) is set, which hands each firing to your backend to start the run with its keys.
+`POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409 `agent_not_runnable` naming the keys for a trigger that
+would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
+before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
+update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
+fires, and the skip's warning names it and says how to turn it off.
+
+`MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
+is saved, before any run, so a template that grants them is still refused at its apply (409 at
+`secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
+server's.
 
 ### Direct Particle-1
 
@@ -2198,8 +2203,8 @@ Streamable HTTP with the official MCP SDK client (`@modelcontextprotocol/client`
 `output_schema` and `annotations` (the server's own claims, not checked). It stores nothing. `auth` is `{type: "none"}`
 (or absent), `{type: "bearer", token}` (sent as `Authorization: Bearer <token>`) or `{type: "headers", headers: {Name:
 value}}` (up to 8). An `oauth` server is signed in to first ([below](#signing-in-with-oauth)), then previewed by name.
-`url` is `https`, or `http` on loopback when the server was started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`
-([start-time switches](#start-time-switches)); without it a loopback URL is `422` on `url`, in words that name the switch.
+`url` is `https`, or `http` on loopback; a loopback URL (either scheme) is taken only on a server started with
+`AGENTRUN_MCP_ALLOW_LOOPBACK=1` ([start-time switches](#start-time-switches)).
 
 A server advertising MCP resources also lists three AgentRun-generated read operations, including when it has no
 tools: `agentrun_list_resources` (`resource: "list"`), `agentrun_list_resource_templates` (`resource: "templates"`)
@@ -2217,7 +2222,11 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the toolkit needs your account and `user_id`
+user_id?, auth_config_id?, price_usd?}` makes and saves the server. In place of `api_key`, `"api_key_env":
+"COMPOSIO_API_KEY"` reads the key from that variable, as the server and each runner were started with it, at each use and keeps no copy: the
+way an [API-only](#api-only) server's token saves one. That key is only ever sent to Composio's own origin, fixed in
+code, so a server saved so whose address is anywhere else is refused by name and sent nothing. The body names no
+address or headers (`422 not_allowed`): Composio answers the address. When the toolkit needs your account and `user_id`
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
 in. The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
 against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one
@@ -2252,9 +2261,8 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
-run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows (the runner's
-redactor keeps them in memory to cut them). A message's binding replaces the
-run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
+run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
+binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
 handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
@@ -2268,8 +2276,13 @@ refused, so a host must not bind a per-run server to a `user_id` that a single-u
 What can go wrong, told apart:
 
 - `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
-  owner's console saves. The link opens Settings → MCP servers with the form filled in (name, URL, kind of credential,
-  toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
+  owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
+  not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
+  (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
+  hold one is left out.
+- `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
+  nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
+  of a server it saved is under way makes the server the owner's, and the token's is this `412`.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
@@ -2327,9 +2340,8 @@ those headers, and only to the origin the server had when the run was started. T
 credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
 a resume, a restart or a lost lease uses it again, and erased from the store by the write that ends the run. It is never
 in the run's saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new
-credential answers the first request's run), and its values are cut from whatever the run shows (the runner's redactor
-keeps them in memory to cut them). `POST /v2/runs/{run_id}/messages`
-takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+credential answers the first request's run), and its values are cut from whatever the run shows.
+`POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
 for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
@@ -3308,16 +3320,44 @@ serves these routes alone:
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
   them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
   or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
+  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
+  backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
+  - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
+    `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
+    value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
+    run's connection and the delete's. A new value takes effect once they start again with it. `COMPOSIO_API_KEY` is
+    the one name taken (`422 invalid` for any other), and it must be set when the server is saved (`422 missing`). A
+    run of a server whose variable is unset is refused before it starts (`409 agent_not_runnable`), naming it; it never
+    runs without the server's tools. `toolkit`, `tools`, `auth_config_id`, `price_usd` and `user_id: "per_run"` work as
+    they do on the full server;
+  - `COMPOSIO_API_KEY` is a secret, so give it to the server and to each runner. The launcher hands it to each over a
+    pipe, so neither process's environment holds it, and no run is handed it: the runner sends it only as the MCP
+    header of a Composio server the run is granted a tool of, and a run granted none gets nothing of it;
+  - the body names no address and no headers (`url` or `headers` is `422 not_allowed`): Composio answers the server's
+    address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
+    whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
+    and nothing is sent;
+  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
+    refused with `412` leaves it the token's), and one that lands while the token's is under way wins: the token's is
+    `412`.
+
+  The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
+  generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
+  own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
+  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
+  way;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
@@ -4960,8 +5000,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   `SENTRY_DSN`, `DB_PWD`; never `PWD` or `OLDPWD`), whether the launcher's list names it or not. The rule is
   `keyShaped` (`src/secret-cut.ts`), which an import's cut and a harness's log take too. The keys a
   run needs are read from the store at its claim, opened with the seal key, and are put on that run's environment alone.
-  It gets none of the computer providers' account keys ([Sandbox](#sandbox)) and not the Archil account key
-  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential. A tool key reaches it only when its
+  It gets none of the computer providers' account keys ([Sandbox](#sandbox)), not the Archil account key
+  (`ARCHIL_API_KEY`), from which the claim mints the run's own mount credential, and not the Composio account key
+  (`COMPOSIO_API_KEY`), which the runner sends only as a granted Composio server's MCP header. A tool key reaches it only when its
   revision names a tool the key unlocks (`MONID_API_KEY` a monid tool, `BROWSERBASE_API_KEY` and `KERNEL_API_KEY` `browser`; a workflow's
   tools are those its model and call nodes name), and a model key only when its model needs it ([Models](#models)), read
   from the revision at each claim, a resume after a restart included.

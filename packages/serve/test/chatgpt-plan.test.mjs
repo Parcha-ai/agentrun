@@ -563,7 +563,8 @@ test("a server with no key says codex and pi run after a ChatGPT sign-in, and Cl
     assert.ok(offer.reason?.includes(SIGN_IN), `${id} names the sign-in: ${JSON.stringify(offer)}`);
     assert.deepEqual(offer.needs, ["key", "chatgpt"], `${id}: ${JSON.stringify(offer)}`);
   }
-  assert.equal(harness(none, "codex").available, false);
+  // Available means it runs: pi, whose adapter is built in, runs nothing with no model key and no sign-in, as codex.
+  for (const id of ["codex", "pi"]) assert.equal(harness(none, id).available, false, `${id}: ${JSON.stringify(harness(none, id))}`);
   for (const id of ["claude-agent", "opencode"]) {
     const offer = harness(none, id);
     assert.doesNotMatch(offer.reason ?? "", /ChatGPT/, `${id} needs a key whatever the plan: ${JSON.stringify(offer)}`);
@@ -611,6 +612,17 @@ test("a server whose AGENT_MODEL names a key's model, with no key, offers no Cha
     assert.deepEqual(offer.needs, ["key"], `${id}: ${JSON.stringify(offer)}`);
     assert.doesNotMatch(offer.reason ?? "", /ChatGPT/, `${id}: ${JSON.stringify(offer)}`);
   }
+});
+
+test("pi is available where a model it offers runs, not its default alone: AGENT_MODEL on OpenAI with no OpenAI key, and an Anthropic key, still runs pi on an Anthropic model", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { ...CODEX_STAND_IN, AGENT_MODEL: "openai/gpt-6.1-sol", ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` }, [...MODEL_VARS, ...Object.keys(CODEX_STAND_IN)]);
+  const { api } = await serve(t, { faux: undefined });
+  const pi = (await api("GET", "/capabilities")).body.harnesses.find((each) => each.id === "pi");
+  assert.equal(pi.available, true, JSON.stringify(pi));
+  assert.ok(pi.models.some((id) => id.startsWith("anthropic/")), JSON.stringify(pi));
+  // Its default still lacks its key, and says so.
+  assert.equal(pi.default_model, null, JSON.stringify(pi));
+  assert.deepEqual(pi.needs, ["key"], JSON.stringify(pi));
 });
 
 test("a sign-out while a sign-in is finishing says revoked false when OpenAI doesn't confirm the dropped sign-in's revocation", { timeout: 30_000 }, async (t) => {
