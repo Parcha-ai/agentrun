@@ -1002,3 +1002,70 @@ for (const [kind, settingsOf] of Object.entries(STORES)) for (const via of ["the
   assert.deepEqual({ again, dropped: await start("pinned"), fresh: await start("fresh") }, { again: refused, dropped: refused, fresh: { status: 201, workflows: [] } }, "the receipt sent again and a new start refuse the purged run's workflow");
 });
 
+
+/** An SDK learning agent with a "status" workflow tool, and its first start (so a revision exists). */
+async function sdkAgent(t, settings, id) {
+  const { api, data, store } = await serve(t, { runner: false });
+  onStore(t, data, settings);
+  const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+  const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
+  const flowOf = (deadline) => JSON.stringify({ v: 2, name: "status", schemas: { Input: { type: "object" }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: {}, out: "Answer", as: "answer", deadline_s: deadline } });
+  assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
+  const first = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "first" });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const { revisionId } = await store.runs.get(first.body.run_id);
+  const endedRun = async (runId) => {
+    await store.runs.create({ id: runId, agentId: id, revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+    await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+  };
+  const start = async (key) => {
+    const res = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": key });
+    return res.status === 201 ? { status: 201, run: res.body.run_id, workflows: res.body.learning.workflows.map(({ workflow }) => digestOf(workflow)) } : { status: res.status, code: res.body?.error?.code, run: res.body?.error?.details?.run_id };
+  };
+  const record = (digest, decided, commit) => ({ workflow: "status", digest, at: new Date().toISOString(), decided, reason: `checked: ${decided}`, commit });
+  return { api, data, store, flowOf, endedRun, start, record };
+}
+
+for (const [kind, settingsOf] of Object.entries(STORES)) for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritten"]) test(`${kind}: a merge that writes a workflow.json with the same bytes owns it in the saved snapshot too, so purging the earlier writer keeps an SDK start's receipt (${via})`, async (t) => {
+  const id = "sdk-same-bytes";
+  const { api, data, store, flowOf, endedRun, start, record } = await sdkAgent(t, settingsOf(), id);
+  const v1 = flowOf(5);
+  await endedRun("writer-a");
+  await endedRun("writer-b");
+  await learned(data, id, (learning) => learningCommit(learning, { runId: "writer-a", reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: v1 }, { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" }] }));
+  const b = await learned(data, id, (learning) => learningCommit(learning, { runId: "writer-b", reason: "It says more.", files: [{ path: "workflows/status/workflow.json", text: v1 }, { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status, then say when.\n---\n" }] }));
+  const learning = learningStoreOf(data, id);
+  const owner = async (at) => (await readSnapshot(learning, at))?.workflows.find(({ name }) => name === "status")?.run ?? null;
+  assert.deepEqual({ saved: await owner(b), rebuilt: (await rebuiltSnapshotAt(learning, b))?.workflows.find(({ name }) => name === "status")?.run ?? null }, { saved: "writer-b", rebuilt: "writer-b" }, "B's merge wrote workflow.json last: both snapshots name B");
+  await store.settings.put(`learning.promotions.${id}`, { v: 1, items: [record(digestOf(v1), "promote", b)] });
+  const pinned = await start("pinned");
+  assert.deepEqual({ status: pinned.status, workflows: pinned.workflows }, { status: 201, workflows: [digestOf(v1)] }, "a start pins B's champion");
+  if (via.startsWith("DELETE")) assert.equal((await api("DELETE", "/runs/writer-a")).status, 204);
+  else await store.runs.purge("writer-a", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  const again = await start("pinned");
+  assert.deepEqual({ status: again.status, run: again.run, workflows: again.workflows }, { status: 201, run: pinned.run, workflows: [digestOf(v1)] }, "purging A leaves B's workflow, so the receipt sent again answers it");
+});
+
+for (const [kind, settingsOf] of Object.entries(STORES)) test(`${kind}: an SDK receipt that pins learning and names no writers (an earlier release's) is refused, never answered: its writer may be purged`, async (t) => {
+  const id = "sdk-no-writers";
+  const { data, store, flowOf, endedRun, start, record } = await sdkAgent(t, settingsOf(), id);
+  const v1 = flowOf(5);
+  await endedRun("writer-a");
+  const merge = await learned(data, id, (learning) => learningCommit(learning, { runId: "writer-a", reason: "It learned status.", files: [{ path: "workflows/status/workflow.json", text: v1 }, { path: "workflows/status/README.md", text: "---\nname: status\ndescription: Read release status.\n---\n" }] }));
+  await store.settings.put(`learning.promotions.${id}`, { v: 1, items: [record(digestOf(v1), "promote", merge)] });
+  const pinned = await start("pinned");
+  assert.deepEqual({ status: pinned.status, workflows: pinned.workflows }, { status: 201, workflows: [digestOf(v1)] }, "a start pins A's champion");
+  const inbox = await store.settings.get(`sdk-run:${pinned.run}`);
+  assert.deepEqual(inbox.learning_writers, ["writer-a"], "the receipt names its writer");
+  // The receipt as an earlier release saved it: the commit each workflow was read at, no writers.
+  const { learning_writers: _w, ...old } = inbox;
+  await store.settings.put(`sdk-run:${pinned.run}`, { ...old, learning_commits: { status: merge } });
+  await store.runs.purge("writer-a", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  const again = await start("pinned");
+  assert.deepEqual({ status: again.status, code: again.code }, { status: 503, code: "unavailable" }, "a receipt with no writers to check is refused, never answered with what it pinned");
+
+  // The agent's first start, before it learned anything, pinned nothing and names its writers too: none.
+  const first = await start("first");
+  assert.equal(first.status, 201, "a receipt that pinned nothing answers again");
+  assert.deepEqual((await store.settings.get(`sdk-run:${first.run}`)).learning_writers, [], "a learning start with nothing pinned names its writers: none");
+});
