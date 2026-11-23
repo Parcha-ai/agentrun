@@ -11233,6 +11233,7 @@ class GetWrappedResponseHarnessesItem(TypedDict):
     sessions: int
     requests: int
     tokens: int
+    sources: list[str]
 
 
 class GetWrappedResponseModelsItem(TypedDict):
