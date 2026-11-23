@@ -70,19 +70,40 @@ function colour(theme: "dark" | "light", name: string): string {
 
 const escape = (text: string): string => text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
-/** The most characters of `face` at `size` that fit `width`. */
-const fits = (width: number, size: number, face: keyof typeof ADVANCE): number => Math.max(1, Math.floor(width / (size * ADVANCE[face])));
+/** A caps line's letter spacing, as a share of its size: added after every character. */
+const CAPS_SPACING = 0.08;
+/** A character a font draws two cells wide (East Asian wide and fullwidth forms, Hangul, emoji): about an em. */
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1F000}-\u{1FAFF}\u{20000}-\u{3FFFD}]/u;
+/** A mark drawn on the character before it, taking no room of its own. */
+const MARK = /\p{M}/u;
 
-/** `text` on one line of `width`, cut with an ellipsis when it is longer. */
-function line(text: string, width: number, size: number, face: keyof typeof ADVANCE): string {
-  const most = fits(width, size, face);
-  const chars = [...text];
-  return chars.length <= most ? text : `${chars.slice(0, most - 1).join("").trimEnd()}…`;
+/** One character's advance in ems: none for a combining mark, an em for a wide one, else the face's. */
+const advanceOf = (char: string, face: keyof typeof ADVANCE): number => (MARK.test(char) ? 0 : WIDE.test(char) ? 1 : ADVANCE[face]);
+
+/** How wide `text` draws in `face` at `size`, its caps spacing (`caps`) counted: what every line is cut to fit. An
+ *  estimate from each character's advance, generous for a wide character, so a line cut to it stays in its box. */
+export function textWidth(text: string, size: number, face: keyof typeof ADVANCE, caps = false): number {
+  let width = 0;
+  for (const char of caps ? text.toUpperCase() : text) width += size * (advanceOf(char, face) + (caps && !MARK.test(char) ? CAPS_SPACING : 0));
+  return width;
 }
 
-/** `text` in lines of `width`, broken at spaces, at most `max` lines, the last cut with an ellipsis when more is left. */
+/** `text` on one line of `width` (as `caps` draws it, when set), cut with an ellipsis when it is wider. */
+function line(text: string, width: number, size: number, face: keyof typeof ADVANCE, caps = false): string {
+  const shown = caps ? text.toUpperCase() : text;
+  if (textWidth(shown, size, face, caps) <= width) return shown;
+  const room = width - textWidth("…", size, face, caps);
+  let cut = "";
+  for (const char of shown) {
+    if (textWidth(cut + char, size, face, caps) > room) break;
+    cut += char;
+  }
+  return `${cut.trimEnd()}…`;
+}
+
+/** `text` in lines of `width`, broken at spaces, at most `max` lines, the last cut with an ellipsis when more is left. A
+ *  word wider than a line is cut on its own line. */
 function wrap(text: string, width: number, size: number, face: keyof typeof ADVANCE, max: number): string[] {
-  const most = fits(width, size, face);
   const lines: string[] = [];
   let rest = text.trim().split(/\s+/).filter(Boolean);
   while (rest.length && lines.length < max) {
@@ -90,7 +111,7 @@ function wrap(text: string, width: number, size: number, face: keyof typeof ADVA
     let used = 0;
     for (const word of rest) {
       const next = current ? `${current} ${word}` : word;
-      if ([...next].length > most && current) break;
+      if (textWidth(next, size, face) > width && current) break;
       current = next;
       used += 1;
     }
@@ -103,7 +124,7 @@ function wrap(text: string, width: number, size: number, face: keyof typeof ADVA
 type Text = { x: number; y: number; size: number; face: keyof typeof ADVANCE; fill: string; text: string; weight?: 400 | 600; anchor?: "start" | "end" | "middle"; caps?: boolean };
 
 function textEl({ x, y, size, face, fill, text, weight = 400, anchor = "start", caps = false }: Text): string {
-  const spacing = caps ? ` letter-spacing="${(size * 0.08).toFixed(2)}"` : "";
+  const spacing = caps ? ` letter-spacing="${(size * CAPS_SPACING).toFixed(2)}"` : "";
   return `<text x="${x}" y="${y}" font-family="${face === "mono" ? MONO : SANS}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}"${spacing}>${escape(caps ? text.toUpperCase() : text)}</text>`;
 }
 
@@ -122,14 +143,15 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
   const out: string[] = [];
   let top = y;
   if (chart.label) {
-    out.push(textEl({ x, y: top + 16, size: 16, face: "mono", fill: paint("muted-foreground"), text: line(chart.label, width, 16, "mono"), caps: true }));
+    out.push(textEl({ x, y: top + 16, size: 16, face: "mono", fill: paint("muted-foreground"), text: line(chart.label, width, 16, "mono", true), caps: true }));
     top += 32;
   }
   const bars = chart.bars;
   if (!bars.length || height - (top - y) < 24) return { marks: out, shown: 0 };
-  // The scale is the largest measured bar; with none measured yet, the largest estimate.
-  const measured = bars.filter((bar) => bar.measured !== false);
-  const most = Math.max(...(measured.length ? measured : bars).map((bar) => measure(bar.value)), 0);
+  // The scale is the largest measured bar; with no measured bar above zero, the largest estimate, so a pending bar still
+  // shows as its outline beside measured zeros (which stay empty).
+  const largest = (of: readonly CardBar[]) => Math.max(0, ...of.map((bar) => measure(bar.value)));
+  const most = largest(bars.filter((bar) => bar.measured !== false)) || largest(bars);
   /** A bar's length on a track of `track`: its share of the scale, capped at the track; an unmeasured bar with no value
    *  fills its track, as an outline. */
   const lengthOf = (bar: CardBar, track: number) =>
@@ -140,15 +162,15 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
     const shown = bars.slice(0, rowsThatFit(room));
     const pitch = Math.min(44, room / shown.length);
     const labelWidth = Math.min(260, width * 0.32);
-    const textWidth = shown.some((bar) => bar.text) ? Math.min(180, width * 0.22) : 0;
-    const barWidth = width - labelWidth - textWidth - (textWidth ? 16 : 0) - 16;
+    const textRoom = shown.some((bar) => bar.text) ? Math.min(180, width * 0.22) : 0;
+    const barWidth = width - labelWidth - textRoom - (textRoom ? 16 : 0) - 16;
     shown.forEach((bar, i) => {
       const middle = top + i * pitch + pitch / 2;
       out.push(textEl({ x, y: middle + 7, size: 20, face: "mono", fill: paint("card-foreground"), text: line(bar.label, labelWidth - 12, 20, "mono") }));
       const length = lengthOf(bar, barWidth);
       out.push(rect(x + labelWidth, middle - 9, barWidth, 18, paint("muted")));
       out.push(bar.measured === false ? outline(x + labelWidth, middle - 9, length, 18, paint("primary")) : rect(x + labelWidth, middle - 9, length, 18, paint("primary")));
-      if (bar.text) out.push(textEl({ x: x + width, y: middle + 7, size: 20, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, textWidth, 20, "mono"), anchor: "end" }));
+      if (bar.text) out.push(textEl({ x: x + width, y: middle + 7, size: 20, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, textRoom, 20, "mono"), anchor: "end" }));
     });
     return { marks: out, shown: shown.length };
   }
@@ -158,15 +180,19 @@ function chartEl(chart: CardChart, x: number, y: number, width: number, height: 
   const labelled = bars.some((bar) => bar.label);
   const baseline = top + room - (labelled ? 28 : 0);
   const tallest = baseline - top - (bars.some((bar) => bar.text) ? 24 : 0);
-  const everyLabel = bars.every((bar) => [...bar.label].length * 14 * ADVANCE.mono <= column + gap);
+  const everyLabel = bars.every((bar) => textWidth(bar.label, 14, "mono") <= column);
   bars.forEach((bar, i) => {
     const left = x + i * (column + gap);
     const length = lengthOf(bar, tallest);
     out.push(rect(left, baseline - 2, column, 2, paint("border")));
     out.push(bar.measured === false ? outline(left, baseline - length, column, length, paint("primary")) : rect(left, baseline - length, column, length, paint("primary")));
-    if (bar.text && column >= 40) out.push(textEl({ x: left + column / 2, y: baseline - length - 8, size: 14, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, column + gap, 14, "mono"), anchor: "middle" }));
-    if (labelled && (everyLabel || i === 0 || i === bars.length - 1)) {
-      out.push(textEl({ x: left + column / 2, y: baseline + 22, size: 14, face: "mono", fill: paint("muted-foreground"), text: everyLabel ? bar.label : line(bar.label, 80, 14, "mono"), anchor: "middle" }));
+    if (bar.text && column >= 40) out.push(textEl({ x: left + column / 2, y: baseline - length - 8, size: 14, face: "mono", fill: paint("muted-foreground"), text: line(bar.text, column, 14, "mono"), anchor: "middle" }));
+    if (labelled && everyLabel) {
+      out.push(textEl({ x: left + column / 2, y: baseline + 22, size: 14, face: "mono", fill: paint("muted-foreground"), text: bar.label, anchor: "middle" }));
+    } else if (labelled && (i === 0 || i === bars.length - 1)) {
+      // Only the ends are labelled: the first from its column's left edge, the last to its right edge, so neither leaves the chart.
+      const first = i === 0;
+      out.push(textEl({ x: first ? left : left + column, y: baseline + 22, size: 14, face: "mono", fill: paint("muted-foreground"), text: line(bar.label, Math.min(80, width / 2 - 8), 14, "mono"), anchor: first ? "start" : "end" }));
     }
   });
   return { marks: out, shown: bars.length };
@@ -227,8 +253,8 @@ function draw(body: CardBody): { marks: string[]; shown: number[] } {
 
   // The eyebrow and the brand on one line.
   const brand = "AgentRun";
-  const brandWidth = [...brand].length * 18 * ADVANCE.mono * 1.08 + 8;
-  if (body.eyebrow) out.push(textEl({ x: PAD, y: PAD + 26, size: 18, face: "mono", fill: paint("muted-foreground"), text: line(body.eyebrow, INNER - brandWidth - 24, 18, "mono"), caps: true }));
+  const brandWidth = textWidth(brand, 18, "mono", true);
+  if (body.eyebrow) out.push(textEl({ x: PAD, y: PAD + 26, size: 18, face: "mono", fill: paint("muted-foreground"), text: line(body.eyebrow, INNER - brandWidth - 32, 18, "mono", true), caps: true }));
   out.push(textEl({ x: CARD_WIDTH - PAD, y: PAD + 26, size: 18, face: "mono", fill: paint("primary-text"), text: brand, weight: 600, anchor: "end", caps: true }));
   let y = PAD + 26 + 28;
 
@@ -242,11 +268,11 @@ function draw(body: CardBody): { marks: string[]; shown: number[] } {
   // The figure, its unit after it.
   if (body.figure) {
     const unit = body.figure.unit ? line(body.figure.unit, INNER / 3, 32, "mono") : "";
-    const unitWidth = unit ? [...unit].length * 32 * ADVANCE.mono + 20 : 0;
+    const unitWidth = unit ? textWidth(unit, 32, "mono") + 20 : 0;
     const value = line(body.figure.value, INNER - unitWidth, 112, "mono");
     y += 24 + 104;
     out.push(textEl({ x: PAD, y, size: 112, face: "mono", fill: paint("primary-text"), text: value, weight: 600 }));
-    if (unit) out.push(textEl({ x: PAD + [...value].length * 112 * ADVANCE.mono + 20, y, size: 32, face: "mono", fill: paint("muted-foreground"), text: unit }));
+    if (unit) out.push(textEl({ x: PAD + textWidth(value, 112, "mono") + 20, y, size: 32, face: "mono", fill: paint("muted-foreground"), text: unit }));
     // Room for the figure's descenders ("pm", "g") above what follows.
     y += 16;
   }
@@ -268,7 +294,7 @@ function draw(body: CardBody): { marks: string[]; shown: number[] } {
       if (index >= shownPerColumn) return;
       const x = PAD + column * (columnWidth + 32);
       const top = y + 28 + index * pitch;
-      out.push(textEl({ x, y: top + 16, size: 16, face: "mono", fill: paint("muted-foreground"), text: line(row.label, columnWidth, 16, "mono"), caps: true }));
+      out.push(textEl({ x, y: top + 16, size: 16, face: "mono", fill: paint("muted-foreground"), text: line(row.label, columnWidth, 16, "mono", true), caps: true }));
       out.push(textEl({ x, y: top + 46, size: 28, face: "mono", fill: paint("card-foreground"), text: line(row.value, columnWidth, 28, "mono") }));
     });
     y += 28 + shownPerColumn * pitch;

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import css from "@/tokens.css?raw";
 import { hslToRgb, readTokens } from "@/design/contrast";
-import { CARD_HEIGHT, CARD_WIDTH, cardAlt, chartCapacity, renderCard, toPng, type CardBody } from "./cardImage";
+import { CARD_HEIGHT, CARD_WIDTH, cardAlt, chartCapacity, renderCard, textWidth, toPng, type CardBody } from "./cardImage";
 
 // The one card renderer (a free run's receipt, each Wrapped card): a CardBody in, an SVG string and its data URL out.
 // Pure, every word from the body, every colour a token of the card's theme, nothing that loads from anywhere.
@@ -104,6 +104,37 @@ describe("renderCard", () => {
     }
   });
 
+  it("keeps every line inside the card's sides, a wide character and caps spacing counted", () => {
+    const wide = "東京で一晩中動いたエージェントの記録と費用の内訳をすべて表示します。よろしくね";
+    expect([...wide]).toHaveLength(39);
+    // 39 wide characters at the title's size are wider than the card: the title is cut, not drawn past its edge.
+    const title = texts(renderCard({ title: wide }).svg).find((t) => t.startsWith("東京"))!;
+    expect(title.endsWith("…")).toBe(true);
+    expect([...title].length).toBeLessThan(39);
+    const bodies: CardBody[] = [
+      receipt,
+      hours,
+      { eyebrow: `${wide}${wide}`, title: wide, figure: { value: "¥1,234,567,890", unit: wide }, rows: [{ label: wide, value: wide }, { label: "w".repeat(90), value: "W".repeat(90) }, { label: "ß".repeat(60), value: "é".repeat(60) }], footnote: wide.repeat(3) },
+      { eyebrow: "m".repeat(120), title: "M".repeat(200), figure: { value: "8".repeat(40), unit: "w".repeat(80) }, footnote: "W".repeat(200) },
+      { title: "Columns", charts: [{ label: wide, bars: Array.from({ length: 12 }, (_, i) => ({ label: `${wide}-${i}`, value: i + 1, text: wide })) }, { label: "x".repeat(80), kind: "rows", bars: [{ label: wide, value: 3, text: wide }, { label: "y".repeat(60), value: 2, text: "z".repeat(60) }] }] },
+    ];
+    for (const body of bodies) {
+      for (const el of parse(renderCard(body).svg).querySelectorAll("text")) {
+        const size = Number(el.getAttribute("font-size"));
+        const width = textWidth(el.textContent ?? "", size, /Mono/.test(el.getAttribute("font-family")!) ? "mono" : "sans", el.hasAttribute("letter-spacing"));
+        const x = Number(el.getAttribute("x"));
+        const anchor = el.getAttribute("text-anchor");
+        const left = anchor === "end" ? x - width : anchor === "middle" ? x - width / 2 : x;
+        expect(left, el.outerHTML).toBeGreaterThanOrEqual(64 - 0.5);
+        expect(left + width, el.outerHTML).toBeLessThanOrEqual(CARD_WIDTH - 64 + 0.5);
+      }
+    }
+    // Caps spacing is part of a caps line's width.
+    expect(textWidth("ab", 10, "mono", true)).toBeCloseTo(textWidth("AB", 10, "mono") + 2 * 10 * 0.08);
+    expect(textWidth("東", 10, "mono")).toBeGreaterThan(textWidth("e", 10, "mono"));
+    expect(textWidth("é", 10, "mono")).toBe(textWidth("e", 10, "mono"));
+  });
+
   it("draws a chart's bars against its largest: many as columns, a few as labelled rows, nothing for zero or a non-number", () => {
     const primary = hex(tokens.dark.primary!);
     const marks = (svg: string) => [...parse(svg).querySelectorAll(`rect[fill="${primary}"]`)].filter((r) => r.getAttribute("y") !== "0.0");
@@ -169,6 +200,13 @@ describe("a bar not measured yet", () => {
     expect(Number(solid[0]!.getAttribute("width"))).toBeCloseTo(track, 0);
     for (const r of dashed) expect(Number(r.getAttribute("width"))).toBeCloseTo(track - 2, 0);
     expect(cardAlt(body)).toContain("other measuring, guess not measured yet");
+    // With no measured bar above zero, the estimates set the scale: the pending bar still shows, a measured zero stays empty.
+    const pending = parse(renderCard({ title: "Launch", charts: [{ kind: "rows", bars: [{ label: "agentrun", value: 0 }, { label: "other", value: 80, measured: false }] }] }).svg);
+    const outline = pending.querySelector(`rect[stroke="${primary}"]`)!;
+    const pendingTrack = Number(pending.querySelector(`rect[fill="${hex(tokens.dark.muted!)}"]`)!.getAttribute("width"));
+    expect(Number(outline.getAttribute("width"))).toBeCloseTo(pendingTrack - 2, 0);
+    const zero = [...pending.querySelectorAll(`rect[fill="${primary}"]`)].filter((r) => r.getAttribute("y") !== "0.0");
+    expect(zero.map((r) => Number(r.getAttribute("width")))).toEqual([0]);
   });
 });
 
