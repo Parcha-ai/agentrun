@@ -1417,8 +1417,9 @@ unless the [launch hook](#launch-hook) is set, which hands each firing to your b
 `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409 `agent_not_runnable` naming the keys for a trigger that
 would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
 before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
-update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
-fires, and the skip's warning names it and says how to turn it off.
+update apply that skips a trigger turns off the agent's trigger of that name when it is on, since each of its firings
+would be refused the same way: `disabled: {reason: "keys_owed", detail}`, the detail naming the keys and the fix, and
+the skip's warning says so. It is kept, so once the launch hook is set it can be turned on again.
 
 `MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
 is saved, before any run, so a template that grants them is still refused at its apply (409 at

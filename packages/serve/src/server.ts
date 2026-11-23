@@ -35,7 +35,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { RUN_KEYS_ENV } from "./env-switch.js";
-import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
+import { declaredKeys, keysOwed, keysOwedDetail, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -3453,15 +3453,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
     // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
     // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
-    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
+    // agent has by its name is never removed. One that is on and whose every firing would be refused for the keys its
+    // agent's runs owe is turned off by the apply (keysOwedOff: disabled keys_owed, as the server turns off any trigger
+    // that can't work); one an API-only server still fires on its own keys stays on, its skip saying so and that the
+    // agent's archive turns it off (an API-only server serves no trigger route).
     const hooked = options.launchHook !== undefined;
+    const keysOwedOff = new Map<number, { id: string; detail: string }>();
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
-      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
+      const owes = runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
+      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? owes;
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
-      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
-      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
+      if (!keptOn) return [[i, skip] as const];
+      if (owes) keysOwedOff.set(i, { id: keptOn.id, detail: keysOwedDetail(brought) });
+      const said = owes
+        ? `The agent's trigger ${keptOn.id} of that name, on until now, is turned off (disabled: keys_owed): each of its firings would be refused the same way.`
+        : `The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: archiving the agent turns it off.`;
+      return [[i, { ...skip, message: `${skip.message} ${said}` }] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
@@ -3519,13 +3527,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
     const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, secrets: declared };
-    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
+    return { pkg, onto, missing, unsaved, saved, mapped, grants, pick, made, emptyFeeds, hostless, keysOwedOff, unmade, hadByName, remade, resent, removing, digest, origin, warned: [...keyWarnings, ...skipped, ...kept, ...modelWarnings, ...computerWarnings] };
   }
 
   /** applyTemplate's work, in its turn on the agent where it has agent_id: prepareApply's reads and checks, then its
    *  writes. */
   async function applyWith(template: Package, body: Json) {
-    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
+    const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, keysOwedOff, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
@@ -3563,6 +3571,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
+        // Skipped: the agent's trigger of that name whose every firing would be refused for the keys owed goes off here.
+        const owedOff = keysOwedOff.get(i);
+        if (owedOff) await triggers.keysOwedOff(owedOff.id, entry.agent.id, owedOff.detail);
         if (unmade(i)) continue;
         const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
         let was = hadByName.get(String(trigger.name).trim());

@@ -6067,6 +6067,10 @@ export type CreateTriggerResponse = {
     at: string;
     reason: "sign_in_refused";
     detail: string;
+  } | {
+    at: string;
+    reason: "keys_owed";
+    detail: string;
   } | null;
   next_at: string | null;
   last_run_id: string | null;
@@ -6305,6 +6309,10 @@ export type GetTriggerResponse = {
     at: string;
     reason: "sign_in_refused";
     detail: string;
+  } | {
+    at: string;
+    reason: "keys_owed";
+    detail: string;
   } | null;
   next_at: string | null;
   last_run_id: string | null;
@@ -6487,6 +6495,10 @@ export type ListTriggersResponse = {
     } | {
       at: string;
       reason: "sign_in_refused";
+      detail: string;
+    } | {
+      at: string;
+      reason: "keys_owed";
       detail: string;
     } | null;
     next_at: string | null;
@@ -6804,6 +6816,10 @@ export type UpdateTriggerResponse = {
   } | {
     at: string;
     reason: "sign_in_refused";
+    detail: string;
+  } | {
+    at: string;
+    reason: "keys_owed";
     detail: string;
   } | null;
   next_at: string | null;

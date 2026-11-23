@@ -2172,6 +2172,10 @@ export interface operations {
         at: string;
         reason: "sign_in_refused";
         detail: string;
+      } | {
+        at: string;
+        reason: "keys_owed";
+        detail: string;
       } | null;
       next_at: string | null;
       last_run_id: string | null;
@@ -4031,6 +4035,10 @@ export interface operations {
         at: string;
         reason: "sign_in_refused";
         detail: string;
+      } | {
+        at: string;
+        reason: "keys_owed";
+        detail: string;
       } | null;
       next_at: string | null;
       last_run_id: string | null;
@@ -5336,6 +5344,10 @@ export interface operations {
         } | {
           at: string;
           reason: "sign_in_refused";
+          detail: string;
+        } | {
+          at: string;
+          reason: "keys_owed";
           detail: string;
         } | null;
         next_at: string | null;
@@ -7225,6 +7237,10 @@ export interface operations {
       } | {
         at: string;
         reason: "sign_in_refused";
+        detail: string;
+      } | {
+        at: string;
+        reason: "keys_owed";
         detail: string;
       } | null;
       next_at: string | null;

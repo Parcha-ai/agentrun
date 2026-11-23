@@ -118,3 +118,8 @@ export function runKeysTriggerSkipped(packageName: string, trigger: { name?: unk
     message: `The ${packageName} template's trigger ${String(trigger.name).trim()} (${kind}) was not made: each run of its agent must carry ${owed.join(" and ")} in keys (${RUN_KEYS_ENV}=1), and its firings would start runs without them. Start its runs through the API with keys, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to the backend in front of this server, which starts the run with its keys.`,
   };
 }
+
+/** The `disabled.detail` of a trigger turned off (`keys_owed`) because each of its firings would be refused for `owed`,
+ *  keys its agent's runs must carry under the run-keys setting: which, and how to fix it. */
+export const keysOwedDetail = (owed: readonly string[]): string =>
+  `Each run of its agent must carry ${owed.join(" and ")} in keys (${RUN_KEYS_ENV}=1), and its firings bring none, so each would be refused (409 agent_not_runnable). Set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and turn it on, so each firing goes to the backend in front of this server, which starts the run with its keys; or start the agent's runs through the API with their keys.`;

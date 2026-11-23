@@ -179,6 +179,7 @@ __all__ = [
     "CreateTriggerResponseDisabled3",
     "CreateTriggerResponseDisabled4",
     "CreateTriggerResponseDisabled5",
+    "CreateTriggerResponseDisabled6",
     "CreateTriggerResponseLastCheck",
     "CreateTriggerResponseLastFiring",
     "CreateTriggerResponseLastFiringError",
@@ -567,6 +568,7 @@ __all__ = [
     "GetTriggerResponseDisabled3",
     "GetTriggerResponseDisabled4",
     "GetTriggerResponseDisabled5",
+    "GetTriggerResponseDisabled6",
     "GetTriggerResponseLastCheck",
     "GetTriggerResponseLastFiring",
     "GetTriggerResponseLastFiringError",
@@ -785,6 +787,7 @@ __all__ = [
     "ListTriggersResponseTriggersItemDisabled3",
     "ListTriggersResponseTriggersItemDisabled4",
     "ListTriggersResponseTriggersItemDisabled5",
+    "ListTriggersResponseTriggersItemDisabled6",
     "ListTriggersResponseTriggersItemLastCheck",
     "ListTriggersResponseTriggersItemLastFiring",
     "ListTriggersResponseTriggersItemLastFiringError",
@@ -1218,6 +1221,7 @@ __all__ = [
     "UpdateTriggerResponseDisabled3",
     "UpdateTriggerResponseDisabled4",
     "UpdateTriggerResponseDisabled5",
+    "UpdateTriggerResponseDisabled6",
     "UpdateTriggerResponseLastCheck",
     "UpdateTriggerResponseLastFiring",
     "UpdateTriggerResponseLastFiringError",
@@ -9543,7 +9547,7 @@ class _CreateTriggerResponseRequired(TypedDict):
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | CreateTriggerResponseDisabled5 | None
+    disabled: CreateTriggerResponseDisabled1 | CreateTriggerResponseDisabled2 | CreateTriggerResponseDisabled3 | CreateTriggerResponseDisabled4 | CreateTriggerResponseDisabled5 | CreateTriggerResponseDisabled6 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -9791,6 +9795,12 @@ class CreateTriggerResponseDisabled5(TypedDict):
     detail: str
 
 
+class CreateTriggerResponseDisabled6(TypedDict):
+    at: str
+    reason: Literal["keys_owed"]
+    detail: str
+
+
 class _CreateTriggerResponseLastFiringRequired(TypedDict):
     key: str
     by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
@@ -9892,7 +9902,7 @@ class _GetTriggerResponseRequired(TypedDict):
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | GetTriggerResponseDisabled5 | None
+    disabled: GetTriggerResponseDisabled1 | GetTriggerResponseDisabled2 | GetTriggerResponseDisabled3 | GetTriggerResponseDisabled4 | GetTriggerResponseDisabled5 | GetTriggerResponseDisabled6 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -10138,6 +10148,12 @@ class GetTriggerResponseDisabled5(TypedDict):
     detail: str
 
 
+class GetTriggerResponseDisabled6(TypedDict):
+    at: str
+    reason: Literal["keys_owed"]
+    detail: str
+
+
 class _GetTriggerResponseLastFiringRequired(TypedDict):
     key: str
     by: Literal["schedule", "email", "feed", "manual", "webhook", "github", "composio"]
@@ -10181,7 +10197,7 @@ class _ListTriggersResponseTriggersItemRequired(TypedDict):
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | ListTriggersResponseTriggersItemDisabled5 | None
+    disabled: ListTriggersResponseTriggersItemDisabled1 | ListTriggersResponseTriggersItemDisabled2 | ListTriggersResponseTriggersItemDisabled3 | ListTriggersResponseTriggersItemDisabled4 | ListTriggersResponseTriggersItemDisabled5 | ListTriggersResponseTriggersItemDisabled6 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -10424,6 +10440,12 @@ class ListTriggersResponseTriggersItemDisabled4(TypedDict):
 class ListTriggersResponseTriggersItemDisabled5(TypedDict):
     at: str
     reason: Literal["sign_in_refused"]
+    detail: str
+
+
+class ListTriggersResponseTriggersItemDisabled6(TypedDict):
+    at: str
+    reason: Literal["keys_owed"]
     detail: str
 
 
@@ -10691,7 +10713,7 @@ class _UpdateTriggerResponseRequired(TypedDict):
     catchup_window_s: int
     max_active_runs: int | None
     failures_in_a_row: int
-    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | UpdateTriggerResponseDisabled5 | None
+    disabled: UpdateTriggerResponseDisabled1 | UpdateTriggerResponseDisabled2 | UpdateTriggerResponseDisabled3 | UpdateTriggerResponseDisabled4 | UpdateTriggerResponseDisabled5 | UpdateTriggerResponseDisabled6 | None
     next_at: str | None
     last_run_id: str | None
     created_at: str
@@ -10935,6 +10957,12 @@ class UpdateTriggerResponseDisabled4(TypedDict):
 class UpdateTriggerResponseDisabled5(TypedDict):
     at: str
     reason: Literal["sign_in_refused"]
+    detail: str
+
+
+class UpdateTriggerResponseDisabled6(TypedDict):
+    at: str
+    reason: Literal["keys_owed"]
     detail: str
 
 

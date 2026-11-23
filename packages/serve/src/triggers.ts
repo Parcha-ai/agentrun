@@ -489,6 +489,20 @@ export class Triggers {
     return on.length;
   }
 
+  /** Trigger `id`, while it is on and still agent `agentId`'s, turned off because each of its firings would be refused for
+   *  keys its agent's runs owe under the run-keys setting (`disabled: {reason: "keys_owed", detail}`, run-keys.ts), and
+   *  said; whether it was. It is kept: on again once its firings can carry them (the launch hook). */
+  async keysOwedOff(id: string, agentId: string, detail: string): Promise<boolean> {
+    const on = (await this.store.triggers.list(agentId)).map(asTrigger).find((t) => t.id === id && t.enabled);
+    if (!on) return false;
+    const off = await this.store.triggers.update(id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "keys_owed", detail } }, undefined, { ifAgent: agentId });
+    if (!off) return false;
+    this.deps.say({ condition: "trigger_keys_owed", trigger: id, detail });
+    await this.arm();
+    await this.offThere([on]);
+    return true;
+  }
+
   /** Agent `agentId` archived, and every trigger that runs as it (its rows: a start_run of it, a message_run to one of its
    *  runs) turned off with it in the store's one transaction (`disabled: {reason: "agent_archived", detail}`), and said;
    *  which, by name. From that commit no firing starts a run of it (store.triggers.fire refuses one, and drive skips). */
