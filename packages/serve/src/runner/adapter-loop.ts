@@ -2676,7 +2676,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         reflecting = lookingBackOpen || jobKept;
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
-        session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred }, io);
+        // A harness's own search defers only where the host offers none (its facts' ownToolSearch).
+        session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred && !offered }, io);
         root = await harness.root(context);
         // The root as the claim found it, before this pass writes anything of its own there (the computer's show-up, a
         // takeover's note): what the reopen check below reads, so a fresh reopen is told by the run's own last entry.

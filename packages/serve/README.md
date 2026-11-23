@@ -1224,7 +1224,7 @@ this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's ke
 [tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
 `openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `particle/particle-1` with `PARTICLE_API_KEY`, then
 `openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. With none of those, pi's default is the first model of this
-machine's Ollama that calls tools ([below](#on-this-machines-ollama)). Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
+machine's Ollama that calls tools ([below](#on-this-machines-ollama)), and so is claude-agent's and Goose's. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
 claude-agent takes the Anthropic one and codex the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
@@ -1580,7 +1580,8 @@ saved earlier is dropped when the server starts, and claude-agent runs on the mo
 
 Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
 gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
-is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, and the console names it
+is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi and for every harness on a wire the
+route translates, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
@@ -1610,11 +1611,16 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
   with its other free requests, so a run on Ollama that keeps calling tools still stops there.
-- Harness: pi alone. claude-agent, codex and opencode never list them.
+- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
+  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
+  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
+  asking the model, an answer it asks for unstreamed comes back whole, and every model id it sends (Claude Code's small
+  model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
+  OpenAI's Responses, never list them.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
-- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi runs on the first model Ollama
-  lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
+- Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the
+  route translates run on the first model Ollama lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
   pulled last first, so pulling one can change that default, and a saved agent that names no model follows it. Name the
   model (`ollama/<tag>`) to pin it.
 

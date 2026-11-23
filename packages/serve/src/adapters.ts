@@ -369,6 +369,9 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
+    // A model the route translates onto the wire (an Ollama model): its proxy forwards with the route's own fetch, and the
+    // provider's own web search (nativeOptions), which the translation cannot run, is not offered.
+    const forward = provider?.fetch ? { fetch: provider.fetch } : {};
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
@@ -378,7 +381,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // On Claude Code's login on this machine: the login's directories in place of a provider, billed to the plan, never
     // priced here.
     const source = provider?.login ? { login: provider.login, price: () => null } : { provider: endpoint, price: priceOf(priced) };
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...nativeOptions(claudeFacts, env) });
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...(provider?.fetch ? forward : nativeOptions(claudeFacts, env)) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);

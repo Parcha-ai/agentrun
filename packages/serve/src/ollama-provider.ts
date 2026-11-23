@@ -1,5 +1,6 @@
 // Ollama as a model provider: the models the Ollama on this machine (or the one OLLAMA_HOST names) has pulled, listed live
-// from its own API, run by pi alone, at $0, on Ollama's native chat API. No key: Ollama has none.
+// from its own API, run by pi and by every harness on a wire the route translates (wires.ts TRANSLATED), at $0, on
+// Ollama's native chat API. No key: Ollama has none.
 //   Where: OLLAMA_HOST, Ollama's own variable, read as the ollama CLI reads it (ollamaBase), from the server's environment,
 //     never from a provider's auth context, so it is never a held secret. Unset, the server names the default address
 //     itself only on one owner's own machine (ollamaHostOf); unset anywhere else, no Ollama is asked. Plain http only to this machine (provider.ts
