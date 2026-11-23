@@ -1361,9 +1361,8 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store (the runner's
-redactor keeps the value in memory to cut it), and the run reports the turn
-ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
+**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
+reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
 tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
 turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
 answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
@@ -1399,9 +1398,9 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
   not cut a shorter one from what the run writes.
 - The keys are taken out of the body before anything reads it, as `model_key` is: never in the run's saved body, its
   timeline, its view, a log or an `Idempotency-Key`'s fingerprint. They are sealed with the run's launch, opened at
-  each claim for its tools alone, and erased from the store by the write that ends its turn; the runner's redactor
-  keeps each value in memory to cut it. Since no read after that could cut them, the runner cuts them from everything
-  the run writes, as it writes it.
+  each claim for its tools alone, and erased from the store by the write that ends its turn. Since no read after that
+  could cut them, the runner cuts them from everything the run writes, as it writes it. To cut them, the runner's
+  redactor keeps each value in memory for as long as the runner runs, as it does a run's `model_key`.
 - A message's `keys` replace the run's in the message's own write, read from the run's next claim on; a turn still
   going keeps the keys it opened. `keys: {}` leaves the run none. A message without them keeps the run's, which are
   none once its last turn ended.
@@ -1410,15 +1409,19 @@ curl -s http://127.0.0.1:7340/v2/agents/searcher/runs -H "Authorization: Bearer 
 hold (409, as before). With `1`, a template's apply makes its agent though a tool key it declares is not set here, with
 a warning, and each run of that agent must bring the key in `keys`: without it, the run is 409 `agent_not_runnable` at
 `keys.<NAME>` before anything is made, and so is a message that would start a turn. Keys the server holds are still
-used by runs that bring none. A trigger's firing brings no keys, so no trigger is made whose firings would start or
-message such runs without them: the apply skips the template's triggers with a warning at `triggers.<N>`
-(`not_set_up_here`, the apply still 201), unless the [launch hook](#launch-hook) is set, which hands each firing to
-your backend to start the run with its keys; `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409
-`agent_not_runnable` naming the keys for a trigger that would start runs of the agent with no hook, or message one of
-its runs, hook or not. `MONID_API_KEY` stays the server's even with
-the setting on: an agent's monid tools are checked with it when the agent is saved, before any run, so a template that
-grants them is still refused at its apply (409 at `secrets.MONID_API_KEY`) where the server has none. A run can still
-bring its own monid key to use in place of the server's.
+used by runs that bring none.
+
+A trigger's firing brings no keys, so no trigger is made whose firings would start or message such runs without them.
+The apply skips the template's triggers with a warning at `triggers.<N>` (`not_set_up_here`, the apply still 201),
+unless the [launch hook](#launch-hook) is set, which hands each firing to your backend to start the run with its keys.
+`POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409 `agent_not_runnable` naming the keys for a trigger that
+would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
+before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing.
+
+`MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
+is saved, before any run, so a template that grants them is still refused at its apply (409 at
+`secrets.MONID_API_KEY`) where the server has none. A run can still bring its own monid key to use in place of the
+server's.
 
 ### Direct Particle-1
 
@@ -2252,9 +2255,8 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
-run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows (the runner's
-redactor keeps them in memory to cut them). A message's binding replaces the
-run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
+run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
+binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
 handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
@@ -2327,9 +2329,8 @@ those headers, and only to the origin the server had when the run was started. T
 credential is sealed into the run's launch record under `AGENTRUN_SEAL_KEY` (bound to the run's id), read at each claim, so
 a resume, a restart or a lost lease uses it again, and erased from the store by the write that ends the run. It is never
 in the run's saved body, its timeline, its view, a log line or an `Idempotency-Key`'s fingerprint (a retry with a new
-credential answers the first request's run), and its values are cut from whatever the run shows (the runner's redactor
-keeps them in memory to cut them). `POST /v2/runs/{run_id}/messages`
-takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
+credential answers the first request's run), and its values are cut from whatever the run shows.
+`POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
 for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
