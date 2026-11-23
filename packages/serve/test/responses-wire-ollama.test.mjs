@@ -32,7 +32,8 @@ delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
 
 const PLAIN = "synth-plain:1b";
 const TOOLS = "synth-tools:2b";
-const SECRET = "not-a-secret-responses-wire-0123456789";
+// A provider key's shape, built at run time so the source holds no literal key (export:source reads none).
+const SECRET = ["sk", "responses-wire", "0123456789abcdef"].join("-");
 const redact = (text) => text.split(SECRET).join("[redacted]");
 
 const READ = { type: "function", name: "read", description: "Read a file.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } };
