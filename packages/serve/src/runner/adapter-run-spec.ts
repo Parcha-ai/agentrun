@@ -501,7 +501,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
   // there is none. Held from the fetch's start, so the release (after the tools' end) removes it however the claim ends; a
   // person's stop ends the fetch at once (run.stopped).
-  const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
+  const checkout = body.checkout ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
   holds.hold({ checkout });
 
   // The run's skills and its learning seed, laid in its folder through the run's Workspace now, before its computer

@@ -1189,3 +1189,147 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     expect(p.video().getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
   });
 });
+
+// A live screen has the run's steps so far beside it: the timeline's own steps and words, oldest first, the list kept at
+// its newest step as steps come until the reader scrolls up. With the steps beside it the panel is wider than the reading
+// column, so the frame keeps its size; alone (no step yet, or nothing live) it keeps the reading column's width.
+describe("the Screen tab's live screen has the run's steps beside it", () => {
+  const live = async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }) as RunComputer;
+  const onDesktop = (run: Run = working) => ({ ...run, computer: { kind: "desktop", provider: "docker", state: "ready" } }) as Run;
+  const at = (s: number) => new Date(Date.parse("2026-11-05T09:00:00Z") + s * 1000).toISOString();
+  let n = 0;
+  const row = (kind: TimelineRow["kind"], summary: string, timestamp: string, more: Partial<TimelineRow> = {}) => ({
+    id: `l${(n += 1)}`, seq: n, kind, summary, text: null, timestamp, created_at: timestamp, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null,
+    tool_input_preview: null, tool_result_preview: null, tool_result_size_bytes: null, ...more,
+  }) as TimelineRow;
+  const ROWS = [
+    row("user_message", "You: Find the cheapest nonstop.", at(0)),
+    row("phase", "The desktop is ready: Linux (amd64), from Docker.", at(4)),
+    row("tool_use", "computer_act", at(6), { tool_name: "computer_act", tool_use_id: "a1" }),
+    row("tool_result", "Opened Chrome: ok", at(8), { tool_name: "computer_act", tool_use_id: "a1", tool_status: "success" }),
+    row("usage", "Cost so far: $0.02", at(9)),
+  ];
+  const NEXT = [
+    row("tool_use", "computer_act", at(12), { tool_name: "computer_act", tool_use_id: "a2" }),
+    row("tool_result", "Clicked “Sort”: no element with that name", at(13), { tool_name: "computer_act", tool_use_id: "a2", tool_status: "failed" }),
+  ];
+  function mount() {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const draw = async (rows: TimelineRow[], run: Run = onDesktop(), read: () => Promise<RunComputer> = live) => {
+      await act(async () => {
+        root!.render(createElement(RunDetail, { run, agentName: "live", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: read, computerEvery: 20, tab: "screen" } as never));
+      });
+      await settle();
+    };
+    // The box that scrolls: a named region the keyboard can stop on, the list inside it.
+    const list = () => host.querySelector('[role="region"][aria-label="The run\'s steps"]') as HTMLElement | null;
+    // A step's words without its time of day, which is the reader's own clock's.
+    const said = () => [...(list()?.querySelectorAll("li") ?? [])].map((li) => (li.textContent ?? "").replace(/^\d{1,2}:\d{2}\s?[AP]M/, ""));
+    const panel = () => host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    return { host, draw, list, said, panel, frame: () => host.querySelector("iframe") as HTMLIFrameElement };
+  }
+
+  it("lists the run's steps so far in the timeline's words, a tool once, without the cost row, and says the run is working", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    expect(p.frame().getAttribute("src")).toBe(`${FRAMED(VIEWER)}&hands=page`);
+    expect(p.said()).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome", " Working"]);
+    expect(p.panel().textContent).toContain("3 steps so far");
+    expect(p.panel().textContent).not.toContain("Cost so far");
+    // A step that failed reads as failed.
+    await p.draw([...ROWS, ...NEXT]);
+    expect(p.said().at(-2)).toBe("Computer actClicked “Sort”: no element with that name");
+    expect(p.list()!.querySelector(".text-destructive-text")?.textContent).toBe("Clicked “Sort”: no element with that name");
+    expect(p.panel().textContent).toContain("4 steps so far");
+  });
+
+  it("a run that waits on its person is not said to be working", async () => {
+    const p = mount();
+    await p.draw(ROWS, onDesktop({ ...working, status: "input_required", state: "waiting" } as Run));
+    expect(p.said()).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome"]);
+  });
+
+  it("the first steps come beside the same frame: the viewer is not loaded again", async () => {
+    const p = mount();
+    await p.draw([]);
+    const before = p.frame();
+    expect(before, "the frame, alone").toBeTruthy();
+    expect(p.list()).toBeNull();
+    await p.draw(ROWS);
+    expect(p.frame(), "the same element").toBe(before);
+    expect(p.list()).toBeTruthy();
+  });
+
+  it("stays at its newest step as steps come, until the reader scrolls up; back at the end it follows again", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    const box = p.list()!;
+    // jsdom lays nothing out: the list's own sizes are given, a box 100px tall over 400px of steps.
+    let height = 400;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 100 });
+    height = 460;
+    await p.draw([...ROWS, NEXT[0]!]);
+    expect(box.scrollTop, "followed the new step").toBe(460);
+    // The reader scrolls up to an earlier step.
+    await act(async () => { box.scrollTop = 120; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    height = 520;
+    await p.draw([...ROWS, ...NEXT]);
+    expect(box.scrollTop, "left where the reader put it").toBe(120);
+    // Back at the end (within a line of it).
+    await act(async () => { box.scrollTop = 410; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    height = 580;
+    await p.draw([...ROWS, ...NEXT, row("thinking", "Thinking: Try the menu instead.", at(20))]);
+    expect(box.scrollTop, "follows again").toBe(580);
+  });
+
+  it("follows a step whose words change without a new step: a call's result takes its call's place", async () => {
+    const p = mount();
+    const call = row("tool_use", "computer_act", at(12), { tool_name: "computer_act", tool_use_id: "b1" });
+    await p.draw([...ROWS, call]);
+    const box = p.list()!;
+    let height = 400;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(box, "clientHeight", { configurable: true, get: () => 100 });
+    await act(async () => { box.scrollTop = 300; box.dispatchEvent(new Event("scroll", { bubbles: true })); });
+    // The result folds into its call's step (the count stays), with words that take more lines.
+    height = 470;
+    await p.draw([...ROWS, call, row("tool_result", "Clicked the check box “Nonstop only”, clicked the pop-up “Sort”, clicked “Price: low to high”: ok", at(14), { tool_name: "computer_act", tool_use_id: "b1", tool_status: "success" })]);
+    expect(p.said().filter((s) => s !== " Working")).toHaveLength(4);
+    expect(box.scrollTop, "followed the longer words").toBe(470);
+  });
+
+  it("the list's box is a named region the keyboard can stop on: it scrolls and holds no control", async () => {
+    const p = mount();
+    await p.draw(ROWS);
+    const box = p.list()!;
+    expect(box.getAttribute("tabindex")).toBe("0");
+    expect(box.querySelector("button, a, input")).toBeNull();
+    expect(box.querySelector("ol")).toBeTruthy();
+  });
+
+  it("is wider than the reading column with its steps, and the reading column's width alone", async () => {
+    const p = mount();
+    await p.draw([]);
+    expect(p.panel().parentElement!.className).toContain("max-w-4xl");
+    await p.draw(ROWS);
+    expect(p.panel().parentElement!.className).toContain("max-w-7xl");
+    expect(p.panel().parentElement!.className).not.toContain("max-w-4xl");
+  });
+
+  it("a screen that is not up has no steps beside it: its words alone, in the reading column", async () => {
+    const p = mount();
+    await p.draw(ROWS, onDesktop(), async () => ({ state: "none", kind: "desktop", hold: "agent", session: "opening" }));
+    expect(p.list()).toBeNull();
+    expect(p.panel().textContent).toContain("Waiting for the desktop");
+    expect(p.panel().parentElement!.className).toContain("max-w-4xl");
+  });
+
+  it("a browser's live page has them too", async () => {
+    const p = mount();
+    await p.draw(ROWS, { ...working, computer: { kind: "browser", provider: "local", state: "ready" } } as Run, async () => ({ state: "live", kind: "browser", viewer: VIEWER, hold: "agent" }));
+    expect(p.frame().getAttribute("src")).toBe(FRAMED(VIEWER));
+    expect(p.said().slice(0, 3)).toEqual(["YouFind the cheapest nonstop.", "PhaseThe desktop is ready: Linux (amd64), from Docker.", "Computer actOpened Chrome"]);
+  });
+});

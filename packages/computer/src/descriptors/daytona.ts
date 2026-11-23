@@ -99,6 +99,8 @@ export const DAYTONA = defineProvider({
 		{ name: "DAYTONA_TARGET", option: "target", required: false },
 		{ name: DAYTONA_ARCHIL_EGRESS, option: "archilEgress", required: false },
 		{ name: DAYTONA_ATTACH_EGRESS, option: "attachEgress", required: false },
+		// How long create waits for the label listing, in ms (DaytonaProviderOptions.listedMs): no secret, a tuning.
+		{ name: "DAYTONA_LISTED_MS", option: "listedMs", required: false },
 	],
 	// How the server reaches its machines: exec (the provider's default, when the server's settings name none), a session
 	// command through the toolbox per connection, or dial, the machine dials the server (a snapshot of box/Dockerfile).
