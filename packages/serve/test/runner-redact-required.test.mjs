@@ -8,6 +8,8 @@ const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
+const { createSdkLoop } = await import("../dist/runner/sdk-loop.js");
+const { piAdapter } = await import("../dist/runner/adapters/pi.js");
 
 const UNHELD = /was given no redactor that holds keys/;
 /** A store whose every read fails the test in its own words: a spec refused for its missing redactor reads nothing first. */
@@ -23,6 +25,14 @@ for (const [name, redact] of [["none", undefined], ["a plain function that holds
 
   test(`a workflow loop given ${name} as its redactor throws at its making, before it reads its deps`, () => {
     assert.throws(() => createWorkflowLoop(() => assert.fail("the spec was asked for"))(loopDepsWith(redact)), UNHELD);
+  });
+
+  test(`an SDK loop given ${name} as its redactor throws at its making, before it reads its deps`, () => {
+    assert.throws(() => createSdkLoop({ sdk: {} }, {}, () => assert.fail("the route was asked for"))(loopDepsWith(redact)), UNHELD);
+  });
+
+  test(`a pi session's adapter given ${name} as its redactor throws at its making, before any session opens`, () => {
+    assert.throws(() => piAdapter({ run: "run-unheld", model: "not-a-model", provider: { api: "anthropic-messages", origin: "http://model.invalid", credential: () => "not-a-secret" }, ...(redact === undefined ? {} : { redact }) }), UNHELD);
   });
 
   test(`a workflow run's spec given ${name} as its redactor rejects before it reads the store`, async () => {
