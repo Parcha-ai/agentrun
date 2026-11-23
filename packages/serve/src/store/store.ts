@@ -747,6 +747,10 @@ export interface FiringChange {
    *  startBy not passed. Read in the settle's own transaction: a host start that pushes a startBy out (triggers.ts
    *  handedStart) leaves a firing whose window closed, or whose run started, meanwhile as it is. */
   readonly holdsAt?: number;
+  /** Written only while the firing is sent with no run and its startBy is still this one, read in the settle's own
+   *  transaction: a host start that pushed a startBy out and wrote no run puts it back (triggers.ts handedStart), unless
+   *  its run started, or another start moved it, meanwhile. */
+  readonly startByWas?: number;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -929,15 +933,14 @@ export interface Triggers {
    *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
   /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there at
-   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeRuns) than its max_active_runs. One read
+   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeKeys) than its max_active_runs. One read
    *  for all of them. */
   waiting(now: number): Promise<(FiringRow & { readonly free: boolean })[]>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
-  /** How many of the trigger's runs are in progress at `now` (the triggers' clock): started with a run not ended (a run
-   *  reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its startBy. */
-  activeRuns(triggerId: string, now: number): Promise<number>;
-  /** The keys of the firings activeRuns counts: the trigger's firings in progress at `now`, in no order. */
+  /** The keys of the trigger's firings in progress at `now` (the triggers' clock), in no order: started with a run not
+   *  ended (a run reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its
+   *  startBy. max_active_runs counts them. */
   activeKeys(triggerId: string, now: number): Promise<string[]>;
   /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
    *  startBy not passed): its key, or undefined. */

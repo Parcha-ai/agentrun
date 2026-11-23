@@ -99,10 +99,10 @@ test("active runs: the trigger's started firings whose run has not ended", async
     await store.triggers.record("trg-1", [due(`fir-${n}`)]);
     await store.triggers.fire({ triggerId: "trg-1", key: `fir-${n}` }, { id: `run-${n}`, agentId: "agent-1", revisionId: "rev-1" });
   }
-  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 3);
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 3);
   const claim = await store.claim("run-2", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 2, "an ended run is not active");
+  assert.equal((await store.triggers.activeKeys("trg-1", Date.now())).length, 2, "an ended run is not active");
   assert.deepEqual((await store.triggers.activeKeys("trg-1", Date.now())).sort(), ["fir-1", "fir-3"], "the keys of the firings counted");
   assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "started", "fire moved the due firing to started");
 });
@@ -173,7 +173,7 @@ test("a settle with holdsAt is written only while the firing holds its trigger's
 
   const pushed = await pushOut("fir-held", startBy);
   assert.deepEqual([pushed?.firing.status, pushed?.firing.startBy, pushed?.firing.reason, pushed?.firing.attrs], ["sent", startBy + 60_000, "handed", { event: "push" }], "at its start_by it still holds: its start_by pushed out, its reason and attrs kept");
-  assert.equal(await store.triggers.activeRuns("trg-1", startBy + 30_000), 1, "it holds the room through the new start_by");
+  assert.equal((await store.triggers.activeKeys("trg-1", startBy + 30_000)).length, 1, "it holds the room through the new start_by");
   assert.deepEqual(await store.triggers.activeKeys("trg-1", startBy + 30_000), ["fir-held"], "a held firing's key is among them");
 
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1", origin: { key: "fir-held" } });

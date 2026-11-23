@@ -613,7 +613,7 @@ for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runO
   const row = await opened.store.triggers.firing(made.id, key);
   assert.deepEqual([row.status, row.runId, row.attempts, row.error], ["started", "run-host", 0, null], JSON.stringify(row));
   assert.equal((await opened.store.triggers.get(made.id)).failuresInARow, 0, "no failure counted");
-  assert.equal(await opened.store.triggers.activeRuns(made.id, opened.clocks.current.now()), 1, "the host's run counts toward max_active_runs");
+  assert.equal((await opened.store.triggers.activeKeys(made.id, opened.clocks.current.now())).length, 1, "the host's run counts toward max_active_runs");
   // The next firing is driven after this one's turn ends: it waits on the host's run, and nothing was told.
   await triggers.receive(made.id, "evt-2", "{}");
   const second = firingKey("webhook", made.id, "evt-2");
@@ -698,7 +698,7 @@ test("two host starts at once for two firings waiting on their retries, with max
   const answers = await Promise.allSettled([b, c].map((key) => triggers.handedStart({ trigger_id: made.id, firing_id: key }, "a", hostRun(store, key, `run-${key}`))));
   assert.deepEqual(answers.map((one) => one.status).sort(), ["fulfilled", "rejected"], JSON.stringify(answers.map((one) => one.value ?? String(one.reason))));
   assert.ok(notDue(/max_active_runs 1/)(answers.find((one) => one.status === "rejected").reason));
-  assert.equal(await store.triggers.activeRuns(made.id, Date.parse("2026-06-01T00:00:00Z")), 1, "one run: the trigger's one place");
+  assert.equal((await store.triggers.activeKeys(made.id, Date.parse("2026-06-01T00:00:00Z"))).length, 1, "one run: the trigger's one place");
 });
 
 test("a host start at its firing's start_by holds the room through its start: start_by is pushed out before the run is written, so a firing driven while it is written past the old start_by waits on it, and is never handed", async (t) => {
@@ -793,7 +793,7 @@ async function slowStart(t, atStartBy) {
   if (atStartBy) assert.equal((await store.triggers.firing(made.id, a)).startBy, startBy + 60_000, "the start pushed a's start_by out");
   // Past start_by and any push of it: only the start itself still holds the room.
   clock.to(new Date(startBy + 3_600_000).toISOString());
-  assert.equal(await store.triggers.activeRuns(made.id, clock.now()), 0, "the store holds nothing for a by now");
+  assert.equal((await store.triggers.activeKeys(made.id, clock.now())).length, 0, "the store holds nothing for a by now");
   await assert.rejects(triggers.handedStart({ trigger_id: made.id, firing_id: b }, "a", hostRun(store, b, "run-b")), notDue(/max_active_runs 1/));
   startA.writing.resolve();
   assert.deepEqual(await startA.done, { run_id: "run-a", replayed: false });
@@ -813,9 +813,9 @@ test("a firing whose run started while its hook is still open counts once: with 
   const a = firingKey("webhook", made.id, "evt-a");
   await until(() => host.open.length === 2, "the host has a's POST, and holds its answer");
   assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-a")), { run_id: "run-a", replayed: false });
-  assert.deepEqual([(await store.triggers.firing(made.id, a)).status, await store.triggers.activeRuns(made.id, clock.now())], ["started", 1], "a's run is in progress, and its hook is still open");
+  assert.deepEqual([(await store.triggers.firing(made.id, a)).status, (await store.triggers.activeKeys(made.id, clock.now())).length], ["started", 1], "a's run is in progress, and its hook is still open");
   assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: b }, "a", hostRun(store, b, "run-b")), { run_id: "run-b", replayed: false }, "a counts once: one of two places taken");
-  assert.equal(await store.triggers.activeRuns(made.id, clock.now()), 2);
+  assert.equal((await store.triggers.activeKeys(made.id, clock.now())).length, 2);
   host.open[1].writeHead(200).end();
 });
 

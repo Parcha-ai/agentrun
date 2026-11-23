@@ -3371,9 +3371,11 @@ firing over again. Until its run starts or its `start_by` passes, it holds its t
 would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
 firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed. A start that
 begins by `start_by` holds the room until its run is written: when `start_by` is less than a minute away, the server
-moves it to a minute after the start began, before it writes the run.
+moves it to a minute after the start began, before it writes the run. A start that fails without writing its run
+moves `start_by` back, so failed starts never extend the window.
 
-The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
+The firing is the run's key, so a second start for the same firing answers the same run, also while the first is
+still writing it (202 with `idempotent-replayed: true`), and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
 another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
 by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry

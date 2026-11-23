@@ -835,7 +835,7 @@ test("a host start that lands while another firing's hand is still open is refus
   assert.deepEqual([sent.status, sent.runId], ["sent", null], JSON.stringify(sent));
   const started = await hostStart(w.api, "triage", w.id, a);
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1);
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1);
   assert.equal((await runsOf(w.api, "triage")).length, 1, "one run: the trigger's one place");
   const refused = await w.firing(b);
   assert.deepEqual([refused.status, refused.runId], ["due", null], "the refused firing waits on its retry, to be handed again");
@@ -880,7 +880,7 @@ test("a firing handed to its host holds its trigger's room until its run starts 
   const waits = await w.decided(c);
   assert.deepEqual([waits.status, waits.waitsOn], ["due", zero.runId], `the later firing waits for the room: ${JSON.stringify(waits)}`);
   assert.match(waits.reason, /max_active_runs 1/);
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1, "the handed firing holds the one place");
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1, "the handed firing holds the one place");
   await w.poll();
   await w.poll();
   assert.deepEqual(w.handed(), [zero.key, a], "nothing is handed while the handed firing holds the room");
@@ -891,7 +891,7 @@ test("a firing handed to its host holds its trigger's room until its run starts 
   const now = await w.firing(a);
   assert.deepEqual([now.status, now.runId], ["started", started.body.run_id]);
   await follow(api, started.body.run_id, ["working"]);
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1, "its run is the one place, counted once");
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1, "its run is the one place, counted once");
   await w.poll();
   assert.deepEqual(w.handed(), [zero.key, a]);
 
@@ -914,8 +914,8 @@ test("a handed firing's hold on its trigger's room ends at its start_by: with ma
   await w.poll();
   await w.poll();
   assert.deepEqual(w.handed(), [a], "not handed while the host may still start the first");
-  assert.equal(await w.store.triggers.activeRuns(w.id, Date.parse("2026-06-01T00:10:00Z")), 1, "held through its start_by");
-  assert.equal(await w.store.triggers.activeRuns(w.id, Date.parse("2026-06-01T00:10:00.001Z")), 0, "and no longer past it");
+  assert.equal((await w.store.triggers.activeKeys(w.id, Date.parse("2026-06-01T00:10:00Z"))).length, 1, "held through its start_by");
+  assert.equal((await w.store.triggers.activeKeys(w.id, Date.parse("2026-06-01T00:10:00.001Z"))).length, 0, "and no longer past it");
 
   assert.ok(await until(() => w.hook.got.length === 2 || void w.clock.to(new Date(w.clock.now() + 500).toISOString())), "handed once start_by has passed");
   assert.deepEqual(w.handed(), [a, c]);
@@ -937,7 +937,7 @@ test("a trigger's first firing, handed with no run yet, holds the room too: with
   assert.deepEqual(w.handed(), [a]);
   const started = await hostStart(w.api, "triage", w.id, a);
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  assert.equal(await w.store.triggers.activeRuns(w.id, w.clock.now()), 1);
+  assert.equal((await w.store.triggers.activeKeys(w.id, w.clock.now())).length, 1);
   assert.equal((await runsOf(w.api, "triage")).length, 1, "one run: the trigger's one place");
 });
 
