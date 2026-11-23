@@ -1,3 +1,4 @@
+import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
@@ -1589,10 +1590,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
+  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
+   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
   const planNow = async () => {
     const was = plan.state;
     if ((await plan.load()).state !== was) await keysChanged();
+    else await plan.changeAgain();
   };
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
    *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
@@ -4164,14 +4167,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
-    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
-    const asked = url.searchParams.get("limit");
-    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
-    const limit = asked === null ? PAGE_ROWS : Number(asked);
-    // `calls=whole`: each call's arguments and its output's head too (tool_input, tool_result_text), for a grader.
+    // `calls=whole`: each call's arguments and its output too, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), for a grader.
     const shape = url.searchParams.get("calls");
     if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
     const calls = shape === "whole";
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's). A
+    // calls=whole page holds at most CALLS_PAGE_ROWS, as each row's result may be CALL_RESULT_CHARS long.
+    const most = calls ? CALLS_PAGE_ROWS : PAGE_ROWS;
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= most)) throw new ApiError("bad_request", `limit is an integer from 1 to ${most}${calls ? " with calls=whole" : ""}`);
+    const limit = asked === null ? most : Number(asked);
     // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
     // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
     // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
@@ -4586,7 +4591,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
     }
-    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
     // verdict over the request the page just marked, never a signed-in user it doesn't have.
     if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
