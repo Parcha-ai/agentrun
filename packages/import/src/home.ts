@@ -127,21 +127,27 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     const read = async (locator: Locator): Promise<SessionRead[]> => {
       const key = locatorKey(locator);
       const cursor = kept?.cursors.get(key);
-      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted.
+      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
+      // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
+      // holds, which a retry would take for a copy.
+      const mine = new Map<string, string>();
+      const found = new Set<string>();
       const seen = {
         has: (record: string) => {
-          const owner = owners.get(record);
+          const owner = owners.get(record) ?? mine.get(record);
           if (owner === undefined) return false;
-          if (owner !== key) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
+          if (owner !== key) found.add(owner);
           return true;
         },
         add(record: string) {
-          if (!owners.has(record)) owners.set(record, key);
+          if (!owners.has(record) && !mine.has(record)) mine.set(record, key);
           return this;
         },
       } as Set<string>;
       const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) return [];
+      for (const [record, owner] of mine) owners.set(record, owner);
+      if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;
       kept?.cursors.set(key, result.cursor);

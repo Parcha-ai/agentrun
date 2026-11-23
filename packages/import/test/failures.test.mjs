@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { chmod } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { parseHome } from "../dist/index.js";
+import { parseHome, READERS } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -51,4 +51,39 @@ test("--known-answer exits 1 with one stderr line per unreadable file, its key a
   assert.equal(lines.length, 2, result.stderr);
   for (const [line, key] of [[lines[0], KEYS.top], [lines[1], KEYS.child]]) assert.match(line, new RegExp(`^agentrun-import: cannot read claude-code ${key} \\(EACCES\\)$`));
   for (const text of [PROMPT, "work-fixture", SESSION, dir]) assert.equal(result.stderr.includes(text), false, `stderr holds no ${text}`);
+});
+
+test("a read that fails partway leaves the state as it was: a retry with the same state gives the fresh pass's totals", async (t) => {
+  const dir = await tempHome(t);
+  await writeJsonl(claudeFile(dir), [
+    claudeUser({ uuid: "u1", text: PROMPT, i: 0 }),
+    claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1 }),
+    claudeUser({ uuid: "u2", text: "More.", i: 2 }),
+    claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 6), i: 3 }),
+  ]);
+  // Claude Code's reader, failing after it has noted three records: an I/O error midway through the file.
+  const real = READERS["claude-code"];
+  const failing = {
+    ...real,
+    read: (locator, cursor, options) => {
+      let noted = 0;
+      const seen = {
+        has: (key) => options.seen.has(key),
+        add(key) {
+          if (++noted > 3) throw Object.assign(new Error("injected"), { code: "EIO" });
+          options.seen.add(key);
+          return this;
+        },
+      };
+      return real.read(locator, cursor, { ...options, seen });
+    },
+  };
+  const state = {};
+  const failures = [];
+  assert.deepEqual(await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, state, failures, catalog: false }), []);
+  assert.equal(failures.length, 1);
+  const retry = await parseHome(dir, { sources: ["claude-code"], state, catalog: false });
+  const fresh = await parseHome(dir, { sources: ["claude-code"], catalog: false });
+  assert.equal(fresh[0].calls, 2);
+  assert.deepEqual(retry, fresh);
 });
