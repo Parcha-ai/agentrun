@@ -798,17 +798,18 @@ test("a run a runner holds is waited for while its view still reads queued (its 
     return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
   };
   const proxy = await refusing(t, baseUrl, () => false, queued);
-  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, runTimeoutMs: 30_000 });
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 10_000, runTimeoutMs: 30_000 });
   const [one] = report.cases[0].runs;
   assert.ok(one, JSON.stringify(report.cases[0]));
   assert.ok(existsSync(holding), "the run reached its turn: a runner held it");
-  // Waited to the run's own bound, never given up on as queued after 1 s.
+  // Waited to the run's own bound, never given up on as queued after 10 s. The queued bound is well over the runner's
+  // 1 s fallback poll for a claim (runner.ts), which a disk-bound machine can run past.
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
   assert.match(one.error, /^the run took longer than 30 s \(state working when the wait gave up\) and was cancelled$/);
   assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
-test("a claim read that stalls holds neither the eval's stop nor the run's deadline: it is given up on and asked again, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
+test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at its own bound, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
   // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
   // asks, as a server that took the request and stalled would.
   const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
