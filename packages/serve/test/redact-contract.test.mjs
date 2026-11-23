@@ -37,6 +37,77 @@ const CASES = [
     values: [P24.join("")],
     hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
   },
+  // P2-4's controls: the held value whole after the parameter, and its head alone there, are cut in place.
+  ...[[P24.join(""), "whole"], [`${P24[0]}x`, "its head and one more character"]].map(([value, what]) => ({
+    name: `a credential parameter's value that is ${what} of a held value is cut in place`,
+    text: `cb?token=${value} ok`,
+    values: [P24.join("")],
+    hides: [P24[0].slice(0, 8)],
+    exact: { redacted: "cb?token=[redacted] ok", redactedAnswer: "cb?token=[redacted] ok", redactSecrets: "cb?token=[redacted] ok", runFile: "cb?token=[redacted] ok" },
+  })),
+  // A held value only a view finds, wholly inside a cut in place, is cut with it: an address held as written and
+  // decoded; a key percent-encoded as a credential parameter's value. Not inside one (a parameter of no credential's
+  // name), it withholds the text.
+  (() => {
+    const address = `https://h.example/feed/me%40h.example/${P24.join("")}/basic.ics`;
+    return {
+      name: "an address held as written and decoded is cut in place with its written form",
+      text: `see ${address} ok`,
+      values: [address, decodeURIComponent(address)],
+      hides: [P24[0], P24[1]],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "see [redacted] ok"])),
+    };
+  })(),
+  ...[["token", "cb?token=[redacted] ok"], ["note", "[redacted]"]].map(([name, shown]) => ({
+    name: `a held value percent-encoded as the value of ?${name}= ${name === "token" ? "is cut in place with it" : "withholds the text"}`,
+    text: `cb?${name}=${[...P24.join("")].map((char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`).join("")} ok`,
+    values: [P24.join("")],
+    hides: ["%5A%71%38%56"],
+    exact: { redacted: shown, redactedAnswer: shown, redactSecrets: shown, runFile: shown },
+  })),
+  // A held value whose part is another held value, cut in place, withholds the text: no part of the longer one shows.
+  ...[[P24[1], P24.join("")], [P24.join(""), P24[1]]].map((values) => ({
+    name: `a held value split by a line break, its rest another held value (${values[0] === P24[1] ? "the shorter" : "the longer"} named first)`,
+    text: `id ${P24[0]}\n${P24[1]} end`,
+    values,
+    hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+    exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
+  })),
+  ...[[`id ${P24[1]} end`, "id [redacted] end"], [`id ${P24.join("")} and ${P24[1]} end`, "id [redacted] and [redacted] end"]].map(([text, shown]) => ({
+    name: `held values whole, one the other's rest, are each cut in place: ${JSON.stringify(text.slice(0, 12))}`,
+    text,
+    values: [P24[1], P24.join("")],
+    hides: [P24[1]],
+    exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown])),
+  })),
+  // A held value across an answer's first piece edge: its head in a credential parameter the first piece cuts, or the
+  // value holding the line break the piece ends at. No piece shows any part of it.
+  {
+    name: "a held value split at a piece's edge, its head in a credential parameter the piece cut",
+    text: `${"w ".repeat(4080)}cb?token=${P24[0]}\n${P24[1]} ok ${"y ".repeat(100)}`,
+    values: [P24.join("")],
+    hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+  },
+  {
+    name: "a held value split at a piece's edge, whole in the text, is cut in place (control)",
+    text: `${"w ".repeat(4080)}cb?token=${P24.join("")}\n${P24[1].slice(0, 4)} ok`,
+    values: [P24.join("")],
+    hides: [P24[0].slice(0, 8)],
+    exact: Object.fromEntries(["redactedAnswer", "redactedCall", "runFile"].map((name) => [name, `${"w ".repeat(4080)}cb?token=[redacted]\n${P24[1].slice(0, 4)} ok`])),
+  },
+  {
+    name: "a held value holding a line break, whole across two pieces' edge",
+    text: `${"w ".repeat(4080)}key: ${P24[0]}\n${P24[1]} end ${"y ".repeat(100)}`,
+    values: [`${P24[0]}\n${P24[1]}`],
+    hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+  },
+  {
+    name: "a held value holding a line break, whole in a short text, is cut in place (control)",
+    text: `key: ${P24[0]}\n${P24[1]} end`,
+    values: [`${P24[0]}\n${P24[1]}`],
+    hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+    exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "key: [redacted] end"])),
+  },
   ...[[], [CUT_KEY]].map((values) => ({
     name: `the ftp password of 3,000 characters with '",' in it where a call's read stops, ${values.length} held`,
     text: `${"y ".repeat(59_000)}ftp://${login("alice", "prefix")}${"p".repeat(3000)}",${"q".repeat(1000)}@host/${"r".repeat(9000)} end`,
