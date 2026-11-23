@@ -34,6 +34,7 @@
 import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { type Env, entries, type Locator, type LocatorSize, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
 import { effortOf as effortName, isObject, mostEffortOf, str } from "../text.js";
 import { ACTIVE_GAP_MS, type Answer, type Ended, type Mirror, type SessionOf, type Turn } from "../types.js";
@@ -394,26 +395,40 @@ function v2Session(reading: Reading, rows: Row[], parts: Map<string, unknown[]>,
 
 /** An open database, read-only; `read` the bytes of the `data` the queries have returned so far. */
 type Db = { all(sql: string, ...params: (string | number)[]): Row[]; close(): void; read(): number };
+/** What says whether OpenCode has a database open, and whether it wrote to it: the file's own stat, and its -wal and
+ *  -shm (made as a connection opens it in WAL mode, removed as the last one closes). */
+const lookAt = async (file: string) => ({
+  stats: await stat(file),
+  owned: (await Promise.all(["-wal", "-shm"].map((end) => lstat(`${file}${end}`).then(() => true, () => false)))).some(Boolean),
+});
 // Read through a variable: a Bun build bundles node:sqlite as missing, and Node has no bun:sqlite.
 const BUN_SQLITE = "bun:sqlite";
 const NODE_SQLITE = "node:sqlite";
 /** How long a read waits on OpenCode's own write (a lock it holds) before it fails, ms; as Bun sets it. */
 const BUSY_MS = 5000;
 const BUSY_PRAGMA = "PRAGMA busy_timeout = 5000";
+// SQLite's open flags: read-only, and the name a URI (file:…?immutable=1).
+const SQLITE_OPEN_READONLY = 0x01;
+const SQLITE_OPEN_URI = 0x40;
 /** `file` opened read-only, waiting BUSY_MS on a lock: with Node's node:sqlite, or Bun's bun:sqlite under Bun (Bun 1.3
- *  has no node:sqlite, and its opener takes no timeout: the connection's busy_timeout, which writes nothing). */
-async function openDb(file: string): Promise<Db> {
+ *  has no node:sqlite, and its opener takes no timeout: the connection's busy_timeout, which writes nothing). A WAL
+ *  database OpenCode has closed (no -wal, no -shm) is opened immutable: a read-only open of it would make both in
+ *  OpenCode's folder, and leave them there, owned by whoever read. With either there, OpenCode has it open (they are
+ *  its), and it is opened as OpenCode shares it. */
+async function openDb(file: string, closed: boolean): Promise<Db> {
   let query: (sql: string, params: (string | number)[]) => Row[];
   let close: () => void;
+  const url = pathToFileURL(resolve(file));
+  url.searchParams.set("immutable", "1");
   if (process.versions.bun) {
-    const { Database } = (await import(BUN_SQLITE)) as { Database: new (file: string, options: { readonly: boolean }) => { query(sql: string): { all(...params: unknown[]): Row[] }; close(): void } };
-    const db = new Database(file, { readonly: true });
+    const { Database } = (await import(BUN_SQLITE)) as { Database: new (file: string, options: { readonly: boolean } | number) => { query(sql: string): { all(...params: unknown[]): Row[] }; close(): void } };
+    const db = closed ? new Database(url.href, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI) : new Database(file, { readonly: true });
     db.query(BUSY_PRAGMA).all();
     query = (sql, params) => db.query(sql).all(...params);
     close = () => db.close();
   } else {
     const { DatabaseSync } = (await import(NODE_SQLITE)) as typeof import("node:sqlite");
-    const db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS });
+    const db = new DatabaseSync(closed ? url : file, { readOnly: true, timeout: BUSY_MS });
     query = (sql, params) => db.prepare(sql).all(...params) as Row[];
     close = () => db.close();
   }
@@ -427,6 +442,25 @@ async function openDb(file: string): Promise<Db> {
     close,
     read: () => bytes,
   };
+}
+
+/** `use` of `file` open (openDb), then closed. Opened immutable, the read assumed nothing changed: one OpenCode opened
+ *  or wrote meanwhile (its -wal or -shm there now, or the file's size, time or inode another) fails, never a clean read:
+ *  the import names it and reads it again next time. */
+async function withDb<T>(file: string, use: (db: Db) => T): Promise<T> {
+  const before = await lookAt(file);
+  const db = await openDb(file, !before.owned);
+  let out: T;
+  try {
+    out = use(db);
+  } finally {
+    db.close();
+  }
+  if (!before.owned) {
+    const after = await lookAt(file);
+    if (after.owned || after.stats.size !== before.stats.size || after.stats.mtimeMs !== before.stats.mtimeMs || after.stats.ino !== before.stats.ino) throw new Error(`${file} changed while it was read: OpenCode opened it`);
+  }
+  return out;
 }
 
 const headOf = (row: Row, file: string): Head => ({
@@ -449,8 +483,7 @@ function tablesOf(db: Db): { v2: boolean; parts2: boolean; v1: boolean; parts1: 
 /** A database's session ids, each once, with each one's last write (the latest time_updated of its rows): its 2.x
  *  sessions, then the 1.x ones it has not moved to its 2.x tables. */
 async function sessionIds(file: string): Promise<Map<string, number>> {
-  const db = await openDb(file);
-  try {
+  return withDb(file, (db) => {
     const tables = tablesOf(db);
     const ids = new Map<string, number>();
     const later = (id: unknown, at: unknown) => ids.has(String(id)) && ids.set(String(id), Math.max(ids.get(String(id))!, num(at) ?? 0));
@@ -462,9 +495,7 @@ async function sessionIds(file: string): Promise<Map<string, number>> {
     for (const [table, two] of [["session_message", true], ["session_part", true], ["message", false], ["part", false]] as const)
       if (tables.all.has(table)) for (const row of db.all(`SELECT session_id, max(time_updated) AS t FROM ${table} GROUP BY session_id`)) if (own.has(String(row.session_id)) === two) later(row.session_id, row.t);
     return ids;
-  } finally {
-    db.close();
-  }
+  });
 }
 
 // Each table's rows of one session, by the column that names it.
@@ -549,8 +580,24 @@ const gone = (error: unknown): undefined => {
   if (code === "ENOENT" || code === "ENOTDIR") return undefined;
   throw error;
 };
-/** The JSON files in `dir`, never through a link, in name order (OpenCode's ids sort by time). */
-async function jsonFiles(dir: string): Promise<string[]> {
+/** An OpenCode id, as its storage names a file or folder by it: one of another shape (a path's "..", a "/") names no
+ *  file of the storage's, and is passed over. */
+const SAFE_ID = /^[\w-]+$/;
+/** The folder `names` make under `root`, each an id and a folder of its own, never a link: none when one is not. */
+async function ownDir(root: string, ...names: string[]): Promise<string | undefined> {
+  let dir = root;
+  for (const name of names) {
+    if (!SAFE_ID.test(name)) return undefined;
+    dir = join(dir, name);
+    if (!(await lstat(dir).catch(gone))?.isDirectory()) return undefined;
+  }
+  return dir;
+}
+/** The JSON files in the folder `names` make under `root` (ownDir), never through a link, in name order (OpenCode's
+ *  ids sort by time). */
+async function jsonFiles(root: string, ...names: string[]): Promise<string[]> {
+  const dir = await ownDir(root, ...names);
+  if (dir === undefined) return [];
   return ((await readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => join(dir, entry.name))
@@ -573,10 +620,10 @@ async function storageSessions(dir: string): Promise<{ file: string; id: string 
   const sessions: { info: Row; file: string }[] = [];
   for (const project of await entries(join(dir, "session"))) {
     if (!project.isDirectory()) continue;
-    for (const file of await jsonFiles(join(dir, "session", project.name)).catch(() => [])) {
+    for (const file of await jsonFiles(dir, "session", project.name).catch(() => [])) {
       // One that cannot be read is listed by its name (OpenCode's <id>.json), so its read fails and is said.
       const info = await readJson(file).catch((): Row => ({ id: basename(file, ".json") }));
-      if (info && str(info.id)) sessions.push({ info, file });
+      if (info && str(info.id) && SAFE_ID.test(info.id as string)) sessions.push({ info, file });
     }
   }
   sessions.sort((a, b) => createdOf(a.info) - createdOf(b.info) || String(a.info.id).localeCompare(String(b.info.id)));
@@ -592,26 +639,27 @@ async function storageStamp(file: string): Promise<string> {
     hash.update(`${path}\0${stats?.size ?? -1}\0${stats?.mtimeMs ?? -1}\n`);
   };
   await add(file);
-  for (const message of await jsonFiles(join(dir, "message", basename(file, ".json")))) {
+  for (const message of await jsonFiles(dir, "message", basename(file, ".json"))) {
     await add(message);
-    for (const part of await jsonFiles(join(dir, "part", basename(message, ".json")))) await add(part);
+    for (const part of await jsonFiles(dir, "part", basename(message, ".json"))) await add(part);
   }
   return hash.digest("hex");
 }
 
-/** One session of the JSON storage, from its file. */
+/** One session of the JSON storage, from its file: its messages and parts by their files' names (ownDir), never by an
+ *  id a file holds. */
 async function storageSession(file: string, keep: boolean, bytes: { n: number }, context: Context): Promise<Found[]> {
   const info = await readJson(file, bytes);
-  if (!info || !str(info.id)) return [];
+  if (!info || !str(info.id) || !SAFE_ID.test(info.id as string)) return [];
   const dir = storageOf(file);
   const time = isObject(info.time) ? info.time : {};
   const head = headOf({ id: info.id, directory: info.directory, parent_id: info.parentID, title: info.title, version: info.version, time_created: time.created, time_updated: time.updated }, file);
   const messages: { info: Row; parts: Row[] }[] = [];
-  for (const messageFile of await jsonFiles(join(dir, "message", head.id))) {
+  for (const messageFile of await jsonFiles(dir, "message", basename(file, ".json"))) {
     const message = await readJson(messageFile, bytes);
     if (!message || !str(message.id)) continue;
     const parts: Row[] = [];
-    for (const partFile of await jsonFiles(join(dir, "part", message.id as string))) {
+    for (const partFile of await jsonFiles(dir, "part", basename(messageFile, ".json"))) {
       const part = await readJson(partFile, bytes);
       if (part) parts.push(part);
     }
@@ -645,6 +693,31 @@ export async function openCodeFiles(home: string, env: Env = {}): Promise<{ dbs:
   return (await lstat(join(storage, "session")).catch(() => null))?.isDirectory() && (await lstat(storage)).isDirectory() ? { dbs, storage } : { dbs };
 }
 
+/** Whether a 1.x message (its info and parts) is a request OpenCode has not ended: not completed, or a tool part of it
+ *  pending (a permission prompt waiting) or running. */
+const running = (info: unknown, parts: unknown[]): boolean =>
+  isObject(info) &&
+  info.role === "assistant" &&
+  (!(isObject(info.time) && num(info.time.completed) !== undefined) || parts.some((part) => isObject(part) && part.type === "tool" && isObject(part.state) && (part.state.status === "pending" || part.state.status === "running")));
+
+/** Whether OpenCode is running a database's session now, whatever its rows' times say (a run parked on a permission
+ *  prompt writes none): a 2.x session's time_busy (set as a run starts, never cleared) after its time_idle (set as it
+ *  ends), where its database has the column; a 1.x one's last message `running`. */
+function busyIn(db: Db, tables: ReturnType<typeof tablesOf>, id: string, v2: boolean): boolean {
+  if (v2) {
+    const columns = new Set(db.all("SELECT name FROM pragma_table_info('session_v2')").map((row) => String(row.name)));
+    if (!columns.has("time_busy")) return false;
+    const [row] = db.all(`SELECT time_busy, ${columns.has("time_idle") ? "time_idle" : "NULL AS time_idle"} FROM session_v2 WHERE id = ?`, id);
+    const busy = num(row?.time_busy);
+    return busy !== undefined && busy > (num(row?.time_idle) ?? -1);
+  }
+  if (!tables.all.has("message")) return false;
+  const [last] = db.all("SELECT id, data FROM message WHERE session_id = ? AND json_valid(data) ORDER BY time_created DESC, id DESC LIMIT 1", id);
+  if (!last) return false;
+  const parts = tables.parts1 ? db.all("SELECT data FROM part WHERE message_id = ?", String(last.id)).map((part) => json(part.data)) : [];
+  return running(json(last.data), parts);
+}
+
 /** A database session's own size, last write and parent: the bytes of its messages' and parts' data (the 2.x tables' when the
  *  session is there, else 1.x's: the rows a read of it takes) and the latest time_updated of its rows. */
 function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string, latest: number): LocatorSize | null {
@@ -654,13 +727,14 @@ function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string, latest:
   const data = (v2 ? ["session_message", "session_part"] : ["message", "part"]).filter((table) => tables.all.has(table));
   const bytes = data.reduce((n, table) => n + Number(db.all(`SELECT coalesce(sum(length(CAST(data AS BLOB))), 0) AS n FROM ${table} WHERE session_id = ?`, id)[0]?.n ?? 0), 0);
   const times = SESSION_TABLES.filter(([table]) => tables.all.has(table)).map(([table, column]) => num(db.all(`SELECT max(time_updated) AS t FROM ${table} WHERE ${column} = ?`, id)[0]?.t) ?? 0);
-  // A row written by a clock set ahead is as old as its database's last write (latestOf): not live for ever.
+  // A row written by a clock set ahead is as old as its database's last write (latestOf): not live for ever. A session
+  // OpenCode is running (busyIn) is written now.
   const last = Math.max(0, ...times);
-  return { bytes, mtimeMs: last > Date.now() ? latest : last, ...(str(row.parent_id) ? { parent: row.parent_id as string } : {}), ...(num(row.time_created) !== undefined ? { created: row.time_created as number } : {}) };
+  return { bytes, mtimeMs: busyIn(db, tables, id, v2 !== undefined) ? Date.now() : last > Date.now() ? latest : last, ...(str(row.parent_id) ? { parent: row.parent_id as string } : {}), ...(num(row.time_created) !== undefined ? { created: row.time_created as number } : {}) };
 }
 
-/** A storage session's size and last write: its session file's, its messages' and their parts' together; its parent, its
- *  session file's. */
+/** A storage session's size and last write: its session file's, its messages' and their parts' together, now when its
+ *  last message is `running`; its parent, its session file's. */
 async function storageSize(file: string): Promise<LocatorSize | null> {
   const own = await stat(file).catch(() => null);
   if (!own) return null;
@@ -675,9 +749,16 @@ async function storageSize(file: string): Promise<LocatorSize | null> {
     size.bytes += stats.size;
     size.mtimeMs = Math.max(size.mtimeMs, stats.mtimeMs);
   };
-  for (const message of await jsonFiles(join(dir, "message", basename(file, ".json"))).catch(() => [])) {
+  const messages = await jsonFiles(dir, "message", basename(file, ".json")).catch((): string[] => []);
+  for (const message of messages) {
     await add(message);
-    for (const part of await jsonFiles(join(dir, "part", basename(message, ".json"))).catch(() => [])) await add(part);
+    for (const part of await jsonFiles(dir, "part", basename(message, ".json")).catch(() => [])) await add(part);
+  }
+  // The last message by its name (OpenCode's message ids sort by time).
+  const last = messages.at(-1);
+  if (last) {
+    const parts = await Promise.all((await jsonFiles(dir, "part", basename(last, ".json")).catch((): string[] => [])).map((part) => readJson(part).catch(() => undefined)));
+    if (running(await readJson(last).catch(() => undefined), parts)) size.mtimeMs = Date.now();
   }
   return size;
 }
@@ -746,17 +827,14 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       const bytes = { n: 0 };
       return result(stamp, await storageSession(file, keep, bytes, context), bytes.n);
     }
-    const db = await openDb(file);
-    try {
+    return withDb(file, (db) => {
       const tables = tablesOf(db);
       const stamp = stampOf(db, tables.all, id);
       if (resumed && cursor.stamp === stamp) return result(stamp, [], 0);
       const before = db.read();
       const sessions = dbSessions(db, file, tables, keep, id, context);
       return result(stamp, sessions, db.read() - before);
-    } finally {
-      db.close();
-    }
+    });
   },
   /** A database session's own (dbSize), not its database's: one live session leaves the others importable, and none
    *  is too large for the size of the rest. A storage session's files together; a database without an id, its file's. */
@@ -767,11 +845,6 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       return { bytes: stats.size, mtimeMs: stats.mtimeMs };
     }
     const latest = await latestOf(file);
-    const db = await openDb(file);
-    try {
-      return dbSize(db, tablesOf(db), id, latest);
-    } finally {
-      db.close();
-    }
+    return withDb(file, (db) => dbSize(db, tablesOf(db), id, latest));
   },
 };

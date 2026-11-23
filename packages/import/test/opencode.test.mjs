@@ -2,7 +2,8 @@
 // storage OpenCode kept before SQLite), each read into the one Session shape. A locator with no id reads every session
 // of its database.
 import assert from "node:assert/strict";
-import { readdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, rename, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
@@ -350,4 +351,106 @@ test("a database session's size and last write are its own rows', not its databa
   await buildV1(v1);
   assert.deepEqual([(await locatorSize({ file: v1, id: "ses_B" }, "opencode")).parent, (await locatorSize({ file: v1, id: "ses_A" }, "opencode")).parent], ["ses_A", undefined]);
   assert.deepEqual(await locatorSize({ file: files[0] }, "opencode"), { bytes: stats.reduce((n, s) => n + s.size, 0), mtimeMs: Math.max(...stats.map((s) => s.mtimeMs)), created: T0 });
+});
+
+/** A folder's entries, each with its size and a hash of what it holds: what a read must leave as it was. */
+const listing = async (dir) => Promise.all((await readdir(dir)).sort().map(async (name) => [name, (await stat(join(dir, name))).size, createHash("sha256").update(await readFile(join(dir, name)).catch(() => "")).digest("hex")]));
+
+test("discover, stat and read leave OpenCode's folder as it was: a WAL database OpenCode has closed (no -wal, no -shm) gets none from a read", async (t) => {
+  const home = await tempHome(t);
+  const data = join(home, ".local", "share", "opencode");
+  const db = join(data, "opencode.db");
+  await buildV2(db);
+  const own = new DatabaseSync(db);
+  own.exec("PRAGMA journal_mode = WAL");
+  own.close();
+  const before = await listing(data);
+  assert.deepEqual(before.map(([name]) => name), ["opencode.db"], "OpenCode closed: no -wal, no -shm");
+  const locators = await reader.discover(home, {});
+  assert.ok(locators.length > 0);
+  for (const locator of locators) {
+    assert.ok(await locatorSize(locator, "opencode"));
+    assert.ok((await reader.read(locator)).sessions.length > 0);
+    await readSession(locator, "opencode", { turns: false });
+  }
+  assert.deepEqual(await listing(data), before, "no -wal or -shm made, the database as it was");
+});
+
+test("a WAL database OpenCode has open (its -wal there) is read as it is now: a row in the -wal not yet checkpointed is read", async (t) => {
+  const home = await tempHome(t);
+  const data = join(home, ".local", "share", "opencode");
+  const db = join(data, "opencode.db");
+  await buildV1(db);
+  const open = new DatabaseSync(db);
+  t.after(() => open.close());
+  open.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
+  open.prepare("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated) VALUES ('ses_W', 'prj_fixture', NULL, 'fixture', '/fixture/w', 'In the WAL', '1.19.5', ?, ?)").run(T0 + 90_000, T0 + 90_000);
+  assert.ok((await readdir(data)).includes("opencode.db-wal"));
+  assert.deepEqual((await reader.discover(home, {})).map(({ id }) => id), ["ses_A", "ses_B", "ses_W"]);
+  assert.equal((await readSession({ file: db, id: "ses_W" }, "opencode")).sourceTitle, "In the WAL");
+});
+
+test("the JSON storage is read by its own files' names, never through a link: a session whose id names another folder is passed over, a linked message folder not followed", async (t) => {
+  const home = await tempHome(t);
+  const storage = join(home, "storage");
+  await buildLegacy(storage);
+  // An id that climbs out of storage/: its messages would be read from home/outside.
+  const climbing = join(storage, "session", "prj_fixture", "ses_Z.json");
+  await writeFile(climbing, JSON.stringify({ id: "../../outside", directory: "/fixture/project", title: "Climb", version: "0.15.0", time: { created: T0, updated: T0 } }));
+  await mkdir(join(home, "outside"), { recursive: true });
+  await writeFile(join(home, "outside", "msg_Z1.json"), JSON.stringify({ id: "msg_Z1", role: "user", time: { created: T0 } }));
+  await mkdir(join(storage, "part", "msg_Z1"), { recursive: true });
+  await writeFile(join(storage, "part", "msg_Z1", "prt_Z1.json"), JSON.stringify({ id: "prt_Z1", type: "text", text: "Words from outside." }));
+  assert.deepEqual((await reader.read({ file: climbing })).sessions, [], "an id that is no OpenCode id is passed over");
+  const data = join(home, ".local", "share", "opencode");
+  await mkdir(data, { recursive: true });
+  await rename(storage, join(data, "storage"));
+  const moved = join(data, "storage");
+  assert.ok(!(await reader.discover(home, {})).some(({ file }) => file.endsWith("ses_Z.json")), "nor listed");
+  // ses_B's message folder moved out and linked back: not followed, by its read, its size or its stamp.
+  await rename(join(moved, "message", "ses_B"), join(home, "elsewhere"));
+  await symlink(join(home, "elsewhere"), join(moved, "message", "ses_B"));
+  const b = join(moved, "session", "prj_fixture", "ses_B.json");
+  const [one] = (await reader.read({ file: b })).sessions;
+  assert.deepEqual(said(one.session), [], "no message through the link");
+  assert.equal((await locatorSize({ file: b }, "opencode")).bytes, (await stat(b)).size, "its size, its own file's alone");
+});
+
+test("a session OpenCode is still running is live whatever its rows' times: a 1.x message not completed or a tool part running, a 2.x session busy, a storage message not completed", async (t) => {
+  const dir = await tempHome(t);
+  const recent = Date.now() - 60_000;
+  const live = (size, what) => assert.ok(size.mtimeMs >= recent, `${what}: live`);
+  const v1 = join(dir, "v1.db");
+  const parked = (id, info, parts) => ({
+    session: { id, directory: "/fixture/p", title: id, time: { created: T0, updated: T0 } },
+    messages: [
+      { info: { id: `${id}_u`, role: "user", time: { created: T0 } }, parts: [{ id: `${id}_t`, type: "text", text: "Go." }] },
+      { info: { id: `${id}_m`, role: "assistant", providerID: "openai", modelID: "gpt-5", path: { cwd: "/fixture/p", root: "/fixture/p" }, time: { created: T0 + 1000, ...info }, cost: 0, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }, parts },
+    ],
+  });
+  const tool = (status) => ({ id: `prt_${status}`, type: "tool", callID: "call_p", tool: "bash", state: { status, input: { command: "ls" }, time: { start: T0 + 1000 } } });
+  await buildV1(v1, [parked("ses_open", {}, []), parked("ses_ask", { completed: T0 + 2000 }, [tool("pending")]), parked("ses_run", { completed: T0 + 2000 }, [tool("running")]), parked("ses_done", { completed: T0 + 2000 }, [tool("completed")])]);
+  for (const id of ["ses_open", "ses_ask", "ses_run"]) live(await locatorSize({ file: v1, id }, "opencode"), id);
+  assert.equal((await locatorSize({ file: v1, id: "ses_done" }, "opencode")).mtimeMs, T0 + 1000, "done: its rows' last write");
+  // 2.x: time_busy (set as a run starts, never cleared) after time_idle (set as it ends): running.
+  const v2 = join(dir, "v2.db");
+  await buildV2(v2);
+  const db = new DatabaseSync(v2);
+  db.exec("ALTER TABLE session_v2 ADD time_busy integer; ALTER TABLE session_v2 ADD time_idle integer");
+  db.prepare("UPDATE session_v2 SET time_busy = ?, time_idle = ? WHERE id = 'ses_C'").run(T0 + 112_000, T0 + 111_500);
+  db.prepare("UPDATE session_v2 SET time_busy = ?, time_idle = ? WHERE id = 'ses_K'").run(T0 + 131_000, T0 + 139_500);
+  db.close();
+  live(await locatorSize({ file: v2, id: "ses_C" }, "opencode"), "2.x busy");
+  assert.equal((await locatorSize({ file: v2, id: "ses_K" }, "opencode")).mtimeMs, T0 + 139_000, "2.x idle since: its rows' last write");
+  // The JSON storage: its last message not completed.
+  const storage = join(dir, "storage");
+  await buildLegacy(storage);
+  const last = join(storage, "message", "ses_B", "msg_B2.json");
+  const info = JSON.parse(await readFile(last, "utf8"));
+  delete info.time.completed;
+  await writeFile(last, JSON.stringify(info));
+  // Every file of it written long ago.
+  for (const entry of await readdir(storage, { recursive: true, withFileTypes: true })) if (entry.isFile()) await utimes(join(entry.parentPath, entry.name), new Date(T0), new Date(T0));
+  live(await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_B.json") }, "opencode"), "storage");
+  assert.equal((await locatorSize({ file: join(storage, "session", "prj_fixture", "ses_A.json") }, "opencode")).mtimeMs, T0, "storage, completed: its files' last write");
 });
