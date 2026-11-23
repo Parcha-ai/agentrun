@@ -84,6 +84,25 @@ test("seconds and minutes are the length the input names, only in the field that
   assert.ok("unknown" in unitsBefore("fal-ai/elevenlabs/music", "minutes", { duration: 60 }), "music's length is music_length_ms or its plan, not duration");
 });
 
+test("ElevenLabs Music with a composition plan is priced from its sections alone, and only while the model keeps their lengths", async () => {
+  const { unitsBefore } = await load();
+  const music = (input) => unitsBefore("fal-ai/elevenlabs/music", "minutes", input);
+  const plan = { positive_global_styles: [], negative_global_styles: [], sections: Array.from({ length: 5 }, () => ({ duration_ms: 120_000 })) };
+  const bills = "fal bills fal-ai/elevenlabs/music per minute, and this job's input";
+  // A plan sets the song's length; music_length_ms goes only with a prompt. Both: neither is read.
+  const both = `${bills} names both music_length_ms and a composition_plan: a plan sets the song's length and music_length_ms goes only with a prompt (fal's OpenAPI), so send one of them`;
+  assert.deepEqual(music({ music_length_ms: 10_000, composition_plan: plan }), { unknown: both }, "10 s named beside a 10 min plan");
+  assert.deepEqual(music({ prompt: "x", music_length_ms: 10_000, composition_plan: plan }), { unknown: both });
+  assert.deepEqual(music({ music_length_ms: null, composition_plan: plan }), { unknown: both }, "a null music_length_ms is still named");
+  // The sections are read when the model keeps their lengths: respect_sections_durations true, or left out (its default).
+  for (const keep of [{}, { respect_sections_durations: true }]) assert.deepEqual(music({ composition_plan: plan, ...keep }), { units: 10, from: "its composition plan's sections" }, JSON.stringify(keep));
+  for (const loose of [false, "true", 1, null]) {
+    assert.deepEqual(music({ composition_plan: plan, respect_sections_durations: loose }), { unknown: `${bills} has a composition_plan with respect_sections_durations ${JSON.stringify(loose)}, so the model may change its sections' lengths: they are read only when it is true or left out (fal's OpenAPI default is true)` }, String(loose));
+  }
+  // A null plan is none: music_length_ms is read.
+  near(music({ prompt: "x", music_length_ms: 90_000, composition_plan: null }).units, 1.5, "a null plan");
+});
+
 test("a length the input names is never read on an endpoint fal bills by its media or by an output no input sets", async () => {
   const { unitsBefore } = await load();
   const v = "https://v3.fal.media/files/v.mp4";
