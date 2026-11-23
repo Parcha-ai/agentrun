@@ -331,16 +331,17 @@ if (process.argv[2] === "check-harness") {
 
 // An upload's body ({files}, as `agentrun deploy` sends POST /v2/templates/import) read from stdin and checked by the
 // import's own check (template-import.ts checkUpload), storing nothing: the package's name and sha as one JSON line and
-// 0, or each reason the import would refuse it, a line each, and 1; 2 when stdin is not JSON. Nothing in it runs.
+// 0, or each reason the import would refuse it, a line each, and 1; 2 when stdin is not JSON. Nothing in it runs. Stdin
+// is decoded once, whole: a character split between two of its chunks reads back as itself.
 if (process.argv[2] === "check-upload") {
   const { checkUpload } = await import("./template-import.js");
   const { ApiError } = await import("./errors.js");
   parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } } });
-  let text = "";
-  for await (const chunk of process.stdin) text += chunk;
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   let body: unknown;
   try {
-    body = JSON.parse(text);
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     console.error("agentrun-serve check-upload reads an upload's body, {files}, as JSON on stdin.");
     process.exit(2);

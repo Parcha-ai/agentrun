@@ -14,6 +14,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -58,15 +59,22 @@ async function serverManifest(fail) {
 }
 
 /** The package checked as the target's import checks it, before anything is sent: the server installed beside this
- *  command runs the import's own check (agentrun-serve check-upload, template-import.ts checkUpload) on the body this
+ *  command runs the import's own check (its `check-upload` command, template-import.ts checkUpload) on the body this
  *  deploy is about to send. A package the target would refuse (a category it has not, an answer's schema it would not
- *  read, a file over its limits) exits 2 here, in the target's words, with no request made. */
+ *  read, a file over its limits) exits 2 here, in the target's words, with no request made. The check runs in a process
+ *  of its own, started as this node on the server's cli.js, never through its shell launcher, which runs nowhere without
+ *  a POSIX shell: loading the server here would take every key out of this command's environment (secrets.ts), the
+ *  target's token among them. */
 async function checkedHere(files, fail) {
   // Loaded here: start.mjs loads cli.mjs, which loads this module.
-  const { installedServer } = await import("./start.mjs");
-  const launcher = installedServer();
-  if (launcher === undefined) throw fail(2, "AgentRun's server is not installed beside this command, and it is the server's import that checks a package: nothing was sent.");
-  const checked = spawnSync(launcher, ["check-upload"], { input: JSON.stringify({ files: filesBody(files) }), encoding: "utf8", maxBuffer: 4 * MAX_BYTES });
+  const { SERVE_PACKAGE } = await import("./start.mjs");
+  let cli;
+  try {
+    cli = join(dirname(createRequire(import.meta.url).resolve(`${SERVE_PACKAGE}/package.json`)), "dist", "cli.js");
+  } catch {
+    throw fail(2, `AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command, and it is the server's import that checks a package: nothing was sent.`);
+  }
+  const checked = spawnSync(process.execPath, [cli, "check-upload"], { input: JSON.stringify({ files: filesBody(files) }), encoding: "utf8", maxBuffer: 4 * MAX_BYTES, windowsHide: true });
   if (checked.status === 0) return;
   const reasons = (checked.stderr ?? "").trim().split("\n").filter(Boolean);
   if (checked.status === 1 && reasons.length) throw fail(2, `The package does not check, so nothing was sent: ${reasons.join("; ")}`);
