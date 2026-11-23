@@ -98,7 +98,7 @@ const LABEL_PARAMETER: Json = {
 /** runsource/1: GET /runs' filter on where a run came from. */
 const SOURCE_PARAMETER: Json = {
   name: "source", in: "query", required: false,
-  description: "Only runs imported from this source (`claude-code`, `codex`, `gemini`, `pi`: a session read from that tool's history), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.",
+  description: "Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.",
   schema: { type: "string" },
   "x-agentrun-serve": "runsource/1",
 };

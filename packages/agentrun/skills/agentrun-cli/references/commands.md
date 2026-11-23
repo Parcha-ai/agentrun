@@ -1082,7 +1082,7 @@ Route: `GET /runs`.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
 - `--archived` (boolean): true lists only archived runs; false, the default, the others.
 - `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
-- `--source STRING` (string): Only runs imported from this source (`claude-code`, `codex`, `gemini`, `pi`: a session read from that tool's history), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.
+- `--source STRING` (string): Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
 ### `agentrun runs message RUN_ID`

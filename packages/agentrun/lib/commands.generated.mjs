@@ -3394,7 +3394,7 @@ export const COMMANDS = [
         "name": "source",
         "type": "string",
         "required": false,
-        "description": "Only runs imported from this source (`claude-code`, `codex`, `gemini`, `pi`: a session read from that tool's history), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400."
+        "description": "Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400."
       }
     ],
     "headers": [],
