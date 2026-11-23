@@ -64,7 +64,11 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   if (!marked || !newestFirst) return "stale";
   // A history read that does not start at main is short (a listing cut, a backend that answered nothing): never
   // rebuilt from, so no tree loses a file on a guess. Retryable.
-  if (newestFirst[0]?.sha !== old) throw new FolderUnreadable(false, `the agent's learning history could not be read whole: run ${runId}'s purge took nothing off, send it again`);
+  // So is one whose commits do not chain, each the parent of the one before and the oldest the first (a commit left
+  // out, a listing cut): rebuilt from, a merge of the run left out would keep its bytes and a commit left out would
+  // lose another run's files.
+  const chained = newestFirst.every(({ parent }, i) => parent === (newestFirst[i + 1]?.sha ?? null));
+  if (newestFirst[0]?.sha !== old || !chained) throw new FolderUnreadable(false, `the agent's learning history could not be read whole: run ${runId}'s purge took nothing off, send it again`);
   // Purged already: what a rewrite stopped after moving main kept of the old history goes now, or this throws, retryable.
   if (marked.length) {
     await store.tidy();

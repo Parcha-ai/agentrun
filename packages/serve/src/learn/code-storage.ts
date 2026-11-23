@@ -43,10 +43,10 @@ const NO_COMMIT = "0".repeat(40);
 export type Scope = "git:read" | "git:write" | "repo:write";
 
 /** A repository id this server may create, read, write or delete: `agentrun-`, a server id (12 hex digits, archil-
- *  settings.ts serverIdOf), then letters, digits, dashes and underscores. The org's other repositories are never touched:
- *  every call checks the id its token names is its own server's (repoToken), and no call lists repositories or deletes
- *  any but one agent's, by its exact id. */
-const AGENTRUN_REPO = /^agentrun-[0-9a-f]{12}-[A-Za-z0-9_-]{1,160}$/;
+ *  settings.ts serverIdOf), then lowercase letters, digits, dashes and underscores (repoIdOf makes no other, so no two
+ *  differ by case alone). The org's other repositories are never touched: every call checks the id its token names is
+ *  its own server's (repoToken), and no call lists repositories or deletes any but one agent's, by its exact id. */
+const AGENTRUN_REPO = /^agentrun-[0-9a-f]{12}-[a-z0-9_-]{1,160}$/;
 
 /** A repository id refused before any request goes out: one not of this server's agents (AGENTRUN_REPO), or a server
  *  id that can't make one. */
@@ -61,14 +61,15 @@ export function agentrunRepo(id: string): string {
 }
 
 /** The repository of agent `agentId` on server `serverId` (12 hex digits; else RepoIdRefused) at its generation
- *  `generation`: agentrun-<server id>-<agent id>-g<generation> for an agent id of letters, digits, dashes and
- *  underscores (at most 64); any other (empty, a slash, a dot, longer) is `h-<its first 21 such characters>-<24 hex
- *  digits of its SHA-256>`, so no id's name is another's and none leaves agentrun-. The generation is the id's last
- *  part, so no agent's generation is another agent's id. */
+ *  `generation`: agentrun-<server id>-<agent id>-g<generation> for an agent id of lowercase letters, digits, dashes and
+ *  underscores (at most 64); any other (a capital, empty, a slash, a dot, longer) is `h-<its first 21 such characters,
+ *  lowercased>-<24 hex digits of its SHA-256>`, so no id's name is another's, not even where the API names repositories
+ *  without regard to case (`Foo` and `foo` are two), and none leaves agentrun-. The generation is the id's last part,
+ *  so no agent's generation is another agent's id. */
 export function repoIdOf(serverId: string, agentId: string, generation = 0): string {
   if (typeof serverId !== "string" || !/^[0-9a-f]{12}$/.test(serverId)) throw new RepoIdRefused(`a code.storage repository is named by this server's id, and ${JSON.stringify(serverId)} is not one: nothing is sent`);
   if (!Number.isSafeInteger(generation) || generation < 0) throw new RepoIdRefused(`${JSON.stringify(generation)} is no repository generation: nothing is sent`);
-  const part = /^[A-Za-z0-9_-]{1,64}$/.test(agentId) && !/^h-.*-[0-9a-f]{24}$/.test(agentId) ? agentId : `h-${String(agentId).replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(String(agentId)).digest("hex").slice(0, 24)}`;
+  const part = /^[a-z0-9_-]{1,64}$/.test(agentId) && !/^h-.*-[0-9a-f]{24}$/.test(agentId) ? agentId : `h-${String(agentId).toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 21)}-${createHash("sha256").update(String(agentId)).digest("hex").slice(0, 24)}`;
   return agentrunRepo(`agentrun-${serverId}-${part}-g${generation}`);
 }
 
@@ -163,21 +164,30 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     /** Every call's token (repoToken), for this store's own server id. */
     const token = async (scopes: readonly Scope[]): Promise<string> => repoToken({ name: settings.name, key: keyOf }, await (server ??= settings.serverId()), repo, scopes);
 
+    /** The token each response's call sent, cut from what it answered (bodyOf). */
+    const sent = new WeakMap<Response, string>();
     /** One call: its response, whatever its status. A network failure is the store unavailable, and so is a redirect:
      *  no call follows one (redirect "error"), so the bearer token never travels to another place. */
     async function call(what: string, method: string, path: string, scopes: readonly Scope[], init: { query?: Record<string, string | undefined>; body?: BodyInit; type?: string } = {}): Promise<Response> {
       const url = new URL(path, base);
       for (const [name, value] of Object.entries(init.query ?? {})) if (value !== undefined) url.searchParams.set(name, value);
-      const headers: Record<string, string> = { authorization: `Bearer ${await token(scopes)}`, "code-storage-agent": "agentrun-serve" };
+      const bearer = await token(scopes);
+      const headers: Record<string, string> = { authorization: `Bearer ${bearer}`, "code-storage-agent": "agentrun-serve" };
       if (init.type) headers["content-type"] = init.type;
+      let response: Response;
       try {
-        return await doFetch(url, { method, headers, ...(init.body !== undefined ? { body: init.body } : {}), redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+        response = await doFetch(url, { method, headers, ...(init.body !== undefined ? { body: init.body } : {}), redirect: "error", signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
       } catch (error) {
-        throw new FolderUnreadable(false, `the agent's learning on code.storage can't be reached right now (${what}): ${(error as Error)?.message ?? error}`);
+        throw new FolderUnreadable(false, `the agent's learning on code.storage can't be reached right now (${what}): ${String((error as Error)?.message ?? error).split(bearer).join("[token]")}`);
       }
+      sent.set(response, bearer);
+      return response;
     }
+    /** What a call answered, the token it sent cut out ("[token]"): what it says reaches errors and logs
+     *  (CodeStorageFailed), so an API echoing the token puts it nowhere. */
     const bodyOf = async (response: Response): Promise<unknown> => {
-      const text = await response.text();
+      const bearer = sent.get(response);
+      const text = bearer ? (await response.text()).split(bearer).join("[token]") : await response.text();
       try {
         return JSON.parse(text);
       } catch {
@@ -200,6 +210,9 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
     /** A 404 on a read of `what` that a repository holding its commit answers, read as the store unavailable (retryable):
      *  never an empty or short answer. */
     const gone = (what: string): FolderUnreadable => unavailable(new CodeStorageFailed(what, 404, "not found where the repository holds it"));
+    /** A listing page of `what` that says there is more (has_more) with no cursor to read it by: a listing cut short,
+     *  the store unavailable (retryable), never read as the whole (a purge's rebuild would drop files or keep merges). */
+    const cutShort = (what: string): FolderUnreadable => unavailable(new Error(`code.storage's ${what} listing says there is more and gives no cursor to read it by`));
     /** A 404 on a read at commit `ref`: undefined when the store does not hold the commit (a reset or purge since),
      *  else the store unavailable (gone). */
     const notHeld = async (what: string, ref: string): Promise<undefined> => {
@@ -238,7 +251,8 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
           const mode = entry.mode === "100755" || entry.mode === "120000" ? entry.mode : entry.type === "symlink" ? "120000" : "100644";
           out.push({ path: entry.path, mode });
         }
-        cursor = page.has_more && page.next_cursor ? page.next_cursor : undefined;
+        if (page.has_more && !page.next_cursor) throw cutShort("files");
+        cursor = page.has_more ? page.next_cursor! : undefined;
       } while (cursor);
       return out;
     }
@@ -282,8 +296,9 @@ export function codeStorageLearningStore(settings: CodeStorageSettings, agentId:
         const page = await getJson<{ commits: CommitView[]; next_cursor?: string | null; has_more?: boolean }>("history", "repos/commits", { branch: "main", limit: String(PAGE), ...(path ? { path } : {}), ...(cursor ? { cursor } : {}) });
         // A page of a main log() just read a commit of: never a history read short.
         if (!page) throw gone("history");
+        if (page.has_more && !page.next_cursor) throw cutShort("history");
         for (const view of page.commits) yield commitOf(view);
-        cursor = page.has_more && page.next_cursor ? page.next_cursor : undefined;
+        cursor = page.has_more ? page.next_cursor! : undefined;
       } while (cursor);
     }
 

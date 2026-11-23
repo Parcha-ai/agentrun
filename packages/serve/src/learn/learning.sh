@@ -135,9 +135,14 @@ key_ok() {
   esac
 }
 
-# Whether the repository holds commit $1.
+# Whether the repository holds commit $1. While a rewrite's tidy mark is there (main moved, the old history not gone
+# yet: a tidy that failed), only a commit main reaches: the old history's commits are objects still, and none reads,
+# seeds or matches as held until a purge sent again tidies.
 holds() {
-  [ -d "$GIT_DIR" ] && g cat-file -e "$1^{commit}" 2>/dev/null
+  [ -d "$GIT_DIR" ] && g cat-file -e "$1^{commit}" 2>/dev/null || return 1
+  [ -f "$TIDY" ] || return 0
+  held_main=$(main_now)
+  [ -n "$held_main" ] && g merge-base --is-ancestor "$1" "$held_main" 2>/dev/null
 }
 
 # Each line of stdin as a JSON string's content: backslash, quote and every control character escaped, a newline as \n
@@ -203,8 +208,9 @@ preconditions() {
   done < "$tmp/absent"
   sed -n 's/^same //p' "$tmp/head" > "$tmp/same"
   while read -r c p; do
-    # A commit this repository does not hold (the agent's learning reset after the run read it) is no ground to merge on.
-    if ! g cat-file -e "$c^{commit}" 2>/dev/null; then
+    # A commit this repository does not hold (the agent's learning reset or purged after the run read it) is no ground
+    # to merge on.
+    if ! holds "$c"; then
       printf 'same %s\n' "$p" >> "$tmp/failed"
       continue
     fi
@@ -215,7 +221,7 @@ preconditions() {
   done < "$tmp/same"
   sed -n 's/^seed //p' "$tmp/head" > "$tmp/seed"
   while read -r c; do
-    g cat-file -e "$c^{commit}" 2>/dev/null || printf 'seed %s\n' "$c" >> "$tmp/failed"
+    holds "$c" || printf 'seed %s\n' "$c" >> "$tmp/failed"
   done < "$tmp/seed"
   if [ -s "$tmp/failed" ]; then
     cat "$tmp/failed"
