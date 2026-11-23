@@ -3,7 +3,7 @@
 import { CORRECTIONS_FILE } from "./corrections.js";
 import { blobOid, forgetHistory, hostCommitOf, isHostPath, type Restored, rewrittenSnapshot, scrubbedMessage, SNAPSHOT_FILE, type SnapLearned, type Snapshot } from "./folder.js";
 import { type ChainCommit, FolderUnreadable, type LearningStore, MOVED_FILE, purgedMarker, runMarker, runMarkerText, runOfKey, type StoreCommit, type StoreFile, wroteOf } from "./store.js";
-import { statusFree, withStatusOf, WORKFLOWS_DIR } from "./workflow-draft.js";
+import { learnedStatus, statusFree, withStatusOf, WORKFLOWS_DIR } from "./workflow-draft.js";
 
 /** The host's words on the commit a purge ends with (its message reads `host: <these>`). */
 const SCRUB = "a purged run's text removed";
@@ -15,7 +15,7 @@ const ATTEMPTS = 4;
  * keeping, of each line text the run's merges added (as the store diffs each merge), only as many copies as the other
  * runs' merges added up to that commit (the first ones); each workflow file the run's merge wrote last there (as its
  * marker names the paths it wrote; a commit of no run that changes only its `status` and `retired_from` lines has them
- * replayed on what is given back, and one that changes any other line is its writer from then on) given back as the rebuilt parent of that merge held it, absent when it was absent there, so a
+ * replayed on what is given back where that makes it stricter, and one that changes any other line is its writer from then on) given back as the rebuilt parent of that merge held it, absent when it was absent there, so a
  * purge takes off only what the run's revisions put there and never another run's file; the run's merge commits kept
  * with their reason cut (`learning: <run>: merged`, its Run-Id trailer) and so empty of its text; and each commit's
  * snapshot rebuilt (learn/folder.ts rewrittenSnapshot: the new commit ids, the run's reasons cut, a given-back
@@ -113,7 +113,7 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
   // the purged run took it, whom a given-back workflow.json's entry names again; `entries`: each such workflow's entry
   // in that rebuilt parent's snapshot.
   const owners = new Map<string, string>();
-  const back = new Map<string, { file: StoreFile | null; prior: string | null }>();
+  const back = new Map<string, { file: StoreFile | null; own: StoreFile | null; prior: string | null }>();
   const entries = new Map<string, SnapLearned | undefined>();
   let held = new Map<string, Buffer>();
   let markers = new Set<string>();
@@ -138,9 +138,10 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
       markers = new Set(files.filter(({ path }) => path.startsWith(RUNS_DIR)).map(({ path }) => path));
       // A commit of no run (a person's approve, retire or restore; the host's) that changes a file the purged run owns:
       // a person's commit is a writer for put-back, and a purge never restores over it. A change of the file's `status`
-      // and `retired_from` lines alone is replayed on what the purge gives back (statusReplay: the decision stands, and
-      // the purged run's text still goes; a file given back absent stays absent). Any other change makes that commit
-      // the file's writer from then on: the purge leaves its copy.
+      // and `retired_from` lines alone carries over to what the purge gives back only to make it stricter (statusReplay,
+      // from the given-back file's own lines each time: the person's latest decision, where it ranks below them; the
+      // purged run's text still goes; a file given back absent stays absent). Any other change makes that commit the
+      // file's writer from then on: the purge leaves its copy.
       if (!run) {
         for (const [path, owner] of owners) {
           if (owner !== runId) continue;
@@ -148,16 +149,17 @@ async function purgeOnce(store: LearningStore, runId: string): Promise<Forgot | 
           if (was && is && was.equals(is)) continue;
           if (!was && !is) continue;
           const given = back.get(path)!;
-          const replayed = was && is ? statusReplay(given.file, splitHeld(was), splitHeld(is)) : undefined;
+          const replayed = was && is ? statusReplay(given.own, splitHeld(was), splitHeld(is)) : undefined;
           if (replayed === undefined) owners.delete(path);
-          else if (replayed !== given.file) back.set(path, { ...given, file: replayed });
+          else back.set(path, { ...given, file: replayed });
         }
       }
       if (run) {
         const take = (path: string) => {
           // A file the purged run owns already keeps what it gives back (its rebuilt parent holds that now).
           if (run === runId && owners.get(path) !== runId) {
-            back.set(path, { file: tree.find((file) => file.path === path) ?? null, prior: owners.get(path) ?? null });
+            const file = tree.find((one) => one.path === path) ?? null;
+            back.set(path, { file, own: file, prior: owners.get(path) ?? null });
             const name = folderOf(path)!;
             entries.set(name, landed?.workflows.find((item) => item.name === name));
           }
@@ -271,18 +273,24 @@ const splitHeld = (held: Buffer): { mode: string; body: Buffer } => {
   return { mode: held.subarray(0, at).toString("utf8"), body: held.subarray(at + 1) };
 };
 
-/** What a purge gives back for a file the purged run owns, after a commit of no run changed it from `was` to `is`:
- *  when the change is of its `status` and `retired_from` lines alone (statusFree reads both the same), `given` with
- *  `is`'s status lines in place of its own (withStatusOf), or `given` as it is when that reads no way (a README that
- *  reads no way reads retired, so nothing is given to a run), or null when nothing is given back (the purged run wrote
- *  it new: it stays absent). Undefined for any other change: that commit is the file's writer from then on. */
+/** How served a README's status is: a person's decision carries over a purge only to rank lower (stricter). */
+const RANK = { retired: 0, pending: 1, active: 2 } as const;
+/** What a purge gives back for a file the purged run owns, after a commit of no run changed it from `was` to `is`, where
+ *  `given` is the file as the purge gives it back on its own: when the change is of its `status` and `retired_from`
+ *  lines alone (statusFree reads both the same), `given` with `is`'s status lines in place of its own (withStatusOf)
+ *  when `is`'s status ranks below `given`'s (active > pending > retired), so a purge never makes a text more served than
+ *  its own record; otherwise, or when that reads no way (a README that reads no way reads retired, so nothing is given
+ *  to a run), `given` as it is; null when nothing is given back (the purged run wrote it new: it stays absent).
+ *  Undefined for any other change: that commit is the file's writer from then on. */
 function statusReplay(given: StoreFile | null, was: { mode: string; body: Buffer }, is: { mode: string; body: Buffer }): StoreFile | null | undefined {
   if (was.mode !== is.mode) return undefined;
   const after = is.body.toString("utf8");
   const free = statusFree(after);
   if (free === undefined || free !== statusFree(was.body.toString("utf8"))) return undefined;
   if (!given) return null;
-  const replayed = withStatusOf(given.body.toString("utf8"), after);
+  const own = given.body.toString("utf8");
+  if (RANK[learnedStatus(after)] >= RANK[learnedStatus(own)]) return given;
+  const replayed = withStatusOf(own, after);
   return replayed === undefined ? given : { ...given, body: Buffer.from(replayed, "utf8") };
 }
 const secondsOf = (at: string): number => {

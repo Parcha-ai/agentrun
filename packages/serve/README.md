@@ -3850,8 +3850,10 @@ stays in every total.
   (none, for words only the run added); each file of a learned workflow (`workflows/<name>/...`) that the run's
   merge wrote last at that commit (as its marker lists it) given back as it was just before that merge (in the rebuilt history), and absent
   where it was absent then (once another run's merge writes a file again it is that run's). A person's approve,
-  retire or restore made after the run's merge stands: its `status` and `retired_from` lines are put on the given-back
-  copy (a workflow the run wrote new still leaves every tree); a commit of no run that changes any other line of such a
+  retire or restore made after the run's merge carries over only to make the given-back copy stricter: its `status` and
+  `retired_from` lines are put on it when that status ranks below the copy's own (active > pending > retired), so a
+  retire stands and an approve never makes the earlier text more served than it was (a workflow the run wrote new still
+  leaves every tree); a commit of no run that changes any other line of such a
   file keeps its copy, the run's lines in it included. So a purge takes off only what the run's revisions put there: a workflow the run revised is the earlier
   writer's again (its champion reads as before), one it wrote alone leaves every tree, and no other run's file goes.
   Its merges' reasons go too (each merge kept, its message `learning: <run>: merged`, empty of its text), each snapshot
