@@ -226,7 +226,9 @@ for (const c of CASES) {
 }
 
 // The adversarial texts, read by the shape scanners in work linear in their length: the characters the scanners visit,
-// counted by match.ts, are at most a fixed multiple of the text's length, through both shape sets.
+// counted by match.ts, are at most a fixed multiple of the text's length, through both shape sets. The multiple, 128,
+// covers each of the shapes' 30-odd prefixes sought once over the text and once over its cut, and each scanner's own
+// reads; a scanner that read a run again at each place in it would pass it many times over at this size.
 const ADVERSARIAL = [
   fill("eyJ"), fill("eyJ-"), `-----BEGIN ${fill("A", SIZE - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", SIZE - 11)}`, `://a:${fill("a", SIZE - 5)}`, fill("://a:"),
   fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
@@ -234,15 +236,18 @@ const ADVERSARIAL = [
   `IBAN GB00${fill("A ", SIZE - 9)}`, fill("AKIA"), fill("AIza"), fill("-----BEGIN "), fill("a-sk-"), fill("Bearer a-Bearer "),
 ];
 
-test("adversarial texts: the characters the shape scanners visit are at most a fixed multiple of the text's length", async () => {
+test("adversarial texts: the characters the shape scanners visit are at most a fixed multiple of the text's length", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
   const over = [];
+  let most = 0;
   for (const text of ADVERSARIAL) {
     for (const redact of [redactSecrets, redactLearned]) {
       scanned.chars = 0;
       redact(text, [CUT_KEY], Buffer.byteLength(text));
-      if (scanned.chars > 64 * text.length) over.push(`${redact.name} ${short(text)}: ${scanned.chars} for ${text.length}`);
+      most = Math.max(most, scanned.chars / text.length);
+      if (scanned.chars > 128 * text.length) over.push(`${redact.name} ${short(text)}: ${scanned.chars} for ${text.length}`);
     }
   }
+  t.diagnostic(`the most characters visited per character of a text: ${most.toFixed(1)}`);
   assert.deepEqual(over, []);
 });
