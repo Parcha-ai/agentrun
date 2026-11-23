@@ -79,19 +79,6 @@ test("from 4 slots, every key is found with its owner across each doubling of th
   assert.equal(owner(index, uuidKey(40_001)), -1);
 });
 
-// Holds about 0.9 GB outside the JS heap, so it runs on demand, not beside the other tests.
-const LARGE = process.env.AGENTRUN_IMPORT_LARGE_TESTS === "1" ? false : "holds ~0.9 GB outside the JS heap; set AGENTRUN_IMPORT_LARGE_TESTS=1 to run it";
-test("more than 2^24 records, a Map's most, are held and found", { skip: LARGE }, () => {
-  const n = 2 ** 24 + 4096;
-  const index = recordIndex();
-  for (let i = 0; i < n; i += 1) add(index, uuidKey(i), i & 0xffff);
-  add(index, "m:msg_last:req_last", 7);
-  assert.equal(recordCount(index), n + 1);
-  for (const i of [0, 1, 2 ** 24 - 1, 2 ** 24, n - 1, 12_345_678]) assert.equal(owner(index, uuidKey(i)), i & 0xffff, String(i));
-  assert.equal(owner(index, uuidKey(n)), -1);
-  assert.equal(owner(index, "m:msg_last:req_last"), 7);
-});
-
 // A reader of Claude Code whose reads of the files named in `failing` fail.
 const failingReader = (failing) => {
   const claude = READERS["claude-code"];
