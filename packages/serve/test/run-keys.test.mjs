@@ -229,6 +229,37 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: a trigger made or moved through t
   assert.equal((await api("PATCH", `/triggers/${plain.body.id}`, { name: "renamed" })).status, 200, "a change that keeps its target is taken");
 });
 
+test("AGENTRUN_RUN_KEYS=1: a message_run trigger's firing to a run whose agent owes a key this server does not hold is refused, 409 agent_not_runnable at keys.PARALLEL_API_KEY, with the launch hook or without, and nothing is written; with the key held here it is sent", async (t) => {
+  const { storeOn } = await import("./store-helpers.mjs");
+  const { triggerTargets } = await import("../dist/trigger-targets.js");
+  const { keysOwed } = await import("../dist/run-keys.js");
+  // A trigger made before the setting was on, or while this server held the key: its firing is the first check.
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "One" }, { id: "rev-1", kind: "agentic", body: {}, package: { id: "searcher", version: "1.0.0", sha: null, parameters_digest: "d", secrets: ["PARALLEL_API_KEY"] } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "Once more." } };
+  for (const [what, held, hooked] of [["no key here", {}, false], ["no key here, the hook set", {}, true], ["the key held here", { PARALLEL_API_KEY: newKey() }, false]]) {
+    let written = 0;
+    const targets = triggerTargets(store, {
+      momentOf: async () => ({ id: "run-1", agentId: "agent-1", kind: "agentic", maxCostUsd: 1, waitsOnPerson: false }),
+      runWrite: async () => (written++, { mode: "follow_up", messageId: "msg_1" }),
+      keysOwed: (revision) => keysOwed(revision, held, []),
+      hooked,
+    });
+    const sending = targets.message(target, target.input, "fir_1", { trigger_id: "trg_1" }, { max: 1, reason: "A message is waiting." });
+    if (held.PARALLEL_API_KEY) {
+      await sending;
+      assert.equal(written, 1, `${what}: sent`);
+      continue;
+    }
+    await assert.rejects(sending, (error) => {
+      assert.deepEqual([error.code, error.extra?.fields?.map((one) => [one.field, one.reason])], ["agent_not_runnable", [["keys.PARALLEL_API_KEY", "not_set_up_here"]]], `${what}: ${error.stack}`);
+      return true;
+    });
+    assert.equal(written, 0, `${what}: nothing written`);
+  }
+});
+
 test("off by default: a template's apply that needs a tool key this server does not hold is refused, nothing made", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const { api } = await setup(t, { templates: searcherTemplate(dir) });
@@ -273,7 +304,7 @@ test("AGENTRUN_RUN_KEYS=1: the apply makes the agent with a warning naming the k
   }
 });
 
-test("a message's keys replace the run's whole set, an empty one too: `keys: {}` on a queued run that still holds its key leaves it none, so under AGENTRUN_RUN_KEYS=1 it is 409 naming keys.PARALLEL_API_KEY", { timeout: 60_000 }, async (t) => {
+test("a message's keys replace the run's whole set, an empty one too: `keys: {}` on a queued run that still holds its key leaves it none, so under AGENTRUN_RUN_KEYS=1 it is 409 naming keys.PARALLEL_API_KEY, the start's refusal for that key", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   // No runner: the run stays queued, its launch still holding the key it carried.
   const { api } = await setup(t, { templates: searcherTemplate(dir), runKeys: true, runner: false });
@@ -285,6 +316,11 @@ test("a message's keys replace the run's whole set, an empty one too: `keys: {}`
 
   const emptied = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: {} });
   assert.deepEqual([emptied.status, emptied.body.error?.code, emptied.body.error?.fields?.map((one) => one.field)], [409, "agent_not_runnable", ["keys.PARALLEL_API_KEY"]], JSON.stringify(emptied.body));
+  // The start's refusal for the same missing key, in the same shape.
+  const bare = await api("POST", `/agents/${applied.body.agent_id}/runs`, { input: { content: "Search the web for widgets." } });
+  assert.equal(bare.status, 409, JSON.stringify(bare.body));
+  const shape = ({ request_id, ...rest }) => rest;
+  assert.deepEqual(shape(emptied.body.error), shape(bare.body.error), "a message and a start refused for the same key answer one 409");
   const carried = await api("POST", `/runs/${runId}/messages`, { content: "Once more.", keys: { PARALLEL_API_KEY: newKey() } });
   assert.equal(carried.status, 202, JSON.stringify(carried.body));
   const kept = await api("POST", `/runs/${runId}/messages`, { content: "And again." });
