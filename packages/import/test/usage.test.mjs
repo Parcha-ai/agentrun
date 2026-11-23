@@ -19,6 +19,15 @@ test("OpenAI and Codex: cached_input_tokens is a subset of input_tokens, so inpu
   assert.equal(normalizeUsage("openai", openaiUsage(10, 20, 5)), undefined);
 });
 
+test("OpenAI and Codex: cache_write_input_tokens is part of input_tokens too, so it comes out of input as well", () => {
+  // OpenAI's Responses usage puts cache_write_tokens in input_tokens_details ("a detailed breakdown of the input
+  // tokens"; "the number of input tokens that were written to the cache"), beside cached_tokens; Codex copies both into
+  // its TokenUsage unchanged. 1000 in: 600 read from the cache, 300 written to it, 100 neither.
+  assert.deepEqual(normalizeUsage("openai", { ...openaiUsage(1000, 600, 50), cache_write_input_tokens: 300 }), { input: 100, output: 50, cacheRead: 600, cacheWrite: 300, reasoning: 0 });
+  // A read and a write that add up to more than the input is no usage at all.
+  assert.equal(normalizeUsage("openai", { ...openaiUsage(1000, 600, 50), cache_write_input_tokens: 500 }), undefined);
+});
+
 test("pi: already split, taken as written", () => {
   assert.deepEqual(normalizeUsage("pi", { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 }), { input: 10, output: 20, cacheRead: 30, cacheWrite: 40, cacheWrite1h: 15 });
   // A 1h part over the whole write is dropped, never trusted.
