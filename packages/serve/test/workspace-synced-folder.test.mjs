@@ -9,7 +9,7 @@
 // refuses the namespace.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,6 +82,16 @@ test("Mode 2: a Daytona sandbox with no DAYTONA_ARCHIL_EGRESS holds the run's fo
   assert.deepEqual(side.launched[0].mount, { kind: "sync" }, "no disk, region or token goes to the computer");
   assert.deepEqual(run.computer.check, { ...CHECK, sync: true });
   await workspace.attach(run.computer.computer, run.computer.check);
+  await run.release();
+});
+
+test("the run's folder is pushed at the claim's start with every file at the pushed mtime (2000-01-01), its bytes as the disk holds them", async () => {
+  const root = scratch();
+  const disk = new FakeArchilDisk();
+  disk.files.set(`${ROOT}/d/f.txt`, Buffer.from("held"));
+  const { run } = await started(disk, loopback(root));
+  assert.equal(readFileSync(join(root, "d/f.txt"), "utf8"), "held");
+  assert.equal(statSync(join(root, "d/f.txt")).mtimeMs, Date.UTC(2000, 0, 1));
   await run.release();
 });
 

@@ -4,7 +4,8 @@
 // scripts; process calls answer ok (realProcesses, in workspace-fake-processes.mjs, runs them for real). A handler
 // may answer a promise. It records every call, in order, as [method, params], so a test can show what an
 // attached Workspace asked the computer for, without the computer module's daemon.
-import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { untar } from "@parcha/agentrun-computer";
 
@@ -74,7 +75,8 @@ export function fakeComputer(root, options = {}) {
       return {};
     },
     "files.stat": ({ path }) => statOf(lstatSync(host(path))),
-    // A tar push, held whole and extracted at its end as computerd does: files at their mode and mtime, dirs, links.
+    // A tar push, held whole and extracted at its end by the system's tar, which keeps each file's mode and mtime and
+    // makes dirs and links, as computerd's extraction does.
     "tar.push.begin": ({ path }) => {
       const id = `push-${pushes.size + 1}`;
       pushes.set(id, { dir: path, bytes: [] });
@@ -84,18 +86,11 @@ export function fakeComputer(root, options = {}) {
     "tar.push.end": ({ id }) => {
       const { dir, bytes } = pushes.get(id);
       pushes.delete(id);
-      const entries = untar(Buffer.concat(bytes));
-      for (const entry of entries) {
-        const at = host(`${dir}/${entry.name}`);
-        mkdirSync(dirname(at), { recursive: true });
-        if (entry.type === "dir") mkdirSync(at, { recursive: true, mode: entry.mode });
-        else if (entry.type === "symlink") symlinkSync(entry.link, at);
-        else {
-          writeFileSync(at, entry.body ?? new Uint8Array(), { mode: entry.mode });
-          if (entry.mtime !== undefined) utimesSync(at, entry.mtime, entry.mtime);
-        }
-      }
-      return { entries: entries.length };
+      const tar = Buffer.concat(bytes);
+      mkdirSync(host(dir), { recursive: true });
+      const extracted = spawnSync("tar", ["-x", "-p", "--no-same-owner", "-C", host(dir)], { input: tar });
+      if (extracted.status !== 0) throw new Error(`the fake computer's tar refused the push: ${extracted.stderr}`);
+      return { entries: untar(tar).length };
     },
     "exec.run": (params) => {
       const ran = options.exec?.(params) ?? { exitCode: 0, stdout: new Uint8Array(0), stderr: new Uint8Array(0), timedOut: false, truncated: false };
