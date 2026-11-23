@@ -2269,6 +2269,24 @@ test("LXXXIII: an ADO value runs over blanks only to its `;`, a tab, a line brea
   }
 });
 
+test("LXXXIV: an empty ADO field (`Application Name=;`) is a pair beside the key: the value runs over its blanks to its `;`, every word in one cut", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  for (const text of [
+    `Server=db;Application Name=;Password=Copper lumen ${pw};`,
+    `Server=db; Application Name = ; Password=Copper lumen ${pw};`,
+    `Password=Copper lumen ${pw};Application Name=;Server=db`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, ["Copper", "lumen", pw]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["connection-string", "label", true]], wrapped);
+    }
+  }
+  assert.equal((await oneCut(`Server=db;Application Name=;Password=Copper lumen ${pw};`)).text, "Server=db;Application Name=;Password=[redacted:connection-string];");
+  // Code's `==` is no empty pair: beside it a spaced key stays code's.
+  for (const wrap of FOUR_WRAPS) await kept(wrap("x == 1; password = userInput;"));
+});
+
 test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
   const pw = "Tq7Wm2Rk9Zx";
   await labelCutIn([

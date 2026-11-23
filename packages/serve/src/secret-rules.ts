@@ -1406,8 +1406,9 @@ const configAssign = (text: string, nameGroup: number, lines: LineBounds, source
 const CONNECTION_PASSWORD = new RegExp(String.raw`(?<![^\s;"'])(password|passwd|pwd)([ \t]{0,3})=([ \t]{0,3})(?:\{(?!\{)((?:[^}\n]|\}\}){1,1024})\}|${VALUE})`, "dgi");
 /** An ADO pair beside a key's (rulings LXVIII, LXXXIII): a key (ADO's hold blanks, `User Id`), blanks maybe around its
  *  `=` (`Server = db`) and a value, read from the `;` or quote before it. Code's `x = 1;` reads the same: the slot's
- *  code shapes decide there, as for any connection string's value. */
-const ADO_PAIR = /^[ \t]{0,8}[A-Za-z](?:[A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-])?([ \t]{0,3})=([ \t]{0,3})[^\s;=]/;
+ *  code shapes decide there, as for any connection string's value. The value may be empty (ruling LXXXIV:
+ *  `Application Name=;`, its `;` or the read's end right after the `=`); code's `==` is no pair. */
+const ADO_PAIR = /^[ \t]{0,8}[A-Za-z](?:[A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-])?([ \t]{0,3})=([ \t]{0,3})(?:[^\s=]|$)/;
 /** An ADO pair's reading (ruling LXXXIII): "plain" when its `=` stands against its key and value (a connection
  *  string's, as code rarely writes it beside a statement's `;`), "spaced" when blanks stand around it (`Server = db`:
  *  code's `x = 1;` reads the same), undefined when no pair stands. */
