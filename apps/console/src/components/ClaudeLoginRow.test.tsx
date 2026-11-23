@@ -73,6 +73,21 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.button(/Open the CLI's sign-in here/)).toBeDefined();
   });
 
+  it("off: while the owner's word is not ticked, Turn on says why it waits, next to it and as its description; ticked, the words go", async () => {
+    const WHY = 'Tick "Only I run agents on this server" to turn it on.';
+    const { v2 } = server(() => OFF, () => OFF);
+    const page = await open(v2);
+    const turnOn = page.button(/^Turn on$/)!;
+    expect(turnOn.disabled).toBe(true);
+    expect(page.row()!.textContent).toContain(WHY);
+    const described = turnOn.getAttribute("aria-describedby");
+    expect(described && document.getElementById(described)?.textContent).toBe(WHY);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    expect(page.button(/^Turn on$/)!.disabled).toBe(false);
+    expect(page.row()!.textContent).not.toContain(WHY);
+    expect(page.button(/^Turn on$/)!.getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("signed in: who and which plan; Turn off; nothing else to type", async () => {
     let view: ClaudeLoginView = { ...OFF, state: "signed_in", place: "machine", account: { method: "claude.ai", email: "person@example.com", plan: "max" } };
     const { v2, calls } = server(() => view, () => (view = { ...OFF, place: "machine" }));
