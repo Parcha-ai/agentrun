@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { request as httpRequest } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -51,11 +52,32 @@ test("approving a note is the owner's password session alone, from the console w
   assert.deepEqual(op.security, [{ ownerSession: [] }], "never the document's bearer: the route answers 403 to every token");
   const scheme = doc.components.securitySchemes.ownerSession;
   assert.deepEqual([scheme.type, scheme.in], ["apiKey", "cookie"]);
-  assert.equal(scheme.name, `agentrun-${new URL(baseUrl).port}`, "the cookie the console sets on this server: agentrun-<its port>");
+  assert.equal(scheme.name, `agentrun-${new URL(baseUrl).port}-session`, "the cookie the owner's sign-in sets on this server (page.ts ownerCookieName)");
   assert.match(scheme.description, /password/);
   assert.equal(op.requestBody?.required, true);
   assert.deepEqual(op.requestBody.content["application/json"].schema, { type: "object", additionalProperties: false, maxProperties: 0 });
   assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
+});
+
+/** GET /v2/openapi.json from the server at `baseUrl` with these headers (a Host fetch would not send): the document. */
+const openapiWith = (baseUrl, headers) =>
+  new Promise((resolve, reject) => {
+    const req = httpRequest(`${baseUrl}/openapi.json`, { headers }, (res) => {
+      let body = "";
+      res.setEncoding("utf8").on("data", (chunk) => (body += chunk)).on("end", () => (res.statusCode === 200 ? resolve(JSON.parse(body)) : reject(new Error(`${res.statusCode} ${body}`))));
+    });
+    req.on("error", reject).end();
+  });
+
+// The console names the owner's cookie for the port the browser opened, not the socket's (a container listening on 7340,
+// published at 7350), and `__Host-agentrun-session` over https: the document names the one this request's console sets, so
+// a client generated from it sends the cookie the browser holds.
+test("the served document names the owner's cookie as the console sets it for this request: the Host's port, or __Host- over https", async (t) => {
+  const { baseUrl } = await serve(t);
+  const nameOf = (doc) => doc.components.securitySchemes.ownerSession.name;
+  assert.equal(nameOf(await openapiWith(baseUrl, { host: "127.0.0.1:7350" })), "agentrun-7350-session", "published at 7350");
+  assert.equal(nameOf(await openapiWith(baseUrl, { host: "localhost" })), `agentrun-${new URL(baseUrl).port}-session`, "a Host with no port keeps the socket's");
+  assert.equal(nameOf(await openapiWith(baseUrl, { "x-forwarded-proto": "https" })), "__Host-agentrun-session", "behind an https proxy");
 });
 
 test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
