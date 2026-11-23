@@ -1,11 +1,13 @@
 // `agentrun export AGENT --out DIR`: the agent's current revision written as a template package folder (GET
 // /agents/{agent_id}/package), which `agentrun template validate` reads and any AgentRun applies. The server's report is
 // printed whole: what kept the package from working elsewhere (`blocked`) and what the target sets up again (`remade`).
-// With anything blocked, or an agent the server does not export, nothing is written and the exit is 2.
+// With anything blocked, an agent the server does not export, or a folder not named as the package, nothing is written
+// and the exit is 2.
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-/** Exits: 0 written; 2 refused (blocked, an agent the server does not export, an unknown one, a folder that holds files). */
+/** Exits: 0 written; 2 refused (blocked, an agent the server does not export, an unknown one, a folder that holds files, a
+ *  folder not named as the package). */
 const REFUSED = 2;
 
 export const EXPORT = {
@@ -14,7 +16,7 @@ export const EXPORT = {
   summary: "Write an agent's current revision as a template package folder, and say what the target sets up again",
   help: [
     ["AGENT", "the agent's id"],
-    ["--out DIR", "the folder to write: a new one, or an empty one"],
+    ["--out DIR", "the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)"],
   ],
   options: { out: { type: "string" } },
   async run({ values, args, env, io, cli }) {
@@ -39,15 +41,22 @@ export const EXPORT = {
     } catch {
       throw cli.fail(1, `The server's answer (${response.status}) is not JSON.`);
     }
-    const { name, sha256, files = [], report = {} } = answer;
+    const { name, sha256, files = [], report = {} } = answer ?? {};
+    if (typeof name !== "string") throw cli.fail(1, `The server's answer (${response.status}) names no package.`);
     const blocked = report.blocked ?? [];
     const remade = report.remade ?? [];
     for (const [label, list] of [["Blocked", blocked], ["Set up again on the target", remade]]) {
       if (list.length) io.stderr.write(`${label}:\n${list.map((note) => `  ${note.kind} ${note.name}: ${note.reason}`).join("\n")}\n`);
     }
-    if (blocked.length) {
+    // A package's folder is named as the package is (agent.md's name, which template validate checks), so a folder of
+    // another name would hold a package that fails it. Neither name is changed here: renaming the package would deploy
+    // another agent's name, and writing into a folder under --out would move where scripts find it.
+    const stops = [];
+    if (blocked.length) stops.push("the package would not work elsewhere until what is blocked is fixed on this agent");
+    if (basename(out) !== name) stops.push(`a package's folder is named as the package is, ${name}, so ${out} would not pass agentrun template validate. Export to ${join(dirname(out), name)}`);
+    if (stops.length) {
       client.print({ name, sha256, blocked, remade, folder: null });
-      io.stderr.write("Nothing was written: the package would not work elsewhere until what is blocked is fixed on this agent.\n");
+      io.stderr.write(`Nothing was written: ${stops.join("; and ")}.\n`);
       return REFUSED;
     }
     // Every path checked before the first write: one that leaves the folder writes nothing.

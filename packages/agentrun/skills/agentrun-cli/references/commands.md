@@ -471,7 +471,7 @@ Write an agent's current revision as a template package folder, and say what the
 
 Route: none, it runs on this machine.
 
-- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)
 
 ## files
 
