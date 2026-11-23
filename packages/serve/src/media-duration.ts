@@ -3,7 +3,13 @@
 // no decoder, nothing read past the bytes given. Undefined for anything else, or a file cut short of the header its
 // length is in. voiceSeconds reads a voice's length from what plays instead, for a file whose sender is billed by it.
 
-const tag = (b: Uint8Array, at: number, text: string): boolean => at >= 0 && b.length >= at + text.length && [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
+/** Whether the bytes at `at` are `text`'s character codes. No allocation: a walk over a 32 MiB file calls it millions
+ *  of times. */
+const tag = (b: Uint8Array, at: number, text: string): boolean => {
+  if (at < 0 || b.length < at + text.length) return false;
+  for (let i = 0; i < text.length; i++) if (b[at + i] !== text.charCodeAt(i)) return false;
+  return true;
+};
 const u32 = (b: Uint8Array, at: number): number => (b[at]! * 0x1000000) + (b[at + 1]! << 16) + (b[at + 2]! << 8) + b[at + 3]!;
 const u32le = (b: Uint8Array, at: number): number => b[at]! + (b[at + 1]! << 8) + (b[at + 2]! << 16) + b[at + 3]! * 0x1000000;
 const u16le = (b: Uint8Array, at: number): number => b[at]! + (b[at + 1]! << 8);
