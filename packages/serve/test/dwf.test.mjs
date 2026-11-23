@@ -110,8 +110,7 @@ const docsFlow = () => ({
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
 const FAUX_DECISIONS = new URL("../scripts/dwf-smoke/faux-decisions.mjs", import.meta.url).pathname;
 
-// SKIP (follow-up #2089): the run's graph never shows a map item working, so the paused-map read never starts
-test.skip("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, live and never waiting on a busy store", async (t) => {
+test("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, live and never waiting on a busy store", async (t) => {
   const dir = await scratch(t);
   const docs = join(dir, "docs");
   await mkdir(docs);
@@ -167,8 +166,14 @@ test.skip("a run's graph reads while it goes and while it is paused mid-map at m
   }
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => i.label), names.map((n) => `${n}.pdf`));
   assert.equal((await api("POST", `/runs/${id}/pause`)).body.paused, true);
-  graph = await read();
-  assert.equal(graph.run.status, "paused");
+  // The pause is a command the runner records at once and applies at the run's next decision or model request
+  // (workflow-loop.ts), so the graph says paused once that has come: within a decision's 300 ms, bounded here by 30 s.
+  for (const end = Date.now() + 30_000; ; ) {
+    graph = await read();
+    if (graph.run.status === "paused") break;
+    assert.ok(Date.now() < end, `the run is paused within 30 s: ${graph.run.status}`);
+    await sleep(100);
+  }
   // The judges in flight finish: every request sent has its receipt, and no call is working. Nothing new starts; every
   // read answers live.
   const sent = async () => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
@@ -223,8 +228,7 @@ test("a tool that fails in a map item fails that item only when the map collects
   assert.match(failed.error, /pdf/i);
 });
 
-// SKIP (follow-up #2089): saving an invalid workflow answers 201 instead of 422
-test.skip("POST /workflows/validate answers every issue by path, writes nothing; a save of an invalid workflow is 422 with each issue as a field", async (t) => {
+test("POST /workflows/validate answers every issue by path, writes nothing; a save of an invalid workflow is 422 with each issue as a field", async (t) => {
   const { api } = await serve(t);
   const good = await api("POST", "/workflows/validate", { workflow: docsFlow(), tools: ["pdf_pages", "llm"] });
   assert.deepEqual([good.status, good.body.ok, good.body.issues], [200, true, []]);
