@@ -729,6 +729,29 @@ test("local: a read whose reader falls behind past the grace (an event loop busy
   assert.equal(text(await store.read(head), "corrections.md"), whole, "the whole file, never the part read before the grace");
 });
 
+test("local: a read whose output drains over several of the event loop's passes after the grace comes back whole: each pass that brings bytes earns another", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  const whole = Array.from({ length: 1500 }, (_, i) => `- line ${String(i).padStart(4, "0")} ${"y".repeat(48)}\n`).join("");
+  const head = (await save(store, null, [{ path: "corrections.md", text: whole }])).saved;
+  // The reader holds the output until the grace itself, then takes 8 KB per pass of the event loop: bytes arrive pass
+  // after pass, and the end only passes later. A 'readable' listener holds it: a plain pause() is resumed by node at exit.
+  localStoreHooks.spawned = (child) => {
+    child.stdout.on("readable", () => {});
+    const step = () => {
+      if (child.stdout.readableEnded || child.stdout.destroyed) return;
+      const buffered = child.stdout.readableLength;
+      child.stdout.read(buffered ? Math.min(8192, buffered) : undefined);
+      setImmediate(step);
+    };
+    child.once("exit", () => setTimeout(() => setImmediate(step), 500));
+  };
+  t.after(() => {
+    localStoreHooks.spawned = undefined;
+  });
+  assert.equal(text(await store.read(head), "corrections.md"), whole, "the whole file: a pass that brought bytes is never taken for a held pipe");
+});
+
 test("local: every git the script runs flushes what it commits (core.fsync=committed): a save reported done survives a crash", async (t) => {
   const store = await STORES.local(t);
   const { localStoreHooks } = await import("../dist/learn/store-local.js");
