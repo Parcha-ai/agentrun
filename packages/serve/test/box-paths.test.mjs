@@ -5,7 +5,7 @@
 // why.
 import assert from "node:assert/strict";
 import { realpathSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { release } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -152,7 +152,10 @@ const hostReads = (fake) => jsonLines(join(fake.state, "host-reads.jsonl"));
 
 test("compose's layout under an allow-list: the Docker host's addresses read once through the socket, unioned with AGENTRUN_DOCKER_HOST_ADDRESSES and shown in capabilities (a Desktop's gateway among them); a failed read with no setting is refused in words, with it offered", { timeout: 240_000 }, async (t) => {
   const NO_ADDRESSES = "the server runs in a container and doesn't know the Docker host's own addresses (the read through Docker's socket failed (exit 125: docker: Error response from daemon: the fake's read failed.)), so a Docker computer can't keep this server's allow-list: set AGENTRUN_DOCKER_HOST_ADDRESSES to the host's IP addresses, or AGENTRUN_BOX_ALLOW=none for no network";
-  // Each case's addresses as capabilities show them, where an operator looks (undefined when Docker isn't offered).
+  // Each case's addresses as capabilities show them, where an operator looks (undefined when Docker isn't offered). The
+  // setting is saved once, here, and restored at the end: a save per case would restore one case's value after the others
+  // (after-hooks run in the order they were added), and the tests after this one would read it.
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
   for (const [given, available, shown] of [
     [{ read: { interfaces: ["127.0.0.1", "172.17.0.1", "203.0.113.7"], gateway: [] } }, true, ["172.17.0.1", "203.0.113.7"]],
     [{ fail: true }, false, undefined],
@@ -163,7 +166,8 @@ test("compose's layout under an allow-list: the Docker host's addresses read onc
     const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
     if (given.read) await writeFile(join(fake.state, "host-addresses.json"), `${JSON.stringify(given.read)}\n`);
     if (given.fail) await writeFile(join(fake.state, "host-addresses-fail"), "");
-    withEnv(t, given.named ? { AGENTRUN_DOCKER_HOST_ADDRESSES: given.named } : {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+    if (given.named) process.env.AGENTRUN_DOCKER_HOST_ADDRESSES = given.named;
+    else delete process.env.AGENTRUN_DOCKER_HOST_ADDRESSES;
     const { api } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo });
     const offer = await docker(api);
     assert.equal(offer.available, available, JSON.stringify({ given, offer }));
@@ -173,6 +177,72 @@ test("compose's layout under an allow-list: the Docker host's addresses read onc
     assert.equal(reads.length, 1, "one read at the start");
     assert.deepEqual([reads[0][reads[0].indexOf("--network") + 1], reads[0][reads[0].indexOf("--user") + 1]], ["host", "65534:65534"]);
   }
+});
+
+// A read that fails at the start (a busy host's Docker, beta.53's autoqa) is tried again in the background
+// (docker-host-addresses.ts retryHostAddresses): once one answers, Docker is offered with no restart. The test's wait
+// stands in for the backoff's, each one ended when the test says.
+test("compose's layout, the read failing at the start: the server reads again in the background, and once a read answers Docker is offered, its boxes logged again, with no restart; none waits or reads after that", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses.json"), `${JSON.stringify({ interfaces: ["172.17.0.1"], gateway: [] })}\n`);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const lines = [];
+  const waits = [];
+  // Settled at each retry wait begun and each line logged: what `until` looks again on. No clock; the test's timeout
+  // bounds a hang.
+  let changed;
+  let next = new Promise((resolve) => (changed = resolve));
+  const change = () => {
+    changed();
+    next = new Promise((resolve) => (changed = resolve));
+  };
+  const hostReadWait = (ms, signal) => new Promise((go) => {
+    waits.push({ ms, go });
+    change();
+    signal.addEventListener("abort", () => go(), { once: true });
+  });
+  /** Until `ready()` holds, looking again at each retry wait begun or line logged. */
+  const until = async (ready) => {
+    while (!ready()) await next;
+  };
+  const logged = (event) => lines.filter((line) => line.includes(` event=${event} `) || line.endsWith(` event=${event}`));
+  const { api } = await serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, log: (line) => (lines.push(line), change()), hostReadWait });
+  const before = await docker(api);
+  assert.deepEqual([before.available, before.state], [false, "unavailable"], JSON.stringify(before));
+  await until(() => waits.length === 1);
+  assert.equal(waits[0].ms, 15_000);
+  // The second read fails as the first did: the retry waits again, longer.
+  waits[0].go();
+  await until(() => waits.length === 2);
+  assert.equal(waits[1].ms, 30_000);
+  assert.equal(hostReads(fake).length, 2);
+  assert.equal((await docker(api)).available, false);
+  // The host's Docker answers now: the third read takes its addresses, and Docker is offered.
+  await rm(join(fake.state, "host-addresses-fail"));
+  const boxesBefore = logged("boxes").length;
+  assert.equal(boxesBefore, 1, "the start's");
+  waits[1].go();
+  await until(() => logged("boxes").length > boxesBefore);
+  const after = await docker(api);
+  assert.deepEqual([after.available, after.host_addresses], [true, ["172.17.0.1"]], JSON.stringify(after));
+  assert.match(logged("docker_host_addresses").at(-1), /addresses=172\.17\.0\.1/);
+  assert.equal(hostReads(fake).length, 3);
+  assert.equal(waits.length, 2, "no wait after a read answered");
+});
+
+test("compose's layout, the read failing at the start, and a later check failing that start: the retry stops with it", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const signals = [];
+  const hostReadWait = (ms, signal) => (signals.push(signal), new Promise((go) => signal.addEventListener("abort", () => go(), { once: true })));
+  await assert.rejects(serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, trustedProxies: ["not a proxy"] }), /trustedProxies/);
+  assert.equal(signals.length, 1, "the retry began");
+  assert.equal(signals[0].aborted, true, "and stopped with the start");
+  assert.equal(hostReads(fake).length, 1, "the start's read alone");
 });
 
 test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {

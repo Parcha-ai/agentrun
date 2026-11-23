@@ -1,12 +1,9 @@
 // The Daytona host: Daytona sandboxes over Daytona's v0 REST API with fetch (no SDK). Daytona's toolbox daemon is the
 // sandbox's first process, so computerd is a child: its upload goes through the toolbox's file API, and every command
 // (install, init's start, the stdio bridge, an Archil computer's root steps) is a session command, its output read from
-// the command's log stream and its stdin sent as the command's input. With connect "dial", the sandbox is made with the
-// boot env as its env, AGENTRUN_ATTACH_URL left out, and once it reads started create runs agentrun-dial, the URL given
-// on its line, as one session command of its own: the machine dials the server, with no upload. A snapshot's entrypoint
-// is never relied on (one registered without the box CMD as its entrypoint has none), and one that runs the box CMD
-// sleeps without the URL, so agentrun-dial never runs twice. The rest of the computer is the shared machine-host
-// adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the README's Daytona section.
+// the command's log stream and its stdin sent as the command's input. With connect dial, create starts agentrun-dial
+// itself in a toolbox session (README, Daytona on dial). The rest of the computer is the shared machine-host adapter's
+// (./hosted/provider.ts). Every Daytona fact used here is cited in the README's Daytona section.
 import { randomBytes } from "node:crypto";
 import { connectOf, kindRefusal, mountsOf } from "./descriptor.js";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
@@ -15,7 +12,7 @@ import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Mac
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, seconds, pause as sleep, words } from "./hosted/process.js";
-import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { dialLaunch, shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -63,6 +60,13 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 * with TLS end to end to the public host. Unset, it dials the public host; a machine on exec never reads it.
 	 */
 	attachEgress?: string;
+	/**
+	 * How long create waits for Daytona's label listing to show a new sandbox, in ms (timeouts.listedMs; serve's
+	 * DAYTONA_LISTED_MS): a whole number above 0, as a number or its digits. Daytona's `GET /sandbox` is eventually
+	 * consistent (an index, not the database), so a sandbox still unlisted then is read by its id and kept when it reads
+	 * started. Unset, the adapter's 15 s; timeouts.listedMs, when given, wins.
+	 */
+	listedMs?: number | string;
 	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
@@ -114,6 +118,14 @@ interface Sandbox {
 	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
 	createdAt?: string;
 	toolboxProxyUrl?: string;
+}
+
+/** options.listedMs as a whole number of ms above 0 (a number, or its digits as DAYTONA_LISTED_MS gives them), or undefined when unset. */
+function listedMsOf(value: unknown): number | undefined {
+	if (value === undefined || value === "") return undefined;
+	const ms = typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+	if (!isWhole(ms) || ms <= 0) throw new Error(`listedMs (DAYTONA_LISTED_MS) is a whole number of ms above 0, not ${JSON.stringify(value)}`);
+	return ms;
 }
 
 /** A positive finite figure of Daytona's answer, else undefined (absent, zero or not a number: never guessed). */
@@ -232,8 +244,8 @@ class DaytonaHost implements MachineHost {
 	readonly upload?: MachineHost["upload"];
 	/** connect dial alone: agentrun-dial's session command's log. */
 	readonly dialLog?: MachineHost["dialLog"];
-	/** Each dial sandbox's machine token, by id, from its create: dialLog's words never hold it. Let go of at its delete. */
-	readonly #dialTokens = new Map<string, string>();
+	/** The command that runs agentrun-dial, by sandbox id, from its create: what dialLog reads. Let go of at its delete. */
+	readonly #dials = new Map<string, string>();
 	/** Daytona's REST API: the control plane, and the toolbox of each sandbox. */
 	readonly #rest: Rest;
 	readonly #headers: Record<string, string>;
@@ -357,27 +369,24 @@ class DaytonaHost implements MachineHost {
 		const sb = orThrow(posted) as Sandbox | null;
 		const id = sb?.id;
 		if (typeof id !== "string" || id === "") throw new Error("POST /sandbox: no sandbox id in the answer");
-		if (req.boot !== undefined) {
-			const token = req.boot.env.AGENTRUN_ATTACH_TOKEN;
-			if (token !== undefined && token !== "") this.#dialTokens.set(id, token);
-			await this.#startDial(sb as Sandbox, attach ?? "", until, ctx.timeoutMs);
-		}
+		if (req.boot !== undefined) await this.#startDial(sb as Sandbox, attach ?? "", until, ctx.timeoutMs);
 		return { id };
 	}
 
 	/**
 	 * A dial sandbox's agentrun-dial, started once the sandbox reads started (by `until`, ms after create began): one
 	 * toolbox session of its own (DIAL_SESSION), its one command async: dialLaunch's line, as root (the toolbox runs
-	 * session commands as root), AGENTRUN_ATTACH_URL a quoted assignment on it. The token is never on it: it stays in the sandbox's env, which the command inherits. The session is kept, so
-	 * its log is the dial's last words (dialLog). A sandbox Daytona fails, one gone, or a session or command it refuses
-	 * throws vendor in Daytona's words, and one not started by `until` throws timeout: either is a create that made a
-	 * machine to the adapter, which deletes it by its name.
+	 * session commands as root), AGENTRUN_ATTACH_URL a quoted assignment on it. The token is never on it: it stays in the
+	 * sandbox's env, which the command inherits. The session and the command's id are kept, so its log is the dial's last
+	 * words (dialLog). A sandbox gone as a machine reads (stateOf: failed, destroying or asked to destroy), or a session or
+	 * command Daytona refuses, throws vendor in Daytona's words, and one not started by `until` throws timeout: either is
+	 * a create that made a machine to the adapter, which deletes it by its name.
 	 */
 	async #startDial(posted: Sandbox, attach: string, until: number, timeoutMs: number): Promise<void> {
 		const { id } = posted;
 		let sb: Sandbox = posted;
-		while (sb.state !== "started") {
-			if (FAILED.has(sb.state ?? "") || GONE.has(sb.state ?? "")) throw new HostError("vendor", `Daytona reads the sandbox ${id} ${sb.state}, so agentrun-dial was not started: ${sb.errorReason || "no reason given"}`);
+		for (let state = stateOf(sb); state !== "running"; state = stateOf(sb)) {
+			if (state === "gone") throw new HostError("vendor", `Daytona reads the sandbox ${id} ${sb.state}${sb.desiredState === "destroyed" ? ", to be destroyed" : ""}, so agentrun-dial was not started: ${sb.errorReason || "no reason given"}`);
 			if (Date.now() + this.#pollMs >= until) throw new HostError("timeout", `the sandbox ${id} did not read started within ${seconds(timeoutMs)} (it reads ${sb.state ?? "no state"}), so agentrun-dial was not started`);
 			await sleep(this.#pollMs);
 			const read = await sandboxOf(this.#rest, id);
@@ -387,28 +396,24 @@ class DaytonaHost implements MachineHost {
 		}
 		try {
 			const toolbox = await this.#toolbox(id);
-			await this.#runAsync(toolbox, DIAL_SESSION, dialLaunch({ rootOnly: this.facts.rootOnly, attach }), Math.max(1, until - Date.now()));
+			const { commandId } = await this.#runAsync(toolbox, DIAL_SESSION, dialLaunch({ rootOnly: this.facts.rootOnly, attach }), Math.max(1, until - Date.now()));
+			this.#dials.set(id, commandId);
 		} catch (error) {
 			throw new HostError("vendor", `starting agentrun-dial in ${id} failed: ${words(error)}`);
 		}
 	}
 
 	/**
-	 * What agentrun-dial wrote: its session command's log (the toolbox's JSON of it, or its text with Daytona's stream
-	 * prefixes dropped), the sandbox's token replaced by `<token>`. undefined when the session, or its command, is none.
+	 * What agentrun-dial wrote: one read of the log of the command create started. The toolbox answers a client that names
+	 * no SDK version with the log as written, each write behind its stream's prefix (README, Daytona on dial), and the
+	 * prefixes are dropped. undefined when this host started no agentrun-dial there.
 	 */
 	async #dialLog(id: string, ctx: HostCall): Promise<string | undefined> {
+		const commandId = this.#dials.get(id);
+		if (commandId === undefined) return undefined;
 		const session = `${await this.#toolbox(id, ctx.signal)}/process/session/${DIAL_SESSION}`;
-		const read = await this.#rest.json("GET", session, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal);
-		if (!read.ok && read.error.code === "not_found") return undefined;
-		const command = ((orThrow(read) as { commands?: Array<{ id?: unknown }> } | null)?.commands ?? []).findLast((one) => typeof one?.id === "string");
-		if (command === undefined) return undefined;
-		const logs = orThrow(await this.#rest.call("GET", `${session}/command/${encodeURIComponent(command.id as string)}/logs`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
-		const json = jsonOf(logs.bytes) as { output?: unknown; stdout?: unknown; stderr?: unknown } | null;
-		const text = typeof json?.output === "string" ? json.output : typeof json?.stdout === "string" || typeof json?.stderr === "string" ? `${json.stdout ?? ""}${json.stderr ?? ""}` : decoder.decode(logs.bytes);
-		const said = text.replaceAll(OUT.toString("latin1"), "").replaceAll(ERR.toString("latin1"), "");
-		const token = this.#dialTokens.get(id);
-		return token === undefined ? said : said.replaceAll(token, "<token>");
+		const logs = orThrow(await this.#rest.call("GET", `${session}/command/${encodeURIComponent(commandId)}/logs`, { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal));
+		return decoder.decode(logs.bytes).replaceAll(OUT.toString("latin1"), "").replaceAll(ERR.toString("latin1"), "");
 	}
 
 	/** GET /sandbox/{id}; one Daytona answers 404 for, or reads destroyed, is none. */
@@ -454,7 +459,7 @@ class DaytonaHost implements MachineHost {
 	 */
 	async delete(id: string, ctx: HostCall): Promise<void> {
 		this.#toolboxes.delete(id);
-		this.#dialTokens.delete(id);
+		this.#dials.delete(id);
 		let failure: ComputerError | undefined;
 		for (let attempt = 1; attempt <= DELETE_ATTEMPTS; attempt++) {
 			const removed = await this.#rest.call("DELETE", sandboxUrl(this.#rest, id), { retry: true, timeoutMs: ctx.timeoutMs });
@@ -722,14 +727,14 @@ export class DaytonaProvider extends HostedProvider {
 			webSocket,
 			pause,
 			timeouts = {},
+			listedMs,
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
 		const via = connectOf(DAYTONA, { connect });
 		const refused = kindRefusal(DAYTONA, { kind: hosted.kind, connect: via });
 		if (refused !== undefined) throw new Error(refused);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
-		const base = new URL(apiUrl);
-		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
+		const base = httpsBase(apiUrl, "the Daytona API URL");
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
 		if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`options.sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
 		const minutes = (name: string, value: unknown) => {
@@ -737,7 +742,9 @@ export class DaytonaProvider extends HostedProvider {
 		};
 		minutes("autoStopMinutes", autoStopMinutes);
 		if (autoDeleteMinutes !== undefined) minutes("autoDeleteMinutes", autoDeleteMinutes);
-		const { retryMs = DEFAULT_RETRY_MS, ...hostedTimeouts } = timeouts;
+		const listed = listedMsOf(listedMs);
+		const { retryMs = DEFAULT_RETRY_MS, ...asked } = timeouts;
+		const hostedTimeouts = { ...(listed === undefined ? {} : { listedMs: listed }), ...asked };
 		if (!isWhole(retryMs) || retryMs <= 0) throw new Error(`timeouts.retryMs must be a whole number of ms above 0, not ${retryMs}`);
 		const { requestMs, pollMs } = timeoutsOf(hostedTimeouts);
 		const headers = headersOf(apiKey);
@@ -750,7 +757,7 @@ export class DaytonaProvider extends HostedProvider {
 		const host = new DaytonaHost({
 			// On dial its capabilities declare no GPU (DIAL_NO_GPU).
 			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set), ...(via === "dial" ? { capabilities: DAYTONA.capabilities.map(({ gpu: _gpu, ...rest }) => rest) } : {}) },
-			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
+			rest: rest({ base, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
 			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,

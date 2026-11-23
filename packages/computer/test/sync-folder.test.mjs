@@ -31,7 +31,8 @@ describe("the synced folder's delta against computerd in a user namespace", { sk
 
 	before(async () => {
 		const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
-		init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
+		// Under umask 077, as init on the exec path runs (hosted/scripts.ts): computerd keeps it.
+		init = spawn("sh", ["-c", 'umask 077 && exec "$@"', "sh", "unshare", "-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
 		init.stderr.on("data", (chunk) => (stderr += chunk));
 		await computerdListening(socket, init, () => stderr);
 		stream = connect(socket);

@@ -309,7 +309,10 @@ Some vendors have states beyond these four:
 in the same shape as `get`. The listing finds; `get` answers: AgentRun takes only the ids from your listing and reads
 each one by `get` for its state, labels and end, and drops one `get` reads as not found. So your listing may be stale,
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
-don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does.
+don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. Your listing
+may also trail a create: create waits up to `timeouts.listedMs` (15 s) for it to show the new machine, then reads the
+machine by `get`, and keeps one that reads running with its labels (with a note), as Daytona's eventually consistent
+listing needs. Any other answer fails create `timeout`.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
@@ -469,12 +472,9 @@ machine with `req.boot.env`. Its descriptor declares the option as a setting wit
 Modal's create gives the sandbox `agentrun-dial` as its command and the env as `env`. The other two start
 `agentrun-dial` themselves, once. A template's start command runs once at the template's build and never sees a
 create's env, so E2B's create starts it through envd, with the env as that one process's
-([README](README.md#e2b-on-dial)). Daytona runs a snapshot's entrypoint, never the image's CMD, and a snapshot
-registered without the box CMD as its entrypoint has none, so Daytona's create sends the env as `env` with
-`AGENTRUN_ATTACH_URL` left out, waits for the sandbox to read `started`, and starts `agentrun-dial` in a toolbox session
-of its own, the URL on its command's line ([README](README.md#daytona-on-dial)): the snapshot's entrypoint is not
-relied on, and one that runs the box CMD sleeps without the URL. A host that starts `agentrun-dial` itself can give
-`dialLog(id)`, what it wrote, and a machine that never dials then fails with its last lines. Their conformance
+([README](README.md#e2b-on-dial)). Daytona's create starts it in a toolbox session once the sandbox reads `started`,
+the URL on its line ([README](README.md#daytona-on-dial)). A host that starts it can give `dialLog(id)`, and a machine
+that never dials then fails with its last lines. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 

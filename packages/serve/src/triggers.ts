@@ -10,19 +10,20 @@
 // While the trigger's last run is active (working, or waiting on a person), a firing is `skipped`, never queued: a firing
 // queued behind a run parked on a person would wait for as long as the person does. A source whose adapter says each
 // firing is its own work (concurrent: a webhook with accept) starts a run per firing instead. With max_active_runs set, a
-// firing past it waits for a run of the trigger to end.
+// firing past it waits for a run of the trigger to end. A firing handed to the launch hook's host with no run yet is a run
+// in progress for both, until its run starts or its start_by passes.
 // One retry policy, kept in the store: a failed try (a full server, a thrown error, a store that could not read) keeps
 // the firing due with its next try in retry_at, after the wait BACKOFF_MS gives for its attempts; past the table it fails.
-// Every failed try counts toward the trigger's streak, and FAILURES_TO_PAUSE in a row turn the trigger off. A firing past
-// its trigger's max_active_runs is no failure: it waits (waits_on, no try counted) and is driven again once a run of the
-// trigger ends, read from the store by one query per tick for every waiting firing (the runner is another process: the
+// Each failed firing counts once toward the trigger's streak, however many tries it took, and FAILURES_TO_PAUSE in a row
+// turn the trigger off. A firing past its trigger's max_active_runs is no failure: it waits (waits_on, no try counted) and
+// is driven again once a run of the trigger ends, read from the store by one query per tick for every waiting firing (the runner is another process: the
 // store is all the two share). One timer, at the soonest next time of an enabled trigger, next try of a due firing, or
 // WAIT_POLL_MS while a firing waits, is armed again after each change. A next time is reckoned from the last nominal time, never from the clock, so a
 // late timer does not drift. Of the times that came while the server was down, or its timer late past LATE_MS, the
 // latest fires if it is within the trigger's catch-up window and the rest are one `missed` row; the schedule goes on from
 // now. A failed firing queues a trigger.failed webhook message.
 // With the launch hook set (trigger-launch-hook.ts), a firing that would start a run goes the same way up to the start,
-// then is handed to the host instead: sent when the host takes it, skipped with why when it does not.
+// then is handed to the host instead: sent when the host takes it, a failed try (hook_failed and why) when it does not.
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
 import { agentDeleting, purgedAgent } from "./agents.js";
@@ -32,7 +33,7 @@ import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
-import { handToHost, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
+import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
 import { MAX_EVERY_S } from "./trigger-schedule.js";
 import { ID, IDEMPOTENCY_TTL_S, isObject, type Json, unknownFields } from "./validate.js";
 
@@ -50,7 +51,8 @@ const FULL_RETRY_S = 30;
 export const SOURCE_KINDS: readonly string[] = TRIGGER_ADAPTERS.map((a) => a.id);
 export const TARGET_KINDS = ["start_run", "message_run"] as const;
 export const FIRING_STATUSES = ["due", "started", "sent", "skipped", "failed", "missed"] as const;
-/** A firing the launch hook's host took (a 2xx) without starting its run here under the firing (RunCreate trigger_firing). */
+/** The reason of a firing the launch hook's host took (a 2xx) without starting its run here under the firing (RunCreate
+ *  trigger_firing). */
 export const HANDED_NO_RUN = "Handed to the host by the launch hook, which started no run here for it.";
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
 /** How late a missed time may be and still fire once, by default: an hour. */
@@ -142,6 +144,11 @@ export type TriggerFailed = { trigger_id: string; name: string; agent_id: string
 /** `attrs`: what its source said of the event that fired it (the firing's attrs, server-written), which the run's tools
  *  may read (an email's Message-ID: email/tools.ts reads the thread it started). */
 export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?: Record<string, string> };
+/** A host's start of a firing the launch hook handed it (Triggers.handedStart): the firing's key, the trigger, input
+ *  origin and title a start here would give the run, and the target and previous-result flag it starts on
+ *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
+ *  host may lower the cap, and its effort holds when the target sets none). */
+export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
 export type TriggerDeps = {
@@ -295,8 +302,13 @@ const nameTaken = (error: unknown, name: string): unknown =>
 const archivedDetail = (name: string) => `The agent ${name} is archived: unarchive it, then turn the trigger on.`;
 /** Why a trigger is off when the server turned it off, as its row keeps it (`disabled`, JSON). */
 const reasonOf = (disabled: unknown): unknown => (isObject(disabled) ? disabled.reason : undefined);
-/** Why a try failed, as its firing keeps it: an ApiError's code, else internal. */
-const errorOf = (error: unknown) => ({ code: error instanceof ApiError ? error.code : "internal", message: String((error as Error)?.message ?? error) });
+/** Why a try failed, as its firing keeps it: an ApiError's code or a launch hook's (hook_failed), else internal. */
+const errorOf = (error: unknown) => ({ code: error instanceof ApiError || error instanceof HookFailed ? error.code : "internal", message: String((error as Error)?.message ?? error) });
+/** What a failed firing's reason says of its try: a launch hook's failure and its cause; nothing for the rest. */
+const failedReason = (error: unknown): string | undefined => (error instanceof HookFailed ? error.message : undefined);
+/** A firing its launch hook's host took (a 2xx) with no run yet: sent with no run, and a startBy, which only such a
+ *  firing has. startBy is kept in the retry_at column: no column of its own, no migration. */
+const tookWithNoRun = (firing: FiringRow): boolean => firing.status === "sent" && firing.runId === null && firing.startBy !== null;
 
 export class Triggers {
   private readonly store: TriggerDeps["store"];
@@ -762,7 +774,7 @@ export class Triggers {
         if (firing.status === "failed") await this.notifyFailed(firing.triggerId, firing.key);
         else if (firing.waitsOn === null && !this.driving.has(firing.key) && (firing.retryAt === null || firing.retryAt <= now)) void this.inTurn(firing.triggerId, firing.key);
       }
-      const waiting = await this.store.triggers.waiting();
+      const waiting = await this.store.triggers.waiting(now);
       this.waiting = waiting.length > 0;
       for (const firing of waiting) if (firing.free && !this.driving.has(firing.key)) void this.inTurn(firing.triggerId, firing.key);
     } catch (error) {
@@ -1101,16 +1113,23 @@ export class Triggers {
    *  active), or, with max_active_runs (a pushed trigger's, with or without accept), waiting on the last run while that
    *  many of the trigger's runs have not ended: a capped trigger starts a run per firing and never skips. A trigger whose
    *  source starts a run per firing (its adapter's concurrent) is never skipped either: with no cap it starts, the server's
-   *  run limit still holding through retry. */
+   *  run limit still holding through retry. A firing its launch hook's host took with no run yet holds the room as a run in
+   *  progress until it starts or its startBy passes (the store's activeRuns and held): with a cap, a firing waits on it (on
+   *  its key while the trigger has no run), and the overlap check skips for it. */
   private async busy(trigger: Trigger, firing: FiringRow): Promise<{ skipped: string } | { waitsOn: string; reason: string } | undefined> {
+    const now = this.clock.now();
     if (trigger.maxActiveRuns !== null) {
-      const active = await this.store.triggers.activeRuns(trigger.id);
-      if (active < trigger.maxActiveRuns || !trigger.lastRunId) return undefined;
-      return { waitsOn: trigger.lastRunId, reason: `${active} of this trigger's runs have not ended (max_active_runs ${trigger.maxActiveRuns}).` };
+      const active = await this.store.triggers.activeRuns(trigger.id, now);
+      if (active < trigger.maxActiveRuns) return undefined;
+      const on = trigger.lastRunId ?? (await this.store.triggers.held(trigger.id, now));
+      if (!on) return undefined;
+      return { waitsOn: on, reason: `${active} of this trigger's runs have not ended (max_active_runs ${trigger.maxActiveRuns}).` };
     }
     if (this.adapter(trigger.source)?.concurrent?.(trigger.source)) return undefined;
     const earlier = (await this.store.triggers.pending()).some((f) => f.triggerId === trigger.id && f.status === "due" && f.key !== firing.key && f.at < firing.at);
     if (earlier) return { skipped: "An earlier firing is still waiting to start its run." };
+    const held = await this.store.triggers.held(trigger.id, now);
+    if (held) return { skipped: `The last firing, ${held}, was handed to the launch hook's host, which may still start its run.` };
     const last = trigger.lastRunId;
     if (!last) return undefined;
     const status = await this.deps.statusOf(last);
@@ -1119,8 +1138,9 @@ export class Triggers {
   }
 
   /** A failed try: kept due with its next try after the backoff table's wait (an answer's own Retry-After when longer), or,
-   *  past the table, failed. Either way one more in the trigger's streak. A throw that is not a target's answer (a store
-   *  or a run's status that did not read, a programming error) is a failed try like a busy server's. */
+   *  past the table, failed. A try is no failure in the trigger's streak: its firing is one, once it fails, however many
+   *  tries it took. A throw that is not a target's answer (a store or a run's status that did not read, a programming
+   *  error) is a failed try like a busy server's. */
   private async failedTry(triggerId: string, key: string, error: unknown): Promise<void> {
     try {
       const firing = await this.store.triggers.firing(triggerId, key);
@@ -1128,14 +1148,10 @@ export class Triggers {
       const attempts = firing.attempts + 1;
       if (attempts <= BACKOFF_MS.length) {
         const wait = Math.max(BACKOFF_MS[attempts - 1]!, error instanceof ApiError ? (error.extra.retry_after_ms ?? 0) : 0);
-        const settled = await this.store.triggers.settle(triggerId, key, { attempts, retryAt: this.clock.now() + wait, error: errorOf(error), reason: errorOf(error).message, waitsOn: null }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
-        if (settled?.paused) {
-          this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
-          await this.pausedThere(triggerId);
-        }
+        await this.store.triggers.settle(triggerId, key, { attempts, retryAt: this.clock.now() + wait, error: errorOf(error), reason: errorOf(error).message, waitsOn: null, from: "due" });
         return;
       }
-      await this.failed(triggerId, key, errorOf(error));
+      await this.failed(triggerId, key, errorOf(error), undefined, failedReason(error));
     } catch (failure) {
       // The store could not keep the failure: said, and the timer tries again after the table's first wait.
       this.deps.say({ condition: "trigger_firing_failed", trigger: triggerId, firing: key, error: String((failure as Error)?.message ?? failure) });
@@ -1143,18 +1159,19 @@ export class Triggers {
     }
   }
 
-  /** A target refused the firing: a busy server's answer is a failed try under the table; any other (a refusal, a thrown
-   *  error) fails the firing at once. Both count toward the streak. */
+  /** A target refused the firing: a busy server's answer, or a launch hook that did not answer (a retryable HookFailed),
+   *  is a failed try under the table; any other (a refusal, a hook's other answer, a thrown error) fails the firing at
+   *  once. The firing counts toward the streak once it fails. */
   private async answered(triggerId: string, key: string, error: unknown, runId?: string): Promise<void> {
-    if (error instanceof ApiError && RETRYABLE.has(error.code)) return this.failedTry(triggerId, key, error);
-    await this.failed(triggerId, key, errorOf(error), runId);
+    if ((error instanceof ApiError && RETRYABLE.has(error.code)) || (error instanceof HookFailed && error.retryable)) return this.failedTry(triggerId, key, error);
+    await this.failed(triggerId, key, errorOf(error), runId, failedReason(error));
   }
 
   /** A start_run firing handed to the host by the launch hook, never started here. The run the host started for it
    *  (handedStart: under the firing's key) makes it started, as a run started here would, whatever the hook answered;
    *  else a 2xx makes it sent, with no run (its attrs kept for a run the host starts late: handedRan) and its startBy
-   *  LAUNCH_HOOK_LATE_START_MS after that answer, and any other answer or none skipped with why. The server's stop leaves
-   *  it due, so the next start hands it again under the same webhook-id (or finds the run the host started). */
+   *  LAUNCH_HOOK_LATE_START_MS after that answer, and any other answer or none is a failed try (answered). The server's
+   *  stop leaves it due, so the next start hands it again under the same webhook-id (or finds the run the host started). */
   private async handed(trigger: Trigger, firing: FiringRow, hook: LaunchHook): Promise<void> {
     if (trigger.target.kind !== "start_run") return;
     const agentId = trigger.target.agent_id;
@@ -1162,31 +1179,30 @@ export class Triggers {
       firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
       input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
     };
-    const handed = await handToHost(hook, sent, this.stopping.signal);
+    const handed: Handed | HookFailed = await handToHost(hook, sent, this.stopping.signal, () => this.clock.now()).catch((error: unknown) => (error instanceof HookFailed ? error : Promise.reject(error)));
     if (this.closed || "stopped" in handed) return;
+    // handedRan starts the firing with its run once: the host's own start may have already.
     const linked = await this.deps.runOf(firing.key);
     if (this.closed) return;
-    if (linked) return void (await this.started(trigger.id, firing.key, linked.run_id));
-    if ("skipped" in handed) {
-      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: handed.skipped });
-      this.deps.say({ condition: "trigger_hook_skipped", trigger: trigger.id, firing: firing.key });
-      return;
-    }
-    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true, startBy: this.clock.now() + LAUNCH_HOOK_LATE_START_MS }, { reset: true });
-    // The host may start the run right after its answer: one it started between the read above and this write found the
-    // firing still due (handedRan left it), so it is read again here.
+    if (linked) return void (await this.handedRan(trigger.id, firing.key, linked.run_id));
+    if (handed instanceof HookFailed) return void (await this.answered(trigger.id, firing.key, handed));
+    // Sent only while it is due: a host start between the read above and this write left it started with its run.
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", reason: HANDED_NO_RUN, keepAttrs: true, startBy: this.clock.now() + LAUNCH_HOOK_LATE_START_MS, from: "due" }, { reset: true });
+    // The host may start the run right after its answer: one it started after this write is read again here.
     const after = await this.deps.runOf(firing.key);
     if (this.closed) return;
-    if (after) return void (await this.started(trigger.id, firing.key, after.run_id));
+    if (after) return void (await this.handedRan(trigger.id, firing.key, after.run_id));
     this.deps.say({ condition: "trigger_handed", trigger: trigger.id, firing: firing.key });
   }
 
   /** The run the host starts through the API for a firing the launch hook handed it (RunCreate `trigger_firing`): the
-   *  firing's key (the run's origin key, so the firing finds it), and the trigger, input origin and title its own start
-   *  would give the run; or the run already started under that key. Refused, in words, unless this server has the hook and
-   *  the firing, of a start_run trigger on `agentId`, is due (being handed over) or one its host took with no run, up to
-   *  its startBy (the host may answer first and start the run after). */
-  async handedStart(given: unknown, agentId: string): Promise<{ run_id: string } | { key: string; trigger: RunTrigger; from: MessageOrigin; title: string }> {
+   *  firing's key (the run's origin key, so the firing finds it), the trigger, input origin and title its own start
+   *  would give the run, and the target and previous-result flag it starts on (the policy's start, as drive's); or the
+   *  run already started under that key. Refused, in words, unless this server has the hook and the firing, of a
+   *  start_run trigger on `agentId`, is due (being handed over, or waiting on its retry) and has room by drive's check
+   *  (busy: max_active_runs, the overlap), or is one its host took with no run, up to its startBy (the host may answer
+   *  first and start the run after). */
+  async handedStart(given: unknown, agentId: string): Promise<{ run_id: string } | HandedStart> {
     const refused = (reason: string, message: string, field = "trigger_firing") => invalid([{ field, reason, message }]);
     if (!this.deps.launchHook) throw refused("not_allowed", "This server has no launch hook: a run starts as a trigger firing's only when the hook handed that firing to its host.");
     if (!isObject(given)) throw refused("wrong_type", "trigger_firing is { trigger_id, firing_id }, as the launch hook sent them.");
@@ -1207,24 +1223,30 @@ export class Triggers {
       return prior;
     }
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
-    const taken = firing.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN;
-    if (taken && (firing.startBy === null || this.clock.now() > firing.startBy)) {
-      const until = firing.startBy === null ? "" : ` (start_by ${iso(firing.startBy)})`;
-      throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed${until}.`, "trigger_firing.firing_id");
+    if (tookWithNoRun(firing) && this.clock.now() > firing.startBy!) {
+      throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed (start_by ${iso(firing.startBy!)}).`, "trigger_firing.firing_id");
     }
-    if (firing.status !== "due" && !taken) {
+    if (firing.status !== "due" && !tookWithNoRun(firing)) {
       throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its answer.`, "trigger_firing.firing_id");
     }
+    // A due firing (being handed, or waiting on its retry) starts by drive's own check: another firing's run may have
+    // taken its trigger's room since it was handed.
+    const busy = firing.status === "due" ? await this.busy(trigger, firing) : undefined;
+    if (busy) throw refused("not_due", `Firing ${key} does not start now. ${"skipped" in busy ? busy.skipped : busy.reason}`, "trigger_firing.firing_id");
     const attrs = firing.attrs as Record<string, string> | null | undefined;
-    return { key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, firing) };
+    return {
+      key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, firing),
+      target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
+    };
   }
 
-  /** Run `runId`, which the host started for firing `key` (handedStart), started: one whose host answered first (sent,
-   *  with no run) is made started here, as handed() makes it when the run came first, so the overlap check and
-   *  max_active_runs count it. A firing still being handed is left to handed(), which reads its run after the answer. */
+  /** Run `runId`, which the host started for firing `key` (handedStart), started: a firing with no run yet, still due
+   *  (being handed, or waiting on its retry after the hook failed) or one its host took first, is made started here, as
+   *  handed() makes it when the run came first, so the overlap check, max_active_runs and last_run_id count it. A failed
+   *  or settled firing is left as it is. */
   async handedRan(triggerId: string, key: string, runId: string): Promise<void> {
     const firing = await this.store.triggers.firing(triggerId, key);
-    if (firing?.status === "sent" && firing.runId === null && firing.reason === HANDED_NO_RUN) await this.started(triggerId, key, runId);
+    if (firing && (firing.status === "due" ? firing.runId === null : tookWithNoRun(firing))) await this.started(triggerId, key, runId);
   }
 
   /** Each sent firing whose host's run is in the store under its key, though the server stopped before the firing was
@@ -1248,11 +1270,16 @@ export class Triggers {
   }
 
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
-   *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id). */
+   *  queued (after the firing is written: a start finds one not yet queued and queues it, under the same webhook-id).
+   *  Failed only while it is due: one its host's run started meanwhile is left started, with no failure and no message. */
   private async failed(triggerId: string, key: string, error: { code: string; message: string }, runId?: string, reason?: string): Promise<void> {
-    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}) }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
+    const settled = await this.store.triggers.settle(triggerId, key, { status: "failed", error, ...(runId ? { runId } : {}), ...(reason ? { reason } : {}), from: "due" }, { failure: true, pauseAt: FAILURES_TO_PAUSE });
+    if (!settled) return;
     await this.notifyFailed(triggerId, key);
-    if (settled?.paused) await this.pausedThere(triggerId);
+    if (settled.paused) {
+      this.deps.say({ condition: "trigger_auto_paused", trigger: triggerId, firing: key });
+      await this.pausedThere(triggerId);
+    }
   }
 
   /** Trigger `triggerId`, turned off by its failure streak: off at its sender too (offThere). */

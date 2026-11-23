@@ -47,7 +47,10 @@ describe("tool settings", () => {
 
   it("describes each known provider in a line, native as never a third party; an unknown one has its id and no line", () => {
     expect(providerHelp("native")).toMatch(/never a third party/);
-    expect(providerHelp("auto")).toMatch(/else keyless Exa/);
+    expect(providerHelp("auto")).toMatch(/else keyless Firecrawl, with keyless Exa behind it/);
+    expect(providerHelp("auto", "web_fetch")).toMatch(/keyless Firecrawl, which is sent each URL read/);
+    expect(providerHelp("firecrawl-keyless", "web_fetch")).toMatch(/never a private or local one/);
+    expect(providerLabel("firecrawl-keyless")).toBe("Firecrawl keyless");
     expect([providerLabel("brave-beta"), providerHelp("brave-beta")]).toEqual(["brave-beta", undefined]);
   });
 

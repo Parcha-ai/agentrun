@@ -453,7 +453,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -1600,8 +1600,13 @@ the TTL.
   name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
-  none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
-  a create). A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  none from inside, and waits until the label listing shows the new computer twice running. Daytona's `GET /sandbox`
+  is eventually consistent (`daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/controllers/sandbox.controller.ts:130-146`:
+  an OpenSearch index the API never writes itself), and on a hosted deployment it left new sandboxes unlisted past
+  15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
+  its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
+  and `list()` leaves it out until the listing shows it; a retry of its request on the same provider finds it by its
+  id. Any other answer fails create `timeout` in those words. A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
   `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
   has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
@@ -1687,17 +1692,19 @@ With `connect: "dial"` (a server's `daytonaConnect` setting, `COMPUTER_DAYTONA_C
 default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)). The host has
 no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTRUN_ATTACH_URL` left out, and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
-`started` (within the create's time; `error` or `build_failed` fails create in Daytona's words), create starts
-`agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session command, as root, that
-first takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init), then
-`&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
+`started` (within the create's time; `error` or `build_failed`, or a sandbox being destroyed, fails create in Daytona's
+words), create starts `agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session
+command, as root, that sets `umask 077` (so init's start log is root's alone whatever the toolbox's umask, and the
+computer's programs inherit 077),
+then `&&` takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init),
+then `&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
 launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL is no secret; the token stays in the sandbox's
 env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
 the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
 image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
-its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with the session
-command's log, its last 10 lines within 800 characters (`dialLog`, the token replaced by `<token>`), or "agentrun-dial
-never started" when the session is none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
+log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
+every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1718,6 +1725,17 @@ What each part of a dial sandbox rests on:
   [daemon session/create.go:23-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/create.go#L23-L24)).
   Live (11-22): a value set in create's `env` was echoed by a session command, which runs as root, and `runAsync` works.
   `AGENTRUN_ATTACH_URL` comes from the command's own line.
+- **The dial's log is plain text, framed.** The provider names no SDK version (no `X-Daytona-SDK-Version`), so the
+  toolbox skips its own demux and answers a command's logs as text
+  ([daemon toolbox/process/session/log.go:55-65](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/toolbox/process/session/log.go#L55-L65),
+  `SkipServerDemux` true for no version,
+  [session/common.go:21-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L21-L24));
+  with `X-Daytona-Split-Output: true` the output is not combined
+  ([common.go:17-19](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L17-L19)),
+  so the text is the log file as written, each write behind its stream's prefix, `\x01\x01\x01` or `\x02\x02\x02`
+  ([session/log.go:121-137](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/log.go#L121-L137)).
+  `dialLog` drops the prefixes, as the daemon does for combined output. Live (11-22): the toolbox's
+  `/process/session/entrypoint/logs` answered plain text, not JSON.
 - **The image's CMD never runs; the snapshot's entrypoint does.** The container's entrypoint is the toolbox daemon, and
   its arguments are the snapshot's entrypoint, else the image's ENTRYPOINT, never its CMD
   ([runner container_configs.go:143-173](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L143-L173));
@@ -1778,7 +1796,8 @@ default snapshot whose `/opt` another user can write would now be refused at cre
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
 - how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
   for both, up to `goneMs`); how long a stop takes to read `stopped`;
-- how soon the label listing shows a new sandbox;
+- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s on a hosted
+  deployment (create keeps a sandbox the listing trails, above);
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.
@@ -2038,7 +2057,8 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `create` waits for the sandbox to run; E2B's create options are not read back. Then the daemon: hello (version,
   `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
   capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
-  listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
+  listing shows the new computer, or, still unlisted after `listedMs`, keeps it when a read by its id finds it running
+  with its labels (the shared adapter's rule, as on Daytona). A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
   create never returns ok once its signal has aborted.
 - `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
   create. `image` is the template create was asked for, from its label.
