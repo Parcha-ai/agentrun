@@ -79,8 +79,8 @@ function serverWrite(sealKey: Buffer, server: McpServerSave, githubMcpOrigin: st
 }
 
 /** Rewrites a server's row as it was read, its sealed credential kept as it is (store.mcp.rewrite): written iff the row
- *  still has the credential, address and auth type `seen`; undefined, writing nothing, when one changed meanwhile or the
- *  row went. Bounded and github_app-guarded as saveMcpServer. `owns`: as saveMcpServerIfCredential's. */
+ *  still has the credential, address, auth type and last edit `seen`; undefined, writing nothing, when one changed
+ *  meanwhile or the row went. Bounded and github_app-guarded as saveMcpServer. `owns`: as saveMcpServerIfCredential's. */
 export async function rewriteMcpServer(
   store: { mcp: Pick<Mcp, "rewrite"> },
   server: { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; listedAt?: number; updatedAt?: number },

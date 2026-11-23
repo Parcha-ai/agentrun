@@ -2314,7 +2314,8 @@ its authorization server refused: sign in again), null for `auth.type` none. No 
 credential; a server's error text is cut of the values sent before it is shown. `POST .../{name}/refresh` lists the
 tools again with the saved URL and credential, keeps them, and answers `{added, removed, changed, server}`: `changed`
 names a tool whose title, description, schemas or annotations differ. A save that moves the server or changes its auth
-type while a refresh lists it stands: the refresh writes nothing and answers `503`. `DELETE .../{name}` forgets the
+type while a refresh lists it stands: the refresh writes nothing and answers `503`. A save that keeps both (new prices,
+say) stands too: the refresh keeps its listing on top of that save, with the save's prices. `DELETE .../{name}` forgets the
 server and its credential. Capabilities' `features.mcp_client` says `transports: ["streamable-http"]`, the `auth` types and `at_rest:
 "sealed"`.
 

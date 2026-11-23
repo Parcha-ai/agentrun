@@ -536,13 +536,14 @@ export class McpServersOverStore {
   }
 
   /** Writes a change over the row it read (`was`), its credential left as it is, by a compare-and-set on that row's
-   *  credential, address and auth type (store.mcp.rewrite), so a save made since is never written back over. A lost one (a
-   *  run kept a refreshed set meanwhile, or a save landed) reads the row again and re-applies the change onto it, while
-   *  `still` holds of it, at most REWRITE_TRIES writes; then it is refused in words, nothing written. */
+   *  credential, address, auth type and last edit (store.mcp.rewrite), so a save made since is never written back over,
+   *  even one that kept the address and auth type (a repricing). A lost one (a run kept a refreshed set meanwhile, or a
+   *  save landed) reads the row again and re-applies the change onto it, while `still` holds of it, at most REWRITE_TRIES
+   *  writes; then it is refused in words, nothing written. A refresh re-applied so takes the fresh row's prices. */
   private async rewriteKeeping(name: string, was: McpServerRow, fields: (row: McpServerRow) => Parameters<typeof rewriteMcpServer>[1], doing: "save" | "refresh", still: (row: McpServerRow) => boolean, owns?: McpOwnersMark): Promise<McpServerRow> {
     let row = was;
     for (let tries = 1; ; tries++) {
-      const saved = await rewriteMcpServer(this.store, fields(row), { sealed: row.sealed, url: row.url, auth: row.auth }, { githubMcpOrigin: this.appOrigin, ...(owns ? { owns } : {}) });
+      const saved = await rewriteMcpServer(this.store, fields(row), { sealed: row.sealed, url: row.url, auth: row.auth, updatedAt: row.updatedAt }, { githubMcpOrigin: this.appOrigin, ...(owns ? { owns } : {}) });
       if (saved) return saved;
       const fresh = await this.store.mcp.server(name);
       if (!fresh) throw notFound(name);
