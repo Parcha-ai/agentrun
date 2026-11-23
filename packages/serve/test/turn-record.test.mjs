@@ -7,6 +7,10 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { KINDS } from "../dist/runner/journal-kinds.js";
+import { runEntries } from "../dist/store-reads/journal.js";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -112,14 +116,12 @@ for (const harness of ADAPTERS) {
     assert.equal(view.result, null, JSON.stringify(view.result));
   });
 
-  // SKIP (needs a product decision): the run is visible live now and ends cancelled, but the cut request's cost never
-  // reaches its cost: a turn cut by a cancel books $0.002 on the way out, after the loop has settled the run's bookings, and
-  // the run reads cost.usd 0.0005 (the answer's), never over its $0.001 cap. The case waited for that cost in a run's own
-  // process held at its exit, a process the runner no longer has; whether a cancel waits for the cut request's booking is
-  // the open question.
-  test.skip(`${harness}: a cancel, then a cost that takes the run over its cap, ends the run cancelled, never failed first`, { timeout: 90_000 }, async (t) => {
+  // The cut request is booked on the run's one ledger before its end (a lost request, at what its cap held: on the faux
+  // model, free, $0), so no cost comes in after the cancel to take a capped run past its cap: a request's booking is never
+  // past its hold, and every hold was admitted under the cap.
+  test(`${harness}: a cancel that cuts a request in flight books it before the run's end, which reads cancelled from the 202 on, never failed`, { timeout: 90_000 }, async (t) => {
     const signal = join(await scratch(t), "admitted");
-    const { api } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
+    const { api, store } = await serve(t, { harnessTable: fauxTable(FAUX_HARNESS) });
     const runId = await start(api, harness, `Answer, then hold a request the cancel cuts and books (signal ${signal}).`, { input: "hi", max_cost_usd: 0.001 });
     await until("the second request is admitted", async () => existsSync(signal));
     await until("the answer's row is in, under the cap", async () => (await rowsOf(api, runId)).some((r) => r.kind === "final_answer" && r.text === "Done."));
@@ -129,11 +131,13 @@ for (const harness of ADAPTERS) {
     assert.deepEqual([cancel.status, cancel.body.cancel_requested], [202, true], JSON.stringify(cancel.body));
     seen.push(cancel.body.status);
     await watch(api, runId, terminal, "the cancel ends the run", { seen });
-    // The cost the cut request books on the way out, over the cap.
-    await until("the cut request's cost is in", async () => ((await api("GET", `/runs/${runId}`)).body.cost?.usd ?? 0) > 0.001);
-    await watch(api, runId, () => true, "", { seen });
     const view = await endsAs(api, runId, seen, "cancelled");
-    assert.ok(typeof view.cost?.usd === "number" && view.cost.usd > 0.001, `the case: the cut request's cost came in after the cancel, over the cap: ${JSON.stringify(view.cost)}`);
+    const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
+    const cut = entries.findIndex((entry) => entry.kind === RUNNER_RECORDS.turn && entry.data?.rule === "lost:cut");
+    const ended = entries.findIndex((entry) => entry.kind === KINDS.end);
+    assert.ok(cut >= 0 && cut < ended, `the cut request is booked before the run's end: ${JSON.stringify(entries.map((entry) => [entry.kind, entry.data?.rule]))}`);
+    assert.equal(entries[cut].data.bookedUsd, 0, JSON.stringify(entries[cut].data));
+    assert.equal(view.cost?.usd, 0.0005, `the answer's cost, and the cut request's $0: ${JSON.stringify(view.cost)}`);
   });
 }
 
