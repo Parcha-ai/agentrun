@@ -612,6 +612,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 				method,
 				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				// Never followed: the key's header would go on to wherever a redirect points, as rest.ts's client refuses too.
+				redirect: "error",
 				signal: either,
 			});
 		} catch (error) {

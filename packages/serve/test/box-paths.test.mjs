@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { closeSync, constants, openSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { release } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -342,8 +342,12 @@ test("compose's layout, the read failing at the start: a close while the retry's
   }
   lock.release();
   assert.equal(answered, false, "the store closed while the removal was still held, and the close waits for the removal");
+  // A writer's open of the gate answers once the removal holds it, and the removal begins only once the killed read's
+  // client has exited (execFile answers after the child is reaped): only then is its pid sure to be gone.
+  const gateWriter = await open(gate, "w");
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the stalled read's client is killed");
-  await writeFile(gate, "go");
+  await gateWriter.writeFile("go");
+  await gateWriter.close();
   await closed;
   assert.deepEqual([hasContainer(fake, name), callsFrom(fake, from)], [false, [["rm", name], ["inspect", name]]]);
 });

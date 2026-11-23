@@ -69,10 +69,13 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	assert.deepEqual(heard, [], "no call went out");
 	// An https base with a trailing slash is taken, the slash dropped.
 	const fake = fakePhoneHarness();
-	const provider = await create({ apiKey: KEY, baseUrl: "https://api.phone-harness.com/", fetch: (url, init) => (heard.push(url), fake.fetch(url, init)), adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const redirects = [];
+	const provider = await create({ apiKey: KEY, baseUrl: "https://api.phone-harness.com/", fetch: (url, init) => (heard.push(url), redirects.push(init?.redirect), fake.fetch(url, init)), adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
 	const made = await provider.create(SPEC, req());
 	assert.equal(made.ok, true, JSON.stringify(made.error));
 	assert.ok(heard.length > 0 && heard.every((url) => url.startsWith("https://api.phone-harness.com/") && !url.startsWith("https://api.phone-harness.com//")), heard.join(", "));
+	// A redirect is never followed, so the key's header never goes on to another URL, as rest.ts's client does.
+	assert.ok(redirects.every((redirect) => redirect === "error"), JSON.stringify(redirects));
 });
 
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
