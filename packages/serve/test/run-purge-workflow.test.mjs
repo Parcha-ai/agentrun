@@ -194,6 +194,16 @@ const servedNow = async (api, store, agentId, question) => {
   await ended(api, run.body.run_id);
   return { champion: promotions.serving.find((line) => line.workflow === "answer")?.champion?.commit ?? null, served: (await store.runs.get(run.body.run_id)).metrics?.workflow_digest ?? null };
 };
+/** Agent `agentId` (learning on, no runner here) with one ended run, `<agentId>-served`, that its learned workflow
+ *  `answer` served first: its id. */
+const servedRunOf = async (api, store, agentId) => {
+  assert.equal((await api("POST", "/agents", agent(agentId, { learning: true }))).status, 201);
+  const revisionId = (await store.agents.get(agentId)).currentRevision;
+  const runId = `${agentId}-served`;
+  await store.runs.create({ id: runId, agentId, revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+  await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_digest: "d1" } });
+  return runId;
+};
 /** Records of workflow `other`, held, after `items` up to the trim bound, so the next write trims. */
 const filledTo = (items, bound, at) => {
   const out = [...items];
@@ -521,6 +531,97 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await servedNow(api, store, "reheld", "What is seven times seven?"), { champion: await mergeAt(data, "reheld", first), served: digestOf(v1[path]) }, "past the trim, the champion read still names v1's commit, and a run that fits it is served v1");
   });
 
+  // #3458 (jobs/purge-keeps-champion 0695220cf9), on both stores. A purge gate whose store read fails (its read of a
+  // writer's run row throws): a promote write still fails closed (decideCheck throws, nothing is promoted), and the
+  // single-run GET answers 200. Here v2's commit holds v2, on main, so the gate's first two reads stand and its read of
+  // the writer's row is the one that throws (#3458's case checks v2 at v1's commit, which this gate refuses as not
+  // holding it before any row is read).
+  test(`${kind}: a purge gate whose store read fails leaves the run read 200 and still refuses the promote write`, { timeout: 120_000 }, async (t) => {
+    const { api, data, store } = await serve(t, { runner: false });
+    onStore(t, data, settingsOf());
+    const runId = await servedRunOf(api, store, "torn");
+    // The workflow's writer, a run of another agent: no read of torn's own runs reads its row, only the gate does.
+    assert.equal((await api("POST", "/agents", agent("elsewhere", { learning: true }))).status, 201);
+    const writer = "torn-writer";
+    await store.runs.create({ id: writer, agentId: "elsewhere", revisionId: (await store.agents.get("elsewhere")).currentRevision }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+    await store.runs.update(await store.claim(writer, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt("in words")];
+    const first = await learned(data, "torn", (ws) => learningCommit(ws, { runId: writer, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const commit = await learned(data, "torn", (ws) => learningCommit(ws, { runId: writer, round: 2, reason: "It revised answer.", files: filesOf("in words") }));
+    const at = new Date().toISOString();
+    const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+    const replay = { commit, runs: ["torn-replay-1"], replay_id: "torn-replay" };
+    await store.settings.put("learning.promotions.torn", { v: 1, items: [
+      { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: first },
+      { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, ...replay },
+    ] });
+    // The writer's row no longer reads: every store read of it throws (its metrics are not JSON, past the column's check).
+    const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+    try {
+      db.exec("PRAGMA ignore_check_constraints = ON");
+      db.prepare("UPDATE runs SET metrics = '{' WHERE id = ?").run(writer);
+    } finally {
+      db.close();
+    }
+    await assert.rejects(store.runs.get(writer), "the writer's row read throws");
+
+    const run = await api("GET", `/runs/${runId}`);
+    const { promotionOf } = await import("../dist/learn/promote.js");
+    const { decideCheck } = await import("../dist/runner/promotion.js");
+    const { secretsShown } = await import("../dist/learning.js");
+    const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `torn-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "6" }));
+    const deps = { store, agentId: "torn", log: () => {}, shown: async () => secretsShown([]), learning: learningStoreOf(data, "torn") };
+    const write = await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay).then(() => "written", () => "refused");
+    const decided = promotionOf((await store.settings.get("learning.promotions.torn")).items, "answer", digestOf(v2[path]))?.decided;
+    assert.deepEqual({ run: run.status, write, decided }, { run: 200, write: "refused", decided: "replaying" }, "a gate whose store read fails leaves the run read 200, and the promote write is still refused");
+  });
+
+  // #3458 (0695220cf9), on both stores. A check that outlives its revision's run, with the inputs it did not agree on:
+  // the run's purge puts v1 back on main while v2's check replays other runs' inputs, and the check lands a hold for v2
+  // at the commit it was checked at. The gate refuses that hold as it refuses a promote there, so the compile's held
+  // names (and the next run's compile ask) never ask a revision of the purged v2 from its disagreements.
+  test(`${kind}: a hold a check lands after its revision's run is purged is refused by the gate: no compile is asked of it`, { timeout: 120_000 }, async (t) => {
+    const { api, data, store } = await serve(t, { runner: false });
+    onStore(t, data, settingsOf());
+    assert.equal((await api("POST", "/agents", agent("rehold", { learning: true }))).status, 201);
+    const revisionId = (await store.agents.get("rehold")).currentRevision;
+    for (const runId of ["rehold-first", "rehold-gone", "rehold-next"]) {
+      await store.runs.create({ id: runId, agentId: "rehold", revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
+      await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    }
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt("in words")];
+    const kept = await learned(data, "rehold", (ws) => learningCommit(ws, { runId: "rehold-first", reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    const revised = await learned(data, "rehold", (ws) => learningCommit(ws, { runId: "rehold-gone", reason: "It revised answer.", files: filesOf("in words") }));
+    const at = new Date().toISOString();
+    const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+    const replay = { commit: revised, runs: ["rehold-replay-1"], replay_id: "rehold-replay" };
+    await store.settings.put("learning.promotions.rehold", { v: 1, items: [
+      { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit: kept },
+      { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, ...replay },
+    ] });
+    assert.equal((await api("DELETE", "/runs/rehold-gone")).status, 204);
+    assert.deepEqual((await onMain(data, "rehold")).files, v1, "main holds answer v1 again");
+
+    // v2's check lands now: every input answered, none as the agent did, so it holds with its disagreements.
+    const { promotionOf, refusedOf } = await import("../dist/learn/promote.js");
+    const { holdsTextOf } = await import("../dist/purged-workflow.js");
+    const { decideCheck } = await import("../dist/runner/promotion.js");
+    const { secretsShown } = await import("../dist/learning.js");
+    const { heldNamesOf } = await import("../dist/learn/compile.js");
+    const { compileAskOf } = await import("../dist/runner/learning-end.js");
+    const learning = learningStoreOf(data, "rehold");
+    const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `rehold-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "seven" }));
+    const deps = { store, agentId: "rehold", log: () => {}, shown: async () => secretsShown([]), learning };
+    await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay);
+    const records = (await store.settings.get("learning.promotions.rehold")).items;
+    assert.equal(promotionOf(records, "answer", digestOf(v2[path]))?.decided, "hold", "the late check lands a hold for v2");
+
+    const ask = await compileAskOf({ store, data, learningStore: (agentId) => learningStoreOf(data, agentId) }, { runId: "rehold-next", agentId: "rehold", outcome: "completed", refuse: [], input: { content: "What is six?", question: "What is six?" }, seedWorkflows: 1 });
+    assert.deepEqual({ held: [...heldNamesOf(records, await refusedOf(records, holdsTextOf(learning)))], asked: ask?.mode === "revise" ? ask.workflow : null }, { held: [], asked: null }, "the gate refuses the late hold at v2's commit: heldNamesOf names no workflow, and the next compile ask revises nothing");
+  });
+
   // The raw reads of a workflow a purged run wrote that is still on main (its run purged before its purge took the
   // folder's text, until its DELETE is sent again): its files read 410 purged, as every route of that run does, and a
   // person's approval of it is refused the same way. The store's reads in place of git's.
@@ -737,6 +838,34 @@ test("a promotion write whose gate answered before a purge keeps the champion be
   const after = JSON.parse(kept.get(key)).items;
   const purged = { keys: new Set(["answer\nv2\nc2"]), unread: false };
   assert.deepEqual({ length: after.length, champion: championOf(after, "answer", purged)?.digest ?? null }, { length: PROMOTIONS_KEPT, champion: "v1" }, "the write trims to the bound and keeps v1's promote, so once v2's run is purged, v1 is the champion");
+});
+
+// #3458 (0695220cf9): the same window when one run wrote two champions in a row: v2, then v3, each promoted over v1.
+// The gate answered before the purge (none refused), and the purge of that run refuses both. The trim keeps a chain of
+// CHAMPIONS_KEPT champions back from the one the answer leaves, so v1's promote is still there and v1 serves. Past the
+// chain it fails closed as before: nothing a purged run wrote serves, and the agent takes the run.
+test("a promotion write whose gate answered before a purge of a run that wrote two champions in a row keeps v1: after the purge v1 serves", async () => {
+  const { CHAMPIONS_KEPT, championOf, PROMOTIONS_KEPT, promotionsKey, recordPromotion } = await import("../dist/learn/promote.js");
+  const key = promotionsKey("chain");
+  const rec = (workflow, digest, decided, commit) => ({ workflow, digest, at: "t", decided, reason: "r", ...(commit ? { commit } : {}) });
+  const refusing = (records) => ({ keys: new Set(records.map((one) => `answer\n${one.digest}\n${one.commit}`)), unread: false });
+  // The gate's answer as it stood before the purge: none refused. The purge marks the run that wrote c2 and c3 right after.
+  const never = async () => assert.fail("a hold names no commit: nothing to check");
+  const stale = { holds: async () => true, onMain: never, writerPurged: never };
+  const past = rec("other", "past", "hold");
+  const written = [rec("answer", "v2", "promote", "c2"), rec("answer", "v3", "promote", "c3")];
+  const two = new Map([[key, JSON.stringify({ v: 1, items: filledTo([rec("answer", "v1", "promote", "c1"), ...written], PROMOTIONS_KEPT, "t") })]]);
+  assert.equal((await recordPromotion(settingsOver(two), "chain", past, (was) => was === undefined, stale)).won, true);
+  const after = JSON.parse(two.get(key)).items;
+  assert.deepEqual({ length: after.length, champion: championOf(after, "answer", refusing(written))?.digest ?? null }, { length: PROMOTIONS_KEPT, champion: "v1" }, "the write trims to the bound and keeps v1's promote, so once the run that wrote v2 and v3 is purged, v1 is the champion");
+
+  // Past the chain: one run wrote every champion after v1, CHAMPIONS_KEPT of them. v1 is trimmed, so after the purge
+  // nothing serves (no purged run's revision either): it fails closed, as a champion trimmed before the purge does.
+  const chain = Array.from({ length: CHAMPIONS_KEPT }, (_, i) => rec("answer", `w${i}`, "promote", `w${i}`));
+  const many = new Map([[key, JSON.stringify({ v: 1, items: filledTo([rec("answer", "v1", "promote", "c1"), ...chain], PROMOTIONS_KEPT, "t") })]]);
+  assert.equal((await recordPromotion(settingsOver(many), "chain", past, (was) => was === undefined, stale)).won, true);
+  const capped = JSON.parse(many.get(key)).items;
+  assert.deepEqual({ length: capped.length, champion: championOf(capped, "answer", refusing(chain))?.digest ?? null }, { length: PROMOTIONS_KEPT, champion: null }, "with CHAMPIONS_KEPT purged champions in a row the trim keeps none before them, and none serves");
 });
 
 for (const [kind, settingsOf] of Object.entries(STORES)) for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritten"]) test(`${kind}: an SDK start sent again never answers a workflow a purged run wrote (${via}): its receipt is 410 purged, its champion record gone or not, and a new start pins none`, async (t) => {
