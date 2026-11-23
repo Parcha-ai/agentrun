@@ -129,18 +129,19 @@ const DIR_PREFIX = "/tmp/.agentrun-exec-";
  * The sh every command starts under ($1 its directory, then the argv). It makes the directory with mode 0700, as
  * mktemp -d does, and a path already there is never its own: the command does not start (exit 126). In it, the fifo
  * and the record of its own pid and start time (as PID_WRAPPER's line, for the kill; written whole and then renamed,
- * so the kill never reads half of it). Once both are there it puts MARK on stderr, before any byte of the argv's: a
- * write and the kill wait for it (Groundbox says `started` before the sh has run), so neither polls. It runs the argv
- * with the fifo as its stdin, opened to read and write, so the fifo never reads end of file between two writers; then it
- * removes the directory and exits as the argv did.
+ * so the kill never reads half of it). Once both are there it puts its mark (markOf) on stderr, before any byte of the
+ * argv's: a write and the kill wait for it (Groundbox says `started` before the sh has run), so neither polls. The sh
+ * holds the fifo open to read and write until it exits, so a write's open never waits for a reader, even once the argv
+ * has ended; the argv has it as its stdin, so the fifo never reads end of file between two writers. Then it removes the
+ * directory and exits as the argv did.
  */
 const START_SCRIPT = [
 	"d=$1; shift",
 	'mkdir -m 700 "$d" 2>/dev/null || { echo "agentrun: $d is already there, so it is not one this command made: the command did not start" >&2; exit 126; }',
-	'mkfifo -m 600 "$d/in" || exit 126',
+	'mkfifo -m 600 "$d/in" && exec 3<>"$d/in" || exit 126',
 	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$d/pid.new" && mv -f "$d/pid.new" "$d/pid" || exit 126',
-	"echo >&2",
-	'"$@" 0<>"$d/in"; c=$?',
+	'echo "agentrun-ready:${d##*-}" >&2',
+	'"$@" <&3 3<&-; c=$?',
 	'rm -rf "$d"; exit $c',
 ].join("\n");
 /**
@@ -151,19 +152,28 @@ const START_SCRIPT = [
 const OWN_DIR = `cd -P "$d" 2>/dev/null && [ "$(pwd -P)" = "$(cd -P "\${d%/*}" && pwd -P)/\${d##*/}" ] && [ "$(stat -c %u:%a .)" = "$(id -u):700" ] || { echo "$d is not the command's own directory" >&2; exit 4; }`;
 /** The check of one file in it ($1 its name): not a link, and this user's. */
 const ownFile = (name: string) => `[ ! -L ${name} ] && [ "$(stat -c %u ${name})" = "$(id -u)" ] || { echo "$d/${name} is not the command's own" >&2; exit 4; }`;
-/** START_SCRIPT's mark, the first byte on stderr once the command's directory, fifo and pid record are made: a newline (`echo >&2`), which no refusal of the sh starts with. */
-const MARK = 0x0a;
+/**
+ * START_SCRIPT's mark for the command whose directory is `dir`, a whole line on stderr once its directory, fifo and pid
+ * record are made: it names the directory's random part, so no other line (a wrapper's warning, another command's mark)
+ * reads as it.
+ */
+const markOf = (dir: string): Buffer => Buffer.from(`agentrun-ready:${dir.slice(dir.lastIndexOf("-") + 1)}\n`);
 /**
  * One write ($1 the command's directory), sent once START_SCRIPT's mark came: its stdin into the fifo there. With no
- * fifo the command has ended (its sh removed it): exit 3. A fifo that went between the check and the write leaves a file
- * of the write's own, removed: exit 3.
+ * fifo the command has ended (its sh removed it): exit 3. After `cat`, by what is at `in` and cat's own status:
+ * - the fifo, and cat succeeded: the bytes went in;
+ * - nothing, and cat succeeded: the bytes went into the fifo and the command has ended since, its sh removing the
+ *   directory: the write went through;
+ * - a file: the fifo went between the check and the write, and cat made a file of its own, removed: exit 3;
+ * - cat failed (the command went mid-write, or the directory was gone before cat's open): exit 3.
  */
 const WRITE_SCRIPT = [
 	'd=$1; [ -p "$d/in" ] || exit 3',
 	OWN_DIR,
 	ownFile("in"),
-	"cat >in",
-	'[ -p in ] || { rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3; }',
+	"cat >in; c=$?",
+	'if [ -p in ] || { [ ! -e in ] && [ ! -L in ]; }; then [ "$c" = 0 ] && exit 0; exit 3; fi',
+	'rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3',
 ].join("\n");
 /**
  * The kill ($1 the command's directory, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command
@@ -246,9 +256,16 @@ interface Command {
 	execId?: string;
 	/** The position in the command's output just after the last chunk read. */
 	seq: number;
-	/** stderr's first byte was read: START_SCRIPT's mark, or the first of the words of a start its sh refused. */
+	/** START_SCRIPT's mark for it (markOf), and whether it was read: stderr from then on is the command's, as it comes. */
+	mark: Buffer;
 	marked: boolean;
-	/** Answers once stderr's first byte came or the stream ended: what a write and the kill wait for. */
+	/**
+	 * Before the mark: the stderr bytes held back because they may be its start (a line's first bytes, shorter than the
+	 * mark, that match it so far), and whether the next byte read starts a line.
+	 */
+	held: Buffer;
+	lineStart: boolean;
+	/** Answers once the mark came or the stream ended: what a write and the kill wait for. */
 	begun: Promise<void>;
 	/** Settles begun. */
 	begin: () => void;
@@ -474,7 +491,7 @@ class GroundboxHost implements MachineHost {
 	}
 
 	/**
-	 * Answers once START_SCRIPT's mark came (or the first of a refusal's words, or the stream ended), or STEP_MS passed:
+	 * Answers once START_SCRIPT's mark came (or the stream ended, as a start its sh refused does), or STEP_MS passed:
 	 * before it, the command's directory may not be made yet. The script that follows checks what is there either way.
 	 */
 	async #begun(command: Command): Promise<void> {
@@ -494,7 +511,8 @@ class GroundboxHost implements MachineHost {
 	async #start(id: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
 		let begin!: () => void;
 		const begun = new Promise<void>((done) => (begin = done));
-		const command: Command = { sandbox: id, dir: `${DIR_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, marked: false, begun, begin, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {}, quiet: () => {} };
+		const dir = `${DIR_PREFIX}${randomBytes(8).toString("hex")}`;
+		const command: Command = { sandbox: id, dir, seq: 0, mark: markOf(dir), marked: false, held: Buffer.alloc(0), lineStart: true, begun, begin, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {}, quiet: () => {} };
 		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.dir, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
 		try {
 			await this.#connect(command, first, ctx);
@@ -510,12 +528,61 @@ class GroundboxHost implements MachineHost {
 	 * ends a command still running). A write or a kill still waiting for the mark goes on to its script.
 	 */
 	#end(command: Command, failure?: Error): void {
-		if (!command.ended) command.failure ??= failure;
+		if (!command.ended) {
+			command.failure ??= failure;
+			this.#release(command);
+		}
 		command.ended = true;
 		command.quiet();
 		command.socket?.close(END);
 		command.begin();
 		command.wake();
+	}
+
+	/** Output read, queued for #events. */
+	#queue(command: Command, stream: "stdout" | "stderr", base64: string): void {
+		if (base64 === "") return;
+		command.events.push({ stream, base64 });
+		command.queued += bytesOf(base64);
+	}
+
+	/**
+	 * stderr read before START_SCRIPT's mark, a whole line: the mark is taken off and settles begun, and the rest is
+	 * queued as it is. Bytes that may still be the mark's start (a line's first bytes, matching it so far) are held for the
+	 * next chunk, never more than the mark's length; anything else is queued at once, so a refusal's words are stderr whole.
+	 */
+	#unmark(command: Command, chunk: Buffer): void {
+		const bytes = command.held.length === 0 ? chunk : Buffer.concat([command.held, chunk]);
+		const { mark } = command;
+		command.held = Buffer.alloc(0);
+		const lineAfter = (from: number) => {
+			const newline = bytes.indexOf(0x0a, from);
+			return newline === -1 ? bytes.length : newline + 1;
+		};
+		for (let at = command.lineStart ? 0 : lineAfter(0); at < bytes.length; at = lineAfter(at)) {
+			const line = bytes.subarray(at, at + mark.length);
+			if (line.length === mark.length && line.equals(mark)) {
+				this.#queue(command, "stderr", bytes.subarray(0, at).toString("base64"));
+				command.marked = true;
+				command.begin();
+				this.#queue(command, "stderr", bytes.subarray(at + mark.length).toString("base64"));
+				return;
+			}
+			if (line.length < mark.length && line.equals(mark.subarray(0, line.length))) {
+				this.#queue(command, "stderr", bytes.subarray(0, at).toString("base64"));
+				command.held = Buffer.from(line);
+				command.lineStart = true;
+				return;
+			}
+		}
+		this.#queue(command, "stderr", bytes.toString("base64"));
+		if (bytes.length > 0) command.lineStart = bytes[bytes.length - 1] === 0x0a;
+	}
+
+	/** The stream ended with no mark: what was held as its possible start is stderr after all. */
+	#release(command: Command): void {
+		this.#queue(command, "stderr", command.held.toString("base64"));
+		command.held = Buffer.alloc(0);
 	}
 
 	/**
@@ -593,25 +660,16 @@ class GroundboxHost implements MachineHost {
 				heard();
 				ready();
 			} else if ((message.type === "stdout" || message.type === "stderr") && typeof message.data === "string") {
-				let base64 = message.data;
-				// stderr's first byte lets the writes and the kill go as it comes, read or not: START_SCRIPT's mark, taken off,
-				// or the first of the words of a start its sh refused, kept.
-				if (message.type === "stderr" && !command.marked && base64 !== "") {
-					const bytes = Buffer.from(base64, "base64");
-					command.marked = true;
-					command.begin();
-					if (bytes[0] === MARK) base64 = bytes.subarray(1).toString("base64");
-				}
-				if (base64 !== "") {
-					command.events.push({ stream: message.type, base64 });
-					command.queued += bytesOf(base64);
-				}
+				// Before START_SCRIPT's mark, stderr is read for it: the mark lets the writes and the kill go as it comes, read or not.
+				if (message.type === "stderr" && !command.marked) this.#unmark(command, Buffer.from(message.data, "base64"));
+				else this.#queue(command, message.type, message.data);
 				if (typeof message.seq === "number") command.seq = message.seq;
 				// Everything up to seq is queued: a socket opened later attaches from there, and nothing is lost or read twice.
 				if (command.queued > this.#bounds.queueHighBytes) letGo("full");
 			} else if (message.type === "skipped") {
 				this.#end(command, new Error(`Groundbox no longer keeps ${String(message.bytes)} bytes of the command's output, lost while its stream was down`));
 			} else if (message.type === "exit" && typeof message.exit_code === "number") {
+				this.#release(command);
 				command.events.push({ exit: message.exit_code });
 				this.#end(command);
 			} else if (message.type === "error") {

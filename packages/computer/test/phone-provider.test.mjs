@@ -59,6 +59,22 @@ test("create(options) builds the phone-harness provider from its options alone: 
 	await assert.rejects(create({ apiKey: KEY, platform: "windows" }), /platform "windows"/);
 });
 
+test("the API URL is https alone, loopback included, so the key never crosses in the clear: the provider refuses another before any call", async () => {
+	const heard = [];
+	const fetch = async (url) => (heard.push(url), new Response("[]", { status: 200 }));
+	for (const baseUrl of ["http://api.phone-harness.com", "http://10.0.0.5:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "ws://api.phone-harness.com"]) {
+		await assert.rejects(create({ apiKey: KEY, baseUrl, fetch }), (error) => /^the phone harness URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY), baseUrl);
+	}
+	await assert.rejects(create({ apiKey: KEY, baseUrl: "api.phone-harness.com", fetch }), (error) => /the phone harness URL is not a URL/.test(error.message) && !error.message.includes(KEY));
+	assert.deepEqual(heard, [], "no call went out");
+	// An https base with a trailing slash is taken, the slash dropped.
+	const fake = fakePhoneHarness();
+	const provider = await create({ apiKey: KEY, baseUrl: "https://api.phone-harness.com/", fetch: (url, init) => (heard.push(url), fake.fetch(url, init)), adb: fake.adb, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const made = await provider.create(SPEC, req());
+	assert.equal(made.ok, true, JSON.stringify(made.error));
+	assert.ok(heard.length > 0 && heard.every((url) => url.startsWith("https://api.phone-harness.com/") && !url.startsWith("https://api.phone-harness.com//")), heard.join(", "));
+});
+
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
 	const { provider, fake } = await setup();
 	assert.deepEqual(provider.check(SPEC), []);
