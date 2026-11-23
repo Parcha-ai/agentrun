@@ -3267,7 +3267,8 @@ serves these routes alone:
     and nothing is sent;
   - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
-    nothing is sent to Composio. An owner's save that lands while the token's is under way wins: the token's is `412`.
+    nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's, and one that lands
+    while the token's is under way wins: the token's is `412`.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
   generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its
