@@ -126,8 +126,8 @@ test("the bin on a store a later release set up says to run that release, once, 
 
 /** The bin started as `npx @parcha/agentrun@0.4.22` starts it (the launcher names itself in AGENTRUN_NPX_PACKAGE, and
  *  opens the browser unless --no-open), on `data`: its stderr and exit code. */
-const startByLauncher = async (t, data) => {
-  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--open", "--data", data, "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: dirname(data), AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.4.22", AGENTRUN_SERVE_PORT: "", npm_config_yes: "" } });
+const startByLauncher = async (t, data, home = dirname(data)) => {
+  const child = spawn(process.execPath, [new URL("../dist/cli.js", import.meta.url).pathname, "--open", "--data", data, "--faux", FAUX], { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, HOME: home, AGENTRUN_NPX_PACKAGE: "@parcha/agentrun@0.4.22", AGENTRUN_SERVE_PORT: "", npm_config_yes: "" } });
   const killer = setTimeout(() => child.kill("SIGTERM"), 10_000);
   t.after(() => (clearTimeout(killer), child.kill("SIGTERM")));
   let err = "";
@@ -180,4 +180,14 @@ test("started by the launcher on a store an earlier release set up, the refusal 
   assert.match(err, /^agentrun-serve: the store at .*store\.sqlite is schema version/m);
   assert.ok(err.split("\n").includes(`To start this version on a new, empty folder: npx @parcha/agentrun@0.4.22 --data ${data}-new`), err);
   assert.doesNotMatch(err, /docker run|On Render/);
+});
+
+test("started on a --data of the person's own, the old folder moved aside starts again on that --data, not ~/.agentrun", { timeout: 20_000 }, async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "work", "agents");
+  await oldHome(data, "old");
+  const { err, code } = await startByLauncher(t, data, join(root, "home"));
+  assert.equal(code, 1, err);
+  assert.ok(err.includes(`mv ${data} ${data}-earlier, then npx @parcha/agentrun@0.4.22 --data ${data} starts this version in ${data}.`), err);
+  assert.ok(err.includes(`without it, they open ${join(root, "home", ".agentrun")})`), err);
 });

@@ -5,6 +5,7 @@
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
 import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
@@ -108,14 +109,18 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
   const port = env[STARTED_PORT_ENV];
   const flags = `${port && /^\d{1,5}$/.test(port) ? ` --port ${port}` : ""}${env[STARTED_OPEN_ENV] === "0" ? " --no-open" : ""}`;
   const command = `npx ${yes}${door}`;
+  // The launcher's own folder when --data names none (agentrun start.mjs): this same command opens `dir` again with no
+  // --data only when `dir` is it.
+  const launcherData = resolve(env.HOME || homedir(), ".agentrun");
+  const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
   const fresh = freeName(`${dir}-new`, exists);
   const aside = freeName(`${dir}-earlier`, exists);
   const installed = exists(join(dir, "bin", "agentrun")) ? " Its bin/agentrun (the earlier installer's command) moves with it: run the installer again for this version's." : "";
   return [
     refused.message.split("\n")[0],
     `To start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
-    `  (every later agentrun command then takes the same --data: without it, they open ${dir})`,
-    `Or keep all of it where the earlier version still opens it: mv ${shellWord(dir)} ${shellWord(aside)}, then ${command}${flags} starts this version in ${dir}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
+    `  (every later agentrun command then takes the same --data: without it, they open ${launcherData})`,
+    `Or keep all of it where the earlier version still opens it: mv ${shellWord(dir)} ${shellWord(aside)}, then ${again} starts this version in ${dir}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
     // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
     `Either way, nothing is deleted.${refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : ""}`,
   ].join("\n");
