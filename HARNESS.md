@@ -524,12 +524,13 @@ timeline written while it was live stays cut.
 
 With every key saved, its runs run on them ahead of its owner's own sign-in, and its scheduled and triggered runs and a
 `message_run` trigger's turns run too. What runs a start is what its claim opened, not what the console lists: a
-scheduled or triggered run whose claim opened not every key (one removed since, or sealed under another seal key) is
-refused at its claim, never put on the sign-in. A person's run whose claim opened not every key stays on the sign-in for
+run no person started (a scheduled or triggered run, a learned workflow's audit shadow or replay) whose claim opened not
+every key (one removed since, or sealed under another seal key) is refused at its claim, never put on the sign-in. A person's run whose claim opened not every key stays on the sign-in for
 that claim: a trigger's message to it is refused in its session, even with the keys saved since, and runs only in a
 claim that opens them. A key that does not open under the server's seal key reads as not saved;
 saving it again replaces it, and removing it deletes its row. A second server on the same store lists another's save or
-removal at its next start; meanwhile its runs still go only on what each claim opens. `harness-check` does not read the saved keys: it reads its keys from
+removal at its next start; meanwhile its runs still go only on what each claim opens, and a removal it makes retires
+the value it last listed, not one the other server saved since. `harness-check` does not read the saved keys: it reads its keys from
 your shell's environment alone, as [Check it](#check-it) shows.
 
 On your own machine, a server you start with `--harness-sign-in` runs a person's runs of a plan-billed recipe that names
@@ -544,8 +545,9 @@ unless the server is one owner's own: it listens on loopback with no public addr
 `AGENTRUN_STORE_URL`), runs its runs beside it as its own user (no `--no-runner`, no user of its own per run), and
 has an owner and one API token. A separate runner never runs a recipe on the sign-in, whatever it is started with. Keys
 saved for the harness come first: with every one saved, its runs run on them, not on the sign-in. A scheduled or
-triggered run on a plan-billed recipe never runs on the sign-in: until every key is saved it is refused at its claim,
-on any server. Nor does a trigger's turn in a person's run on one: until then a `message_run` trigger to that run is
+triggered run, or a learned workflow's audit shadow or replay, on a plan-billed recipe never runs on the sign-in: until
+every key is saved it is refused at its claim, on any server. A person's run is any start through the API that no
+trigger fired: a `POST /agents/{id}/runs` an outside cron sends to such a server runs on the sign-in. Nor does a trigger's turn in a person's run on one: until then a `message_run` trigger to that run is
 refused when it is made, and each firing is skipped in words if the recipe is named only later.
 
 Each start of the agent's process digests the binary and its tree again and refuses a start where either differs from

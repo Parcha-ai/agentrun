@@ -1277,7 +1277,7 @@ test("a shared server runs a plan-billed recipe on the keys its owner saved for 
   assert.deepEqual(findPlanted([{ where: "the leaking run's reads", text }, { where: "the store's bytes", text: storeBytes(second.data).toString("latin1") }], [leakKey]), []);
 });
 
-test("a scheduled run on a plan-billed recipe whose key rows are counted but do not open (removed or sealed under another key between the count and the claim) is refused at its claim, never run on its owner's sign-in", { skip: linux, timeout: 180_000 }, async (t) => {
+test("a run no person started (a scheduled run, a learned workflow's audit shadow) on a plan-billed recipe whose key rows are counted but do not open (removed or sealed under another key between the count and the claim) is refused at its claim, never run on its owner's sign-in", { skip: linux, timeout: 240_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const { data, file, origin } = await installed(t, (o) => signingIn(o));
   assert.equal((await signIn(file, data)).status, 0);
@@ -1292,14 +1292,22 @@ test("a scheduled run on a plan-billed recipe whose key rows are counted but do 
   await putSealedKey(server.store, randomBytes(32), "harness:model-agent:MODEL_AGENT_GEMINI_API_KEY", "fake-unopenable-key");
   const row = await server.store.runs.get(person.run_id);
   const launch = await server.store.runs.launch(person.run_id);
-  const scheduled = randomUUID();
-  const before = origin.messages().length;
-  await server.store.runs.create({ id: scheduled, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), trigger: { id: "trg_nightly", firing_key: "k1" } }), sealed: launch.sealed });
-  const { last } = await follow(server.api, scheduled, ["completed", "failed"], { deadlineMs: 120_000 });
-  const read = (await server.api("GET", `/runs/${scheduled}`)).body;
-  assert.equal(last.status, "failed", JSON.stringify(read));
-  assert.match(JSON.stringify(read), /never on its owner's own sign-in/);
-  assert.equal(origin.messages().length, before, "the vendor heard nothing: no turn went on the sign-in");
+  // A schedule's run carries its trigger; an audit shadow of the person's run carries no trigger but the audit it is
+  // (runner/audit.ts): neither is a person's run, so neither goes on the sign-in.
+  const made = {
+    scheduled: { trigger: { id: "trg_nightly", firing_key: "k1" } },
+    "audit shadow": { audit: { of: person.run_id, workflow: "nightly-flow", digest: "a".repeat(64) } },
+  };
+  for (const [kind, extra] of Object.entries(made)) {
+    const id = randomUUID();
+    const before = origin.messages().length;
+    await server.store.runs.create({ id, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), ...extra }), sealed: launch.sealed });
+    const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
+    const read = (await server.api("GET", `/runs/${id}`)).body;
+    assert.equal(last.status, "failed", `${kind}: ${JSON.stringify(read)}`);
+    assert.match(JSON.stringify(read), /never on its owner's own sign-in/, kind);
+    assert.equal(origin.messages().length, before, `${kind}: the vendor heard nothing, no turn went on the sign-in`);
+  }
 });
 
 test("a start runs only on the keys its claim laid: the server's listing holding them saved, or the operator's shell exporting one, never puts it on the keys route", { skip: linux, timeout: 240_000 }, async (t) => {
@@ -1336,6 +1344,8 @@ test("a trigger's message never runs in a session its claim started on its owner
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   let go;
   const held = new Promise((resolve) => (go = resolve));
+  // A failed assertion never leaves the held request open.
+  t.after(() => go());
   // The person's first turn holds at the vendor until `go`: the run's session stays open on the sign-in meanwhile.
   const step = async (body) => {
     if (JSON.stringify(body.messages ?? []).includes("Hold the answer")) await held;

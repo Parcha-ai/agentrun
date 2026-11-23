@@ -17,7 +17,7 @@ import { harnessOf, recipeKeysOf } from "../harness-table.js";
 import { harnessKeysSaved, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
 import type { SealedKeys } from "../store/index.js";
 import { hostMemory, neverFits } from "../host.js";
-import type { RunLaunch } from "../run-launch.js";
+import { personStarted, type RunLaunch } from "../run-launch.js";
 import { resolveHarness } from "./adapters/index.js";
 import { adapterRunSpecFromLaunch, type AdapterSpecDeps, PI_WIRES } from "./adapter-run-spec.js";
 import { createAdapterLoop } from "./adapter-loop.js";
@@ -39,13 +39,13 @@ export class NeverFits extends ClaimRefused {
 
 export { RECIPE_SIGN_IN_PERSON_ONLY };
 
-/** Refuses at its claim a run no person started (a schedule's, a trigger's: launch.trigger) on a plan-billed recipe's
- *  harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved for that harness (harness-keys.ts), on
+/** Refuses at its claim a run no person started (a schedule's, a trigger's, a learned workflow's audit shadow or replay:
+ *  personStarted) on a plan-billed recipe's harness (harness-table.ts recipeKeysOf) unless every key it runs on is saved for that harness (harness-keys.ts), on
  *  every path a claim takes (run-child-host.ts staysInRunner, and here): the early word, before a process is made. Rows
  *  are counted, never opened; the claim's spec opens them and refuses it again if not every one opened, since a row
  *  counted here can be gone or not open by then (cli-run-spec.ts). */
-export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "trigger">): Promise<void> {
-  if (launch.trigger === undefined) return;
+export async function refuseRecipeTriggerRun(deps: { readonly env?: NodeJS.ProcessEnv; readonly store: { readonly sealedKeys: Pick<SealedKeys, "all"> } }, harness: string, launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): Promise<void> {
+  if (personStarted(launch)) return;
   const keys = recipeKeysOf(deps.env ?? {}, harness);
   if (keys !== undefined && !(await harnessKeysSaved(deps.store, harness, keys))) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
 }

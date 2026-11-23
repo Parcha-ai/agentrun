@@ -76,10 +76,11 @@ export function keysLaid(env: NodeJS.ProcessEnv, names: readonly string[]): bool
 const savedHere = new Map<string, ReadonlySet<string>>();
 export const harnessKeysSavedHere = (data: string, harness: string): boolean => savedHere.get(data)?.has(harness) === true;
 
-/** The words a run no person started (a schedule's, a trigger's) on a plan-billed recipe is refused in at its claim
- *  (runner/harness-loops.ts, runner/cli-run-spec.ts): such a run takes keys saved for that harness, never its owner's
- *  own sign-in, and not every one is saved, or not every one opened. */
-export const RECIPE_SIGN_IN_PERSON_ONLY = `A scheduled or triggered run on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and not every one of its keys is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}), start this run yourself, or run the agent on a harness billed through this server's model proxy.`;
+/** The words a run no person started (a schedule's, a trigger's, a learned workflow's audit shadow or replay:
+ *  run-launch.ts personStarted) on a plan-billed recipe is refused in at its claim (runner/harness-loops.ts,
+ *  runner/cli-run-spec.ts): such a run takes keys saved for that harness, never its owner's own sign-in, and not every
+ *  one is saved, or not every one opened. */
+export const RECIPE_SIGN_IN_PERSON_ONLY = `A run its owner did not start (a scheduled or triggered run, a learned workflow's audit or replay) on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and not every one of its keys is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}), start this run yourself, or run the agent on a harness billed through this server's model proxy.`;
 
 /** The words a trigger's message is refused in by a session its claim started with not every key of its plan-billed
  *  recipe laid (runner/adapter-loop.ts, the spec's personOnly): that session runs on its owner's own sign-in, or on

@@ -1416,8 +1416,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
     // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
-    // placed, so no turn of it reaches the vendor on that sign-in.
-    if (specNow?.personOnly && originOf((command.body as { origin?: unknown } | null)?.origin)?.kind === "trigger") return { refused: specNow.personOnly };
+    // placed, so no turn of it reaches the vendor on that sign-in. Known by its origin's kind as written (an origin whose
+    // source originOf does not know is still a trigger's), or by answering nothing (answers: false, a trigger's message).
+    const sent = command.body as { origin?: { kind?: unknown } | null; answers?: unknown } | null;
+    if (specNow?.personOnly && (sent?.origin?.kind === "trigger" || sent?.answers === false)) return { refused: specNow.personOnly };
     // The session is still new and this is no reopen's message (the claim has yet to send the run's input), or the run's
     // learned workflow runs first, or a message before it still waits for either: it waits for the input, off the runner's
     // delivery, as a computer channel's call does (channelCommand). The runner hands the run's rows on one at a time, each

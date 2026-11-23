@@ -38,7 +38,7 @@ import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
-import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
+import { learningStartOf, personStarted, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { filesToCopy, placeRunInputs } from "../uploads.js";
@@ -477,7 +477,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // by name for the agent's start, and only keys laid here take a run onto the keys route (harness-recipe-entry.ts).
   // The run environment copies the runner's own (cliRunEnv), so a key's name the operator's shell exported is dropped
   // first: the agent reads a saved key or none. All or nothing: a claim that opened not every key lays none, and a run
-  // no person started (a schedule's, a trigger's, and a trigger's turn into a run) is refused then, before any route
+  // no person started (a schedule's, a trigger's, a trigger's turn into a run, a learned workflow's audit shadow or
+  // replay: personStarted) is refused then, before any route
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
   // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
@@ -488,7 +489,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
     hold(Object.values(opened));
     if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
-    else if (launch.trigger !== undefined) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+    else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
     else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
