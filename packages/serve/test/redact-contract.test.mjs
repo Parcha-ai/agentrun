@@ -337,6 +337,15 @@ for (const c of CASES) {
 // counted by match.ts, are at most a fixed multiple of the text's length, through both shape sets. The multiple, 128,
 // covers each of the shapes' 30-odd prefixes sought once over the text and once over its cut, and each scanner's own
 // reads; a scanner that read a run again at each place in it would pass it many times over at this size.
+test("valueLeft: a held value only a view finds, wholly inside a cut in place, is not left; split by a cut's edge, it is", async () => {
+  // New with valueLeft (learn/secrets.ts): imported where it is read, so the cases above still run on a build without it.
+  const { valueLeft } = await import("../dist/learn/secrets.js");
+  const address = `https://h.example/feed/me%40h.example/${P24.join("")}/basic.ics`;
+  assert.equal(valueLeft(`see ${address} ok`, [address, decodeURIComponent(address)]), false);
+  assert.equal(valueLeft(`cb?token=${P24[0]}\n${P24[1]} ok`, [P24.join("")]), true);
+  assert.equal(valueLeft(`cb?token=${P24.join("")} ok`, [P24.join("")]), false);
+});
+
 const ADVERSARIAL = [
   fill("eyJ"), fill("eyJ-"), `-----BEGIN ${fill("A", SIZE - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", SIZE - 11)}`, `://a:${fill("a", SIZE - 5)}`, fill("://a:"),
   fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
