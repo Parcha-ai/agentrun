@@ -105,44 +105,62 @@ const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
   }
 };
 
+/** A request to the Ollama at `base`, under `signal`, following no redirect: its JSON answer, or a throw. */
+const askerOf = (base: string, send: typeof fetch, signal: AbortSignal) => async (path: string, body?: unknown): Promise<unknown> => {
+  const response = await send(`${base}${path}`, { method: body === undefined ? "GET" : "POST", redirect: "error", signal, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+  if (!response.ok) throw new Error(`${path}: ${response.status}`);
+  return response.json();
+};
+
+/** Model `name` as /api/show reports it (`ask`): its capabilities and trained context. Undefined where it does not answer
+ *  (a refusal, a wrong shape, the deadline) or names a cloud model. */
+async function shownOf(ask: ReturnType<typeof askerOf>, name: string): Promise<OllamaListed | undefined> {
+  try {
+    const show = (await ask("/api/show", { model: name })) as ({ capabilities?: unknown; model_info?: Record<string, unknown> } & Remote) | null;
+    if (remote(show)) return undefined;
+    // An Ollama from before /api/show said capabilities chats, with its tools as text.
+    const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
+    const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];
+    return { name, capabilities, trained: typeof length === "number" && Number.isSafeInteger(length) && length > 0 ? length : undefined };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
  * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
  * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
- * does not answer for is left out, and so is a cloud model (remote_host or remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ * does not answer for, before the deadline included, is left out and the others kept; so is a cloud model (remote_host or
+ * remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
  */
 export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
   const base = baseOf(env);
   if (base === undefined) return [];
-  const signal = AbortSignal.timeout(timeoutMs);
-  const ask = async (path: string, body?: unknown): Promise<unknown> => {
-    const response = await send(`${base}${path}`, { method: body === undefined ? "GET" : "POST", redirect: "error", signal, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
-    if (!response.ok) throw new Error(`${path}: ${response.status}`);
-    return response.json();
-  };
+  const ask = askerOf(base, send, AbortSignal.timeout(timeoutMs));
   let models: readonly OllamaListed[] = [];
   try {
     const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
     const names = (Array.isArray(tags?.models) ? tags.models : []).filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
-    const shown = await Promise.all(names.map(async (name): Promise<OllamaListed | undefined> => {
-      try {
-        const show = (await ask("/api/show", { model: name })) as ({ capabilities?: unknown; model_info?: Record<string, unknown> } & Remote) | null;
-        if (remote(show)) return undefined;
-        // An Ollama from before /api/show said capabilities chats, with its tools as text.
-        const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
-        const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];
-        return { name, capabilities, trained: typeof length === "number" && Number.isSafeInteger(length) && length > 0 ? length : undefined };
-      } catch {
-        if (signal.aborted) throw signal.reason;
-        return undefined;
-      }
-    }));
-    models = shown.filter((model): model is OllamaListed => model !== undefined);
+    models = (await Promise.all(names.map((name) => shownOf(ask, name)))).filter((model): model is OllamaListed => model !== undefined);
   } catch {
     models = [];
   }
   kept.set(base, { at: now(), models });
   return models;
+}
+
+/** How long a run gives the /api/show of the one Ollama model it names (ollamaShown): longer than a listing's, since the
+ *  run cannot start without it and Ollama may be loading another model. */
+export const OLLAMA_SHOW_TIMEOUT_MS = 10_000;
+
+/** Model `tag` of the Ollama `env` names, for a run that names it (`ollama/<tag>`): from its address's kept listing, else
+ *  its own /api/show within `timeoutMs`, never /api/tags, so a run never waits on a whole listing. Undefined where it is
+ *  not there, does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. */
+export async function ollamaShown(env: NodeJS.ProcessEnv, tag: string, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_SHOW_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<OllamaListed | undefined> {
+  const base = baseOf(env);
+  if (base === undefined) return undefined;
+  return kept.get(base)?.models.find((model) => model.name === tag) ?? shownOf(askerOf(base, send, AbortSignal.timeout(timeoutMs)), tag);
 }
 
 /** The models the Ollama `env` names has: its address's kept listing while fresh; a stale one at once, asked again behind

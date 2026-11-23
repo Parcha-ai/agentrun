@@ -10,7 +10,7 @@ import { test } from "node:test";
 import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
 import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
-const { hostModel, providerModels } = await import("../dist/model.js");
+const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
@@ -56,6 +56,34 @@ test("under the model gateway or the faux model, providerModels never asks Ollam
     assert.deepEqual(models.getModels("ollama"), [], Object.keys(env)[0]);
   }
   assert.equal(ollama.got.tags, 0, "the fake was never asked for its tags");
+  assert.deepEqual(ollama.got.show, []);
+});
+
+test("a listing whose deadline passes while one /api/show is pending keeps the models shown before it", async (t) => {
+  const ollama = await fakeOllama(t, { hangOn: (route, body) => route === "show" && body?.model === TOOLS });
+  const listed = await listOllama({ OLLAMA_HOST: ollama.host }, { timeoutMs: 300 });
+  assert.deepEqual(listed.map((model) => model.name), [PLAIN, "synth-embed:1b"], "the hung one left out, the others kept");
+});
+
+test("a run pinned to an Ollama model resolves it with its /api/show alone: a hung /api/tags is never waited on", async (t) => {
+  const ollama = await fakeOllama(t, { hangOn: (route) => route === "tags" });
+  const env = { OLLAMA_HOST: ollama.host };
+  const route = await routeOf(`ollama/${TOOLS}`, env);
+  assert.equal(route.like?.contextWindow, 65_536);
+  const pinned = await runModels(env, { pinned: { provider: "ollama", modelId: TOOLS } });
+  assert.equal(pinned.models.getModel("ollama", TOOLS)?.contextWindow, 65_536);
+  assert.equal(ollama.got.tags, 0, "the listing never asked");
+  assert.ok(ollama.got.show.length > 0 && ollama.got.show.every((name) => name === TOOLS), JSON.stringify(ollama.got.show));
+});
+
+test("a start on another provider's model never asks Ollama: an OpenRouter key, the host default or a named model, with an Ollama that never answers", async (t) => {
+  const ollama = await fakeOllama(t, { hang: true });
+  const env = { OLLAMA_HOST: ollama.host, OPENROUTER_API_KEY: `not-a-secret-${"keyed-start"}` };
+  const chosen = await chooseModel(env, undefined, "default", "pi");
+  assert.equal(chosen.model?.provider, "openrouter", JSON.stringify(chosen));
+  await runModels(env, undefined);
+  await runModels(env, "openrouter/openai/gpt-6.1-sol");
+  assert.equal(ollama.got.tags, 0, "no listing started, so none awaited");
   assert.deepEqual(ollama.got.show, []);
 });
 

@@ -35,7 +35,7 @@ import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
-import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
+import { type ModelRef, ollamaTagsOf, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
@@ -114,7 +114,7 @@ async function modelsOf(entry: HarnessEntry, env: NodeJS.ProcessEnv, ref: string
     const choice = await entry.model(env, typeof ref === "object" ? `${ref.pinned.provider}/${ref.pinned.modelId}` : ref, true);
     if (!choice) throw new Error(`${entry.id} does not run here.`);
     if ("why" in choice) throw new Error(choice.why);
-    return { model: choice.model, models: await providerModels(env) as unknown as AdapterNeeds["models"], unpriced: new Set() };
+    return { model: choice.model, models: await providerModels(env, { ollama: ollamaTagsOf([choice.model]) }) as unknown as AdapterNeeds["models"], unpriced: new Set() };
   }
   const chosen = await runModels(env, ref, ["default"], entry.id);
   if (!chosen.model) throw new Error(`${entry.id} has no model here.`);

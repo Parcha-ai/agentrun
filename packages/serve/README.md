@@ -1566,7 +1566,9 @@ is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, 
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, and follows no redirect.
+lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
+before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+seconds), and a run on any other model, a key's default included, never asks Ollama.
 
 - Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434. A host alone, or `host:port`, with no
   scheme is plain http, port 11434 when none is given; `http://` and `https://` take their own default ports. `0.0.0.0`

@@ -25,8 +25,10 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
  * answers (an Ollama stuck loading); `reply(body, n)` the answer to the n-th chat (from 1), as
  * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output } }`, or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
+ * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
+ * answered (an Ollama whose listing is stuck, or one model's /api/show).
  */
-export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, got = { tags: 0, show: [], chat: [] } } = {}) {
+export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, got = { tags: 0, show: [], chat: [] } } = {}) {
   return (req, res) => {
     const path = new URL(req.url ?? "/", "http://ollama").pathname;
     const route = req.method === "GET" && path === "/api/tags" ? "tags" : req.method === "POST" && path === "/api/show" ? "show" : req.method === "POST" && path === "/api/chat" ? "chat" : undefined;
@@ -45,6 +47,11 @@ export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "D
       }
       if (hang) {
         if (route === "tags") got.tags += 1;
+        return;
+      }
+      if (hangOn(route, body)) {
+        if (route === "tags") got.tags += 1;
+        if (route === "show") got.show.push(body?.model);
         return;
       }
       if (route === "tags") {
