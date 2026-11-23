@@ -12,7 +12,7 @@ import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
-const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaModels, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -77,6 +77,29 @@ test("a run pinned to an Ollama model resolves it with its /api/show alone: a hu
   assert.equal(pinned.models.getModel("ollama", TOOLS)?.contextWindow, 65_536);
   assert.equal(ollama.got.tags, 0, "the listing never asked");
   assert.ok(ollama.got.show.length > 0 && ollama.got.show.every((name) => name === TOOLS), JSON.stringify(ollama.got.show));
+});
+
+test("a pinned tag's kept entry is reused only while fresh: past OLLAMA_TTL_MS its /api/show is asked again, and num_ctx follows the new context", async (t) => {
+  let at = 1_000_000;
+  ollamaClock(() => at);
+  t.after(() => ollamaClock());
+  const models = [{ name: "synth-resized:1b", capabilities: ["completion", "tools"], family: "synthresized", context_length: 16_384 }];
+  const ollama = await fakeOllama(t, { models, reply: () => ({ text: "Fine." }) });
+  const env = { OLLAMA_HOST: ollama.host };
+  const sent = async () => {
+    await eventsOf(await routeOf("ollama/synth-resized:1b", env));
+    return ollama.got.chat.at(-1).options.num_ctx;
+  };
+  await ollamaModels(env);
+  assert.equal(await sent(), 16_384, "context A, from the kept listing");
+  // The model is now one with another context (pulled again, or a Modelfile's num_ctx changed).
+  models[0].context_length = 8_192;
+  const shown = ollama.got.show.length;
+  assert.equal(await sent(), 16_384, "still fresh: the kept entry, no /api/show");
+  assert.equal(ollama.got.show.length, shown);
+  at += OLLAMA_TTL_MS + 1;
+  assert.equal(await sent(), 8_192, "past the TTL: its /api/show asked again, context B sent");
+  assert.ok(ollama.got.show.length > shown);
 });
 
 test("a start on another provider's model never asks Ollama: an OpenRouter key, the host default or a named model, with an Ollama that never answers", async (t) => {
@@ -240,15 +263,17 @@ test("an agent's max_requests stops a run on an Ollama model at that many reques
   const ollama = await fakeOllama(t, { reply: (_body, n) => ({ calls: [{ name: "lookup", arguments: { n } }], usage: { input: 50, output: 5 } }) });
   withEnv(t, { OLLAMA_HOST: ollama.host });
   const { api, data } = await serve(t, { faux: undefined });
-  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 2 }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 4 }))).status, 201);
   const started = await api("POST", "/agents/capped/runs", { input: { content: "Look it up until told to stop." }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
   const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
   assert.equal(view.status, "failed", JSON.stringify(view));
-  assert.match(String(view.error?.message ?? view.error), /2-request limit/, JSON.stringify(view.error));
-  assert.equal(ollama.got.chat.length, 2, "the third request was never sent");
-  assert.match(JSON.stringify(ollama.got.chat[0].messages), /2 free-model requests left in this run/, "told to finish, as a run near the server's limit is");
+  assert.match(String(view.error?.message ?? view.error), /4-request limit/, JSON.stringify(view.error));
+  assert.equal(ollama.got.chat.length, 4, "the fifth request was never sent");
+  // Told to finish once 3 are left, as a run near the server's limit is: its local requests count down to it.
+  assert.doesNotMatch(JSON.stringify(ollama.got.chat[0].messages), /free-model requests? left/, "4 left: not yet");
+  assert.match(JSON.stringify(ollama.got.chat[1].messages), /3 free-model requests left in this run/, "after one local request, 3 left");
   const requests = journalOf(data, started.body.run_id).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
   assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the server's limit");
 });

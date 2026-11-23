@@ -54,10 +54,10 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
     // Sent, its answer not booked yet (in flight, or a process that went down before it was).
     e(7, 4, "runner.request", { turn: 2, model: "claude-haiku-5-5" }),
   ];
-  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0.002, bounded: 0, unpriced: 1, atMost: 0, requests: 2, unmetered: 1, models: { "claude-haiku-5-5": 2 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0.002, bounded: 0, unpriced: 1, atMost: 0, requests: 2, unmetered: 1, models: { "claude-haiku-5-5": 2 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 }, plan: { requests: 0, tokens: 0 } });
   // Once it is booked, it is counted at its cost.
   const answered = [...entries, e(7, 5, "runner.turn", { turn: 2, usd: 0.001, bookedUsd: 0.001, usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, rule: "answered" })];
-  assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, bounded: 0, unpriced: 0, atMost: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
+  assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, bounded: 0, unpriced: 0, atMost: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 }, plan: { requests: 0, tokens: 0 } });
 });
 
 test("an agent run's cost counts its decisions beside its model requests and paid tool calls, and stays unknown when any part is (LS-07)", async () => {
@@ -136,7 +136,7 @@ test("bookedSpend reads an answer with no price of its own as a cost unknown, ne
     // Answered at no known price (a model serve has no price for): the booking's rule books it at its hold for the cap.
     e(7, 3, "runner.turn", { turn: 1, usd: null, bookedUsd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
   ];
-  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, bounded: 0, unpriced: 1, atMost: 0, requests: 1, unmetered: 0, models: { "not-a-catalog-model": 1 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, bounded: 0, unpriced: 1, atMost: 0, requests: 1, unmetered: 0, models: { "not-a-catalog-model": 1 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 }, plan: { requests: 0, tokens: 0 } });
 });
 
 // A CLI harness's run (claude-agent, codex, opencode): its record (the loop's agentrun.* entries) carries no usage, so its

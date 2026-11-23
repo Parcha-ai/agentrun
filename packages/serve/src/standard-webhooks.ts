@@ -1,7 +1,8 @@
 // The Standard Webhooks spec (standardwebhooks.com), once, for every message this server signs and every request it
 // checks: a secret is `whsec_` and its bytes in base64, and a signature is `v1,<base64 HMAC-SHA256 of
-// "{id}.{timestamp}.{body}">` under those bytes. The outbound webhook (webhooks.ts) signs with it; a pushed trigger
-// source (the webhook trigger) verifies with it.
+// "{id}.{timestamp}.{body}">` under those bytes. The outbound webhook (webhooks.ts) and the launch hook
+// (trigger-launch-hook.ts) sign with it and read their receiver's answer the same way; a pushed trigger source (the
+// webhook trigger) verifies with it.
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** How far a request's `webhook-timestamp` may be from this server's clock, either way. */
@@ -48,6 +49,24 @@ export const secretForms = (value: string): string[] => {
 
 /** The signature header of `body`, sent as message `id` at `timestamp` (Unix seconds), under `secret` (`whsec_...`). */
 export const signatureOf = (secret: string, id: string, timestamp: string, body: string | Buffer): string => `v1,${hmacOf(secret, id, timestamp, body).toString("base64")}`;
+
+/** The headers of a signed POST of JSON `body` as message `id`, stamped `timestamp` (Unix seconds, from the sender's own
+ *  clock) and signed with `secret`, sent as `agent`: the outbound webhook's and the launch hook's. */
+export const signedRequest = (secret: string, id: string, timestamp: string, body: string, agent: string): Record<string, string> => ({
+  "content-type": "application/json",
+  "user-agent": agent,
+  "webhook-id": id,
+  "webhook-timestamp": timestamp,
+  "webhook-signature": signatureOf(secret, id, timestamp, body),
+});
+
+/** What a receiver's answer `res` says, its body never read: undefined for a 2xx, else why it did not land ("answered
+ *  503"; a redirect is not followed). */
+export async function answerOf(res: { readonly status: number; readonly body: { cancel(): Promise<void> } | null }): Promise<string | undefined> {
+  await res.body?.cancel().catch(() => undefined);
+  if (res.status >= 200 && res.status <= 299) return undefined;
+  return res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
+}
 
 /** Why a request's webhook headers are refused before its body is read, or undefined when they may be checked:
  *  present, a webhook-id of printable ASCII, a bounded signature list, a timestamp within HOOK_TOLERANCE_S. */

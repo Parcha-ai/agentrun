@@ -253,7 +253,7 @@ export async function modelPortFor(writer: SessionWriter, options: ModelPortOpti
  *  left, so a request a crash cut off (or one still in flight, read from another process or session) counts at the
  *  figure its host held for it, and leaves the spend unknown when there is none. */
 export function sessionSpendOf(records: readonly SessionRecord[]): { turns: number[]; held: Map<number, number>; hosts: Map<number, string>; answered: Set<number>; openHolds: Set<number>; spentUsd: number | null; figures: { turn: number; usd: number | null }[]; cost: SessionCost } {
-  const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; host?: unknown; hold?: unknown; plan?: unknown });
+  const requests = records.filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => (r.data ?? {}) as { turn?: number; heldUsd?: unknown; host?: unknown; hold?: unknown });
   const turns = requests.map((data, i) => data.turn ?? i + 1);
   // Hold-only steps (ModelRequest.paid.hold): money reserved, never spent. One still open is no spend here: the process
   // that holds it counts it in flight (runBooking), and a lost claim's is given back (bookCut), never booked as cut.
@@ -261,10 +261,13 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
   requests.forEach((data, i) => { if (data.hold === true) holdOnly.add(turns[i]!); });
   const hosts = new Map<number, string>();
   requests.forEach((data, i) => { if (typeof data.host === "string") hosts.set(turns[i]!, data.host); });
+  // One billed to a person's plan (Admitted.plan) costs the run $0 however it ends: its figure for the cap, held or not,
+  // and its cost while it is open, known and never unpriced (turnCostOf's rule once it is booked).
+  const onPlan = new Set<number>();
+  requests.forEach((data, i) => { if (billedToPlan(data)) onPlan.add(turns[i]!); });
   const held = new Map<number, number>();
   requests.forEach((data, i) => {
-    // One billed to a person's plan (Admitted.plan) costs the run $0 however it ends: its figure, held or not.
-    const figure = data.plan === true ? 0 : heldFigure(data.heldUsd);
+    const figure = onPlan.has(turns[i]!) ? 0 : heldFigure(data.heldUsd);
     if (figure !== undefined) held.set(turns[i]!, figure);
   });
   // A request that never answered (a crash or a lost claim cut it; booked cut or not yet) counts for the cap at its hold,
@@ -315,7 +318,7 @@ export function sessionSpendOf(records: readonly SessionRecord[]): { turns: numb
     }
     spentUsd = spent(spentUsd, worst(turn));
     figures.push({ turn, usd: worst(turn) ?? null });
-    unpriced++;
+    if (!onPlan.has(turn)) unpriced++;
   }
   return { turns, held, hosts, answered, openHolds, spentUsd, figures, cost: costOfParts([{ known, bounded, atMost, unpriced }]) };
 }
@@ -354,6 +357,11 @@ export function rebooked<K>(seen: Set<K>, key: K | undefined): boolean {
 /** The rule (runner.turn `rule`) of a request cut with no answer that bookCut booked at what its host held for it: the
  *  most it can have cost (its whole input uncached and the output it was sent with), marked `atMost`. */
 export const CUT_AT_HOLD = "cut";
+
+/** Whether a runner.request (its `data`) is billed to a person's plan (Admitted.plan, its record's `plan`): $0 to the run
+ *  however it ends, open or booked. The one check every reader of a booking makes (sessionSpendOf, bookCut, serve's
+ *  bookedSpend). */
+export const billedToPlan = (data: unknown): boolean => (data as { plan?: unknown } | null | undefined)?.plan === true;
 
 /** A booked request's own cost, from its runner.turn, as every reader of a run's cost reads it (the session's cost, the
  *  run's stored cost and its views): what it was booked at, else its `usd`; null when no one knows it (an answer with no
@@ -749,7 +757,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     // a plan request `plan` before it looks at free, and freeModel refuses a plan model, so no plan request is admitted
     // `freeRequest`.
     const modelTurns = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { paid?: unknown } | undefined)?.paid === true ? [] : [inherited[i]!])));
-    const onPlan = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => ((r.data as { plan?: unknown } | undefined)?.plan === true ? [inherited[i]!] : [])));
+    const onPlan = new Set(options.records.filter((r) => r.kind === RUNNER_RECORDS.request).flatMap((r, i) => (billedToPlan(r.data) ? [inherited[i]!] : [])));
     const boundOf = (turn: number): number | undefined => {
       const hold = held.get(turn);
       return hold !== undefined && hold > 0 && modelTurns.has(turn) ? hold : undefined;

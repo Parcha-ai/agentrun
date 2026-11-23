@@ -67,6 +67,20 @@ export function freeWrapUpDue(limit: number, made: number): { left: number } | u
   return left >= 1 && left <= FREE_WRAP_UP_MARGIN ? { left } : undefined;
 }
 
+/** The free limit a run's next request on `model` is nearest, and what counts toward it: the agent's own (`own`,
+ *  max_requests) over its free and local requests together, and on a free model with a quota behind it (limitedFree) the
+ *  run's free limit (`server`) over its free requests alone; of the two, the one with fewer requests left. Undefined where
+ *  none applies: a paid model, a router, a plan's, or a local model with no limit of the agent's. */
+export function freeLimitNearest(model: CapModel | undefined, limits: { own?: number; server?: number }, made: { free: number; local: number }): { limit: number; made: number } | undefined {
+  const local = freeModel(model) && model?.local === true;
+  const counted = limitedFree(model);
+  const each = [
+    ...(limits.own !== undefined && (local || counted) ? [{ limit: limits.own, made: made.free + made.local }] : []),
+    ...(limits.server !== undefined && counted ? [{ limit: limits.server, made: made.free }] : []),
+  ];
+  return each.reduce<{ limit: number; made: number } | undefined>((near, one) => (near === undefined || one.limit - one.made < near.limit - near.made ? one : near), undefined);
+}
+
 /** The note's words, once per run and limit (the dollar cap's wrap-up note carries them, the same mechanism). */
 export const freeWrapUpWords = (left: number): string => `${SERVER_NOTE_LABEL}${left} free-model request${left === 1 ? "" : "s"} left in this run, this one included: finish now with your answer.`;
 

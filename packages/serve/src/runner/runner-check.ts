@@ -25,6 +25,7 @@ import { HARNESS_MODULES_SETTING, HARNESS_RECIPES_SETTING } from "../harness-tab
 import { GATEWAY_IDS_ENV } from "../model-gateway.js";
 import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV, MCP_ALLOW_LOOPBACK_ENV } from "../start-switches.js";
 import { DOCKER_IMAGE_ENV } from "../box-image.js";
+import { type Interfaces, RunnerLiveRefused, runnerLiveOf } from "../live-reach.js";
 import { bootSealKey } from "../seal-key.js";
 import { SECRET_NAMES } from "../secrets.js";
 import type { Settings, Store } from "../store/store.js";
@@ -111,6 +112,8 @@ export interface RunnerEnvCheckOptions {
   readonly read: (name: string) => string | undefined;
   /** Whether a TCP connect to `host`:`port` is answered within `ms` (a test's stand-in). */
   readonly answers?: (host: string, port: number, ms: number) => Promise<boolean>;
+  /** This machine's network interfaces (a test's stand-in), for AGENTRUN_RUNNER_LIVE_HOST given as an IPv4 block. */
+  readonly interfaces?: Interfaces;
 }
 
 /** How long a forwarder has to answer the check's connect. */
@@ -208,7 +211,26 @@ export async function checkRunnerEnv(options: RunnerEnvCheckOptions): Promise<Ch
     rows.push((await answers(target.host, target.port, FORWARDER_MS)) ? { state: "ok", name, why: "on this machine's loopback, and a forwarder answers there" } : { state: "bad", name, why: `on this machine's loopback, and nothing answers there within ${FORWARDER_MS / 1000} s: start its forwarder` });
   }
   for (const name of SERVER_ONLY) if (read(name)?.trim()) rows.push({ state: "warn", name, why: "the server's own secret: a runner never needs it, so leave it off the runner" });
+  const liveRow = liveHostRow(env, options.interfaces);
+  if (liveRow) rows.push(liveRow);
   return rows;
+}
+
+/** AGENTRUN_RUNNER_LIVE_HOST's row, where it is set: the host the server reaches this runner at (an address, never a
+ *  secret); warn where it names no host; bad where an IPv4 block holds none or several of this machine's addresses (live-reach.ts runnerLiveOf). */
+function liveHostRow(env: NodeJS.ProcessEnv, interfaces?: Interfaces): CheckRow | undefined {
+  const name = "AGENTRUN_RUNNER_LIVE_HOST";
+  if (!env[name]?.trim()) return undefined;
+  try {
+    // The key is not read here: the host alone is.
+    const live = runnerLiveOf(env, Buffer.alloc(32), interfaces);
+    return live
+      ? { state: "ok", name, why: `the server reaches this runner's relay and viewers at ${live.host}` }
+      : { state: "warn", name, why: "not a host name, an IPv4 address or an IPv4 block other than loopback: this runner's relay and viewers stay on loopback, where a server on another host cannot reach them" };
+  } catch (error) {
+    if (error instanceof RunnerLiveRefused) return { state: "bad", name, why: error.message };
+    throw error;
+  }
 }
 
 /** The check's lines: one per row (its state, its name, why), then the outcome. */

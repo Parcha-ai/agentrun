@@ -176,7 +176,8 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	const make = (options) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), ...options });
 	assert.throws(make({ apiKey: "" }), /the Daytona API key, is required/);
 	assert.throws(() => create({ daemonPath: DAEMON }), /options\.apiKey/);
-	assert.throws(make({ apiUrl: "http://api.daytona.test/api" }), /must be https/);
+	for (const apiUrl of ["http://api.daytona.test/api", "http://127.0.0.1:3000/api", "http://localhost:3000/api"]) assert.throws(make({ apiUrl }), /^Error: the Daytona API URL must be https, so the key never crosses in the clear: http:$/, apiUrl);
+	assert.throws(make({ apiUrl: "api.daytona.test" }), /^Error: the Daytona API URL is not a URL: "api\.daytona\.test"$/);
 	assert.throws(make({ daemonUser: "0:0" }), /root/);
 	assert.throws(make({ daemonUser: "1000:0" }), /root's group/);
 	for (const daemonUser of ["00:1000", "000:000", "1000:00", "0:01000"]) assert.throws(make({ daemonUser }), /root or in root's group/, daemonUser);
@@ -280,6 +281,21 @@ test("with an Archil egress, the helper's mount names it as its last word: the D
 	assert.ok(mount, "the helper's mount ran");
 	assert.equal(mount.argv.at(-1), `egress=${EGRESS}`);
 	assert.ok(!mount.argv.join(" ").includes(ARCHIL_SPEC.mount.token), "the token goes on stdin alone, never in argv");
+});
+
+test("DAYTONA_LISTED_MS is the provider's listedMs, create's wait for Daytona's eventually consistent label listing: a sandbox still unlisted then that reads started is kept; a value that is not a whole number of ms above 0 is refused", async () => {
+	assert.deepEqual(DAYTONA.keys.find((key) => key.name === "DAYTONA_LISTED_MS"), { name: "DAYTONA_LISTED_MS", option: "listedMs", required: false });
+	const { listedMs: _unset, ...timeouts } = TIMEOUTS;
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request to Daytona"), timeouts, listedMs: "300" });
+	const { host } = fakeHostFor(provider);
+	host.list = async () => [];
+	const made = await provider.create(SPEC, { requestId: "r-listed-ms" });
+	assert.equal(made.ok, true, made.ok ? "" : `${made.error.code}: ${made.error.message}`);
+	assert.match(made.value.notes.join("\n"), /did not show computer-[0-9a-f]{12} \(machine [^)]+\) on 2 polls in a row within 0\.3 s .*so it is kept/);
+	const make = (listedMs) => () => new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: async () => assert.fail("no request"), listedMs });
+	for (const bad of ["0", "-5", "1.5", "15s", 0, 2.5]) assert.throws(make(bad), /listedMs \(DAYTONA_LISTED_MS\) is a whole number of ms above 0/, String(bad));
+	assert.doesNotThrow(make(" 45000 "));
+	assert.doesNotThrow(make(""));
 });
 
 test("create() asks Daytona for the request's name and labels, a TTL in whole minutes, no public port, network none, and no resources", async () => {

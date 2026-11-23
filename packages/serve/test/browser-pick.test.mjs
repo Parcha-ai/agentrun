@@ -58,7 +58,7 @@ test("a run's plane names its browser from the server's keys, set or saved; a la
   assert.deepEqual(recheckPlane({ browser: NO_CHROME }, { ...BB, ...KERNEL }), { browser: NO_CHROME }, "an unavailable browser stays so");
   // A run made before its plane was kept, resolved at a later launch: Browserbase, the vendor it had, never today's pick.
   const today = planeFor({ ...BB, ...KERNEL }, tooling, { browser: { provider: "kernel" } });
-  assert.deepEqual(keptFromBefore(today), { browser: "browserbase", web_fetch: "kernel" });
+  assert.deepEqual(keptFromBefore(today), { browser: "browserbase", web_fetch: "firecrawl-keyless" });
   // What is kept is the vendor, never its refusal: the plane a launch hands over is checked again (recheckPlane), so keys
   // restored later make it run.
   assert.deepEqual(recheckPlane(keptFromBefore(today), KERNEL).browser, "unavailable: browserbase picked, no BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID");
