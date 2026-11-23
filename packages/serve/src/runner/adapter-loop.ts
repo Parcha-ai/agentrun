@@ -1888,18 +1888,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
         // A call settled above its hold (a fal job whose output states more than its input asked, a monid call charged above
-        // its maxCost) can take what the run was
-        // charged past its cap. From then on, a settle that leaves the run's charges over its cap stops the run at once in
-        // the cap's words (overCap, settled charges only), as a stop for good (paid-calls.ts stopRun): no tool runs after it,
-        // a script's own calls included. A charge is never given back, so that stop holds; a call still in flight counts
-        // only toward admissions (the cap's rule), where it refuses a new call, never stops the run. Its hold, kept from its
-        // admission, tells an overrun.
+        // its maxCost) can take the run's charges past its cap: from then on, a settle that leaves them over it stops the run
+        // in the cap's words (overCap, settled charges only; paid-calls.ts stopRun). A call still in flight counts only
+        // toward admissions. Its hold, kept from its admission until it settles, tells an overrun (a host tool call's paid
+        // steps, bookedIn below). An admit its ref had booked already opens no step and is never settled, so it keeps
+        // nothing.
         const holds = new Map<string, number>();
         let overran = false;
         const paidUnder: PaidBooking = {
           admit: async (request) => {
             const admitted = await paid.admit({ ...request, under: spec.session.key });
-            holds.set(request.id, request.holdUsd);
+            if ((admitted as { booked?: unknown } | undefined)?.booked !== true) holds.set(request.id, request.holdUsd);
             return admitted;
           },
           settle: async (id, usd, options) => {
