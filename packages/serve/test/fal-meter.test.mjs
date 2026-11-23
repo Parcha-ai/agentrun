@@ -321,7 +321,7 @@ test("a talking head is held at its voice's length in whole seconds, read before
   const fabric = await run.call("run_model", head(FABRIC, { resolution: "480p" }));
   assert.equal(fabric.isError, undefined, textOf(fabric));
   assert.deepEqual(run.asked.media, ["https://v3.fal.media/files/voice.mp3"], "only the voice was read, never the image");
-  assert.deepEqual(run.asked.reads, [{ maxBytes: VOICE_MAX_BYTES, httpsOnly: true }], "read https only, under the voice's cap");
+  assert.deepEqual(run.asked.reads, [{ maxBytes: VOICE_MAX_BYTES, httpsOnly: true, maxRedirects: 0 }], "read https only, under the voice's cap, following no redirect");
   near(run.admits[0].holdUsd, 4 * 0.08, "the 3.096 s voice, billed as 4 whole seconds, at $0.08 a second");
   assert.equal(run.admits[0].basis, "fal's price for veed/fabric-1.0: $0.08 per second × 4 (its voice at audio_url, read before the call, in whole seconds), from get_pricing at 2026-11-20T12:00:00.000Z");
   // Fabric's output states no length: it is booked at its hold, the voice's length.

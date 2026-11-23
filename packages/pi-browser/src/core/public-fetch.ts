@@ -72,6 +72,9 @@ export type PublicFetchOptions = {
   maxBytes?: number;
   /** Refuse http as well, on the first hop and at every redirect: https only. Default false. */
   httpsOnly?: boolean;
+  /** The most redirects followed, a whole number from 0 to 5; with 0 any redirect is refused before its target is
+   *  dialled. Default 5. */
+  maxRedirects?: number;
 };
 
 /** The answer that ended the redirects: its URL, status and type, and its body when it is a 2xx text answer. */
@@ -88,10 +91,13 @@ export type PublicFile = { url: string; status: number; contentType: string; byt
 
 const MIB = 1024 * 1024;
 
-/** The options checked before any lookup: `maxBytes` (default 5 MiB) a whole number of bytes above 0. */
+/** The options checked before any lookup: `maxBytes` (default 5 MiB) a whole number of bytes above 0, and
+ *  `maxRedirects` a whole number from 0 to 5. */
 function capOf(options: PublicFetchOptions): number {
   const maxBytes = options.maxBytes ?? PUBLIC_MAX_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError(`maxBytes must be a whole number of bytes above 0, not ${maxBytes}`);
+  const redirects = options.maxRedirects ?? MAX_REDIRECTS;
+  if (!Number.isSafeInteger(redirects) || redirects < 0 || redirects > MAX_REDIRECTS) throw new RangeError(`maxRedirects must be a whole number from 0 to ${MAX_REDIRECTS}, not ${redirects}`);
   return maxBytes;
 }
 
@@ -105,6 +111,7 @@ async function publicHops<T>(url: string, options: PublicFetchOptions, accept: s
   const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
   const [scheme, schemeName] = options.httpsOnly ? ([/^https:$/, "https"] as const) : ([/^https?:$/, "http(s)"] as const);
+  const most = options.maxRedirects ?? MAX_REDIRECTS;
   let target = new URL(url);
   if (!scheme.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not ${schemeName}`);
   for (let hop = 0; ; hop += 1) {
@@ -119,7 +126,7 @@ async function publicHops<T>(url: string, options: PublicFetchOptions, accept: s
     try {
       res = await request(target, { redirect: "manual", signal: options.signal, dispatcher, headers: { accept, "user-agent": "pi-browser" } });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-        if (hop >= MAX_REDIRECTS) throw refusedError("refused: too many redirects");
+        if (hop >= most) throw refusedError(most === 0 ? "refused: a redirect, and this download follows none" : "refused: too many redirects");
         target = new URL(res.headers.get("location")!, target);
         if (!scheme.test(target.protocol)) throw refusedError(`refused: a redirect left ${schemeName}`);
         continue;
@@ -183,11 +190,11 @@ function statedLength(headers: Headers): number | undefined {
 }
 
 /**
- * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
+ * Fetches `url` from a public host, following at most 5 redirects (or `maxRedirects`), each hop resolved, checked and dialled at the
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
  * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s) (other
  * than https, with `httpsOnly`); a host that is local by name or resolves to any private address; a port other than 80
- * or 443; too many redirects; a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a
+ * or 443; too many redirects (any, with `maxRedirects` 0); a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a
  * hop's name lookup included (it rejects with the signal's reason), and an aborted hop is never dialled.
  */
 export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {

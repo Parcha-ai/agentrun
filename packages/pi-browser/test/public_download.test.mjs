@@ -140,6 +140,31 @@ test("httpsOnly: an http URL, or a redirect to one, is refused before it is dial
   await assert.rejects(publicFetch("http://cdn.example/p", { ...fetched, httpsOnly: true }), refused(/^refused: http: is not https$/), "publicFetch takes it too");
 });
 
+test("maxRedirects: at most that many redirects are followed; 0 refuses any redirect before its target is dialled", async () => {
+  const answers = {
+    "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location: "https://other.example/x.mp3" } }),
+    "https://other.example/x.mp3": () => new Response(BINARY, { status: 200, headers: { "content-type": "audio/mpeg" } }),
+    "https://cdn.example/direct.mp3": () => new Response(BINARY, { status: 200, headers: { "content-type": "audio/mpeg" } }),
+  };
+  const none = network({ answers });
+  await assert.rejects(publicDownload("https://cdn.example/f", { ...none, maxBytes: MAX, maxRedirects: 0 }), refused(/^refused: a redirect, and this download follows none$/));
+  assert.deepEqual(none.dialled, ["https://cdn.example/f"], "the redirect's target was never requested");
+  const direct = network({ answers });
+  assert.equal((await publicDownload("https://cdn.example/direct.mp3", { ...direct, maxBytes: MAX, maxRedirects: 0 })).bytes.length, 256, "a file with no redirect is read");
+  const one = network({ answers });
+  assert.equal((await publicDownload("https://cdn.example/f", { ...one, maxBytes: MAX, maxRedirects: 1 })).bytes.length, 256, "one redirect, followed");
+  const chain = Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`https://public.example/${i}`, () => new Response(null, { status: 302, headers: { location: `/${i + 1}` } })]));
+  const two = network({ answers: chain });
+  await assert.rejects(publicDownload("https://public.example/0", { ...two, maxBytes: MAX, maxRedirects: 2 }), refused(/^refused: too many redirects$/));
+  assert.equal(two.dialled.length, 3);
+  // A whole number from 0 to 5: never more than the guard's own limit, checked before any lookup.
+  for (const maxRedirects of [-1, 1.5, 6, Number.NaN]) {
+    const net = network();
+    await assert.rejects(publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX, maxRedirects }), RangeError, String(maxRedirects));
+    assert.deepEqual([net.looked, net.dialled], [[], []], String(maxRedirects));
+  }
+});
+
 test("the signal: aborted before the call, nothing is looked up or dialled; a deadline ends a body that never finishes", async () => {
   const before = network();
   await assert.rejects(publicDownload("https://cdn.example/f", { ...before, maxBytes: MAX, signal: AbortSignal.abort() }), { name: "AbortError" });

@@ -115,7 +115,8 @@ test("a talking head is billed by the voice at its audio_url alone, https only; 
   // The voice is read once here and fetched again by fal: only fal's own media, which serves the same file to both, is
   // priced. A voice anywhere else could play 1 s to this read and 60 s to fal.
   assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: "https://fal.media/files/a.mp3", resolution: "480p" }), { voice: "https://fal.media/files/a.mp3" });
-  for (const audio_url of ["https://m.example/a.mp3", "https://fal.media.example/a.mp3", "https://notfal.media/a.mp3", "https://v3.fal.media.m.example/a.mp3", "https://storage.googleapis.com/falserverless/a.mp3"]) {
+  // The host is the parsed URL's: fal.media as a user name or in a path is not fal's host.
+  for (const audio_url of ["https://m.example/a.mp3", "https://fal.media.example/a.mp3", "https://notfal.media/a.mp3", "https://v3.fal.media.m.example/a.mp3", "https://storage.googleapis.com/falserverless/a.mp3", "https://fal.media@evil.example/x", "https://v3.fal.media@evil.example/a.mp3", "https://evil.example/fal.media", "https://evil.example/?u=https://v3.fal.media/a.mp3", "https://evil.example#.fal.media"]) {
     const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
     assert.equal(units.unknown, "fal bills fal-ai/bytedance/omnihuman/v1.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times", audio_url);
   }
@@ -130,6 +131,7 @@ test("a media read is capped at web_save's 200 MiB, or the lower cap its caller 
     "https://m.example/a.mp3": body,
     "http://m.example/a.mp3": body,
     "https://m.example/hop": () => new Response(null, { status: 302, headers: { location: "http://m.example/a.mp3" } }),
+    "https://m.example/away": () => new Response(null, { status: 302, headers: { location: "https://m.example/a.mp3" } }),
     "https://m.example/big": () => new Response(new Uint8Array(1), { status: 200, headers: { "content-type": "audio/mpeg", "content-length": String(SAVE_MAX_BYTES + 1) } }),
   };
   const guard = async () => ({ lookup: async () => ["93.184.216.34"], fetchImpl: async (url) => (dialled.push(url.href), (answers[url.href] ?? (() => new Response("no", { status: 404 })))()) });
@@ -144,6 +146,14 @@ test("a media read is capped at web_save's 200 MiB, or the lower cap its caller 
   assert.deepEqual(dialled, [], "an http URL is never dialled");
   await assert.rejects(read("https://m.example/hop", signal, { httpsOnly: true }), /a redirect left https/);
   assert.deepEqual(dialled, ["https://m.example/hop"], "the http hop is never dialled");
+  // A talking head's voice is read as VOICE_READ: no redirect is followed, so a fal.media URL that sends the read
+  // elsewhere can't put a host whose bytes may change behind the price.
+  const { VOICE_READ, VOICE_MAX_BYTES } = await load();
+  assert.deepEqual(VOICE_READ, { maxBytes: VOICE_MAX_BYTES, httpsOnly: true, maxRedirects: 0 });
+  dialled.length = 0;
+  await assert.rejects(read("https://m.example/away", signal, VOICE_READ), /a redirect, and this download follows none/);
+  assert.deepEqual(dialled, ["https://m.example/away"], "the redirect's target is never dialled");
+  assert.equal((await read("https://m.example/a.mp3", signal, VOICE_READ)).length, 100, "a voice served directly is read");
   assert.equal((await read("https://m.example/hop", signal)).length, 100, "without httpsOnly an http hop is followed, as web_save's is");
 });
 

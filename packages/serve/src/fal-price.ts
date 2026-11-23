@@ -30,6 +30,9 @@ export const MEDIA_TIMEOUT_MS = 120_000;
 /** The most of a talking head's voice read to price it: a minute of 48 kHz stereo 32-bit WAV (23 MB) fits, and fal's
  *  talking heads take a minute of voice at most (OmniHuman v1.5's OpenAPI). A larger voice is unpriceable. */
 export const VOICE_MAX_BYTES = 32 * 1024 * 1024;
+/** How a talking head's voice is read: https only, under VOICE_MAX_BYTES, and following no redirect, so a fal.media URL
+ *  can't send the read to a host whose bytes may change (voiceOf). fal.media serves its files with no redirect. */
+export const VOICE_READ = { maxBytes: VOICE_MAX_BYTES, httpsOnly: true, maxRedirects: 0 } as const;
 
 /** Whether `url` is on fal's MCP host. */
 const onFalHost = (url: string): boolean => URL.parse(url)?.hostname === FAL_MCP_HOST;
@@ -127,6 +130,10 @@ const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => str
 /** A talking head's voice: its input's audio_url when that is an https URL on fal's own media (TALKING_HEADS). */
 function voiceOf(input: Record<string, unknown>): string | undefined {
   const url = typeof input.audio_url === "string" ? URL.parse(input.audio_url) : null;
+  // The cap rests on this check. It assumes a file on fal.media never changes: fal gives each file its own path and
+  // never overwrites one, so the voice this meter reads (VOICE_READ, no redirect followed) is the voice fal fetches. If
+  // fal ever serves changing bytes at one fal.media URL, this is where the cap breaks. The host is the parsed URL's, so
+  // fal.media as a user name, a path or a query is not it.
   return url?.protocol === "https:" && (url.hostname === "fal.media" || url.hostname.endsWith(".fal.media")) ? (input.audio_url as string) : undefined;
 }
 
@@ -219,20 +226,20 @@ function bodyOf(result: Record<string, unknown>): unknown {
 
 const shown = (n: number) => String(usd(n));
 
-/** How a MediaReader reads: under `maxBytes` (lower than its own cap; never higher), and with `httpsOnly`, refusing http
- *  on the first hop and at every redirect. */
-export type MediaRead = { maxBytes?: number; httpsOnly?: boolean };
+/** How a MediaReader reads: under `maxBytes` (lower than its own cap; never higher), with `httpsOnly` refusing http
+ *  on the first hop and at every redirect, and following at most `maxRedirects` (0 to 5; default 5). */
+export type MediaRead = { maxBytes?: number; httpsOnly?: boolean; maxRedirects?: number };
 /** The bytes of a job's input media at `url`, read before the job is sent; it throws when they can't be read. */
 export type MediaReader = (url: string, signal: AbortSignal, read?: MediaRead) => Promise<Uint8Array>;
 
 /** A MediaReader over the public-host guard web_fetch and web_save download through (`guard`: their fetch options),
  *  within web_save's size cap and download slots. */
-export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal" | "httpsOnly">>, slots: SaveSlots = SERVER_SLOTS): MediaReader => async (url, signal, read = {}) => {
+export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal" | "httpsOnly" | "maxRedirects">>, slots: SaveSlots = SERVER_SLOTS): MediaReader => async (url, signal, read = {}) => {
   const { publicDownload } = await import("@parcha/pi-browser");
   const bound = AbortSignal.any([signal, AbortSignal.timeout(MEDIA_TIMEOUT_MS)]);
   const release = await slots.take(bound);
   try {
-    const file = await publicDownload(url, { ...(await guard()), maxBytes: Math.min(read.maxBytes ?? SAVE_MAX_BYTES, SAVE_MAX_BYTES), httpsOnly: read.httpsOnly === true, signal: bound });
+    const file = await publicDownload(url, { ...(await guard()), maxBytes: Math.min(read.maxBytes ?? SAVE_MAX_BYTES, SAVE_MAX_BYTES), httpsOnly: read.httpsOnly === true, maxRedirects: read.maxRedirects, signal: bound });
     if (!file.bytes) throw new Error(`the host answered ${file.status}`);
     return file.bytes;
   } finally {
@@ -355,7 +362,7 @@ export function falMeter({ media, now = Date.now }: { media?: MediaReader; now?:
     let whole: { whole?: true } = {};
     if ("voice" in units) {
       // The length the voice plays (voiceSeconds), never one its header states: whoever sends the job made the file.
-      const seconds = await longest([units.voice], signal, { maxBytes: VOICE_MAX_BYTES, httpsOnly: true }, voiceSeconds);
+      const seconds = await longest([units.voice], signal, VOICE_READ, voiceSeconds);
       if (typeof seconds !== "number") return { job, why: `fal bills ${job.endpoint} per ${oneOf(price.unit)} of the voice at its audio_url, and the length of ${seconds.unread.slice(0, 200)} could not be read` };
       units = { units: wholeSeconds(seconds, "seconds") / (price.unit === "minutes" ? 60 : 1), from: "its voice at audio_url, read before the call, in whole seconds" };
       whole = { whole: true };
