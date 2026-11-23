@@ -751,6 +751,10 @@ export interface FiringChange {
    *  transaction: a host start that pushed a startBy out and wrote no run puts it back (triggers.ts handedStart), unless
    *  its run started, or another start moved it, meanwhile. */
   readonly startByWas?: number;
+  /** Written only while the firing has no run, read in the settle's own transaction (with `from`, a firing's start by a
+   *  run written apart from it, triggers.ts handedRan): one a release failed, or another run started, meanwhile is left
+   *  as it is. */
+  readonly noRun?: true;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */

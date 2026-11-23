@@ -1120,6 +1120,7 @@ class SqliteStore implements Store {
           // holdsAt: holdsRoom's own predicate, at that time.
           if (change.holdsAt !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at !== null && was.retry_at >= change.holdsAt)) return undefined;
           if (change.startByWas !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at === change.startByWas)) return undefined;
+          if (change.noRun && was.run_id !== null) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as

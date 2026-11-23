@@ -1355,8 +1355,13 @@ export class Triggers {
       room.ran(run);
       try {
         // The run's write started the firing (store.runs.create `firing`): said here. One a start wrote without it is
-        // started by handedRan, which says so.
-        if (!(await this.handedRan(triggerId, key, run.run_id))) this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
+        // started by handedRan, which says so. A firing released before that (a run written apart from it, by a server
+        // from before the one write, that a release beat to the firing) stays released: the run is answered, never
+        // refused, since it exists, and the log says it ran after the release.
+        if (!(await this.handedRan(triggerId, key, run.run_id))) {
+          const now = await this.store.triggers.firing(triggerId, key);
+          this.deps.say({ condition: now && released(now) ? "trigger_run_after_release" : "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
+        }
       } catch (error) {
         // Its run is written but the firing's start is not: the firing's next turn starts it with the run under its key,
         // so the run is counted while it works.
@@ -1446,12 +1451,13 @@ export class Triggers {
   /** Run `runId`, which the host started for firing `key` (handedStart), started: a firing with no run yet, still due
    *  (being handed, or waiting on its retry after the hook failed) or one its host took first, is made started here, as
    *  handed() makes it when the run came first, so the overlap check, max_active_runs and last_run_id count it. A failed
-   *  or settled firing is left as it is. Whether it started it here. */
+   *  or settled firing is left as it is, and so is one that moved between this read and the write (the write is only
+   *  while it is still in the status read, with no run: a release that failed it meanwhile stands). Whether it started
+   *  it here. */
   async handedRan(triggerId: string, key: string, runId: string): Promise<boolean> {
     const firing = await this.store.triggers.firing(triggerId, key);
     if (!firing || !(firing.status === "due" ? firing.runId === null : tookWithNoRun(firing))) return false;
-    await this.started(triggerId, key, runId);
-    return true;
+    return this.started(triggerId, key, runId, { from: firing.status, noRun: true });
   }
 
   /** The refusal of a host start of firing `key` whose run's write found the firing moved (FiringMoved): released by
@@ -1550,9 +1556,11 @@ export class Triggers {
     }
   }
 
-  private async started(triggerId: string, key: string, runId: string): Promise<void> {
-    await this.store.triggers.settle(triggerId, key, { status: "started", runId }, { reset: true });
+  /** Firing `key` started with run `runId`, as `only` allows (FiringChange's guards); said when written. Whether it was. */
+  private async started(triggerId: string, key: string, runId: string, only: Pick<FiringChange, "from" | "noRun"> = {}): Promise<boolean> {
+    if (!(await this.store.triggers.settle(triggerId, key, { status: "started", runId, ...only }, { reset: true }))) return false;
     this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: runId });
+    return true;
   }
 
   /** A failed firing: one more in its trigger's streak, the trigger turned off at FAILURES_TO_PAUSE, and trigger.failed
