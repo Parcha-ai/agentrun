@@ -704,3 +704,113 @@ test("no CLI command, the table's or a hand-written one, reaches an operation th
   assert.match(help.stdout, /Keys and other secrets are set in the console, signed in/);
   assert.doesNotMatch(help.stdout, /tool-keys[^\n]*\b(?:set|save|delete)\b/, "help lists no command that writes a key");
 });
+
+test("the API base: /v2 is added to an address whose path holds no v2 segment, a path prefix kept and the trailing slashes cut; the origin never changes", async () => {
+  const { apiBase } = await import("../lib/target.mjs");
+  assert.equal(typeof apiBase, "function", "target.mjs exports the one rule");
+  const cases = [
+    ["https://agents.example.test", "https://agents.example.test/v2"],
+    ["https://agents.example.test/", "https://agents.example.test/v2"],
+    ["https://agents.example.test/v2", "https://agents.example.test/v2"],
+    ["https://agents.example.test/v2///", "https://agents.example.test/v2"],
+    ["https://agents.example.test/prefix", "https://agents.example.test/prefix/v2"],
+    ["https://agents.example.test/prefix/", "https://agents.example.test/prefix/v2"],
+    ["https://agents.example.test/prefix/v2/", "https://agents.example.test/prefix/v2"],
+    ["http://127.0.0.1:7340", "http://127.0.0.1:7340/v2"],
+    // A base inside the API stays itself, as before; a segment that only holds v2 is not one.
+    ["https://agents.example.test/v2/settings", "https://agents.example.test/v2/settings"],
+    ["https://agents.example.test/v2x", "https://agents.example.test/v2x/v2"],
+    // Never re-serialized: the host's case and an explicit port are kept as given.
+    ["HTTPS://Agents.Example.Test:443/api", "HTTPS://Agents.Example.Test:443/api/v2"],
+  ];
+  for (const [given, base] of cases) {
+    assert.equal(apiBase(given), base, given);
+    assert.equal(apiBase(base), base, `${given}: the rule is idempotent`);
+    assert.equal(new URL(apiBase(given)).origin, new URL(given).origin, `${given}: same origin`);
+  }
+  for (const given of ["https://agents.example.test\\prefix", "https:agents.example.test", "http://[::1]:7340", "https://agents.example.test/v2/..", "https://agents.example.test/./x"]) {
+    assert.equal(new URL(apiBase(given)).origin, new URL(given).origin, `${given}: same origin`);
+  }
+});
+
+test("every way to name the server takes its address with or without /v2 and a trailing slash, its path prefix kept: the request goes to PREFIX/v2", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  // The listener answers under its own random prefix alone: a request that lost the prefix is a 404, never recorded.
+  const prefix = server.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  const sent = async (args, extra, label) => {
+    const before = server.requests.length;
+    const answered = await run(env, ["agents", "list", ...nowhere, ...args], { extra });
+    assert.equal(answered.code, 0, `${label}: ${answered.err}`);
+    assert.equal(server.requests.length, before + 1, label);
+    assert.equal(server.requests.at(-1).url, "/v2/agents", label);
+    return server.requests.at(-1);
+  };
+  for (const given of [prefix, `${prefix}/`, `${prefix}//`, `${prefix}/v2`, `${prefix}/v2/`]) {
+    await sent(["--base-url", given], { AGENTRUN_API_KEY: "fake-test-key" }, `--base-url ${given}`);
+  }
+  await sent([], { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" }, "AGENTRUN_BASE_URL");
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  writeFileSync(config, JSON.stringify({ base_url: `${prefix}/`, api_key: "saved-key" }), { mode: 0o600 });
+  const fromConfig = await sent([], {}, "base_url in the config");
+  assert.equal(fromConfig.headers.authorization, "Bearer saved-key");
+  // A template command, as every command: POST /v2/templates/import.
+  const before = server.requests.length;
+  await run(env, ["template", "install", "github:example/package", "--dry-run", ...nowhere], { extra: { AGENTRUN_BASE_URL: prefix, AGENTRUN_API_KEY: "fake-test-key" } });
+  assert.equal(server.requests.length, before + 1);
+  assert.equal(`${server.requests.at(-1).method} ${server.requests.at(-1).url}`, "POST /v2/templates/import");
+});
+
+test("the token kept with an address is found with or without /v2, and is never sent to another origin or another path on it", async (t) => {
+  const { dir, env } = scratch(t);
+  const home = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const other = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const config = join(dir, ".config", "agentrun", "config.json");
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  const keep = (base_url) => writeFileSync(config, JSON.stringify({ base_url, api_key: "saved-key" }), { mode: 0o600 });
+  const prefix = home.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  // Kept without /v2 (as login wrote a --base-url before this rule), asked with it, and the other way round.
+  for (const [kept, asked] of [[prefix, `${prefix}/v2`], [`${prefix}/`, `${prefix}/v2/`], [`${prefix}/v2/`, prefix], [`${prefix}/v2`, `${prefix}/`]]) {
+    keep(kept);
+    const found = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
+    assert.equal(found.code, 0, `kept ${kept}, asked ${asked}: ${found.err}`);
+    assert.equal(home.requests.at(-1).headers.authorization, "Bearer saved-key");
+  }
+  // Another port, another host name for the same address, another scheme, another path prefix: no token, nothing sent.
+  keep(prefix);
+  const { port } = new URL(home.base);
+  const elsewhere = [
+    other.base.replace(/\/v2$/, ""),
+    `http://127.0.0.1:${new URL(other.base).port}${new URL(prefix).pathname}`,
+    prefix.replace("127.0.0.1", "localhost"),
+    prefix.replace("http:", "https:"),
+    `http://127.0.0.1:${port}/elsewhere`,
+  ];
+  const seen = home.requests.length + other.requests.length;
+  for (const asked of elsewhere) {
+    const refused = await run(env, ["agents", "list", "--base-url", asked, ...nowhere]);
+    assert.equal(refused.code, 4, `${asked}: ${refused.err}`);
+    assert.match(refused.err, /No token for/);
+    assert.ok(!`${refused.out}${refused.err}`.includes("saved-key"));
+  }
+  assert.equal(home.requests.length + other.requests.length, seen, "nothing was sent");
+});
+
+test("login --base-url takes the address without /v2 too: it checks the token at PREFIX/v2 and keeps the API base, which the next command finds", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, (request) => (request.headers.authorization === "Bearer fake-test-key" ? [200, "application/json", '{"agents":[],"next_cursor":null}'] : [401, "application/json", "{}"]));
+  const prefix = server.base.replace(/\/v2$/, "");
+  const login = await run(env, ["login", "--base-url", `${prefix}/`], { input: "fake-test-key\n" });
+  assert.equal(login.code, 0, login.err);
+  assert.equal(server.requests.at(-1).url, "/v2/agents?limit=1");
+  const config = join(dir, ".config", "agentrun", "config.json");
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: "fake-test-key" });
+  assert.equal(JSON.parse(login.out).base_url, server.base);
+  const next = await run(env, ["agents", "list", "--data", join(dir, "nowhere")]);
+  assert.equal(next.code, 0, next.err);
+  assert.equal(server.requests.at(-1).url, "/v2/agents");
+  assert.equal(server.requests.at(-1).headers.authorization, "Bearer fake-test-key");
+});
