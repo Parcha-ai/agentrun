@@ -70,7 +70,7 @@ const PULL_REQUESTS = {
 const OWN_TRIGGERS = /triggers:\n  - name: pull-requests[\s\S]*?(?=\n---\n)/;
 
 test("the code-review package reads whole: its review skill with the rules beside it, its findings schema and its eval case", () => {
-  const [review] = readPackages();
+  const review = readPackages().find((p) => p.name === "code-review");
   assert.deepEqual([review.name, review.version, review.model, review.effort, review.budget, review.learning], ["code-review", "0.4.0", { tier: "fast", choices: [{ id: "particle", label: "Particle 1 (OpenRouter)", model: "openrouter/particle-ai/particle-1", harness: "pi", secrets: ["OPENROUTER_API_KEY"], note: "The model this template was tuned and measured on: about 18 cents a review on our own pull requests." }] }, "medium", { per_run_usd: 2 }, false]);
   assert.deepEqual([review.tools, review.toolPolicy, review.computer, review.checkout], [["read", "bash", "subagent"], { bash: "read-only" }, ["shell", "none"], "pull_request"], "a shell where there is one, else none; bash read-only on the checkout the platform makes; read for the skill's own files; subagent for its eight reviewers");
   assert.deepEqual(Object.keys(review.skills).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
@@ -246,13 +246,13 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   const listed = await api("GET", "/templates");
   assert.equal(listed.status, 200);
   meets("/templates", "get", "200", listed.body);
-  assert.deepEqual(listed.body.templates.map((x) => x.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(listed.body.templates.map((x) => x.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const view of listed.body.templates) {
     assert.deepEqual(view.author, { name: "Parcha Labs" }, `${view.name} names its author`);
     assert.equal(typeof view.output?.schema, "string", `${view.name} names its answer's schema file`);
     assert.equal(view.output.json_schema.type, "object", `${view.name} shows the schema itself, for the console`);
   }
-  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default");
+  assert.deepEqual(Object.fromEntries(listed.body.templates.map((x) => [x.name, x.approvals_default])), { "agent-scout": "never", "code-review": "never", "inbound-lead": "never", kyb: "ask", "market-monitor": "never", "release-notes": "never" }, "a template whose job runs on triggers runs unattended by default, and so does agent-scout, which the server starts for a scan and which writes nothing");
   const review = listed.body.templates.find((x) => x.name === "code-review");
   assert.deepEqual([review.version, review.secrets, review.skills, review.evals, review.parameters.required],["0.4.0", [], ["review"], ["clean-refactor", "injection", "mentions-defused", "never-flag", "null-name", "off-by-one", "other-repo", "pasted-by-reference", "re-review", "re-review-open", "repo-rule", "two-defects"], ["owner", "repo"]]);
 
@@ -430,7 +430,7 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
 
   // What a consent screen shows: each tool, and the permission the package asks for it.
   const listed = (await api("GET", "/templates")).body.templates.find((x) => x.name === "code-review");
-  const [review] = readPackages();
+  const review = readPackages().find((p) => p.name === "code-review");
   assert.deepEqual(listed.mcp, [{ source: "github", toolkit: "github", required: false, reason: review.mcp[0].reason, tools: GITHUB_TOOLS.map((name) => ({ name, tool: `mcp:github/${name}`, asks: GITHUB_READS.includes(name) ? "allow" : "ask", pin: REVIEW_PINS[name] })) }]);
 
   // No grants: the agent gets none of the GitHub tools. code-review runs unattended (approvals never), and never only
@@ -592,6 +592,7 @@ test("every package this server ships applies on a server with nothing saved: no
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "KERNEL_API_KEY", "TYPESAFE_API_KEY"]);
   const { api } = await serve(t);
   const parameters = {
+    "agent-scout": {},
     "code-review": AGENTRUN,
     "inbound-lead": { icp: "B2B fintech, 50-2000 people, US or EU; never gambling operators", post_to: "none" },
     kyb: { risk_appetite: "medium" },
@@ -600,7 +601,7 @@ test("every package this server ships applies on a server with nothing saved: no
   };
   const listed = (await api("GET", "/templates")).body.templates;
   assert.deepEqual(listed.map((x) => x.name), Object.keys(parameters), "a new package gets its parameters here");
-  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["code-review"], "the one package with a shell");
+  assert.deepEqual(listed.filter((x) => x.tools?.includes("bash")).map((x) => x.name), ["agent-scout", "code-review"], "the packages with a shell");
   for (const { name, mcp, tools } of listed) {
     const before = (await api("GET", "/agents")).body.agents.length;
     const applied = await api("POST", `/templates/${name}/apply`, { parameters: parameters[name] });
@@ -666,7 +667,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // URL it fetches. A package that fetches reads nothing through MCP.
   const fetches = new Set(packages.filter((p) => p.tools?.includes("web_fetch")).map((p) => p.name));
   assert.deepEqual(listed.filter((x) => fetches.has(x.p) && !WRITES.has(x.id)).map((x) => `${x.p}: ${x.id}`), [], "a package that holds web_fetch and reads through MCP");
-  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended");
+  assert.deepEqual(packages.filter((p) => p.approvals === "never").map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "market-monitor", "release-notes"], "the packages whose job runs on triggers run unattended, and agent-scout, which the server starts for a scan and which writes nothing");
   assert.ok(listed.some((x) => WRITES.has(x.id) && x.pinned) && listed.some((x) => x.allowed), "the check sees pinned writes and allowed tools");
 });
 

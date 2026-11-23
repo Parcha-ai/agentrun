@@ -99,7 +99,11 @@ export interface HostedTimeouts {
 	 * listings while create waits for the new computer to show: those start at 150 ms and double up to it.
 	 */
 	pollMs: number;
-	/** How long create waits for the listing to show the new computer. */
+	/**
+	 * How long create waits for the listing to show the new computer. A computer still not listed then is read by its id:
+	 * one that reads running with its labels is kept, with a note, since a vendor's listing may trail its create (Daytona's
+	 * is eventually consistent); any other is a timeout.
+	 */
 	listedMs: number;
 	/**
 	 * The listing's stability window: create's wait ends once the listing has shown the new computer on two consecutive
@@ -342,6 +346,13 @@ export class HostedProvider implements ComputerProvider {
 	/** What the vendor said a machine this create made was given (Machine.resources), by machine id, from its read once it
 	 *  ran (#prepare) until the create answers with it (#createOnce). */
 	readonly #given = new Map<string, ComputerResources>();
+	/**
+	 * Each computer create kept while the vendor's listing still left it out (#unlisted), by name to machine id: a retry
+	 * of its request finds it here, read by its id, where the name's listing would not show it yet. An entry goes once
+	 * the listing shows the name, a read finds the machine gone or not this one, or release deletes it. This instance's
+	 * alone: another instance's retry still waits on the listing.
+	 */
+	readonly #keptUnlisted = new Map<string, string>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
 	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
@@ -690,6 +701,11 @@ export class HostedProvider implements ComputerProvider {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
+		if (found.length === 0) {
+			const kept = await this.#keptOf(name, signal);
+			if (!kept.ok) return kept;
+			if (kept.value !== undefined) return this.#again(spec, name, kept.value, signal);
+		} else this.#keptUnlisted.delete(name);
 		if (found.length > 1) return this.#fail("exists", `${found.length} machines carry the name ${name} (${found.map((m) => m.id).join(", ")}): create with a new request id`);
 		if (found.length === 1) return this.#again(spec, name, found[0] as Machine, signal);
 		if (taken) return taken;
@@ -719,6 +735,21 @@ export class HostedProvider implements ComputerProvider {
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
 		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
+	}
+
+	/**
+	 * The computer create kept for this name while the listing left it out (#keptUnlisted), read by its id now: undefined
+	 * when there is none, or the read finds it gone or not this name's (the entry then goes). A read that fails fails the
+	 * create, the entry kept: a retry never asks the vendor for a second computer while the first may still be up.
+	 */
+	async #keptOf(name: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		const id = this.#keptUnlisted.get(name);
+		if (id === undefined) return ok(undefined);
+		const read = await this.#get(id, signal);
+		if (!read.ok) return this.#fail(read.error.code, `${name} (machine ${id}), which create kept while the listing left it out, could not be read, so no second computer is made: ${read.error.message}`);
+		if (read.value !== undefined && ours(read.value.labels, name) && alive(read.value.state)) return ok(read.value);
+		this.#keptUnlisted.delete(name);
+		return ok(undefined);
 	}
 
 	/**
@@ -1100,7 +1131,7 @@ export class HostedProvider implements ComputerProvider {
 			await opened.value.close();
 		}
 		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok([...closed, ...notes]) : listed;
+		return listed.ok ? ok([...closed, ...notes, ...listed.value]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
@@ -1316,23 +1347,46 @@ export class HostedProvider implements ComputerProvider {
 	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
 	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
 	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
+	 * A listing that has not settled by listedMs is no failure alone (#unlisted): the computer is read by its id.
 	 */
-	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
+	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
-		const until = Date.now() + listedMs;
+		const began = Date.now();
+		const until = began + listedMs;
 		let since: number | undefined;
+		const seen = { polls: 0, shown: 0 };
 		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
 			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
+			seen.polls += 1;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
 				hits += 1;
+				seen.shown += 1;
 				since ??= Date.now();
 			} else [hits, since] = [0, undefined];
-			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
-			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
+			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok([]);
+			if (Date.now() >= until) return this.#unlisted(ref, { ...seen, ms: Date.now() - began }, signal);
 			await pause(Math.min(delay, until - Date.now()), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
 		}
+	}
+
+	/**
+	 * A new computer the listing did not show twice in a row within listedMs, read by its id: one that reads running and
+	 * carries its labels is kept, the note saying so (create already reached its daemon and checked it from inside, so only
+	 * the vendor's listing lags; list() leaves it out until that listing shows it). Any other answer, or a read that fails,
+	 * is a timeout naming the labels asked for, the machine, the polls and the time waited.
+	 */
+	async #unlisted(ref: ComputerRef, seen: { polls: number; shown: number; ms: number }, signal?: AbortSignal): Promise<Result<string[]>> {
+		const asked = Object.entries(byName(ref.name)).map(([key, value]) => `${key}=${value}`).join(", ");
+		const what = `the listing by the labels ${asked} did not show ${ref.name} (machine ${ref.id}) on ${LISTED_ROUNDS} polls in a row within ${seconds(this.#timeouts.listedMs)} (${seen.polls} polls in ${seconds(seen.ms)}, ${seen.shown} of them showed it)`;
+		const read = await this.#own(ref, signal);
+		if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
+		if (read.ok && read.value.state === "running") {
+			this.#keptUnlisted.set(ref.name, ref.id);
+			return ok([`${what}; a read by its id finds it running with its labels, so it is kept: the vendor's listing trails its create, and list() leaves the computer out until it shows it`]);
+		}
+		return this.#fail("timeout", `${what}; ${read.ok ? `a read by its id finds it ${read.value.state}` : `a read by its id: ${read.error.message}`}`);
 	}
 
 	/** This provider's machine for ref, as the vendor reads it, or why not. */
@@ -1612,6 +1666,7 @@ export class HostedProvider implements ComputerProvider {
 		if (how === "detach") return this.#fail("unsupported", `the ${this.#label} provider keeps no computer for an agent (it declares no persistence), so release detach is refused: release it with delete`);
 		if (how === "stop") return this.#fail("unsupported", `${a(this.#label)} computer is deleted, never stopped and kept: release it with delete`);
 		if (how !== "delete") return this.#fail("invalid", `release is "delete", not ${String(how)}`);
+		if (this.#keptUnlisted.get(ref.name) === ref.id) this.#keptUnlisted.delete(ref.name);
 		const found = await this.#get(ref.id);
 		if (!found.ok) return found;
 		if (found.value === undefined) {

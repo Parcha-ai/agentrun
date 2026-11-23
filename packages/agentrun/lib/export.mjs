@@ -12,6 +12,7 @@ export const EXPORT = {
   command: ["export"],
   pathParams: ["agent"],
   summary: "Write an agent's current revision as a template package folder, and say what the target sets up again",
+  route: "GET /agents/{agent_id}/package",
   help: [
     ["AGENT", "the agent's id"],
     ["--out DIR", "the folder to write: a new one, or an empty one"],

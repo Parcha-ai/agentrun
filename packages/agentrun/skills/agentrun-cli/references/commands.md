@@ -427,19 +427,20 @@ Route: `POST /connectors/{connector_id}/targets/{target_id}/sync/status`.
 
 Deploy an agent's package to another AgentRun: upload, plan, apply, lock (deploy rollback, deploy delete).
 
-Route: none, it runs on this machine.
+Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 
 - `--to URL` (string, this CLI's own): where: cloud (the hosted AgentRun; AGENTRUN_CLOUD_URL overrides its address), or an AgentRun's address; left out after the first deploy, the lock's target (a folder's, only where this CLI deployed it, or cloud)
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
 - `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
 
 ### `agentrun deploy delete SOURCE`
 
 Delete the deployed agent from its target (archived first), and the lock here.
 
-Route: none, it runs on this machine.
+Route: `POST /agents/{agent_id}/archive`, `DELETE /agents/{agent_id}`.
 
 - `--to URL` (string, this CLI's own): the target, in place of the lock's
 - `--yes` (boolean, this CLI's own): delete without asking (needed off a terminal)
@@ -448,7 +449,7 @@ Route: none, it runs on this machine.
 
 Make the deployed agent's previous revision current on its target, and the lock follow.
 
-Route: none, it runs on this machine.
+Route: `GET /agents/{agent_id}/revisions`, `POST /agents/{agent_id}/current`.
 
 - `--to URL` (string, this CLI's own): the target, in place of the lock's
 
@@ -469,7 +470,7 @@ Route: none, it runs on this machine.
 
 Write an agent's current revision as a template package folder, and say what the target sets up again.
 
-Route: none, it runs on this machine.
+Route: `GET /agents/{agent_id}/package`.
 
 - `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
 
@@ -671,6 +672,16 @@ A code that pairs a person's own computer with this server.
 
 Route: `POST /computers/pairings`.
 
+### `agentrun local create-suggested-agent SUGGESTION_ID`
+
+Create a suggested agent: a branch with its package and client, the agent made here, and a pull request.
+
+Route: `POST /suggestions/{suggestion_id}/create`.
+
+- `--name STRING` (string): The agent's name, in place of the suggestion's.
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun local delete-composio-subscription NAME`
 
 Delete the Composio project's webhook subscription, once no trigger uses it.
@@ -689,6 +700,12 @@ Turn Mode 2 off: run folders on this server's own disk.
 
 Route: `DELETE /workspace/archil`.
 
+### `agentrun local discard-suggestion SUGGESTION_ID`
+
+Discard a suggested agent: it goes away, and later scans leave it out.
+
+Route: `POST /suggestions/{suggestion_id}/discard`.
+
 ### `agentrun local disconnect-git-hub`
 
 Disconnect GitHub: the App's credentials gone from this server, and every github trigger off.
@@ -706,6 +723,14 @@ Route: `GET /integrations/github`.
 The model gateway in force: the environment's, the one saved here, or none.
 
 Route: `GET /settings/model-gateway`.
+
+### `agentrun local get-suggestion SUGGESTION_ID`
+
+One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.
+
+Route: `GET /suggestions/{suggestion_id}`.
+
+- `--name STRING` (string): The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters.
 
 ### `agentrun local get-workspace-archil`
 
@@ -737,11 +762,26 @@ Settings → Computers: the kinds of computer this server offers, each provider 
 
 Route: `GET /computers`.
 
+### `agentrun local list-git-hub-repositories`
+
+The repositories this server's GitHub App is installed on.
+
+Route: `GET /integrations/github/repositories`.
+
 ### `agentrun local list-mcp-server-names`
 
 The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
+
+### `agentrun local list-suggestions`
+
+Suggested agents: each repository's scan and the agents it suggests.
+
+Route: `GET /suggestions`.
+
+- `--repo STRING` (string): owner/name: one repository's alone.
+- `--status open|created|discarded|all` (string, one of these)
 
 ### `agentrun local receive-hook-composio HOOK`
 
@@ -752,11 +792,27 @@ Route: `POST /hooks/composio/{hook}`.
 - `--body JSON|@FILE|-` (`*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of `*/*`; any other than JSON is sent as given.
 
+### `agentrun local restore-suggestion SUGGESTION_ID`
+
+Bring a discarded suggestion back (an undo).
+
+Route: `POST /suggestions/{suggestion_id}/restore`.
+
 ### `agentrun local rotate-composio-secret NAME`
 
 Rotate the Composio project's webhook subscription's secret, and keep the new one.
 
 Route: `POST /settings/mcp-servers/{name}/composio/rotate-secret`.
+
+### `agentrun local scan-for-suggestions`
+
+Scan a repository for places its app needs an agent.
+
+Route: `POST /suggestions/scans`.
+
+- `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun local test-computer PROVIDER`
 

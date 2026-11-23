@@ -126,7 +126,7 @@ function revisionInputOf(definition: Json, files: Record<string, string>): Revis
     ...(definition.approvals === "ask" || definition.approvals === "never" ? { approvals: definition.approvals } : {}),
     ...(isObject(definition.input_schema) ? { inputSchema: definition.input_schema } : {}),
     ...(isObject(definition.output_schema) ? { outputSchema: definition.output_schema } : {}),
-    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}),
+    ...(definition.checkout === "pull_request" || definition.checkout === "repository" ? { checkout: definition.checkout } : {}),
     ...common,
     ...learning,
     ...capped,
@@ -485,7 +485,7 @@ export function agentView(
     revisions: entry.revisions,
     source: null,
     ...(sourceSyncOf(body) ? { source_sync: { moved: true as const } } : {}),
-    // The template package it was applied from (its first revision keeps it): the package's id, version and the commit an
+    // The package its current revision came from (packageOf): the package's id, version and the commit an
     // imported one was read at (null for a bundled one). Null for an agent made otherwise.
     template: entry.template ? { id: entry.template.id, version: entry.template.version, sha: entry.template.sha ?? null } : null,
     skills: Object.entries(body.skills ?? {}).map(([path, sha]) => ({ path, sha256: sha, size_bytes: entry.sizes.get(sha) ?? null })),

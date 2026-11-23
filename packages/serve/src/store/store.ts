@@ -130,7 +130,7 @@ export interface TemplatePackage {
   /** The names of the keys the package declared (its `secrets`, and those of the model choice the apply took), sorted,
    *  never their values: what an export of the agent names, whatever version of the package the server holds later, and
    *  the tool keys a run of the revision may carry (run-keys.ts; under the run-keys setting one that does not is refused).
-   *  Absent on a revision applied before it was kept. */
+   *  Every apply writes it. */
   readonly secrets?: readonly string[];
 }
 
