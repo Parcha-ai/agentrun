@@ -55,3 +55,12 @@ test("a handed MCP header's credential is cut alone, whatever its scheme: a Basi
   const launch = launchValuesOf(Buffer.alloc(32, 7), "run_1", sealRunLaunch(Buffer.alloc(32, 7), "run_1", { mcp: { files: { headers: { authorization: `Basic ${basic}` }, origin: ORIGIN } } }));
   assert.ok(launch.includes(basic) && launch.includes(password), "a served read and the end's census list them from the launch");
 });
+
+test("a handed Bearer header's token is cut alone, whichever case the scheme is written in", () => {
+  for (const scheme of ["Bearer", "bearer"]) {
+    const token = `not-a-secret-${"bearer-token"}-${scheme}-41c7`;
+    const values = handedSecretValues({ mcp: { files: { headers: { authorization: `${scheme} ${token}` }, origin: ORIGIN } } });
+    assert.ok(values.includes(token), `the ${scheme} token`);
+    assert.equal(cutHanded(`H: ${scheme} ${token} and TOKEN=${token}`, values), `H: ${scheme} [redacted] and TOKEN=[redacted]`, `the ${scheme} token is cut with or without its scheme word`);
+  }
+});
