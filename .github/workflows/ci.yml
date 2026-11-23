@@ -610,10 +610,10 @@ jobs:
           node --test test/beneath-flags.test.mjs
 
   binary:
-    # The session-counts entry compiled with Bun into one file that needs neither Node nor Bun (scripts/build-binary.mjs),
+    # The import CLI (packages/import, agentrun-import) compiled with Bun into one file that needs neither Node nor Bun (scripts/build-binary.mjs),
     # for Agent Wrapped's numbers in the terminal: built on each runner for its own platform, run there on a made-up home
-    # (scripts/build-binary.test.mjs, the same line Node prints), and kept as an artifact. Node stays the runtime: not in
-    # verify's needs nor a required check. It runs when a change reaches the entry, the readers it compiles, the build and its helper,
+    # (scripts/build-binary.test.mjs, the same lines Node prints running the CLI's tsc build), and kept as an artifact. Node stays the runtime: not in
+    # verify's needs nor a required check. It runs when a change reaches packages/import (the entry and the readers it compiles), the build and its helper,
     # the Bun pin or this file: a Mac's minutes cost ten of Linux's.
     name: binary (${{ matrix.target }})
     strategy:
@@ -650,7 +650,7 @@ jobs:
           if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: built"; exit 0
           fi
-          changed=$(git diff --name-only --no-renames "$base" HEAD -- scripts/session-counts.mjs scripts/build-binary.mjs scripts/build-binary.test.mjs scripts/is-main.mjs packages/serve/src/import-sources.ts .bun-version .github/workflows/ci.yml)
+          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/import/ scripts/build-binary.mjs scripts/build-binary.test.mjs scripts/is-main.mjs .bun-version .github/workflows/ci.yml)
           echo "${changed:-no path the binary is built from changed}"
           if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
@@ -661,7 +661,14 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         with:
           bun-version-file: .bun-version
-      # The entry and the readers it compiles import only Node's builtins, and so do the build and its test: no npm ci.
+      # The entry prices requests with pi-ai's catalog, an optional peer it imports with a fallback: bun build leaves an
+      # import it cannot resolve to fail at run time, so without pi-ai installed the binary compiles and prices nothing.
+      # Only packages/import's dependencies and the root's (tsc) are installed: the test's Node run is the CLI built by tsc.
+      - name: packages/import's dependencies, and its build for Node
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          node scripts/npm-ci-retry.mjs --ignore-scripts --workspace=packages/import --include-workspace-root
+          npm run build -w packages/import
       - name: The binary, built
         if: steps.paths.outputs.run == 'true'
         env:
@@ -671,11 +678,11 @@ jobs:
         if: steps.paths.outputs.run == 'true'
         env:
           TARGET: ${{ matrix.target }}
-        run: AGENTRUN_BINARY="$RUNNER_TEMP/binary/session-counts-${TARGET#bun-}" node --test scripts/build-binary.test.mjs
+        run: AGENTRUN_BINARY="$RUNNER_TEMP/binary/agentrun-import-${TARGET#bun-}" node --test scripts/build-binary.test.mjs
       - uses: actions/upload-artifact@v4
         if: steps.paths.outputs.run == 'true'
         with:
-          name: session-counts-${{ matrix.target }}
+          name: agentrun-import-${{ matrix.target }}
           path: ${{ runner.temp }}/binary/
           if-no-files-found: error
           retention-days: 7

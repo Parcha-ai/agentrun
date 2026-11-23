@@ -1,12 +1,14 @@
-// The compiled binary (scripts/build-binary.mjs) on a made-up home: each source's sessions and token counts, the same
-// line Node prints running the entry itself. The binary is the one AGENTRUN_BINARY names (CI's binary job builds it on
+// The compiled binary (scripts/build-binary.mjs) on a made-up home: the import CLI's known answer, one line per session,
+// byte for byte what Node prints running the same CLI built to packages/import/dist. The binary is the one AGENTRUN_BINARY names (CI's binary job builds it on
 // each runner); without one, the tests that run it skip.
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
+import { createHash } from 'node:crypto';
 import { DEFAULT_ENTRY, hostTarget, missingImports } from './build-binary.mjs';
 
 const BINARY = process.env.AGENTRUN_BINARY;
@@ -76,33 +78,55 @@ test("this machine's target is Bun's name for its platform and architecture, and
   assert.throws(() => hostTarget('win32', 'ia32'), /no Bun target for win32-ia32/);
 });
 
-const EXPECTED = {
-  'claude-code': { sessions: 2, requests: 3, input: 18, output: 36, cacheRead: 300, cacheWrite: 150 },
-  codex: { sessions: 1, requests: 2, input: 600, output: 55, cacheRead: 900, cacheWrite: 0 },
-  pi: { sessions: 1, requests: 1, input: 40, output: 4, cacheRead: 60, cacheWrite: 30 },
-};
+const key = (path) => createHash('sha256').update(path).digest('hex');
+const run = (args, options = {}) => spawnSync(BINARY, args, { encoding: 'utf8', cwd: scratch, env: { PATH: process.env.PATH ?? '' }, ...options });
+/** The import CLI as Node runs it: the build in packages/import/dist (npm run build -w packages/import). */
+const NODE_CLI = fileURLToPath(new URL('../packages/import/dist/cli.js', import.meta.url));
+const USAGE = /usage: agentrun-import <home> \[--sources claude-code,codex,pi\] --known-answer/;
+const tokens = (input, output, cacheRead, cacheWrite) => ({ input, output, cacheRead, cacheWrite, cacheWrite1h: 0 });
+// What the home holds, a line per session sorted by key: the resumed copy counts once, its subagent's requests join the
+// parent's, the cut pi request counts as a call and not as tokens, and the file too shallow for codex is no session.
+const EXPECTED = [
+  { key: key('.codex/sessions/2026/01/02/rollout-2026-01-02-fixture.jsonl'), source: 'codex', tokens: tokens(600, 55, 900, 0), cost: null, turns: 2, calls: 2 },
+  { key: key('.claude/projects/-fixture-a/s-a.jsonl'), source: 'claude-code', tokens: tokens(1018, 1036, 300, 150), cost: null, turns: 1, calls: 4 },
+  { key: key('.pi/agent/sessions/--fixture-project--/2026-01-01T00-00-00-000Z_pi-session.jsonl'), source: 'pi', tokens: tokens(40, 4, 60, 30), cost: 0.02, turns: 1, calls: 2 },
+].sort((a, b) => (a.key < b.key ? -1 : 1));
 
-test('the binary counts each source\'s sessions and tokens under a home, as Node running the entry does', { skip }, () => {
+test('the default entry is the import CLI', () => {
+  assert.equal(DEFAULT_ENTRY, fileURLToPath(new URL('../packages/import/src/cli.ts', import.meta.url)));
+});
+
+test("the binary prints each session's known answer under a home, byte for byte what Node running the CLI prints", { skip }, () => {
   const dir = home();
-  const out = execFileSync(BINARY, [dir], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' }, cwd: scratch });
-  assert.deepEqual(JSON.parse(out), EXPECTED);
-  const node = execFileSync(process.execPath, [DEFAULT_ENTRY, dir], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' }, cwd: scratch });
-  assert.equal(out, node);
+  const result = run([dir, '--known-answer']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map((line) => JSON.parse(line)), EXPECTED);
+  const node = spawnSync(process.execPath, [NODE_CLI, dir, '--known-answer'], { encoding: 'utf8', cwd: scratch, env: { PATH: process.env.PATH ?? '' } });
+  assert.equal(node.status, 0, `${node.stderr} (npm run build -w packages/import builds ${NODE_CLI})`);
+  assert.equal(result.stdout, node.stdout);
 });
 
-test('the binary counts nothing under an empty home', { skip }, () => {
+test('--sources limits the binary to the sources named', { skip }, () => {
+  const result = run([home(), '--sources', 'pi,codex', '--known-answer']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split('\n').map((line) => JSON.parse(line).source).sort(), ['codex', 'pi']);
+});
+
+test('the binary prints nothing under an empty home', { skip }, () => {
   const empty = mkdtempSync(join(scratch, 'empty-'));
-  const zero = { sessions: 0, requests: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  assert.deepEqual(JSON.parse(execFileSync(BINARY, [empty], { encoding: 'utf8', cwd: scratch })), { 'claude-code': zero, codex: zero, pi: zero });
+  const result = run([empty, '--known-answer']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, '');
 });
 
-test('the binary prints its usage for --help, and refuses no home with it', { skip }, () => {
-  const help = spawnSync(BINARY, ['--help'], { encoding: 'utf8', cwd: scratch });
-  assert.equal(help.status, 0);
-  assert.match(help.stdout, /^Usage: session-counts <home>/);
-  const none = spawnSync(BINARY, [], { encoding: 'utf8', cwd: scratch });
-  assert.equal(none.status, 2);
-  assert.match(none.stderr, /^Usage: session-counts <home>/);
+test('the binary exits 2 with its usage on no home, no --known-answer, an unknown source or an unknown option', { skip }, () => {
+  const dir = home();
+  for (const args of [[], ['--known-answer'], [dir], [dir, '--sources', 'nope', '--known-answer'], [dir, '--help'], ['--help']]) {
+    const result = run(args);
+    assert.equal(result.status, 2, `${args.join(' ')}: ${result.stderr}`);
+    assert.match(result.stderr, USAGE);
+    assert.equal(result.stdout, '');
+  }
 });
 
 test('the binary reads no bunfig.toml from the directory it runs in', { skip }, () => {
@@ -110,7 +134,7 @@ test('the binary reads no bunfig.toml from the directory it runs in', { skip }, 
   // A preload a bunfig.toml names would run before the entry, as code of the directory's.
   writeFileSync(join(dir, 'preload.mjs'), 'console.log("preloaded");\n');
   writeFileSync(join(dir, 'bunfig.toml'), 'preload = ["./preload.mjs"]\n');
-  const run = spawnSync(BINARY, ['--help'], { encoding: 'utf8', cwd: dir, env: { PATH: process.env.PATH ?? '' } });
-  assert.equal(run.status, 0, run.stderr);
-  assert.doesNotMatch(run.stdout, /preloaded/);
+  const result = run([home(), '--known-answer'], { cwd: dir });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /preloaded/);
 });

@@ -1,10 +1,10 @@
 // One entry compiled with Bun into a binary that needs neither Node nor Bun installed (`bun build --compile`), for each
-// target asked: Agent Wrapped's numbers in the terminal without an npx install first. Node stays the runtime the
+// target asked: the importer's known answer for a home in the terminal without an npx install first. Node stays the runtime the
 // packages ship on; the binary is one more way to run the same entry, and Node runs it when the binary cannot.
 //
 //   node scripts/build-binary.mjs [--entry FILE] [--name NAME] [--target TARGET]... [--out DIR]
 //
-// --entry   the program (default DEFAULT_ENTRY); --name the binary's name before its target (default the entry's)
+// --entry   the program (default DEFAULT_ENTRY); --name the binary's name before its target (default agentrun-import for the default entry, else the entry's)
 // --target  bun-linux-x64, bun-linux-arm64, bun-darwin-arm64 or bun-darwin-x64; repeat for several (default this machine's)
 // --out     where the binaries go (default .binary/), each <name>-<os>-<arch>
 //
@@ -20,8 +20,9 @@ import { parseArgs } from 'node:util';
 import { isMain } from './is-main.mjs';
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
-/** The program the binary runs: the importer's own CLI takes this line once it lands. */
-export const DEFAULT_ENTRY = join(ROOT, 'scripts', 'session-counts.mjs');
+/** The program the binary runs: the importer's own CLI (agentrun-import), named after its bin. */
+export const DEFAULT_ENTRY = join(ROOT, 'packages', 'import', 'src', 'cli.ts');
+export const DEFAULT_NAME = 'agentrun-import';
 export const TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-arm64', 'bun-darwin-x64'];
 /** Modules Bun's runtime lacks, each with what to use there instead. */
 const MISSING = { 'node:sqlite': 'bun:sqlite (import it when `typeof Bun === "object"`, node:sqlite otherwise)' };
@@ -57,7 +58,7 @@ export function build({ entry = DEFAULT_ENTRY, name, targets = [hostTarget()], o
   const have = bunVersion(bun);
   if (have !== pinned) throw new Error(`Bun ${have} at ${bun}; .bun-version pins ${pinned}`);
   for (const target of targets) if (!TARGETS.includes(target)) throw new Error(`unknown target ${target}; one of ${TARGETS.join(', ')}`);
-  const stem = name ?? basename(entry, extname(entry));
+  const stem = name ?? (entry === DEFAULT_ENTRY ? DEFAULT_NAME : basename(entry, extname(entry)));
   mkdirSync(out, { recursive: true });
   const scratch = mkdtempSync(join(tmpdir(), 'build-binary-'));
   try {
