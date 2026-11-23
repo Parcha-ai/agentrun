@@ -83,7 +83,7 @@ import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
-import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
 import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
@@ -4436,13 +4436,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { signed_in: true }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
       }
       // This browser: its session revoked on the server (a copy of its cookie is no session either) and its cookie
-      // cleared; every other browser's session left as it is. A viewer watching with it is cut off.
+      // cleared; every other browser's session left as it is. A viewer watching with it is cut off. Its sessions at this
+      // server's other ports go too (page.ts sessionsAtEveryPort: a browser sends a host's cookies to every port), each
+      // name cleared; a cookie this server did not make (another server's on the same host) is left as it is.
       case "/auth/sign-out": {
         fromPage(req);
         if (!signedIn(req, me)) throw new ApiError("unauthenticated", "this browser is not signed in");
-        for (const value of heldSessions(req)) if (me.valid(value)) me.revoke(value);
+        const ended = sessionsAtEveryPort(req).filter(({ value }) => me.valid(value));
+        for (const { value } of ended) me.revoke(value);
         viewers.recheck();
-        return send(res, 200, { signed_out: true }, { "set-cookie": ownerCookie(req, "", 0) });
+        const names = new Set([ownerCookieName(req), ...ended.map(({ name }) => name)]);
+        return send(res, 200, { signed_out: true }, { "set-cookie": [...names].map((name) => ownerCookie(req, "", 0, name)) });
       }
       // Every browser and phone: the sessions' epoch moves on, so every cookie made before is none, this one's too.
       case "/auth/sign-out-everywhere": {
@@ -6154,7 +6158,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The MCP endpoint's tools are the routes above, called in process with the caller's token (mcp.ts).
   const mcp = mcpEndpoint({ route, authorized: (header, req) => bearer(header, req), authFailed, version: VERSION });
 
-  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string | string[]> = {}): void {
     const text = JSON.stringify(body);
     res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
     res.end(text);

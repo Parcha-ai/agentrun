@@ -82,9 +82,21 @@ export const isJson = (req: IncomingMessage) => String(req.headers["content-type
 
 /** The owner's session cookie: `__Host-` on https, so no other host or path can set it; else one per port the browser opened. */
 export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Host-agentrun-session" : `agentrun-${browserPort(req)}-session`);
-/** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0). */
-export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number) =>
-  `${ownerCookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;
+/** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0); under `name`, this
+ *  request's own unless another is given. */
+export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number, name = ownerCookieName(req)) =>
+  `${name}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;
+/** The owner's session cookies the request holds under this request's name and under any port's (`agentrun-<port>-session`),
+ *  each with its name, valid or not: a browser sends a host's cookies to every port of it, so one signed in at 7340 and
+ *  again through a tunnel at 8080 sends both to either. Which are this server's is the owner's to say (Owner.valid). */
+export const sessionsAtEveryPort = (req: IncomingMessage): Array<{ name: string; value: string }> => {
+  const own = ownerCookieName(req);
+  return String(req.headers.cookie ?? "").split(";").flatMap((part) => {
+    const at = part.indexOf("=");
+    const name = part.slice(0, at).trim();
+    return at > 0 && (name === own || /^agentrun-\d{1,5}-session$/.test(name)) ? [{ name, value: part.slice(at + 1).trim() }] : [];
+  });
+};
 /** The owner's session cookies the request holds, valid or not. */
 export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));
 /** Whether the request holds a session the owner signed in. */
