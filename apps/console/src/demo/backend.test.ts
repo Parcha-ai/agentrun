@@ -101,6 +101,32 @@ describe("demo mode's backend", () => {
     expect(await of("pr-reviewer")).toEqual([2, [], 0]);
   });
 
+  it("opens each agent's own learning files: a workflow it lists reads as its graph, and its corrections are its own", async () => {
+    const { v2 } = demo();
+    for (const id of ["refund-desk", "support-triage"]) {
+      const learning = await v2.agentLearning(id);
+      for (const w of learning.workflows) {
+        const graph = JSON.parse((await v2.readLearningFile(id, w.file)).text) as { name: string; root: { node: string } };
+        expect(graph).toMatchObject({ name: w.name, root: { node: "chain" } });
+        expect((await v2.readLearningFile(id, w.readme)).text).toMatch(new RegExp(`^# ${w.name}`));
+      }
+      expect((await v2.readLearningFile(id, "corrections.md")).text).toBe(learning.corrections);
+    }
+    // A file another agent keeps is not this one's.
+    await expect(v2.readLearningFile("support-triage", "workflows/refund-decision/workflow.json")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("takes the owner's OK on the Refund desk's waiting workflow alone: another agent's workflow is refused, and approves nothing", async () => {
+    const { v2 } = demo();
+    const pending = async () => (await v2.agentLearning("refund-desk")).workflows.find((w) => w.status === "pending");
+    const triage = (await v2.agentLearning("support-triage")).workflows[0];
+    await expect(v2.approveWorkflow("support-triage", triage.readme, triage.etag)).rejects.toMatchObject({ status: 403, code: "demo_mode" });
+    const waiting = await pending();
+    expect(waiting).toBeDefined();
+    await v2.approveWorkflow("refund-desk", waiting!.readme, waiting!.etag);
+    expect(await pending()).toBeUndefined();
+  });
+
   it("holds a run at its approval until the person allows the call, then finishes it", async () => {
     const { v2, now } = demo();
     const waiting = await v2.getRun("demo-run-refund-approval");

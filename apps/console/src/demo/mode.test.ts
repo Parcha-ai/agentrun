@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { demoOn, onDemoChange, setDemo } from "./mode";
+import { ClientError } from "@/lib/client";
+import { DEMO_REFUSAL, demoOn, demoUpload, onDemoChange, setDemo } from "./mode";
 
 const store = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) }; };
 
@@ -28,4 +29,16 @@ it("holds the choice on the page when the browser's storage refuses it", () => {
   setDemo(false, refusing);
   expect(demoOn(refusing)).toBe(false);
   setDemo(false, store());
+});
+
+it("refuses a picked file in the page: no request is made, and the person reads why", async () => {
+  const open = vi.spyOn(XMLHttpRequest.prototype, "open");
+  const sent = vi.spyOn(globalThis, "fetch");
+  const refusal = await demoUpload(new File(["x"], "notes.md"), () => {}, new AbortController().signal).catch((e: unknown) => e);
+  expect(refusal).toBeInstanceOf(ClientError);
+  expect(refusal).toMatchObject({ status: 403, code: "demo_mode", message: DEMO_REFUSAL });
+  expect(open).not.toHaveBeenCalled();
+  expect(sent).not.toHaveBeenCalled();
+  open.mockRestore();
+  sent.mockRestore();
 });

@@ -18,10 +18,26 @@ export type DemoAgent = {
   /** A connected agent: a Claude Code or Codex setup on a developer's machine, run from here as it is set up there. */
   native?: { runtime: "claude-code" | "codex"; project: string; selector: { kind: "project" } | { kind: "agent"; name: string }; version: string; skills: string[]; mcp: string[] };
   /** What a learning agent holds beyond the Refund desk's full story: its corrections, and a workflow it is checking. */
-  learned?: { corrections: string; checking?: { name: string; description: string } };
+  learned?: { corrections: string; checking?: { name: string; description: string; readme: string; workflow: object } };
   /** An agent made or edited in the demo: its definitions as saved, oldest first, in place of the story's. */
   saved?: Record<string, unknown>[];
 };
+
+/** The workflow Support triage drafted from its runs, checked against its past tickets before it may answer one alone. */
+const TRIAGE_WORKFLOW = {
+  v: 2, name: "ticket-triage",
+  schemas: {
+    Ticket: { type: "object", required: ["subject", "body"], properties: { subject: { type: "string" }, body: { type: "string" } } },
+    Triage: { type: "object", required: ["queue", "urgency"], properties: { queue: { type: "string" }, urgency: { type: "integer" } } },
+  },
+  input: { schemaId: "Ticket" }, output: { schemaId: "Triage", path: "triage" },
+  root: { node: "chain", steps: [
+    { node: "call", label: "read the playbook", tool: "read", args: { path: "playbooks/triage.md" }, as: "playbook" },
+    { node: "pick", label: "which queue", from: "playbook.queues", instructions: "Which queue does this ticket belong to, by what the buyer or seller asks for?", as: "queue", none: "hand back" },
+    { node: "code", label: "score the urgency", as: "triage" },
+  ] },
+};
+const TRIAGE_README = "# ticket-triage\n\nFiles a ticket under its queue (billing, shipping, account, merchant, abuse) and scores its urgency from the playbook: a chargeback, a locked account or a safety problem is 4 or more.\n\nDrafted from Support triage's runs. It is being checked against past tickets before it answers one alone; the first reply stays with the agent.\n";
 
 export const AGENTS: DemoAgent[] = [
   {
@@ -35,7 +51,7 @@ export const AGENTS: DemoAgent[] = [
     description: "Reads each new support ticket, files it under a queue with an urgency, and drafts the first reply.",
     instructions: "Triage one support ticket.\n\nPick the queue (billing, shipping, account, merchant, abuse), score urgency 1 to 5, and draft a first reply of at most four sentences. A ticket that mentions a chargeback, a locked account or a safety problem is urgency 4 or more.",
     tools: ["read", "write", "email_draft"], notes: [null, "Chargebacks are urgency 4 or more"], learning: true,
-    learned: { corrections: "# Corrections\n\n- A ticket that names a chargeback is urgency 4 or more, whatever its tone.\n- \"Where is my parcel\" under four days since dispatch is urgency 1.\n- Never quote a payout date in the first reply.\n", checking: { name: "ticket-triage", description: "Files a ticket under its queue and scores its urgency from the playbook." } },
+    learned: { corrections: "# Corrections\n\n- A ticket that names a chargeback is urgency 4 or more, whatever its tone.\n- \"Where is my parcel\" under four days since dispatch is urgency 1.\n- Never quote a payout date in the first reply.\n", checking: { name: "ticket-triage", description: "Files a ticket under its queue and scores its urgency from the playbook.", readme: TRIAGE_README, workflow: TRIAGE_WORKFLOW } },
   },
   {
     id: "kyb-check", name: "KYB check", kind: "workflow", harness: "pi", model: MODELS.default, workflow: kybWorkflow, madeDaysAgo: 33,

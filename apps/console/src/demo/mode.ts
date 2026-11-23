@@ -1,7 +1,17 @@
 // Demo mode's switch: whether this browser shows the console over sample data in place of its server's. The choice is
 // this browser's alone (localStorage), so it never changes what the server holds or what another browser sees.
 
+import { ClientError } from "@/lib/client";
+import type { Upload } from "@/lib/uploads";
+
 const KEY = "agentrun.console.demo";
+
+/** What demo mode answers a write it does not make. */
+export const DEMO_REFUSAL = "Demo mode shows sample data, so this change was not made. Turn demo mode off in Settings → Demo to work with your own server.";
+
+/** Demo mode's upload: a picked file is refused here, before any byte leaves the page. The start screens' own upload is
+ *  an XMLHttpRequest to the server, which the demo's `fetch` never sees. */
+export const demoUpload: Upload = () => Promise.reject(new ClientError(403, "demo_mode", DEMO_REFUSAL));
 type Store = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 const local = (): Store | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
 

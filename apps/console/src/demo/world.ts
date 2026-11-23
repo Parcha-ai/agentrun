@@ -338,7 +338,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       const log = c ? [{ by: { run: own.at(-1)?.story.id ?? "" }, commit: hex(`${id}:learn:1`), at: iso(opened - 3 * DAY), reason: `Drafted ${c.name}`, files: [`workflows/${c.name}/workflow.json`] }] : [];
       return {
         agent: id, main: a.learned ? hex(`${id}:learn:1`) : null, corrections: a.learned?.corrections ?? "",
-        workflows: c ? [{ name: c.name, file: `workflows/${c.name}/workflow.json`, readme: `workflows/${c.name}/README.md`, description: c.description, status: "checking", run: own.at(-1)?.story.id ?? null, bytes: 1180, etag: `"${hex(`${id}:etag`, 16)}"`, last_change: { kind: "approved", by: "person", at: iso(opened - 3 * DAY) } }] : [],
+        workflows: c ? [{ name: c.name, file: `workflows/${c.name}/workflow.json`, readme: `workflows/${c.name}/README.md`, description: c.description, status: "checking", run: own.at(-1)?.story.id ?? null, bytes: JSON.stringify(c.workflow, null, 2).length, etag: `"${hex(`${id}:etag`, 16)}"`, last_change: { kind: "approved", by: "person", at: iso(opened - 3 * DAY) } }] : [],
         log: { items: log, total: log.length, next_cursor: null }, counts: { merged: kept, dropped: { empty: Math.max(own.length - kept, 0) }, in_progress: c ? 1 : 0 }, impact: null, learning_model: model,
       };
     }
@@ -366,7 +366,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       learning_model: model,
     };
   };
-  const approvePending = () => { pendingApproved = true; };
+  /** The owner's OK on the Refund desk's waiting workflow, the one learned workflow that waits for it; false for any other. */
+  const approvePending = (agent: string, file: string): boolean => {
+    if (agent !== FULL_STORY || file !== `workflows/${PENDING_WORKFLOW}/README.md`) return false;
+    pendingApproved = true;
+    return true;
+  };
 
   const mean = (xs: number[]) => (xs.length ? Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(4)) : 0);
   const learningCostOf = (id: string, now = clock()): LearningCost => {
@@ -455,6 +460,18 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       { commit: hex("learn:1"), at: iso(opened - 29 * DAY), by: { run: runs[3]?.story.id ?? "" }, reason: `Drafted ${LEARNING_WORKFLOW}`, text: text.replace('"work out the refund"', '"work out the refund (draft)"'), digest: hex("refund-decision:draft-1", 64) },
       { commit: hex("learn:3"), at: iso(takeoverAt), by: { run: runs.find((h) => h.start >= takeoverAt - DAY)?.story.id ?? "" }, reason: "Wrote the refund in code, from the picked line", text, digest: LEARNING_DIGEST },
     ] };
+  };
+  /** An agent's learning files by path: the Refund desk's full story, or what an agent earlier in its learning keeps. */
+  const learningFileOf = (agent: string, file: string): string | null => {
+    if (agent === FULL_STORY) return learningFiles[file] ?? null;
+    const learned = agents.get(agent)?.learned;
+    if (!learned) return null;
+    const c = learned.checking;
+    const files: Record<string, string> = {
+      "corrections.md": learned.corrections,
+      ...(c ? { [`workflows/${c.name}/README.md`]: c.readme, [`workflows/${c.name}/workflow.json`]: JSON.stringify(c.workflow, null, 2) } : {}),
+    };
+    return files[file] ?? null;
   };
   const learningFiles: Record<string, string> = {
     "corrections.md": CORRECTIONS_MD,
@@ -560,7 +577,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, {}, "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
     learning: (id: string) => (agents.has(id) ? learningOf(id) : null),
     createAgent, saveDefinition, learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
-    learningFile: (file: string) => learningFiles[file] ?? null, approvePending,
+    learningFile: learningFileOf, approvePending,
     start, answer, stop, archive,
     /** A sample page image by its run-relative path, as a data URL. */
     page: (path: string) => fixturePages[path] ?? null,

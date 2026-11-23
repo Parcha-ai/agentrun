@@ -8,9 +8,11 @@
 // (`/capabilities`, shown as a server with every model and tool ready, without its secrets' names or its switches) and the
 // templates it ships with (`/templates`, the bundled ones only).
 import { DAY } from "./tale";
+import { DEMO_REFUSAL } from "./mode";
 import { createWorld, hex, type World } from "./world";
 
-export const DEMO_REFUSAL = "Demo mode shows sample data, so this change was not made. Turn demo mode off in Settings → Demo to work with your own server.";
+export { DEMO_REFUSAL };
+
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 const refusal = (status: number, code: string, message: string, details?: Record<string, unknown>) => json({ error: { code, message, retryable: false, request_id: "req_demo", ...(details ? { details } : {}) } }, status);
@@ -110,10 +112,9 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
           // An approval is the one learning write a tour makes: the workflow that waits for the owner's OK takes it.
           const action = method === "POST" ? more.at(-1) : null;
           const file = (action ? more.slice(0, -1) : more).join("/");
-          const text = world.learningFile(file);
+          const text = world.learningFile(id, file);
           if (text === null) return notFound(`file ${file}`);
-          if (action && action !== "approve") return refused();
-          if (action) world.approvePending();
+          if (action && (action !== "approve" || !world.approvePending(id, file))) return refused();
           if (!get && !action) return refused();
           return new Response(text, { status: 200, headers: { "content-type": "text/markdown; charset=utf-8", etag: `"${hex(`file:${file}:${action ?? ""}`, 16)}"` } });
         }

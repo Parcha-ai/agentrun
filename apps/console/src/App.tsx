@@ -20,7 +20,7 @@ import { HarnessKeysPage } from "@/components/HarnessKeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { DemoBar, DemoPage } from "@/demo/DemoPage";
-import { demoOn, onDemoChange, setDemo } from "@/demo/mode";
+import { demoOn, demoUpload, onDemoChange, setDemo } from "@/demo/mode";
 import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
@@ -822,7 +822,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!externalPlayground && caps?.models?.ready === false && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>
