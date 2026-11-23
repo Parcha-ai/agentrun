@@ -430,3 +430,14 @@ test("a refused OLLAMA_HOST is said in one log line at the start, never with its
   assert.match(said[0], /OLLAMA_HOST/);
   assert.ok(!said[0].includes("synthuser") && !said[0].includes("not-a-secret"), said[0]);
 });
+
+test("a save resolves its tools on the Ollama default its run takes, as capabilities do, even before anything here has listed that Ollama", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const { blockersOf } = await import("../dist/runnable.js");
+  // A fresh address: nothing in this process has listed it yet.
+  const ollama = await fakeOllama(t);
+  const env = { OLLAMA_HOST: ollama.host };
+  const blockers = await blockersOf(env, { kind: "agentic", instructions: "Answer.", harness: "pi", tools: ["web_search"] }, { web_search: { provider: "native" } });
+  const search = blockers.find((blocker) => blocker.message.includes("web_search"));
+  assert.match(search?.message ?? "", new RegExp(`no native search for ollama/${TOOLS}`), JSON.stringify(blockers));
+});
