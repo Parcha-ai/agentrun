@@ -1,0 +1,16 @@
+{
+  "headerWhileHeld": "LIVE You drive · desktop RECORDING HAND BACK",
+  "computerWhileHeld": {
+    "state": "live",
+    "kind": "desktop",
+    "hold": "person"
+  },
+  "finishedLooksWhileHeld": 1,
+  "computerAfter": {
+    "state": "live",
+    "hold": "agent"
+  },
+  "sameFrame": true,
+  "liveListHasTakeOverRow": true,
+  "screenshot": "R5-taken-over.png"
+}

@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "desktop": {
+    "kind": "desktop",
+    "offered": true,
+    "record": {
+      "available": true
+    },
+    "providers": [
+      {
+        "id": "faux-desktop",
+        "ready": true,
+        "metered": false
+      },
+      {
+        "id": "faux-dial",
+        "ready": true,
+        "metered": false
+      }
+    ]
+  }
+}

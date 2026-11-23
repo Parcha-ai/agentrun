@@ -1,0 +1,18 @@
+{
+  "run_id": "01a205ef-e0c8-7000-aca0-572ce6c99936",
+  "status": "completed",
+  "recordings": [
+    {
+      "path": "recordings/faux-desktop-1.mp4",
+      "computer": "faux-desktop-1",
+      "seconds": 15.6,
+      "bytes": 12048,
+      "finished": true
+    }
+  ],
+  "startRow": {
+    "summary": "Recording the desktop's screen into recordings/faux-desktop-1.mp4.",
+    "timestamp": "2026-11-23T01:05:37.096Z"
+  },
+  "rows": 40
+}

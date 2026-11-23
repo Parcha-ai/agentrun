@@ -1,0 +1,15 @@
+{
+  "afterNewStepWhileUp": {
+    "scrollTop": 0,
+    "scrollHeight": 901,
+    "clientHeight": 482,
+    "gap": 419
+  },
+  "grewAfterReturn": true,
+  "afterNewStepAtEnd": {
+    "scrollTop": 469,
+    "scrollHeight": 951,
+    "clientHeight": 482,
+    "gap": 0
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "recording": {
+    "path": "recordings/faux-desktop-1.mp4",
+    "computer": "faux-desktop-1",
+    "seconds": 15.6,
+    "bytes": 12048,
+    "finished": true
+  },
+  "videoDuration": 15.592,
+  "startRow": "2026-11-23T01:05:37.096Z",
+  "takeOverRow": "2026-11-23T01:05:39.903Z",
+  "takeOverInList": "0:02",
+  "takeOverExpected": "0:02",
+  "lastStepInList": "0:14",
+  "lastRowSinceStartSeconds": 16.552,
+  "videoMinusLastRowSeconds": -0.9599999999999991,
+  "timesInList": [
+    "0:00",
+    "0:00",
+    "0:00",
+    "0:02",
+    "0:06",
+    "0:06",
+    "0:06",
+    "0:06",
+    "0:07",
+    "0:07",
+    "0:07",
+    "0:08",
+    "0:08",
+    "0:08",
+    "0:09",
+    "0:09",
+    "0:09",
+    "0:10",
+    "0:12",
+    "0:14"
+  ],
+  "monotonic": true,
+  "looksBeforeTakeOver": 1,
+  "looksBetweenTakeOverAndHandBack": 0
+}
