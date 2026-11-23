@@ -20,12 +20,14 @@ import { type ChainCommit, COMMIT, FolderUnreadable, IDENTITY, type LearningStor
 const SCRIPT = fileURLToPath(new URL("./learning.sh", import.meta.url));
 /** How long one script run may take: a hung git would hold the folder. */
 const SCRIPT_TIMEOUT_MS = 60_000;
+/** How long a script's pipes may stay open after it exited and its group was killed, before they are closed here. */
+const PIPE_GRACE_MS = 500;
 /** The most a script's answer is read: a read of a whole tree is bounded by what a save may write. */
 const STDOUT_MAX = 64 << 20;
 
-/** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), and each run's argv,
- *  told once the run ended and awaited before its answer is handed back. */
-export const localStoreHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void | Promise<void> } = {};
+/** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), each run's argv,
+ *  told once the run ended and awaited before its answer is handed back, and a shorter deadline than SCRIPT_TIMEOUT_MS. */
+export const localStoreHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void | Promise<void>; timeoutMs?: number } = {};
 
 /** The script's environment, whole: it inherits nothing. */
 const scriptEnv = (): Record<string, string> => ({
@@ -45,34 +47,66 @@ async function runScript(cwd: string, args: readonly string[], stdin?: Buffer): 
   return ran;
 }
 
+/** The script runs as the leader of its own process group, so its deadline, a cut and its exit each kill the group
+ *  whole: a git the script started (a gc, a fast-import, a read-tree) never outlives it. Once the script exited, its
+ *  pipes get PIPE_GRACE_MS to close before they are closed here, so nothing a stuck git holds open keeps the call. */
 function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("sh", [SCRIPT, ...args], { cwd, env: scriptEnv(), stdio: ["pipe", "pipe", "pipe"] });
+    const timeoutMs = localStoreHooks.timeoutMs ?? SCRIPT_TIMEOUT_MS;
+    const child = spawn("sh", [SCRIPT, ...args], { cwd, env: scriptEnv(), stdio: ["pipe", "pipe", "pipe"], detached: true });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let size = 0;
     let cut = false;
-    const timer = setTimeout(() => child.kill("SIGKILL"), SCRIPT_TIMEOUT_MS);
+    let timedOut = false;
+    let exit: { code: number | null } | undefined;
+    let settled = false;
+    let grace: NodeJS.Timeout | undefined;
+    const killGroup = (): void => {
+      if (child.pid === undefined) return;
+      try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup();
+    }, timeoutMs);
+    const finish = (): void => {
+      if (settled || exit === undefined) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      const stderr = Buffer.concat(err).toString("utf8");
+      if (cut) return reject(new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`));
+      if (timedOut) return reject(new Error(`the learning script's ${args[0]} did not finish in ${timeoutMs / 1000} s: ${stderr.trim().slice(0, 500)}`));
+      if (exit.code === null) return reject(new Error(`the learning script's ${args[0]} did not finish: ${stderr.trim().slice(0, 500)}`));
+      resolve({ code: exit.code, stdout: Buffer.concat(out), stderr });
+    };
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > STDOUT_MAX) {
         cut = true;
-        child.kill("SIGKILL");
-      } else out.push(chunk);
+        killGroup();
+      } else if (!cut) out.push(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
     child.stdin.on("error", () => undefined);
     child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      killGroup();
       reject(error);
     });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      const stderr = Buffer.concat(err).toString("utf8");
-      if (cut) return reject(new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`));
-      if (code === null) return reject(new Error(`the learning script's ${args[0]} did not finish${signal === "SIGKILL" ? ` in ${SCRIPT_TIMEOUT_MS / 1000} s` : ""}: ${stderr.trim().slice(0, 500)}`));
-      resolve({ code, stdout: Buffer.concat(out), stderr });
+    child.on("exit", (code) => {
+      exit = { code };
+      killGroup();
+      grace = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish();
+      }, PIPE_GRACE_MS);
     });
+    child.on("close", finish);
     child.stdin.end(stdin ?? Buffer.alloc(0));
   });
 }

@@ -74,10 +74,11 @@ die() {
   exit 2
 }
 
-# Every git call: no hook, no fsmonitor, no signing, no transport.
+# Every git call: no hook, no fsmonitor, no signing, no transport; what it commits (objects and refs) is flushed to disk
+# before it returns, so a save reported done survives a crash (git before 2.36 ignores the setting).
 g() {
   git --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c commit.gpgSign=false \
-    -c protocol.allow=never "$@"
+    -c protocol.allow=never -c core.fsync=committed "$@"
 }
 
 tmp=$(mktemp -d) || die "no temporary folder"
