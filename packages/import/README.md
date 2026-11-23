@@ -79,8 +79,11 @@ rewind to, so a Codex break is never `edited`; pi writes no compaction or sidech
 break is never `compaction` or `sidechain`. A session read without its chain names `model` and `idle` alone.
 
 `cacheHome(home, options)` analyzes every session `parseHome` totals (the same options but `state`), keyed the same way,
-one file at a time: `hitRate` over the session's requests and its subagents', and the breaks of each of its files and,
-with a `subagent` number, each subagent's. `cacheTotals(sessions)` counts the breaks and sums their priced extra cost by
+one file at a time: `hitRate` over the session's requests and its subagents', and its breaks. A session's files (a Codex
+thread that goes on in a new rollout) are one conversation in the import's order: a file's first turn is compared with
+the last turn of the file before it (its model, time and cache life carried over), and turns count on across them. Two
+sessions are never compared. Each subagent is a conversation of its own, its breaks with its `subagent` number.
+`analyzeCache` hands back the `last` turn it compared, for the next file's `before`. `cacheTotals(sessions)` counts the breaks and sums their priced extra cost by
 cause.
 
 ```sh

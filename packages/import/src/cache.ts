@@ -24,14 +24,22 @@ export const CACHE_TTL_LONG_MS = 60 * 60_000;
  *  `diverged`: for an edit, the index of the first message where its prompt and the turn before's differ. */
 export type CacheBreak = { turn: number; at: number; dropPct: number; rewritten: number; extraCost: number | null; cause: CacheCause; diverged?: number };
 
-/** `hitRate`: the cache read over the whole prompt (input, cache read and write), null for a session that sent none. */
-export type CacheReport = { hitRate: number | null; breaks: CacheBreak[] };
+/** `hitRate`: the cache read over the whole prompt (input, cache read and write), null for a session that sent none.
+ *  `last`: the last turn compared, to carry into the session's next file (CacheOptions.before). */
+export type CacheReport = { hitRate: number | null; breaks: CacheBreak[]; last?: CacheCarry };
+
+/** The turn a file of a session ended on, which the session's next file compares its first turn with: its model, its
+ *  time, its usage, and whether the latest cache write by then was a 1h one. */
+export type CacheCarry = { model?: string; at: number; usage: Usage; long: boolean };
 
 export type CacheOptions = {
   /** The catalog to price with; false prices none (every extraCost null). Default: pi-ai's. */
   catalog?: Catalog | false;
   /** pi-ai's calculateCost, when the caller imported pi-ai itself; else priceRequests loads it. */
   calculateCost?: CalculateCost;
+  /** The last turn of the session's file before this one (CacheReport.last): this file's first turn is compared with
+   *  it, and its turns are no session's first. Absent for a session's first file. */
+  before?: CacheCarry;
 };
 
 const round = (value: number, places: number): number => Math.round(value * 10 ** places) / 10 ** places;
@@ -41,7 +49,7 @@ const promptOf = ({ input, cacheRead, cacheWrite }: Usage): number => input + ca
  *  without its chain names a model change or an idle gap; its other breaks are unknown. A turn compared is a request with
  *  usage that sent a prompt (a request that failed before it sent any, or whose usage is unknown, is passed over); a
  *  break compares it with the one before it. */
-export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | "model">, { catalog, calculateCost }: CacheOptions = {}): Promise<CacheReport> {
+export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | "model">, { catalog, calculateCost, before: carried }: CacheOptions = {}): Promise<CacheReport> {
   const answers = session.turns.filter((turn): turn is Answer => turn.role === "assistant");
   const chain = session.chain ?? [];
   // The record that opens each request, by its index among the answers, and each record by id (the first of a repeat).
@@ -55,9 +63,10 @@ export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | 
   let read = 0;
   let prompt = 0;
   const breaks: CacheBreak[] = [];
-  let before: { index: number; answer: Answer; usage: Usage } | undefined;
+  // The turn before, at index -1 when it is the session's previous file's.
+  let before: { index: number; answer: Pick<Answer, "model" | "at">; usage: Usage } | undefined = carried ? { index: -1, answer: { at: carried.at, ...(carried.model ? { model: carried.model } : {}) }, usage: carried.usage } : undefined;
   // Whether the latest request that wrote the cache wrote it for an hour.
-  let long = false;
+  let long = carried?.long ?? false;
   for (const [index, answer] of answers.entries()) {
     const usage = answer.usage;
     if (!usage || promptOf(usage) === 0) continue;
@@ -81,19 +90,23 @@ export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | 
     if (usage.cacheWrite > 0) long = (usage.cacheWrite1h ?? 0) > 0;
     before = { index, answer, usage };
   }
-  return { hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks };
+  const last = before ? { ...(before.answer.model ?? session.model ? { model: (before.answer.model ?? session.model)! } : {}), at: before.answer.at, usage: before.usage, long } : undefined;
+  return { hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks, ...(last ? { last } : {}) };
 }
 
 type Evidence = { long: boolean; chain: ChainRecord[]; opens: Map<number, number>; byId: Map<string, ChainRecord> };
 
 /** The first cause, in CACHE_CAUSES' order, the transcript shows for the break at request `index` after `last`. */
-function causeOf(lastIndex: number, last: Answer, index: number, answer: Answer, { long, chain, opens, byId }: Evidence): { cause: CacheCause; diverged?: number } {
+function causeOf(lastIndex: number, last: Pick<Answer, "model" | "at">, index: number, answer: Answer, { long, chain, opens, byId }: Evidence): { cause: CacheCause; diverged?: number } {
   if (last.model && answer.model && last.model !== answer.model) return { cause: "model" };
   if (answer.at - last.at > (long ? CACHE_TTL_LONG_MS : CACHE_TTL_MS)) return { cause: "idle" };
-  const from = opens.get(lastIndex);
+  // The turn before in the session's previous file: a compaction this file opens with is since it; its chain is that
+  // file's, so no edit or sidechain is named across the two.
+  const from = lastIndex < 0 ? -1 : opens.get(lastIndex);
   const to = opens.get(index);
   if (from === undefined || to === undefined) return { cause: "unknown" };
   if (chain.slice(from + 1, to).some((record) => record.compact)) return { cause: "compaction" };
+  if (from < 0) return { cause: "unknown" };
   const was = chain[from]!;
   const now = chain[to]!;
   // A sidechain's prompt is a conversation of its own, never an edit of the main one's.
@@ -152,12 +165,16 @@ export type SessionCache = { key: string; file: string; source: string; id: stri
  *  options are parseHome's but `state`: each call reads every file from its start. */
 export async function cacheHome(home: string, { sources = SOURCES, readers = READERS, catalog, calculateCost, env, failures }: Omit<ParseOptions, "state"> = {}): Promise<SessionCache[]> {
   const prices = catalog === false ? false : (catalog ?? (await builtinCatalog()) ?? false);
+  const priced: CacheOptions = { catalog: prices, ...(calculateCost ? { calculateCost } : {}) };
   const out: SessionCache[] = [];
   const failed: NonNullable<ParseOptions["failures"]> = [];
   for (const source of sources) {
-    const reports = new Map<string, CacheReport>();
+    // Each file analyzed as it is read, on its own; and its first turn compared, with the chain before it, kept to compare
+    // with the last turn of the session's file before it once the files are joined (a Codex thread goes on in a new
+    // rollout).
+    const reports = new Map<string, { alone: CacheReport; head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number }>();
     const { tops, children, unread } = await readSource(home, source, readers, env, undefined, async (read): Promise<SessionRead> => {
-      reports.set(locatorKey(read.locator), await analyzeCache(read.session, { catalog: prices, ...(calculateCost ? { calculateCost } : {}) }));
+      reports.set(locatorKey(read.locator), { alone: await analyzeCache(read.session, priced), ...headOf(read.session) });
       const { turns: _turns, chain: _chain, firstPrompt: _prompt, titleText: _title, sourceTitle: _source, cwd: _cwd, ...session } = read.session;
       return { locator: read.locator, session: { ...session, turns: [] }, requests: read.requests.map(({ at, usage }): Answer => ({ role: "assistant", text: "", calls: [], at, ...(usage ? { usage } : {}) })) };
     });
@@ -171,13 +188,23 @@ export async function cacheHome(home: string, { sources = SOURCES, readers = REA
         prompt += promptOf(usage);
       }
       const breaks: SessionCache["breaks"] = [];
-      let before = 0;
+      // The session's files in the import's order, one conversation: each file's first turn compared with the last
+      // turn before it in the files before, its turns counted on from theirs.
+      let counted = 0;
+      let carry: CacheCarry | undefined;
       for (const part of parts) {
-        for (const found of reports.get(locatorKey(part.locator))?.breaks ?? []) breaks.push({ ...found, turn: found.turn + before });
-        before += part.read.requests.length;
+        const report = reports.get(locatorKey(part.locator));
+        if (!report) continue;
+        if (carry && report.head) {
+          const { breaks: [edge] } = await analyzeCache(report.head, { ...priced, before: carry });
+          if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
+        }
+        for (const found of report.alone.breaks) breaks.push({ ...found, turn: found.turn + counted });
+        carry = report.alone.last ?? carry;
+        counted += part.read.requests.length;
       }
       subagents.forEach((part, n) => {
-        for (const found of reports.get(locatorKey(part.locator))?.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
+        for (const found of reports.get(locatorKey(part.locator))?.alone.breaks ?? []) breaks.push({ ...found, subagent: n + 1 });
       });
       const first = parts[0]!;
       out.push({ ...keyOf(home, first.locator), source, id: first.read.session.id, hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks });
@@ -200,4 +227,18 @@ export function cacheTotals(sessions: readonly Pick<SessionCache, "breaks">[]): 
     else extraCost[cause] = round(extraCost[cause] + usd, 6);
   }
   return { sessions: sessions.length, breaks, extraCost, unpriced };
+}
+
+/** A file's first turn compared (a request with usage that sent a prompt), with the chain up to it, as a session of that
+ *  turn alone; `skipped`, the turns before it. None for a file with no such turn. */
+function headOf(session: Pick<SessionOf, "turns" | "chain" | "model">): { head?: Pick<SessionOf, "turns" | "chain" | "model">; skipped: number } {
+  const answers = session.turns.filter((turn): turn is Answer => turn.role === "assistant");
+  const index = answers.findIndex(({ usage }) => usage !== undefined && promptOf(usage) > 0);
+  if (index < 0) return { skipped: 0 };
+  const chain = session.chain ?? [];
+  const opens = chain.findIndex(({ request }) => request === index);
+  const answer = answers[index]!;
+  // Only whether a compaction came before it: the chain's ids are this file's alone.
+  const compacted = opens > 0 && chain.slice(0, opens).some(({ compact }) => compact);
+  return { head: { turns: [{ role: "assistant", text: "", calls: [], at: answer.at, ...(answer.model ? { model: answer.model } : {}), usage: answer.usage! }], chain: [...(compacted ? [{ compact: true as const }] : []), { request: 0 }], ...(session.model ? { model: session.model } : {}) }, skipped: index };
 }

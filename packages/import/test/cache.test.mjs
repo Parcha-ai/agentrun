@@ -291,3 +291,39 @@ test("a cursor read with a chain goes on with it; one read without is no place t
   assert.equal(after.resumed, false);
   assert.equal(after.sessions[0].session.chain.length, 4);
 });
+
+/** A Codex rollout of `steps` ([input, cached] each, from second `i`), its file named for `name`; `id` its thread. */
+async function rollout(home, name, id, steps, i, model = "gpt-fixture") {
+  const records = [codexMeta(id), ctx(i++, model)];
+  let total = 0;
+  for (const [input, cached] of steps) records.push(codexUser(`${PROMPT} ${i}`, i++), codexAnswer("Fixture answer.", i++), tokens(input, cached, (total += input), i++));
+  return writeJsonl(codexFile(home, `rollout-2026-01-01T00-00-0${name}-fixture.jsonl`), records);
+}
+
+test("--cache compares a session's files across their boundary, in the import's order, its turns counted on", async (t) => {
+  const home = await tempHome(t);
+  // One thread in two rollouts: the first file's last turn reads 1000, the second's first reads 50.
+  await rollout(home, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
+  await rollout(home, "2", "thread-1", [[1300, 50], [1400, 1250]], 30);
+  const result = run(home, "--cache", "--sources", "codex");
+  assert.equal(result.status, 0, result.stderr);
+  const [line, totals] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.deepEqual(line.breaks.map(({ turn, cause, dropPct }) => [turn, cause, dropPct]), [[3, "unknown", 95]]);
+  assert.equal(totals.totals.sessions, 1);
+  // A model change or an idle gap at the boundary is named as within a file.
+  const idle = await tempHome(t);
+  await rollout(idle, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
+  await rollout(idle, "2", "thread-1", [[1300, 50]], 1000);
+  assert.deepEqual(JSON.parse(run(idle, "--cache", "--sources", "codex").stdout.split("\n")[0]).breaks.map(({ turn, cause }) => [turn, cause]), [[3, "idle"]]);
+});
+
+test("--cache never compares two sessions: a thread's first turn is its turn 1 whatever another read last", async (t) => {
+  const home = await tempHome(t);
+  await rollout(home, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
+  await rollout(home, "2", "thread-2", [[1300, 50], [1400, 1250]], 30);
+  const result = run(home, "--cache", "--sources", "codex");
+  assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.equal(lines.length, 3);
+  for (const line of lines.slice(0, 2)) assert.deepEqual(line.breaks, []);
+});
