@@ -1141,6 +1141,64 @@ describe("the Screen tab's recording has the run's steps beside it", () => {
     expect(p.video().className).toContain("aspect-[16/10]");
   });
 
+  // The run's trace, as far as these cases read it: its two computer calls, by the ids their timeline rows carry.
+  const call = (id: string, startedAt: string, status: "ok" | "failed") => ({ id: `t:0:${id}`, kind: "tool", parent_id: null, name: "computer_act", agent_label: null, started_at: startedAt, ended_at: startedAt, status, stop_reason: null, tokens: null, usd: null, charged: false, decision: false, not_metered: false, tool_use_id: id, input_preview: null, result_preview: null, result_size_bytes: null });
+  const TRACE = { run_id: RUN, model_requests: "priced", dropped: 0, spans: [call("c1", at(4), "ok"), call("c2", at(31), "failed"), call("c9", at(205), "ok")] };
+  async function traced(run: Run, rows: TimelineRow[], tab: "screen" | "trace" = "screen") {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows, files: [], actions: {}, readComputer: async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }), computerEvery: 20, tab, fileUrl: URL_OF, readTrace: async () => TRACE } as never));
+    });
+    await settle();
+    const tabNow = () => host.querySelector('[role=tab][aria-selected="true"]')!.textContent;
+    const toDevTools = () => [...host.querySelectorAll("button")].find((b) => b.textContent === "Open this step in Dev tools") as HTMLButtonElement | undefined;
+    const callPanel = () => host.querySelector("aside[aria-label='Call details']");
+    const toRecording = () => [...(callPanel()?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "Show on the recording") as HTMLButtonElement | undefined;
+    const steps = () => [...host.querySelectorAll('ol[aria-label="The recording\'s steps"] button')] as HTMLButtonElement[];
+    const press = async (el: Element | null | undefined) => { expect(el).toBeTruthy(); await act(async () => { (el as HTMLElement).click(); }); await settle(); };
+    return { host, tabNow, toDevTools, callPanel, toRecording, steps, press, video: () => host.querySelector("video") as HTMLVideoElement };
+  }
+
+  it("the step the video is at opens in Dev tools when it is a tool call: the tab opens on that call's details", async () => {
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS);
+    // At the recording's start the video is at a phase, which is no call: the button is there and says why it is off.
+    expect([p.toDevTools()!.disabled, p.toDevTools()!.title]).toEqual([true, "The step the video is at is not a tool call"]);
+    await p.press(p.steps()[3]);
+    expect(p.toDevTools()!.disabled).toBe(false);
+    await p.press(p.toDevTools());
+    expect(p.tabNow()).toBe("Dev tools");
+    // The failed click, by its call's id: the panel is that call's, and its row is the one marked open.
+    expect(p.callPanel()!.textContent).toMatch(/^Tool callFailedcomputer_act/);
+    expect([...p.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr button[aria-pressed='true']")]).toHaveLength(1);
+  });
+
+  it("a call's details in Dev tools show it on the recording made while it ran: the Screen tab plays from the call's time", async () => {
+    const p = await traced(recorded([rec("recordings/desk.mp4")]), ROWS, "trace");
+    const row = (n: number) => p.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr")[n]!;
+    // The call made after the recording's length is on no recording: its panel offers none.
+    await p.press(row(2));
+    expect(p.toRecording()).toBeUndefined();
+    await p.press(row(0));
+    await p.press(p.toRecording());
+    expect(p.tabNow()).toBe("Screen");
+    // The player takes no time before it knows the video's length: it moves once it does.
+    expect(p.video().currentTime).toBe(0);
+    await act(async () => { p.video().dispatchEvent(new Event("loadedmetadata")); });
+    // The first computer call's result came 6 s into the recording, where its step is.
+    expect(p.video().currentTime).toBe(6);
+  });
+
+  it("offers neither where the trace can't be read, or while the run can still open its computer", async () => {
+    const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
+    expect([...p.panel.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Open this step in Dev tools");
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    const live = await traced({ ...recorded([rec("recordings/desk.mp4")]), status: "working", state: "working" } as Run, ROWS, "trace");
+    await live.press(live.host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr")[0]);
+    expect(live.callPanel()).toBeTruthy();
+    expect(live.toRecording()).toBeUndefined();
+  });
+
   it("a step moves the video to its time and is marked; the mark follows the video as it plays", async () => {
     const p = await played(recorded([rec("recordings/desk.mp4")]), ROWS);
     expect(p.current()).toEqual(["0:00PhaseRecording the desktop's screen into recordings/desk.mp4."]);
