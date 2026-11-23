@@ -273,3 +273,21 @@ test("LVI: a tool's output is scrubbed with its call's context, so a read of a c
   assertNoValue(ran.stdout + ran.stderr, { pw }, "json");
   assert.equal(JSON.parse(ran.stdout).by_kind.dump, 1, ran.stdout);
 });
+
+test("LXIV: Gemini CLI's read_file (`absolute_path` in v0.1.18, `file_path` now) and Cursor's (`target_file`) are reads: a ~/.pgpass read is one dump", async (t) => {
+  // target_file is in no published Cursor schema found; Cursor CLI's published `args.path` is already read (pi's form).
+  const { store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  for (const [id, input] of [["gemini-read", { absolute_path: "~/.pgpass" }], ["gemini-read-now", { file_path: "~/.pgpass" }], ["cursor-read", { target_file: "~/.pgpass" }]]) {
+    await oneCallRun(store, id, "read_file", input, `db:5432:app:svc:${pw}`);
+    const gathered = await shareTexts(store, id, deps);
+    const count = await countCuts(id, gathered.kind, gathered.texts, gathered.held);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", id);
+  }
+  // The same read of an unrelated file: no cut.
+  await oneCallRun(store, "cursor-notes", "read_file", { target_file: "notes.txt" }, `db:5432:app:svc:${pw}`);
+  const gathered = await shareTexts(store, "cursor-notes", deps);
+  assert.equal((await countCuts("cursor-notes", gathered.kind, gathered.texts, gathered.held)).cuts, 0);
+});

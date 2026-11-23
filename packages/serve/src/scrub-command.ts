@@ -73,7 +73,10 @@ export interface ShareText {
 }
 
 /** A call that prints one file whole, by its tool's name: its output is that file's content (a write's or an edit's is
- *  not). Claude Code's and pi's `Read`, Gemini's `read_file`, ACP's `fs/read_text_file`. */
+ *  not). Claude Code's and pi's `Read`, Gemini's `read_file`, ACP's `fs/read_text_file`. Its file is its input's
+ *  `file_path` (Claude Code; Gemini CLI's current `read_file`), `absolute_path` (Gemini CLI's `read_file` in v0.1.18),
+ *  `target_file` (Cursor, as ruled: in no published schema found) or `path` (pi; ACP; Cursor CLI's published
+ *  `readToolCall.args.path`), ruling LXIV. */
 const FILE_READ_TOOL = /^(?:read|read_?file|(?:fs\/)?read_text_file)$/i;
 /** A shell `-c` launch (`["bash", "-lc", "cat ~/.pgpass"]`): its script is the command. */
 const SHELL_LAUNCH = /^(?:(?:\/usr)?\/bin\/)?(?:ba|z|da)?sh$/;
@@ -95,7 +98,7 @@ function callContexts(rows: readonly TimelineEvent[]): Map<string, { path?: stri
     const input = (row as Record<string, unknown>).tool_input;
     if (row.kind !== "tool_use" || row.tool_use_id === null || input === null || typeof input !== "object" || Array.isArray(input)) continue;
     const args = input as Record<string, unknown>;
-    const file = args.file_path ?? args.path;
+    const file = args.file_path ?? args.absolute_path ?? args.target_file ?? args.path;
     const path = row.tool_name !== null && FILE_READ_TOOL.test(row.tool_name) && typeof file === "string" ? file : undefined;
     const command = commandOf(args);
     if (path !== undefined || command !== undefined) out.set(row.tool_use_id, { ...(path !== undefined ? { path } : {}), ...(command !== undefined ? { command } : {}) });
