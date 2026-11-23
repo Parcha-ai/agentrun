@@ -7,8 +7,11 @@
 // refuses a GitHub source.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { memoryFiles, readPackage } from "../dist/templates.js";
+import { folderFiles, memoryFiles, readPackage } from "../dist/templates.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
@@ -95,6 +98,36 @@ test("a package holds no hidden file: one inside skills/, rules/ or evals/ (an u
   const files = pkg(undefined, { "skills/check/.env": "PARALLEL_API_KEY=not-a-secret\n", "skills/check/.DS_Store": Buffer.from([0, 0, 0, 1]), "skills/check/.cache/token": "not-a-secret\n" });
   const read = readPackage(memoryFiles("pr-alert", "the upload pr-alert", files));
   assert.deepEqual(Object.keys(read.skills), ["check/SKILL.md"]);
+});
+
+test("a hidden entry directly under the package, skills/, rules/ or evals/ is no part of it either, in memory (an upload, a GitHub import) or on disk (a folder): never refused, never copied beside a skill", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "template-hidden-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const hidden = {
+    ".github/workflows/check.yml": "on: push\n",
+    "skills/.DS_Store": Buffer.from([0, 0, 0, 1]),
+    "skills/.cache/state": "not-a-secret\n",
+    "rules/.private.md": "PARALLEL_API_KEY=not-a-secret\n",
+    "rules/.DS_Store": Buffer.from([0, 0, 0, 1]),
+    "evals/.DS_Store": Buffer.from([0, 0, 0, 1]),
+    "evals/.cache/state": "not-a-secret\n",
+  };
+  for (const [i, [entry, data]] of Object.entries(hidden).entries()) {
+    const files = pkg(undefined, { "rules/STYLE.md": "Keep it short.\n", [entry]: data });
+    const dir = join(root, String(i), "pr-alert");
+    for (const [path, bytes] of files) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), bytes);
+    }
+    for (const [where, from] of [["in memory", memoryFiles("pr-alert", "the upload pr-alert", files)], ["on disk", folderFiles(dir)]]) {
+      await t.test(`${entry}, ${where}`, () => {
+        let read;
+        assert.doesNotThrow(() => (read = readPackage(from)), "left out, never refused");
+        assert.deepEqual(Object.keys(read.skills).sort(), ["check/SKILL.md", "check/STYLE.md"], "never copied beside the skill");
+        assert.deepEqual(read.evals, []);
+      });
+    }
+  }
 });
 
 test("an upload is refused in the GitHub import's words, storing nothing: a path that is not plain, over 1 MiB of agent files, over 256 files, over the bytes an import keeps, and an agent.md that does not check", { timeout: 60_000 }, async (t) => {
