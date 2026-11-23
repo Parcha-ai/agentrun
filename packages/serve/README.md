@@ -1568,10 +1568,14 @@ sandbox, or on another machine, uses the keys. The login is the server's user's.
 (the image, `run_isolation: "uid"`), a run on AgentRun's own login folder gets the login's access token alone in
 `CLAUDE_CODE_OAUTH_TOKEN`: never the folder and never the refresh token, so its CLI never renews the login. The runner
 reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
-person's own Claude Code wrote there is picked up. AgentRun itself does not renew the login yet. A token with less than
-five minutes left fails the run at its start, in words that say to open Claude Code once to renew it, and one refused
-mid-run with no newer token there ends the turn in words that say to run the claude CLI once on this login to renew
-it. A command the run's CLI starts can read the token,
+person's own Claude Code wrote there is picked up. The runner renews the login itself, in the CLI's place: when a token
+has less than five minutes left, and after Anthropic refuses one mid-run. It sends the pinned CLI's own refresh request,
+holds the CLI's own refresh lock on the folder (so a renewal by the CLI or another runner is taken and nothing is sent
+twice), and writes the answer back to the folder's `.credentials.json` alone, atomically at mode 0600, every other field
+kept. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
+in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
+No token is in the runner's log or in any error. A command the run's CLI starts can read the token,
 as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`) fails at its
 claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
 the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give

@@ -724,14 +724,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
     },
     // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
-    // the process names: its access token alone, read again at each ask; never its folder or its refresh token.
+    // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end,
+    // or refused); never its folder or its refresh token.
     claudeLogin: async () => {
       if (await runKeyed()) return undefined;
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
       const at = await loginForRun(store.settings, deps.data, deps.env ?? {}, harness, launch.place);
       if (!at || !agentRunLogin(at, deps.data)) return undefined;
       const tokens = loginTokensFor(at);
-      return { token: () => tokens.token() };
+      return { token: () => tokens.token(), refused: (sent: string) => tokens.refused(sent) };
     },
     signInReadsBack: () => handedSignInReadsBack(store, sealKey, run),
     runSignIn: (resolution) => {

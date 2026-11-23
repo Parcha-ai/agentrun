@@ -2,8 +2,9 @@
 // whose runs are users of their own hands it: the CLI is started with that token in CLAUDE_CODE_OAUTH_TOKEN, which the
 // pinned CLI reads with no refresh token, so it never renews; no refresh token, no login folder, no model URL or key,
 // and its credentials directories the session's own; no wait on a 401. When Anthropic refuses the token the CLI asks the
-// host for a newer one (the SDK's getOAuthToken): the host reads its login again and answers a different token, or
-// answers none and ends the drive in words that say to run the claude CLI once on this login to renew it, never a hang. The token is in
+// host for a newer one (the SDK's getOAuthToken): the adapter first tells the host which token was refused (`refused`,
+// so the host may renew that login), then reads it again and answers a different token, or answers none and ends the
+// drive in the host's words or words that say to run the claude CLI once on this login to renew it, never a hang. The token is in
 // no argument the CLI is started with. A stand-in CLI records what it was started with and looks for a credentials file
 // where its environment points; no key, no network, fake values.
 import assert from 'node:assert/strict';
@@ -106,6 +107,54 @@ test('when Anthropic refuses the token, the CLI\'s ask for a newer one is answer
   const { result } = await drive({ reader: { token: async () => reads.shift() ?? renewed }, cli, onQuery: (given) => asked.push(given.getOAuthToken?.({ signal: new AbortController().signal })) });
   assert.equal(result.status, 'complete', JSON.stringify(result.error ?? null));
   assert.equal(await asked[0], renewed, 'the newer token, which the CLI then uses');
+});
+
+test('the CLI\'s 401 tells the host which token Anthropic refused (refused) before the login is read again: a host that renews it answers the renewed token; one whose renewal failed answers none, and the drive ends in the host\'s words', async () => {
+  assert.equal(typeof claude.claudeLoginByToken, 'function', 'the adapter takes a login handed as its token (login.ts ClaudeLoginToken)');
+  // A host that renews: its token() hands the renewed token once it was told the one in hand was refused.
+  const sent = fake('access-sent');
+  const renewed = fake('access-renewed');
+  const events = [];
+  let refusedOne;
+  const renewing = {
+    token: async () => {
+      events.push('token');
+      return refusedOne === sent ? renewed : sent;
+    },
+    refused: async (token) => {
+      events.push('refused');
+      refusedOne = token;
+    },
+  };
+  const asked = [];
+  const { cli } = recordingCli();
+  const { result } = await drive({ reader: renewing, cli, onQuery: (given) => asked.push(given.getOAuthToken?.({ signal: new AbortController().signal })) });
+  assert.equal(result.status, 'complete', JSON.stringify(result.error ?? null));
+  assert.equal(await asked[0], renewed, 'the renewed token, which the CLI then uses');
+  assert.equal(refusedOne, sent, 'the host was told the token the CLI had, the one refused');
+  assert.ok(events.indexOf('refused') >= 0 && events.indexOf('refused') < events.lastIndexOf('token'), `told before the login is read again: ${events.join(', ')}`);
+  // A host whose renewal failed: told, then refuses in its own words, and the drive ends in them.
+  const words = 'Claude Code\'s login on this machine runs out in less than 5 minutes, and the runner could not renew it: open Claude Code on this login once to renew it.';
+  const told = [];
+  let failedRenewal = false;
+  const failing = {
+    token: async () => {
+      if (failedRenewal) throw new Error(words);
+      return sent;
+    },
+    refused: async (token) => {
+      told.push(token);
+      failedRenewal = true;
+    },
+  };
+  const failed = [];
+  const { cli: failingCli } = recordingCli();
+  const ended = await drive({ reader: failing, cli: failingCli, lagMs: 500, onQuery: (given) => failed.push(given.getOAuthToken?.({ signal: new AbortController().signal })) }).then(() => null, (error) => error);
+  assert.equal(await failed[0], null, 'no token for the CLI, which then ends its turn');
+  assert.deepEqual(told, [sent], 'the host was told the refused token once');
+  assert.ok(ended instanceof Error, 'the drive ends');
+  assert.match(String(ended.message), /could not renew it: open Claude Code on this login once to renew it/);
+  assert.ok(!String(ended.stack).includes(sent), 'the token is in no word of the end');
 });
 
 test('when the login read again holds the same token, or none, the CLI\'s ask is answered with none and the drive ends in words that say to run the claude CLI once on this login to renew it: never a hang', async () => {

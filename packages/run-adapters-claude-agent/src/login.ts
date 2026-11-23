@@ -6,7 +6,7 @@
 // signed in (`claude auth status`), reading nothing but that answer; or, where the host keeps the login out of the CLI's
 // reach (a run under a user of its own), it is handed the login's access token alone (ClaudeLoginToken), by
 // environment, asked of the host again at each start and when Anthropic refuses it. The CLI never gets a refresh token
-// then, and never renews the login itself.
+// then, and never renews the login itself: the host does, if anyone (told which token was refused: `refused`).
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,6 +28,9 @@ export interface ClaudeAgentLogin {
  *  refresh token and no login directory. */
 export interface ClaudeLoginToken {
   token(): Promise<string>;
+  /** Told, before `token()` is asked again, that Anthropic refused `sent` (the CLI's 401): a host that renews the login
+   *  renews it at that ask unless it already holds another token. */
+  refused?(sent: string): Promise<void>;
 }
 
 /** Whether `login` is handed as a token (ClaudeLoginToken), not as its directories. */

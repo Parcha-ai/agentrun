@@ -792,12 +792,14 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           ctx.state().effectOrder.some((e) => e.name === DATE_EFFECT && (e.input as { day?: unknown } | undefined)?.day === day && store.hasUser(e.key.slice(DATE_EFFECT.length + 1)));
         // On a login handed as a token, the CLI's ask for a newer one when Anthropic refuses it (the SDK's
         // `getOAuthToken`, answering the CLI's `oauth_token_refresh`; the pins test holds that the pinned SDK takes it,
-        // as its typings do not say): the host's token read once more, answered when it is another than the one the CLI
-        // holds. Else null, and the drive halts in words (the host's, or LOGIN_TOKEN_REFUSED), so the CLI fails the
-        // request at once (CLAUDE_CODE_OAUTH_401_WAIT_MS=0) and the turn ends: never a wait.
+        // as its typings do not say): the host told which token was refused (`refused`, so a host that renews renews
+        // it), then its token read once more, answered when it is another than the one the CLI holds. Else null, and
+        // the drive halts in words (the host's, or LOGIN_TOKEN_REFUSED), so the CLI fails the request at once
+        // (CLAUDE_CODE_OAUTH_401_WAIT_MS=0) and the turn ends: never a wait.
         const askToken = byToken
           ? async (): Promise<string | null> => {
               try {
+                if (sentToken !== undefined) await byToken.refused?.(sentToken);
                 const next = await byToken.token();
                 if (next !== sentToken) return (sentToken = next);
                 ctx.halt?.(new Error(LOGIN_TOKEN_REFUSED));

@@ -243,3 +243,42 @@ test('the pinned CLI reads CLAUDE_CODE_OAUTH_TOKEN with no refresh token and no 
   });
   assert.deepEqual([...found].sort(), ['envToken', 'storage', 'write', 'writes'], 'the pinned CLI still reads the token alone, and keeps and writes its login as the fixture says');
 });
+
+// A host that renews a login in the CLI's place (serve's claude-login-token.ts) does it with the pinned CLI's own request,
+// lock and write back, which the adapter states once (src/login-refresh.ts, exported as CLAUDE_LOGIN_REFRESH and from
+// /facts as loginRefresh). Each of them is read here in the installed CLI, so a repin that changes any fails this test
+// rather than a host's renewal at a person's login.
+const { CLAUDE_LOGIN_REFRESH } = await import('@parcha/agentrun-harness-claude');
+const { loginRefresh } = await import('@parcha/agentrun-harness-claude/facts').catch(() => ({}));
+const literal = (text) => text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+test('the login renewal the adapter states is the pinned CLI\'s own: its token URL and client id, its JSON refresh body and answer, its scopes, its two refresh locks, its write back at 0600 and its 5-minute margin', { skip: !claudeAgentExecutable() && 'no pinned CLI installed here' }, () => {
+  assert.equal(typeof CLAUDE_LOGIN_REFRESH, 'object', 'the adapter states the CLI\'s login renewal (src/login-refresh.ts CLAUDE_LOGIN_REFRESH)');
+  assert.equal(loginRefresh, CLAUDE_LOGIN_REFRESH, 'the same facts from /facts, which a host reads without loading the SDK');
+  const { tokenUrl, clientId, scopes, lockName, legacyLockSuffix, lockStaleMs, lockUpdateMs } = CLAUDE_LOGIN_REFRESH;
+  assert.ok(Object.isFrozen(CLAUDE_LOGIN_REFRESH) && Object.isFrozen(scopes));
+  assert.deepEqual([...scopes], ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers', 'user:file_upload', 'user:plugins'], 'the CLI\'s default scopes, plugins included, in its order');
+  const id = '[\\w$]+';
+  const found = holds(claudeAgentExecutable(), {
+    // Its production OAuth config: the token URL, and the client id in the same object.
+    config: new RegExp(`TOKEN_URL:"${literal(tokenUrl)}",[^{}]{0,1200}?CLIENT_ID:"${literal(clientId)}"`),
+    // Its refresh request: this body, as JSON, to that URL; the login's own client id, else the config's.
+    body: new RegExp(`\\{grant_type:"refresh_token",refresh_token:${id},client_id:${id}\\?\\?${id}\\(\\)\\.CLIENT_ID,scope:${id}\\.join\\(" "\\)\\}`),
+    post: new RegExp(`\\.post\\(${id}\\(\\)\\.TOKEN_URL,${id},\\{headers:\\{"Content-Type":"application\\/json"\\},timeout:\\d+`),
+    // Its answer: the token, a new refresh token or the one sent, the seconds to its end, and the scopes granted.
+    answer: new RegExp(`\\{access_token:${id},refresh_token:${id}=${id},expires_in:${id}\\}=${id}`),
+    answerRefreshEnd: new RegExp(`${id}\\.refresh_token_expires_in`),
+    // Its scopes: the three literal ones in the default list, and the three named constants beside them.
+    scopeList: new RegExp(`${id}=\\[${id},${id},"${scopes.slice(2, 5).join('","')}"\\]`),
+    scopeNames: new RegExp(`="${literal(scopes[1])}",${id}="${literal(scopes[0])}",${id}="${literal(scopes[5])}"`),
+    // Its refresh lock in the credentials directory (proper-lockfile's options), and the older one beside its real path.
+    lock: new RegExp(`lockfilePath:${id}\\(${id},"${literal(lockName)}"\\),realpath:!1,stale:${lockStaleMs},update:${lockUpdateMs}`),
+    legacyLock: new RegExp(`\`\\$\\{await ${id}\\(${id}\\)\\.catch\\(\\(\\)=>${id}\\)\\}${literal(legacyLockSuffix)}\``),
+    // Its write back: the answer's fields over the file's, a refresh end it does not give kept, at mode 0600.
+    merge: new RegExp(`refreshTokenExpiresAt:${id}\\.refreshTokenExpiresAt\\?\\?${id}\\?\\.refreshTokenExpiresAt`),
+    mode0600: new RegExp(`,384\\),await ${id}\\(${id},384\\)`),
+    // Its margin: a token with less than 5 minutes left is expired to it.
+    margin: new RegExp(`${id}\\+300000>=${id}`),
+  });
+  assert.deepEqual([...found].sort(), ['answer', 'answerRefreshEnd', 'body', 'config', 'legacyLock', 'lock', 'margin', 'merge', 'mode0600', 'post', 'scopeList', 'scopeNames'], 'the pinned CLI still renews a login as the adapter states');
+});

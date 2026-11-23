@@ -1,9 +1,10 @@
 // Claude Code's login on this machine as claude-agent's model source: a person's own Claude plan, used by the pinned
 // Claude Code CLI as that CLI always uses it. AgentRun never copies, stores, proxies or relays the login or a browser
-// code, and never renews it: the CLI keeps it in its own files and calls Anthropic with it itself (the harness's
-// login.ts). This server tells the CLI where its login is, asks it for its status (`claude auth status`), and keeps one
-// setting: that the owner turned the mode on, where the login is, and on which machine. Where each run is a user of its
-// own, the runner reads AgentRun's own login folder, and a run gets only its access token (claude-login-token.ts).
+// code: the CLI keeps it in its own files and calls Anthropic with it itself (the harness's login.ts). This server tells
+// the CLI where its login is, asks it for its status (`claude auth status`), and keeps one setting: that the owner turned
+// the mode on, where the login is, and on which machine. Where each run is a user of its own, the runner reads AgentRun's
+// own login folder, renews it there in the CLI's place, with the CLI's own request and lock, and a run gets only its
+// access token (claude-login-token.ts).
 //
 // One switch (AGENTRUN_CLAUDE_CODE_LOGIN): unset, the mode is there only on a server that listens on loopback, so a
 // server bound past it (0.0.0.0 in a container, a hosted service) has it off with nothing to set; `off` or `on` says so
