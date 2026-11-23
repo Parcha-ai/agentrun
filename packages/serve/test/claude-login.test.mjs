@@ -381,6 +381,18 @@ test("a sign-in that waits for the browser says so to every read, for 10 minutes
   assert.equal(alive(two), false, "turning the mode off ended the sign-in that waited");
 });
 
+test("a sign-in that waits for the browser ends with the server's stop, which waits for its CLI to go, so no CLI keeps the browser's port from the next server", { timeout: 120_000 }, async (t) => {
+  const { api, fake, stop } = await signInServer(t, "wait");
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).status, 200);
+  assert.equal((await api("POST", "/settings/claude-login/login")).body.sign_in?.state, "waiting");
+  await until(() => fake.pids().length === 1, "the sign-in waits");
+  const [pid] = fake.pids();
+  assert.equal(alive(pid), true);
+  // The CLI ends on SIGTERM; the stop resolves only once its process is gone.
+  await stop();
+  assert.equal(alive(pid), false, "the server's stop ended the sign-in that waited");
+});
+
 test("this machine's login is the folder the CLI uses: CLAUDE_CONFIG_DIR when the server has it as an absolute path, else ~/.claude; the view names it", { timeout: 120_000 }, async (t) => {
   assert.equal(loginAt("machine", "/d", { HOME: "/u/p" }).dir, "/u/p/.claude");
   assert.deepEqual(loginAt("machine", "/d", { HOME: "/u/p", CLAUDE_CONFIG_DIR: "/u/p/elsewhere" }), { dir: "/u/p/elsewhere", profiles: "/u/p/.config/anthropic" });
