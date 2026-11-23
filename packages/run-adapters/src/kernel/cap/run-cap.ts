@@ -21,6 +21,8 @@ type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; h
 
 /** The session a run's workflow decisions book under. */
 export const DECISION_SESSION = "decisions";
+/** The prefix of the model key a decision books under (`decision:<id>`). */
+const DECISION_KEY = "decision:";
 
 export interface RunCapOptions {
   /** The run's sessions: every key it has and each one's records (the journal's). */
@@ -112,7 +114,11 @@ export function overCapOf(records: readonly SessionRecord[], othersUsd: number, 
 export function runCap(options: RunCapOptions): RunCap {
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
-  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route) };
+  // A decision's model key is never read by the run's model reader: a decision goes to its own provider, priced by the
+  // model it is admitted at (`deciding`) or, with no cap, by none. The run's reader may answer the run's model for any
+  // id (a CLI session's one model), which would mark an uncapped decision the plan's or a free model's: $0 to the run
+  // whatever its provider charged, or a known $0 for one whose charge was lost.
+  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? (id.startsWith(DECISION_KEY) ? undefined : options.modelOf(id, route)) };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
     ...pricing,
@@ -126,20 +132,17 @@ export function runCap(options: RunCapOptions): RunCap {
   // runner.request, so the next count holds it in any process). A paid tool call and a decision book under their own
   // sessions and never count; nor does a ChatGPT plan's request (no free model). A free model's request is also admitted
   // `free`: the runner books it a known $0 however it ends (runner.ts Admitted), never unknown. One on a person's plan
-  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. Only a model request of
-  // the run's own sessions is: a decision goes to its own provider, which charges it, and with no cap it is priced by no
-  // model of its own, so the run's model reader may answer the run's plan model for it (a CLI session's one model). A
-  // request is never both: freeModel refuses a plan model (its listing's price is no price), so `free` is false for every
-  // plan request, and the plan mark is returned before the free one is looked at. One the rule refused stays refused.
+  // (CapModel.plan) is admitted `plan`: $0 to the run however it ends, cut by a crash included. A request is never both:
+  // freeModel refuses a plan model (its listing's price is no price), so `free` is false for every plan request, and the
+  // plan mark is returned before the free one is looked at. One the rule refused stays refused.
   const limit = options.freeRequests;
   const judge: BeforeRequest = async (request) => {
     const free = freeRequest(request, pricing.modelOf);
-    const own = request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
-    const counted = free && own;
+    const counted = free && request.key !== DECISION_SESSION && request.key !== TOOL_SESSION;
     if (counted && limit !== undefined && (request.freeRequestsMade ?? 0) >= limit) return { refuse: freeCeilingEnd(limit), forGood: true, code: SPEND_CAP_REACHED };
     const answer = await rule(request);
     if (answer && "refuse" in answer) return await roomOf(request, answer);
-    if (own && !request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
+    if (!request.paid && pricing.modelOf(request.model, request.route)?.plan) return { ...answer, plan: true };
     if (!free) return answer;
     return { ...(answer ?? {}), ...(counted ? { freeRequest: true as const } : {}), free: true as const };
   };
@@ -179,7 +182,7 @@ export function runCap(options: RunCapOptions): RunCap {
           // Under no cap a decision is not priced: nothing is read, nothing refused (its model may be "unreadable").
           if (capUsd !== undefined && request.model === "unreadable") throw new DecisionPriceUnreadable();
           const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request);
-          const key = `decision:${request.id}`;
+          const key = `${DECISION_KEY}${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
           return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
         },

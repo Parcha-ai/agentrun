@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { RUNNER_RECORDS, sessionSpendOf } from "@parcha/agentrun-kernel";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { CapRefused, DECISION_SESSION, noteFor, requestFigures, runCap } from "../dist/kernel/cap/index.js";
-import { capOn, modelRequest, SONNET, toolRequest, UNPRICED } from "./kernel-cap-support.mjs";
+import { capOn, FREE, modelRequest, SONNET, toolRequest, UNPRICED } from "./kernel-cap-support.mjs";
 
 /** A plan model as the server's route gives it: no price, no output ceiling known, billed to the plan. */
 const PLAN = Object.freeze({ id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: null, plan: true });
@@ -53,6 +53,18 @@ test("a decision on a plan run with no cap is never marked the plan's: what its 
   const turn = records.find((one) => one.kind === RUNNER_RECORDS.turn)?.data;
   assert.deepEqual([request?.plan, turn?.billing], [undefined, undefined], `no plan mark on its records: ${JSON.stringify([request, turn])}`);
   assert.deepEqual(sessionSpendOf(records).cost, { usd: 0.01, soFarUsd: 0.01, unpriced: 0 }, "its cost is what its provider charged");
+});
+
+// The same reader on a run on a free model (a CLI run on a local model): a decision with no cap must not be read as a free
+// model's request either. One that settles lost (its charge not said) is unknown, never a known $0.
+test("a decision on a free-model run with no cap that settles lost is unknown, never a free $0", async () => {
+  const store = memorySessionStore();
+  const decisions = await runCap({ sessions: store, capUsd: () => undefined, modelOf: () => FREE }).decisions(await store.open(DECISION_SESSION));
+  await decisions.admit({ kind: "decision", id: "d1", model: { id: "openai/gpt-6.1-sol", api: "openrouter", price: { input: 1.25, output: 10 }, outputCeiling: 4_096 }, inputTokens: 100 });
+  await decisions.settle("d1", { end: "lost" });
+  const records = await store.read(DECISION_SESSION);
+  assert.equal(sessionSpendOf(records).cost.usd, null, "its cost is unknown");
+  assert.equal(records.find((one) => one.kind === RUNNER_RECORDS.request)?.data?.free, undefined, "no free mark on its runner.request");
 });
 
 test("an unpriced model that is no plan's is refused for good under a cap", async () => {
