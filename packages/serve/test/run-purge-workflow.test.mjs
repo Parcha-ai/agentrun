@@ -868,6 +868,59 @@ test("a promotion write whose gate answered before a purge of a run that wrote t
   assert.deepEqual({ length: capped.length, champion: championOf(capped, "answer", refusing(chain))?.digest ?? null }, { length: PROMOTIONS_KEPT, champion: null }, "with CHAMPIONS_KEPT purged champions in a row the trim keeps none before them, and none serves");
 });
 
+// #3458 (cced5d642e): the champions before never crowd out a decision: enough workflows with CHAMPIONS_KEPT champions
+// each to fill the bound, and a check decides a hold for a revision never promoted. The write says it won, so its hold
+// must be there (dropped, the next claim finds no decision and pays for the same check again), and still there after the
+// next write.
+test("champions kept before the newest never crowd out a decision just written: the hold stays past the next write", async () => {
+  const { CHAMPIONS_KEPT, championOf, PROMOTIONS_KEPT, promotionOf, promotionsKey, recordPromotion } = await import("../dist/learn/promote.js");
+  const rec = (workflow, digest, decided) => ({ workflow, digest, at: "t", decided, reason: "r", commit: `${workflow}-${digest}` });
+  const workflows = Array.from({ length: Math.ceil(PROMOTIONS_KEPT / CHAMPIONS_KEPT) }, (_, w) => `w${w}`);
+  const kept = new Map([[promotionsKey("crowd"), JSON.stringify({ v: 1, items: workflows.flatMap((w) => Array.from({ length: CHAMPIONS_KEPT }, (_, d) => rec(w, `d${d}`, "promote"))) })]]);
+  const settings = settingsOver(kept);
+  // A gate that refuses nothing: every commit holds its text.
+  const never = async () => assert.fail("a hold is written with no check of its commit");
+  const none = { holds: async () => true, onMain: never, writerPurged: never };
+  const first = await recordPromotion(settings, "crowd", rec("fresh", "n1", "hold"), (was) => was === undefined, none);
+  const second = await recordPromotion(settings, "crowd", rec("fresh", "n2", "hold"), (was) => was === undefined, none);
+  const items = JSON.parse(kept.get(promotionsKey("crowd"))).items;
+  assert.deepEqual(
+    { won: [first.won, second.won], n1: promotionOf(items, "fresh", "n1")?.decided ?? null, n2: promotionOf(items, "fresh", "n2")?.decided ?? null, champions: workflows.every((w) => championOf(items, w)?.digest === `d${CHAMPIONS_KEPT - 1}`) },
+    { won: [true, true], n1: "hold", n2: "hold", champions: true },
+    "both holds are kept and every workflow's champion still serves",
+  );
+});
+
+// #3458 (0adfd8882d): a champion before is kept whole or not at all: its promote and its newest record (a hold since,
+// here) go together. The room the newest leave is one record: kept alone, x's old promote would read as x's champion
+// once the run that wrote b is purged, and the revision held for its answers would serve again.
+test("a champion before that does not fit whole is dropped whole: its promote never stays without the hold after it", async () => {
+  const { championOf, PROMOTIONS_KEPT, trimPromotions } = await import("../dist/learn/promote.js");
+  const rec = (workflow, digest, decided, commit) => ({ workflow, digest, at: "t", decided, reason: "r", commit });
+  const champions = Array.from({ length: PROMOTIONS_KEPT / 2 - 2 }, (_, z) => rec(`z${z}`, "p", "promote", `z${z}`));
+  const fillers = Array.from({ length: PROMOTIONS_KEPT / 2 }, (_, i) => rec("other", `o${i}`, "hold", `o${i}`));
+  const items = [rec("x", "a", "promote", "ca"), rec("x", "a", "hold", "ca"), ...fillers, rec("x", "b", "promote", "cb"), ...champions];
+  assert.equal(items.length, PROMOTIONS_KEPT + 1);
+  const kept = trimPromotions(items);
+  const purgedB = { keys: new Set(["x\nb\ncb"]), unread: false };
+  const a = kept.filter((one) => one.workflow === "x" && one.digest === "a").map((one) => one.decided);
+  assert.deepEqual(
+    { length: kept.length, promoteWithoutHold: a.includes("promote") && !a.includes("hold"), champion: championOf(kept, "x", purgedB)?.digest ?? null },
+    { length: PROMOTIONS_KEPT, promoteWithoutHold: false, champion: null },
+    "x's promote of a is never kept without its hold since, so once b's run is purged none serves",
+  );
+
+  // One further back, c, would fit where a did not: it is not kept past a, or c would serve in a's place (a, held since,
+  // serves none).
+  const deeper = [rec("x", "c", "promote", "cc"), ...items];
+  const cutAt = trimPromotions(deeper);
+  assert.deepEqual(
+    { length: cutAt.length, c: cutAt.some((one) => one.workflow === "x" && one.digest === "c"), champion: championOf(cutAt, "x", purgedB)?.digest ?? null },
+    { length: PROMOTIONS_KEPT, c: false, champion: null },
+    "the chain is cut at a: c is not kept past it, so once b's run is purged none serves",
+  );
+});
+
 for (const [kind, settingsOf] of Object.entries(STORES)) for (const via of ["the store's purge", "DELETE /runs/{id}, the history rewritten"]) test(`${kind}: an SDK start sent again never answers a workflow a purged run wrote (${via}): its receipt is 410 purged, its champion record gone or not, and a new start pins none`, async (t) => {
   const { api, data, store } = await serve(t, { runner: false });
   onStore(t, data, settingsOf());
