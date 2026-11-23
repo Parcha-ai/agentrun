@@ -108,7 +108,10 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     } finally { setBusy(false); setFinishing(false); }
   };
 
-  const alert = problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>;
+  // A refusal here first; else, not waiting, why the server's last sign-in ended unsigned (its view's `problem`): OpenAI's
+  // tab says it completed before the server exchanges the code, so this is the only word of a failure after it.
+  const said = problem ?? (pending ? undefined : v.problem);
+  const alert = said && <p className="font-mono text-small text-destructive-text" role="alert">{said}</p>;
   if (v.state === "signed_in") return (
     <div className="space-y-2">
       <p className="text-body font-semibold">{signedInAs(v)}</p>

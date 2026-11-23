@@ -496,6 +496,7 @@ const CHATGPT_SIGN_IN = {
     authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
     expires_at: { type: "string", format: "date-time", description: "With `pending`: when that sign-in stops waiting, as its start answered." },
     models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
+    problem: { type: "string", description: "Why the last sign-in ended without signing in, in words a person acts on: OpenAI refused the code (\"OpenAI refused the sign-in (invalid_grant): start it again.\"), its answer could not be read, OpenAI could not be reached, or the sign-in could not be saved. Set once the browser's return or a pasted address got that far (OpenAI's tab has already said the sign-in completed); the server's log line `event=chatgpt chatgpt=sign_in_failed reason=…` names it (OpenAI's status and error code, never a token or a code). Gone at the next start, sign-in or sign-out; a cancelled sign-in sets none." },
   },
 };
 /** GET /settings/claude-login's answer (claude-login.ts ClaudeLoginView): what Claude Code's CLI says of its login, never

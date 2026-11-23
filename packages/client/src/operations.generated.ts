@@ -3162,6 +3162,7 @@ export type FinishChatGPTSignInResponse = {
   authorize_url?: string;
   expires_at?: string;
   models?: Array<string>;
+  problem?: string;
 };
 
 /** This server's calendar: its host, name and time zone, never its address (GET /settings/calendar). */
@@ -3180,6 +3181,7 @@ export type GetChatGPTSignInResponse = {
   authorize_url?: string;
   expires_at?: string;
   models?: Array<string>;
+  problem?: string;
 };
 
 /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */

@@ -735,6 +735,60 @@ test("a second sign-in revokes the first before it takes its place", { timeout: 
   assert.equal(await plan.token(), second.access);
 });
 
+/** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */
+async function browserReturns(authorizeUrl, options) {
+  const url = new URL(callbackFor(authorizeUrl, options));
+  url.hostname = CALLBACK_HOST;
+  const page = await fetch(url);
+  return { status: page.status, text: await page.text() };
+}
+
+test("the browser's return on this machine finishes the sign-in by itself: no paste, signed in with the plan's models", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32) });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  assert.equal((await browserReturns(authorize_url)).status, 200);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(plan.view().state, "signed_in");
+  assert.equal(openai.codes, 1);
+});
+
+test("through the server: the sign-in started on the API and finished by the browser's return reads signed in on the API", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  fakeOpenAI(t);
+  const { api } = await serve(t, { faux: undefined });
+  const started = await api("POST", "/settings/chatgpt/sign-in");
+  assert.equal(started.status, 200);
+  assert.equal((await browserReturns(started.body.authorize_url)).status, 200);
+  let view;
+  const end = Date.now() + 5_000;
+  do view = (await api("GET", "/settings/chatgpt")).body; while (view.state === "pending" && Date.now() < end && (await new Promise((resolve) => setTimeout(resolve, 50)), true));
+  assert.equal(view.state, "signed_in", JSON.stringify(view));
+});
+
+test("a browser's return whose code OpenAI refuses says why, in the view and the log, instead of reading not signed in", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields) });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  // The tab says it is done (pi-ai's page, before the code is exchanged); OpenAI's token endpoint then refuses the code.
+  assert.equal((await browserReturns(authorize_url, { code: "spent-code" })).status, 200);
+  await until(() => plan.view().state !== "pending", "the sign-in ends");
+  assert.equal(openai.codes, 1, "the code went to OpenAI");
+  const view = plan.view();
+  assert.equal(view.state, "signed_out");
+  assert.match(view.problem ?? "", /OpenAI refused the sign-in/);
+  assert.deepEqual(logged, [{ chatgpt: "sign_in_failed", reason: "token_400_invalid_grant" }]);
+  assert.doesNotMatch(JSON.stringify(logged), /spent-code/, "no code in the log");
+  // A new sign-in clears it.
+  await plan.startSignIn();
+  assert.equal(plan.view().problem, undefined);
+});
+
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { createConnection } = await import("node:net");

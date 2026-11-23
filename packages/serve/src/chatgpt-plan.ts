@@ -57,8 +57,8 @@ const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try ag
 const REDIRECT = Object.assign(new URL("http://callback.invalid/auth/callback"), { hostname: "127.0.0.1", port: "1455" });
 
 export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
-/** GET /settings/chatgpt: never a token. */
-export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[] };
+/** GET /settings/chatgpt: never a token. `problem`: why the last sign-in ended without signing in, in words. */
+export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[]; problem?: string };
 
 type Credential = { type: "oauth"; access: string; refresh: string; expires: number; clientId: string; scopes?: string[] };
 /** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the store's clock). */
@@ -126,6 +126,32 @@ function whoOf(token: string): { email?: string; plan?: string } {
  *  endpoint, as pi-ai words it), not a network fault or a 5xx. */
 const refusedForGood = (error: unknown): boolean => /\((400|401)\)|invalid_grant|refresh_token_(reused|expired|invalidated)/.test(String((error as Error)?.message ?? ""));
 
+/** A sign-in OpenAI finished whose credential this server could not keep (keep threw). */
+class NotKept extends Error {}
+
+/** Why a sign-in past its browser step ended without signing in, from what pi-ai's flow or keep threw: `reason` for the
+ *  log (OpenAI's status and error code, a missing field's name, a network error's code; never a token or a code) and
+ *  `words` a person reads. pi-ai's page says the sign-in completed before it exchanges the code, so these are the only
+ *  word of a failure after it. */
+export function signInFailure(error: unknown): { reason: string; words: string } {
+  const notKept = error instanceof NotKept;
+  const cause = notKept ? error.cause : error;
+  const message = String((cause as Error)?.message ?? "");
+  if (message.includes(DIRECT_SCOPE)) return { reason: "no_direct_scope", words: "This ChatGPT account did not allow its plan to be used by apps: sign in with an account whose plan allows it." };
+  const tag = (value: unknown) => String(value ?? "").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40);
+  if (notKept) return { reason: `not_saved${tag((cause as { code?: unknown })?.code) ? `_${tag((cause as { code?: unknown }).code)}` : ""}`, words: "OpenAI signed you in, but this server could not save the sign-in: start it again. The server's log says why." };
+  const refused = /token request failed \((\d{3})\)/.exec(message);
+  if (refused) {
+    const code = tag(/"error"\s*:\s*"([^"]*)"/.exec(message)?.[1]);
+    return { reason: `token_${refused[1]}${code ? `_${code}` : ""}`, words: `OpenAI refused the sign-in (${code || refused[1]}): start it again.` };
+  }
+  const unread = /token response (?:has invalid (\w+)|did not contain an (ID token)|must be an object)/.exec(message);
+  if (unread) return { reason: `token_answer_${tag((unread[1] ?? unread[2] ?? "shape").replace(" ", "_"))}`, words: "OpenAI's answer to the sign-in was not one AgentRun can read: start it again. The server's log says what was missing." };
+  const network = tag((cause as { cause?: { code?: unknown } })?.cause?.code);
+  if (/fetch failed/.test(message) || network) return { reason: `network${network ? `_${network}` : ""}`, words: "This server could not reach OpenAI to finish the sign-in: check its connection, then start again." };
+  return { reason: `other_${tag((cause as Error)?.name) || "error"}`, words: "The sign-in did not finish: start it again. The server's log says why." };
+}
+
 /** Whether a renewal that failed surely left its refresh token unspent: OpenAI answered with a fault (a 5xx, a 429), or
  *  the request never reached it (no address, no connection). A timeout, or a fault once it was sent, may have spent it. */
 function unspent(error: unknown): boolean {
@@ -163,6 +189,9 @@ export class ChatGPTPlan implements PlanReader {
   /** Set when a sign-in dropped by a sign-out (keep) could not have its revocation confirmed by OpenAI: that sign-out
    *  answers revoked false. Cleared at each sign-out's start. */
   #droppedUnconfirmed = false;
+  /** Why the last sign-in ended past its browser step without signing in (signInFailure's words), until a sign-in starts,
+   *  finishes or a sign-out. A cancelled one leaves none. */
+  #problem: string | undefined;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -254,8 +283,9 @@ export class ChatGPTPlan implements PlanReader {
     const row = this.#snapshot;
     const who = row ? { ...(row.email ? { email: row.email } : {}), ...(row.plan ? { plan: row.plan } : {}) } : {};
     if (this.#pending) return { state: "pending", authorize_url: this.#pending.authorizeUrl, expires_at: new Date(this.#pending.expiresAt).toISOString(), ...who };
-    if (!row) return { state: "signed_out" };
-    return { state: row.state, ...who, ...(row.state === "signed_in" ? { models: [...row.models] } : {}) };
+    const problem = this.#problem ? { problem: this.#problem } : {};
+    if (!row) return { state: "signed_out", ...problem };
+    return { state: row.state, ...who, ...(row.state === "signed_in" ? { models: [...row.models] } : {}), ...problem };
   }
 
   /** This server's id at OpenAI (its agent host id): a UUID made once and kept in the store's settings. Not a credential. */
@@ -280,6 +310,7 @@ export class ChatGPTPlan implements PlanReader {
     // A sign-in still finishing drops its credential (keep): this one is the person's latest.
     const epoch = ++this.#epoch;
     const before = this.#pending;
+    this.#problem = undefined;
     this.cancel();
     // pi-ai's callback listener on :1455 closes as its login ends: the one cancelled ends before this one listens.
     if (before) await before.result.catch(() => undefined);
@@ -302,8 +333,18 @@ export class ChatGPTPlan implements PlanReader {
       this.#pending = undefined;
     };
     // Pending until the credential is kept or dropped, so a sign-out meanwhile cancels it (keep's epoch).
-    const result = login.then((credential) => this.keep(credential as Credential, epoch)).finally(settle);
-    result.catch(() => undefined);
+    const result = login.then((credential) => this.keep(credential as Credential, epoch).catch((error: unknown) => {
+      throw new NotKept("not kept", { cause: error });
+    })).finally(settle);
+    // Past the browser step, the tab already says it completed: an end that is not a cancel (a newer start, a sign-out,
+    // the wait's end, the server's close) says why in the view and the log, whichever way the address came back.
+    let waiting = false;
+    result.catch((error: unknown) => {
+      if (!waiting || abort.signal.aborted || epoch !== this.#epoch) return;
+      const { reason, words } = signInFailure(error);
+      this.#problem = words;
+      this.#deps.log?.({ chatgpt: "sign_in_failed", reason });
+    });
     const authorizeUrl = await Promise.race([link, result.then(() => undefined, (error: unknown) => {
       throw new PlanSignInRefused(/in use/.test(String((error as Error)?.message)) ? "Another sign-in holds this machine's port 1455: finish or cancel it, then start again." : "The sign-in could not start: try again.");
     })]);
@@ -312,6 +353,7 @@ export class ChatGPTPlan implements PlanReader {
     const timer = setTimeout(() => (this.#pending?.abort === abort ? this.cancel() : undefined), PENDING_MS);
     timer.unref();
     this.#pending = { abort, state: new URL(authorizeUrl).searchParams.get("state") ?? "", authorizeUrl, expiresAt, paste, result, timer };
+    waiting = true;
     return { authorize_url: authorizeUrl, expires_at: new Date(expiresAt).toISOString() };
   }
 
@@ -336,9 +378,7 @@ export class ChatGPTPlan implements PlanReader {
     try {
       await pending.result;
     } catch (error) {
-      const words = String((error as Error)?.message ?? "");
-      if (words.includes(DIRECT_SCOPE)) throw new PlanSignInRefused("This ChatGPT account did not allow its plan to be used by apps: sign in with an account whose plan allows it.");
-      throw new PlanSignInRefused("OpenAI refused the sign-in: start it again.");
+      throw new PlanSignInRefused(signInFailure(error).words);
     }
     return this.view();
   }
@@ -371,6 +411,7 @@ export class ChatGPTPlan implements PlanReader {
       if (await this.swap(was, row)) break;
     }
     this.#snapshot = row;
+    this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
     await this.#deps.changed?.();
   }
@@ -509,6 +550,7 @@ export class ChatGPTPlan implements PlanReader {
    *  is not this answer's to give). */
   async signOut(): Promise<{ revoked: boolean }> {
     this.#droppedUnconfirmed = false;
+    this.#problem = undefined;
     this.#epoch += 1;
     const finishing = this.#pending;
     this.cancel();

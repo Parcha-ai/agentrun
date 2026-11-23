@@ -1241,6 +1241,18 @@ test("the server's refusals and ignored webhook deliveries reach the person in p
   assert.equal(said.at(-1), "AgentRun refuses more requests than this terminal shows; it says no more of them here.");
 });
 
+test("a ChatGPT sign-in that did not finish reaches the person, each time, with its reason; the sign-in's other lines do not", () => {
+  const told = start.tellerOf();
+  const failed = "at=2026-11-23T18:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  const words = "AgentRun's ChatGPT sign-in did not finish (token_400_invalid_grant): Settings → API Keys says why; start it again there.";
+  assert.equal(told(failed), words);
+  assert.equal(told(failed), words, "a second try that fails the same way is said too");
+  assert.equal(told("at=2026-11-23T18:00:01.000Z event=chatgpt chatgpt=signed_in"), undefined);
+  // Under a flood of refusals, a sign-in that fails is still said.
+  for (let i = 0; i <= start.TOLD_MAX; i++) told(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`);
+  assert.equal(told(failed), words);
+});
+
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   const child = spawn(process.execPath, [BIN, "--no-open"], { env, stdio: ["ignore", "pipe", "pipe"] });

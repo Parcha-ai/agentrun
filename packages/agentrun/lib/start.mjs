@@ -290,13 +290,15 @@ function fieldsOf(line) {
 
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
- *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. With AGENTRUN_LOG=quiet,
- *  as this command starts the server, those lines are all an operator would otherwise miss. */
+ *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. A ChatGPT sign-in that
+ *  did not finish (chatgpt=sign_in_failed: OpenAI's tab already said it completed) is said each time, with its reason.
+ *  With AGENTRUN_LOG=quiet, as this command starts the server, those lines are all an operator would otherwise miss. */
 export function tellerOf() {
   const said = new Set();
   let full = false;
   return (line) => {
     const fields = fieldsOf(line);
+    if (fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed") return `AgentRun's ChatGPT sign-in did not finish (${fields.reason ?? "no reason given"}): Settings → API Keys says why; start it again there.`;
     let words;
     let key;
     if (fields.event === "auth_failed" && fields.route) {

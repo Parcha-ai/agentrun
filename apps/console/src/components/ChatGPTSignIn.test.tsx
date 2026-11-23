@@ -130,6 +130,23 @@ describe("ChatGPTSignIn", () => {
     expect(calls.length).toBe(reads);
   });
 
+  it("a browser's return the server could not finish says why, where the waiting page was, with Continue with ChatGPT to try again", async () => {
+    let state: ChatGPTView = { state: "pending", authorize_url: AUTHORIZE };
+    const { v2 } = server(() => state, () => json(500, {}));
+    const page = await mount(v2, state);
+    // OpenAI's tab said the sign-in completed; the server then could not exchange the code.
+    state = { state: "signed_out", problem: "OpenAI refused the sign-in (invalid_grant): start it again." };
+    await page.wait(() => !!page.host.querySelector('[role="alert"]'), "the problem is shown");
+    expect(page.host.querySelector('[role="alert"]')!.textContent).toBe("OpenAI refused the sign-in (invalid_grant): start it again.");
+    expect(page.button(/^Continue with ChatGPT$/)).toBeTruthy();
+  });
+
+  it("a page opened after such a sign-in says why from the server's view", async () => {
+    const { v2 } = server(() => ({ state: "signed_out" }), () => json(500, {}));
+    const page = await mount(v2, { state: "signed_out", problem: "This server could not reach OpenAI to finish the sign-in: check its connection, then start again." });
+    expect(page.host.querySelector('[role="alert"]')?.textContent).toContain("could not reach OpenAI");
+  });
+
   it("a read slower than the 2 s poll still lands: one read at a time, so the next doesn't make it stale", async () => {
     const reads: number[] = [];
     const fetch = (async () => {
