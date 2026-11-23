@@ -69,7 +69,7 @@ type Reader<S extends string, C> = {
   name: string;
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
 };
@@ -78,7 +78,9 @@ type Reader<S extends string, C> = {
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
-newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
+newline yet is read but not consumed. With `turns: false`, `totals: true` asks for only what parseHome totals, each
+request's model and usage; a `lineReader` gives that only when its source sets `totals: true` (one that sets no turn's
+model or usage after adding it), and its requests whole otherwise. A source that keeps many sessions in one file (a SQLite database) implements
 `discover` and `read` itself and returns one locator per session, with its `id`.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
