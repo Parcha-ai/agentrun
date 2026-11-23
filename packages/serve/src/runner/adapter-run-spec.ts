@@ -345,7 +345,8 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  * The run's computer once off for the run (RunGate.computerOff): a call of its tools is refused before any settings read.
  * `turnedOff`: an earlier claim turned it off (computer-journal.ts computerTurnedOff), so this claim's gate starts off.
  * `onComputerOff`: told the computer's kind, and awaited, when this claim's first deny of a call of its tools turns it off,
- * for the run's journal (computer-journal.ts recordComputerOff), so a later claim starts it off too.
+ * for the run's journal (computer-journal.ts recordComputerOff), so a later claim starts it off too. The gate's
+ * `computerOff` says whether it is off now, so a park lets it go instead of keeping it (spec-holds.ts Held.computerOff).
  */
 /** The run's tool permissions as a learned workflow's call nodes are held to them (learned-workflow.ts policy, denyFrom,
  *  refresh): the same gate as the run's own calls, its settings read again from the store before each call node. */
@@ -355,7 +356,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -453,7 +454,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made) });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -708,6 +709,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const facts = factsOf(deps.env, revision.body.harness);
   // The run's computer off for the run (its first deny's, this claim's or an earlier one's) is on the run's journal.
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
+  holds.hold({ computerOff: gate.computerOff });
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the

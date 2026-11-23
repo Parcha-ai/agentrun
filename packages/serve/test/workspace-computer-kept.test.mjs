@@ -280,6 +280,35 @@ test("Mode 2, a claim whose desktop is off loses its park's kept desktop to a la
   await later.release();
 });
 
+test("Mode 2, a claim whose desktop is off finds its park's kept desktop ended by the janitor (the claim that began its end died first): it takes on the mount credential no computer holds and revokes it", async () => {
+  const one = await server({ mode: 2 });
+  await (await one.claim(3)).park();
+  const row = await readKept(one.store.settings, "run-1");
+  assert.equal(row?.folder, "archil", "its row says the desktop held the run's folder on Archil");
+  // A claim won the row and died before its delete: the row is left ending, and the janitor's pass ends it, with no
+  // revoke (the janitor holds no claim's credential).
+  await assert.rejects(endKept(one.store.settings, "run-1", row, async () => { throw new Error("the runner died"); }));
+  await one.janitor();
+  assert.equal((await readKept(one.store.settings, "run-1"))?.ended, true);
+  assert.deepEqual(deletes(one.account), ["c1"]);
+  const tokens = new Set([3]);
+  const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true, ...archilClaimOf(tokens, 5) });
+  assert.deepEqual([off.computer, off.off], [undefined, true]);
+  assert.deepEqual([...tokens], [], "the parking claim's credential revoked now, not left for its 24-hour ttl");
+  assert.deepEqual(deletes(one.account), ["c1"], "nothing more deleted");
+});
+
+test("a claim whose desktop is off finds its park's kept desktop ended, its folder not on Archil: nothing taken on or revoked", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  const row = await readKept(one.store.settings, "run-1");
+  assert.notEqual(row?.folder, "archil");
+  await endKept(one.store.settings, "run-1", row, async () => {});
+  const off = await one.claim(5, { turnedOff: "desktop", hadComputer: async () => true });
+  assert.deepEqual([off.computer, off.off], [undefined, true]);
+  assert.deepEqual(one.mounts.steps, [], "no credential to take on");
+});
+
 test("a desktop resumed after 10 minutes is a new one: the kept one let go, said once with why", async () => {
   const one = await server();
   await (await one.claim(3)).park();
