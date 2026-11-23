@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readlink, rename } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, realpath, rename } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -94,19 +94,23 @@ function binaryUnder(root: string, cmd: string): string | undefined {
   return inside && inside !== ".." && !inside.startsWith(`..${sep}`) ? path : undefined;
 }
 
-/** The first link under `root` (its path from `root`) whose target, read as the link says it (readlink, resolved beside
- *  the link), leaves `root`; undefined when none does. The tree digest holds a link by those words, never the bytes it
- *  leads to, so a file reached through one (the binary behind a linked folder, code a launcher loads from `lib` linked
- *  elsewhere) would be checked by nothing. Every link is read, so no chain of in-tree links leads out either. */
+/** The first link under `root` (its path from `root`) that leads outside `root`, or to nothing; undefined when none does.
+ *  The tree digest holds a link by its words, never the bytes it leads to, so a file reached through one (the binary
+ *  behind a linked folder, code a launcher loads from `lib` linked elsewhere) would be checked by nothing. Each link is
+ *  resolved by the filesystem (realpath), as opening it would be, never by its words alone: in a chain such as
+ *  `sub/up -> ..` and `sub/code -> up/../outside`, the `..` is taken after the link before it is followed, so the words
+ *  read inside while the path leads out. A link that leads to nothing is refused too, since what its last step names
+ *  could be made outside later. */
 export async function linkOutOf(root: string): Promise<string | undefined> {
-  const base = resolve(root);
+  const base = await realpath(resolve(root));
+  const within = (path: string) => path === base || path.startsWith(`${base}${sep}`);
   const walk = async (dir: string): Promise<string | undefined> => {
     for (const name of await readdir(dir)) {
       const path = join(dir, name);
       const entry = await lstat(path);
       if (entry.isSymbolicLink()) {
-        const target = resolve(dirname(path), await readlink(path));
-        if (target !== base && !target.startsWith(`${base}${sep}`)) return relative(base, path);
+        const target = await realpath(path).catch(() => undefined);
+        if (target === undefined || !within(target)) return relative(base, path);
       } else if (entry.isDirectory()) {
         const found = await walk(path);
         if (found !== undefined) return found;

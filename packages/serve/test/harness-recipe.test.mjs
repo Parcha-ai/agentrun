@@ -335,17 +335,29 @@ test("a link out of the install folder is refused: the tree digest holds a link,
     assert.equal(spawnSync("tar", ["-czf", archive, "-C", packed, "."]).status, 0);
     return readFileSync(archive);
   };
+  const agentAt = (at) => writeFileSync(join(at, "agent"), "#!/bin/sh\nexec node \"$(dirname \"$0\")/lib/index.js\"\n", { mode: 0o755 });
   const cases = [
-    { name: "bin", cmd: "./bin/agent", lay: (at) => symlinkSync(outside, join(at, "bin")) },
-    { name: "lib", cmd: "./agent", lay: (at) => { writeFileSync(join(at, "agent"), "#!/bin/sh\nexec node \"$(dirname \"$0\")/lib/index.js\"\n", { mode: 0o755 }); symlinkSync(outside, join(at, "lib")); } },
+    { name: "bin", link: "bin", cmd: "./bin/agent", lay: (at) => symlinkSync(outside, join(at, "bin")) },
+    { name: "lib", link: "lib", cmd: "./agent", lay: (at) => { agentAt(at); symlinkSync(outside, join(at, "lib")); } },
+    // Words that read inside, a path that leads out: `up` is followed before the `..` after it, so `code` is the folder
+    // beside the install. Beside the placed install it is a real folder; beside the unpack's own, it is nothing.
+    { name: "chain", link: join("sub", "code"), cmd: "./agent", lay: (at) => {
+      agentAt(at);
+      mkdirSync(join(at, "..", "outside"), { recursive: true });
+      writeFileSync(join(at, "..", "outside", "index.js"), "console.log('outside')\n");
+      mkdirSync(join(at, "sub"));
+      symlinkSync("..", join(at, "sub", "up"));
+      // Written as words, never through join, which would fold them to `outside`.
+      symlinkSync("up/../outside", join(at, "sub", "code"));
+    } },
   ];
-  for (const { name, cmd, lay } of cases) {
+  for (const { name, link, cmd, lay } of cases) {
     const bytes = archiveOf(name, lay);
     const file = await recipeFile(t, formatRecipe(bytes, "tar.gz", { cmd }));
     const { recipe } = loadRecipe(file);
     // The installer refuses the archive before anything is put in place.
     const fresh = join(root, `fresh-${name}`);
-    await assert.rejects(installRecipe(recipe, file, fresh, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && error.message.includes(`link out of its files (${name})`), name);
+    await assert.rejects(installRecipe(recipe, file, fresh, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && error.message.includes(`link out of its files (${link})`), name);
     assert.equal(existsSync(join(fresh, "harnesses", recipe.id)), false, name);
     // One placed before links out were refused, its tree recorded: every check refuses it, and the reinstall it asks for
     // is never "already" (each start would refuse that install again): the unpack says why.
@@ -353,6 +365,7 @@ test("a link out of the install folder is refused: the tree digest holds a link,
     const dir = join(data, "harnesses", recipe.id);
     mkdirSync(dir, { recursive: true });
     lay(dir);
+    assert.ok(existsSync(join(dir, link, "index.js")), `${name}: the link leads to real files outside the folder`);
     const record = firstSeenTreeOf(data, recipe, PLATFORM);
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, `${await treeDigest(dir)}\n`);
@@ -360,7 +373,7 @@ test("a link out of the install folder is refused: the tree digest holds a link,
     assert.equal(placed.code, undefined, placed.message);
     const refused = await installHolds(placed);
     assert.equal(refused?.code, "HARNESS_BINARY_MISMATCH", name);
-    assert.ok(refused.message.includes(`leads outside it (${name})`), refused.message);
+    assert.ok(refused.message.includes(`leads outside it (${link})`), refused.message);
     await assert.rejects(installRecipe(recipe, file, data, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack, `${name}: reinstalled, not "already"`);
   }
   // The same files inside the folder hold: the link alone was refused.
