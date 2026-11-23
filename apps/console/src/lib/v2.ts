@@ -271,6 +271,9 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 // Computers (Settings → Computers) and Archil (Settings → Workspace).
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
+/** GET /v2/computers/running: each run still going whose agent has a computer, with its run read's `computer`. */
+export type RunningComputers = Answer<"listRunningComputers">;
+export type RunningComputer = RunningComputers["computers"][number];
 export type ComputerKindView = Computers["kinds"][number];
 /** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
  *  attached now, and the run that holds it. */

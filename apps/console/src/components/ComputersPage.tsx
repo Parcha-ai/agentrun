@@ -1,10 +1,10 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { pasteFromClipboard } from "@/lib/paste";
-import { Monitor, Smartphone } from "lucide-react";
+import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { Picker } from "@/components/ui/picker";
@@ -12,7 +12,7 @@ import { type Client, ClientError, problemOf } from "@/lib/client";
 import { BY_THE_MINUTE, METERED } from "@/lib/computers";
 import { clock, runLabel, when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing } from "@/lib/v2";
+import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing, RunningComputer } from "@/lib/v2";
 
 /** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
 const KIND_WORDS: Record<string, { label: string; gives: string }> = {
@@ -42,8 +42,10 @@ export const testable = (p: ComputerProvider): boolean =>
 
 /** How often the page reads the computers again while a pairing code is up, so the computer that uses it shows. */
 export const PAIRING_POLL_MS = 2_000;
+/** How often the page reads the runs that have a computer again, so one that starts or ends shows without a reload. */
+export const RUNNING_POLL_MS = 10_000;
 
-/** Settings → Computers: first, the person's own computers paired with this server (Pair a computer: a code to type into
+/** Settings → Computers: first, the computers up now (RunningSection: each run still going that has a computer). Then the person's own computers paired with this server (Pair a computer: a code to type into
  *  the computer's driver with this server's address, one page for every OS; each paired computer as its hello says it,
  *  online or offline, the run that holds it and until when, and Remove). Each is
  *  also a provider of its kind in GET /v2/computers, and shows here once, in its own section. Then every kind of computer
@@ -127,6 +129,7 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
           <p className="mt-2 text-lead text-muted-foreground">The computers an agent can be given, and who provides them. An agent can have a kind once one of its providers is ready. Keys are kept sealed on this server and never shown again.</p>
         </div>
         <div className={settingsBodyClass}>
+          <RunningSection v2={v2} kinds={view.kinds} />
           <PairedSection v2={v2} paired={view.paired} reload={load} />
           {!writable && <p role="status" className="border bg-card p-4 text-body">{WHY_NOT_WORDS[whyNot]}</p>}
           {view.kinds.map((k) => (
@@ -147,6 +150,77 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
         </div>
       </div>
     </div>
+  );
+}
+
+const RUN_KIND_ICON = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const;
+/** A run's computer state as the list says it: the run read's `computer.state`, in the Screen tab's words. */
+const RUNNING_STATE: Record<RunningComputer["computer"]["state"], { words: string; tone: "active" | "success" | "error" | "muted" }> = {
+  starting: { words: "Starting", tone: "muted" },
+  ready: { words: "Ready", tone: "success" },
+  taken_over: { words: "You drive", tone: "active" },
+  failed: { words: "Failed", tone: "error" },
+  ended: { words: "Ended", tone: "muted" },
+};
+/** What a run that isn't working says beside its computer's state: it waits on its person, is paused, or is queued. */
+const RUN_WAITS: Partial<Record<RunningComputer["status"], string>> = { input_required: "Waiting for you", paused: "Paused", queued: "Queued" };
+
+/** Running now: each run still going whose agent has a computer (GET /v2/computers/running), newest first, read when
+ *  the page opens and again every RUNNING_POLL_MS. A row says the run and its agent, the computer's kind and provider
+ *  (the provider's name as Settings → Computers lists it, else its id), its state as the run read says it, what a run
+ *  that isn't working waits on, and a held run's hold; its link opens the run, whose Screen tab is the live view and
+ *  the take-over. A read that fails keeps the last list and says so; with none going, the section says that. An
+ *  agent's own computer kept between runs is on its agent's page, and a paired computer in the section below. */
+function RunningSection({ v2, kinds }: { v2: Client; kinds: ComputerKindView[] }) {
+  const [running, setRunning] = useState<RunningComputer[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const read = () => v2.runningComputers().then(
+      (answer) => { if (alive) { setRunning(Array.isArray(answer?.computers) ? answer.computers : []); setProblem(null); } },
+      (e) => { if (alive) setProblem(problemOf(e)); },
+    );
+    void read();
+    const poll = setInterval(() => void read(), RUNNING_POLL_MS);
+    return () => { alive = false; clearInterval(poll); };
+  }, [v2]);
+  const providerName = (kind: string, id: string) => kinds.find((k) => k.kind === kind)?.providers.find((p) => p.id === id)?.name ?? id;
+  return (
+    <SettingsSection label="Running now" title="Running now"
+      note={<p>Each run still going that has a computer. Open one to watch its screen or take it over.</p>}>
+      {problem && <p role="alert" className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text">The running computers could not be read: {problem}</p>}
+      {running === null ? (!problem && <ListSkeleton label="Loading the running computers" rows={1} />)
+        : running.length === 0 ? <p className="border bg-card p-4 text-body text-muted-foreground">No run with a computer is going now.</p>
+        : (
+          <ul className="divide-y border bg-card">
+            {running.map((r) => {
+              const Icon = RUN_KIND_ICON[r.computer.kind];
+              const state = RUNNING_STATE[r.computer.state];
+              const waits = RUN_WAITS[r.status];
+              const held = r.computer.held;
+              return (
+                <li key={r.run_id} data-running={r.run_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+                  <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <div className="min-w-0 flex-1 basis-56">
+                    <p className="truncate text-body font-semibold" title={r.title}>{r.title || `Run ${runLabel(r.run_id)}`}</p>
+                    <p className="mt-0.5 truncate font-mono text-small text-muted-foreground">
+                      {r.agent_id} · {wordsOf(r.computer.kind).label} · {providerName(r.computer.kind, r.computer.provider)} · started {when(r.created_at)}
+                    </p>
+                    {held && held.state !== "released" && <p className="mt-0.5 text-small text-muted-foreground">Held for you{held.until ? ` until ${clock(held.until)}` : ""}.</p>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Chip tone={state.tone}>{state.words}</Chip>
+                    {waits && <Chip tone="warning">{waits}</Chip>}
+                  </div>
+                  <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label={`Open ${r.title || `run ${runLabel(r.run_id)}`}`}>
+                    {r.computer.kind === "sandbox" ? "Open run" : "Watch"}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+    </SettingsSection>
   );
 }
 

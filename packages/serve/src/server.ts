@@ -232,6 +232,7 @@ import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
+import { runningComputers } from "./computers-running.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
@@ -714,6 +715,8 @@ export const ROUTES: readonly Route[] = [
   // Settings → Computers (computers.ts settingsComputerRoute) and the owner's Archil settings (archil-routes.ts
   // archilRoute): the server switch dispatches them, once the server opens its store.
   { method: "GET", pattern: /^\/computers$/, name: "listComputers" },
+  // Every run still going that has a computer (computers-running.ts): the list behind Settings → Computers' "Running now".
+  { method: "GET", pattern: /^\/computers\/running$/, name: "listRunningComputers" },
   { method: "PUT", pattern: /^\/computers\/([^/]+)\/keys$/, name: "saveComputerKeys" },
   { method: "POST", pattern: /^\/computers\/([^/]+)\/test$/, name: "testComputer" },
   { method: "GET", pattern: /^\/computers\/([^/]+)\/choices$/, name: "listComputerChoices" },
@@ -5294,6 +5297,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComputer":
         await attach.remove(id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "listRunningComputers": {
+        // Each going run's own read and its computer field, as GET /runs/{run_id} answers them (computers-running.ts).
+        const deps = runReadDepsFor(linkOrigin(req));
+        return send(res, 200, await runningComputers(store, { view: (runId) => viewOverStore(store, runId, deps), computer: runComputerOf }), { "cache-control": "no-store" });
+      }
       case "listComputers":
       case "saveComputerKeys":
       case "testComputer":
