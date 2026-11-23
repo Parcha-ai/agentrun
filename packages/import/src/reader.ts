@@ -42,6 +42,9 @@ export type ReadOptions = {
    *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
    *  the cursor takes it whole. */
   keepsCursor?: boolean;
+  /** true keeps the session's chain (SessionOf.chain) for analyzeCache, its turns with it: each record's id, its
+   *  parent's and a hash of its content, never the content. A cursor read with it is resumed with it. Default false. */
+  chain?: boolean;
 };
 
 export type Reader<S extends string = string, C = unknown> = {

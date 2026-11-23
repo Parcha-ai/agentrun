@@ -44,6 +44,13 @@ export type Turn = (
   uuids?: string[];
 };
 export type Answer = Extract<Turn, { role: "assistant" }>;
+
+/** One record of a session's conversation, as the cache analyzer (analyzeCache) reads it: never its text. `id` and
+ *  `parent` are the source's own (Claude Code's uuid and parentUuid, pi's id and parentId), absent where the source's
+ *  records name none (Codex, whose prompt only grows); `hash`, of what the record put in the conversation (two records of
+ *  the same content hash the same); `compact`, a compaction or summary boundary; `sidechain`, a record of a sidechain
+ *  (Claude Code's isSidechain); `request`, the index among the session's assistant turns of the request it opens. */
+export type ChainRecord = { id?: string; parent?: string; hash?: string; compact?: true; sidechain?: true; request?: number };
 export type Ended = "completed" | "failed" | "stopped";
 
 /** The longest gap between two records counted as time at work, as WakaTime counts it: a longer gap is a session left
@@ -85,4 +92,6 @@ export type SessionOf<S extends string = string> = {
   copies: number;
   /** The effort or thinking level most of its requests ran at, as the source names it; with its turns only. */
   effort?: string;
+  /** Its records in the order read, as the cache analyzer reads them (ChainRecord): only when read with `chain: true`. */
+  chain?: ChainRecord[];
 };

@@ -64,7 +64,7 @@ function codexFailed(output: unknown): boolean | undefined {
   return undefined;
 }
 
-function record(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
+function record(value: Record<string, unknown>, at: number, { state, keep, add, chain }: ReadContext<Own>): void {
   const { session, names, turns, own: codex } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
@@ -72,6 +72,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   const answer = (): Answer => {
     const turn: Answer = { role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
     add(turn);
+    chain?.push({ request: state.answers.length - 1 });
     return turn;
   };
   const request = (): Answer => codex.open ?? (codex.open = codex.unpaid = answer());
@@ -83,6 +84,12 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (response) turn.key = response;
     codex.open = codex.unpaid = undefined;
   };
+  // A rollout's prompt only grows, but for a compaction, which replaces the history with its summary: the chain holds the
+  // requests and the compactions, in their order, and no record ids (a rollout names none to rewind to).
+  if (value.type === "compacted") {
+    chain?.push({ compact: true });
+    return;
+  }
   if (value.type === "session_meta") {
     if (str(payload.id)) session.id = payload.id as string;
     if (str(payload.cwd)) session.cwd = payload.cwd as string;

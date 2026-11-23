@@ -2,12 +2,16 @@
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries } from "../reader.js";
-import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
-import type { ToolCall } from "../types.js";
+import { argsOf, effortOf, hashOf, isObject, str, textOf, timeOf } from "../text.js";
+import type { ChainRecord, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
-function record(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<undefined>): void {
+function record(value: Record<string, unknown>, at: number, { state, keep, add, chain }: ReadContext<undefined>): void {
   const { session, priced } = state;
+  // Each entry after the session's own names the one before it (parentId): a branch names an earlier one. pi writes no
+  // compaction or sidechain record in the sessions read here, so the chain marks none.
+  const link = chain && value.type !== "session" && str(value.id) ? { id: value.id as string, ...(str(value.parentId) ? { parent: value.parentId as string } : {}), hash: hashOf([value.type, isObject(value.message) ? [value.message.role, value.message.content] : (value.modelId ?? value.thinkingLevel ?? null)]) } : undefined;
+  if (link) chain!.push(link);
   if (value.type === "session") {
     if (str(value.id)) session.id = value.id as string;
     if (str(value.cwd)) session.cwd = value.cwd as string;
@@ -70,6 +74,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       ...(tokens ? { usage: tokens } : {}),
       ...(message.stopReason === "error" ? { error: str(message.errorMessage) ?? "unknown error" } : {}),
     });
+    if (link) (link as ChainRecord).request = state.answers.length - 1;
   }
 }
 

@@ -80,12 +80,12 @@ export class ReadFailures extends Error {
 
 /** A session's key: the sha256 of its file's path relative to the home, "/" between its parts, `#<id>` after it when its
  *  locator names one. */
-const keyOf = (home: string, { file, id }: Locator): { key: string; file: string } => {
+export const keyOf = (home: string, { file, id }: Locator): { key: string; file: string } => {
   const path = relative(home, file).split(sep).join("/");
   return { key: createHash("sha256").update(id === undefined ? path : `${path}#${id}`).digest("hex"), file: path };
 };
 
-type Part = { locator: Locator; read: SessionRead };
+export type Part = { locator: Locator; read: SessionRead };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
 export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
@@ -104,13 +104,17 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
+/** What a pass that reads chains (the cache analyzer's) does with each session read, as it is read: it returns what of
+ *  it the pass keeps (a whole home's turns would not fit). */
+export type Each = (read: SessionRead) => Promise<SessionRead>;
+
 /** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`.
  *  A pass handed a state goes on from its cursors, and comes out as a fresh pass would: a record copied into many files
  *  counts in the first of them in the order as it is now. The whole source is read again when a locator it read before is
  *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+export async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, each?: Each): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
@@ -145,7 +149,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return this;
         },
       } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, each ? { seen, chain: true } : { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
@@ -163,7 +167,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;
       kept?.cursors.set(key, result.cursor);
-      return result.sessions;
+      return each ? Promise.all(result.sessions.map(each)) : result.sessions;
     };
     const tops: Part[] = [];
     for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
@@ -176,7 +180,11 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
+/** A source's sessions: each with its files (`parts`, in the import's order) and its subagents' (`children`); `untied`, a
+ *  subagent's whose session is not under the home, a session of its own. A session whose every file holds only records
+ *  an earlier file holds (copies) is none: its records count where they were first read. serve's import leaves such a
+ *  file out the same way. */
+export function groupsOf(tops: Part[], children: (Part & { of: Locator })[]): { parts: Part[]; children: Part[]; untied?: true }[] {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -213,11 +221,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
   }
   // A subagent whose session is not under the home: a line of its own, but its prompts are its parent agent's.
   for (const part of untied) sessions.set(`\0${locatorKey(part.locator)}`, { parts: [part], children: [], untied: true });
+  return [...sessions.values()].filter(({ parts, children }) => !(parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.requests.length === 0) && children.length === 0));
+}
+
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
   const out: SessionTotals[] = [];
-  for (const { parts, children: subagents, untied } of sessions.values()) {
-    // A session whose every file holds only records an earlier file holds (copies) is no session: its records count where
-    // they were first read. serve's import leaves such a file out the same way.
-    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.requests.length === 0) && subagents.length === 0) continue;
+  for (const { parts, children: subagents, untied } of groupsOf(tops, children)) {
     const first = parts[0]!;
     const tokens = noTokens();
     let reasoning = 0;
