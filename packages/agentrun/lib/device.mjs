@@ -7,6 +7,7 @@
 // signed in to, and a line says so when the address to open is on another origin. The device code and the token are
 // never printed, never in an error and never in argv.
 import { readFileSync } from "node:fs";
+import { CLOUD_CONSOLE, CLOUD_URL } from "./target.mjs";
 
 /** What each request of the flow names itself: this package and its version. */
 const USER_AGENT = `agentrun-cli/${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
@@ -139,14 +140,20 @@ export function deviceOffer(capabilities, base) {
   return { metadata, scope };
 }
 
+/** AgentRun cloud's API and the origin of its device page, its console: the one pair the cross-origin line is not said
+ *  for. It is exempt from that line alone, never from a check. */
+const CLOUD_PAIR = { api: new URL(CLOUD_URL).origin, page: new URL(CLOUD_CONSOLE).origin };
+
 /** The origins the person is told the code is approved at: those of `addresses` (the ones printed to open, any of them
  *  null when absent) other than the target's, each once. An address on another origin is taken, not refused: a
  *  self-hosted install may serve its console on another origin, and this CLI cannot know which. So the line names both
  *  origins, and a server that hands out another service's code, to keep the token approved there, is seen before the
- *  code is approved. */
+ *  code is approved. Cloud's API with its device page on its console is the known pair, named by neither: a warning
+ *  on every cloud sign-in would teach people to skip it. */
 export function elsewhereOf(target, addresses) {
   const own = new URL(target).origin;
-  return [...new Set(addresses.filter((at) => at != null).map((at) => new URL(at).origin))].filter((origin) => origin !== own);
+  const known = (origin) => own === CLOUD_PAIR.api && origin === CLOUD_PAIR.page;
+  return [...new Set(addresses.filter((at) => at != null).map((at) => new URL(at).origin))].filter((origin) => origin !== own && !known(origin));
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
