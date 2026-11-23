@@ -1200,10 +1200,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  input's user entry left as pi writes it (its submission, which a re-claim answers from, unchanged), so the Timeline
    *  shows the next user entry with exactly this text as "AgentRun: …". Once per follow-up: the marker names its request
    *  id, and a re-claim that finds one under it writes none (a second would stay open, and could take a person's later
-   *  message of the same words for the server's). A CLI's run records its follow-up through its own record, which carries
-   *  the origin itself. */
+   *  message of the same words for the server's). A CLI's run records its follow-up in its own record, written here with
+   *  the origin (once under its request id, as the output retry's is), since the CLI's session keeps no user entry. */
   const markServerFollowUp = async (theHarness: Harness, theRoot: Conversation, text: string, requestId: string): Promise<void> => {
-    if (cliRecord) return;
+    if (cliRecord) return await cliRecord.followUp(text, requestId, CAP_RAISED_ORIGIN);
     const marked = (await entriesOf(gate!.journal, theRoot.id, context)).some((entry) => entry.kind === MESSAGE_ORIGIN && (entry.data as { requestId?: unknown } | undefined)?.requestId === requestId);
     if (marked) return;
     await theHarness.commit((tx) => tx.appendEntry(theRoot.id, { kind: MESSAGE_ORIGIN, data: { origin: CAP_RAISED_ORIGIN, text, requestId } as unknown as JsonValue }), context);
