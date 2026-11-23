@@ -22,7 +22,7 @@ import { learningStoreOf, useLearningStore } from "../dist/learn/store-of.js";
 import { launchBody } from "../dist/run-launch.js";
 import { ended, git, repoOf, started } from "./learn-support.mjs";
 import { codeStorageFake } from "./fixtures/code-storage-fake.mjs";
-import { agent, answerFlow, serve, startRun } from "./support.mjs";
+import { agent, answerFlow, call, cookieOf, serve, startRun } from "./support.mjs";
 
 /** `write` over agent `agentId`'s learning store on this server (learn/store-of.ts), as a run's merge writes it: its
  *  commit. */
@@ -337,6 +337,90 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     const after = (await onMain(data, "revoked")).files;
     assert.deepEqual({ file: after[path], holds: JSON.stringify(after).includes(mark) }, { file: v1[path], holds: false }, "the purge puts answer's workflow.json back as `first` wrote it, and no file of answer on main holds the purged run's text");
     assert.deepEqual(await stands("What is seven times six?"), want, "after the purge, answer is still retired: main's README.md and the view read retired, and no run is served it");
+  });
+
+  /** Agent `agentId` (learning on) with ended runs `first` and `gone`, `first`'s v1 of answer (unless `fresh`: none),
+   *  then `gone`'s v2 (held: its README pending, when `held`), and answer's status as main's README.md and the view read
+   *  it. A person's approve, retire or restore through the route: its status. */
+  const personCase = async (t, agentId, { fresh = false, held = false, firstHeld = false } = {}) => {
+    const mark = `PURGED-PERSON-${randomBytes(6).toString("hex")}`;
+    // With accounts: an approve and a restore take the owner's password session (learn-restore.test.mjs's keeper).
+    const { api, data, store, port } = await serve(t, { learning: "on", accounts: true, openSetup: true });
+    onStore(t, data, settingsOf());
+    const origin = `http://127.0.0.1:${port}`;
+    const json = { "content-type": "application/json" };
+    const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: "the owner signs in with this phrase" } });
+    assert.equal(setup.status, 201, setup.text);
+    const cookie = cookieOf(setup);
+    const first = (await startRun(api, agentId, "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+    await ended(api, first);
+    const gone = await started(api, agentId, "What is three?");
+    await ended(api, gone);
+    const readme = "workflows/answer/README.md";
+    const path = "workflows/answer/workflow.json";
+    const [v1, v2] = [answerAt("in whole numbers"), answerAt(mark)];
+    if (!fresh) await learned(data, agentId, (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers"), ...(firstHeld ? { held: [readme] } : {}) }));
+    await learned(data, agentId, (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark), ...(held ? { held: [readme] } : {}) }));
+    const { learnedStatus } = await import("../dist/learn/workflow-draft.js");
+    const person = async (action) => {
+      const etag = (await api("GET", `/agents/${agentId}/learning/files/${encodeURIComponent(readme)}`)).headers.get("etag");
+      const path = `/agents/${agentId}/learning/files/${encodeURIComponent(readme)}/${action}`;
+      const res = action === "retire" ? await api("POST", path, undefined, { "if-match": etag }) : await call(port, { method: "POST", path: `/v2${path}`, headers: { ...json, cookie, origin, "if-match": etag }, body: {} });
+      assert.equal(res.status, 200, `${action}: ${res.text ?? JSON.stringify(res.body)}`);
+      return learnedStatus(`${(await onMain(data, agentId)).files[readme]}\n`);
+    };
+    const stands = async () => {
+      const files = (await onMain(data, agentId)).files;
+      const view = (await api("GET", `/agents/${agentId}/learning`)).body.workflows.find(({ name }) => name === "answer");
+      return { readme: files[readme] === undefined ? null : learnedStatus(`${files[readme]}\n`), view: view?.status ?? null };
+    };
+    const purge = async () => {
+      assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+      return (await onMain(data, agentId)).files;
+    };
+    return { api, data, store, mark, readme, path, v1, v2, person, stands, purge };
+  };
+
+  test(`${kind}: a purge keeps a person's approve made after the purged run's merge: its status lines replay on the put-back README (a held v1 reads active)`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "approver", { held: true, firstHeld: true });
+    assert.equal((await c.stands()).readme, "pending", "gone's v2 waits for its owner's OK");
+    assert.equal(await c.person("approve"), "active");
+    const after = await c.purge();
+    assert.deepEqual({ file: after[c.path], holds: JSON.stringify(after).includes(c.mark) }, { file: c.v1[c.path], holds: false }, "the purge puts first's workflow.json back, and no file holds the purged run's text");
+    assert.equal(after[c.readme].includes("Answers a question, in whole numbers"), true, "the README is first's text");
+    const stands = await c.stands();
+    assert.deepEqual({ readme: stands.readme, waiting: stands.view === "pending" }, { readme: "active", waiting: false }, "the person's approve stands: first's README, held before, reads active, and the view does not read it as waiting for an OK");
+  });
+
+  test(`${kind}: a purge keeps a person's retire and then restore made after the purged run's merge: the restore's status lines replay on the put-back README (pending, as it was retired from)`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "restorer", { held: true });
+    assert.equal(await c.person("retire"), "retired");
+    assert.equal(await c.person("restore"), "pending", "restored to pending, the status it was retired from");
+    const after = await c.purge();
+    assert.deepEqual({ file: after[c.path], holds: JSON.stringify(after).includes(c.mark) }, { file: c.v1[c.path], holds: false }, "the purge puts first's workflow.json back, and no file holds the purged run's text");
+    assert.equal(after[c.readme].includes("Answers a question, in whole numbers"), true, "the README is first's text");
+    assert.equal((await c.stands()).readme, "pending", "the person's restore stands: first's README reads pending, as restored, never active over the person's last word");
+  });
+
+  test(`${kind}: a workflow the purged run wrote new and a person retired leaves main whole: no README, no file, no view entry, nothing served`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "newborn", { fresh: true });
+    assert.equal(await c.person("retire"), "retired");
+    const after = await c.purge();
+    assert.deepEqual(after, {}, "no file of answer is left on main: never a retired stub of the purged run's text");
+    assert.deepEqual(await c.stands(), { readme: null, view: null }, "the view lists no answer");
+    assert.equal((await servedNow(c.api, c.store, "newborn", "What is six?")).served, null, "no run is served it");
+  });
+
+  test(`${kind}: a hand commit that changes more than a put-back README's status lines owns the file from then on: the purge leaves its copy (Not covered: it keeps the purged run's lines it held)`, { timeout: 300_000 }, async (t) => {
+    const c = await personCase(t, "handed");
+    const { commitChange, readSnapshot } = await import("../dist/learn/folder.js");
+    const learning = learningStoreOf(c.data, "handed");
+    const said = (await onMain(c.data, "handed")).files[c.readme];
+    const edited = `${said.replace("Answers a question", "Answers any question")}\n`;
+    const done = await commitChange(learning, await readSnapshot(learning, await learning.head()), { by: { person: "retired", file: c.readme }, writes: [{ path: c.readme, text: edited }] });
+    assert.equal(done.landed, true, JSON.stringify(done));
+    const after = await c.purge();
+    assert.deepEqual({ readme: after[c.readme], file: after[c.path] }, { readme: edited.trim(), file: c.v1[c.path] }, "the hand commit's README stays as it wrote it; workflow.json, still the purged run's, goes back to first's");
   });
 
   // #3458 (f5567cd095): a purged run that revised a workflow and put its earlier bytes back in a later round: the
