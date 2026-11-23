@@ -13,23 +13,23 @@
 #   AGENTRUN_DOCKER_IMAGE=$tag AGENTRUN_BOXES=docker node packages/serve/dist/cli.js
 #
 # The tag is the first 12 hex digits of this file's sha256, as a recipe's tag is: an edit here is a new tag. The base is
-# pinned by digest, Node and the headless shell by sha256, and the Debian packages by a snapshot.debian.org instant, so
-# two builds of one tag install the same packages. The HyperFrames CLI's dependencies are pinned by npm's --before, the
-# same instant: by date, not by content. Nothing in it holds a key, and nothing in it is fetched when a box runs.
+# pinned by digest, Node and the headless shell by sha256, and the Debian packages by a snapshot.debian.org instant read
+# over https, so two builds of one tag install the same packages. The HyperFrames CLI's dependencies are pinned by npm's
+# --before, the same instant: by date, not by content. Nothing in it holds a key, and nothing in it is fetched when a
+# box runs. Move the snapshot instant and npm's --before together (media-image.test.mjs holds them equal), in a PR of
+# their own, at each release that publishes this image and on a Debian security fix for a package it installs.
 #
 # A box's commands get PATH and HOME but not the image's environment, so `hyperframes` on PATH is a small script that
 # names the browser to render with (the headless shell where the image has it, else Chromium) unless the caller names
 # one in HYPERFRAMES_BROWSER_PATH: HyperFrames would otherwise try to download its pinned shell, which a box with no
-# network cannot. The script also turns off HyperFrames' usage
-# reports and its update check unless the caller turns them on: a box with a network sends nothing of its work home.
-# And it gives HyperFrames a font cache in HOME holding a link to each folder of fonts compressed at build (below).
+# network cannot. The script also turns off HyperFrames' usage reports and its update check unless the caller turns them
+# on: a box with a network sends nothing of its work home. And it gives HyperFrames a font cache in HOME holding a link
+# to each folder of fonts compressed at build (below).
 FROM python:3.12-slim@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
 
 # The default image's tools (but its nodejs and npm, which Node's tarball brings), then Chromium, FFmpeg and the fonts,
-# from Debian's archive and its security archive as snapshot.debian.org held them at one instant (the step fails if a
-# source still names the live mirror), over https: the base already has apt's https method and the CA certificates. apt
-# checks each package against that snapshot's signed index; a snapshot's index is past its Valid-Until date, so apt is
-# told not to refuse it for that.
+# from the snapshot the header names (the step fails if a source still names the live mirror). A snapshot's index is past
+# its Valid-Until date, so apt is told not to refuse it for that.
 RUN sed -i -E 's#^URIs: http://deb\.debian\.org/(debian|debian-security)$#URIs: https://snapshot.debian.org/archive/\1/20261121T204200Z#' /etc/apt/sources.list.d/debian.sources \
  && ! grep -q 'deb\.debian\.org' /etc/apt/sources.list.d/debian.sources \
  && apt-get -o Acquire::Check-Valid-Until=false update \
