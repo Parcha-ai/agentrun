@@ -2,7 +2,7 @@
 export type { Answer, Ended, ToolCall, Turn, Usage } from "./types.js";
 export { ACTIVE_GAP_MS } from "./types.js";
 export { mostEffortOf, personsWords } from "./text.js";
-export { addTokens, noTokens, normalizeUsage, type Tokens, type UsageFormat } from "./usage.js";
+export { addTokens, noTokens, normalizeUsage, type OtelUsage, otelUsage, type Tokens, type UsageFormat } from "./usage.js";
 export { type Env, type Locator, locatorKey, type Reader, type ReadOptions, type ReadResult, type SessionRead } from "./reader.js";
 export { type FileCursor, type LineSource, lineReader, type ReadContext, type ReadState } from "./lines.js";
 export { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES, type Source } from "./readers/index.js";
