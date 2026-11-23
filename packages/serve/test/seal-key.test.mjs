@@ -125,6 +125,58 @@ test("a key of the wrong shape is refused with the length it wants and the lengt
   });
 });
 
+/** A refusal that names the one handed by its length, never its value. */
+const saysHanded = (words, key) => (error) => {
+  const said = String(error.message);
+  assert.ok(said.includes(words), said);
+  assert.equal(said.split(key).length - 1, 0, "the key's value is never in the refusal");
+  return true;
+};
+const SHAPE_60 = "the one handed is not 32 bytes in base64 (43 characters, or 44 ending in =; it has 60)";
+
+test("tool keys' store tells a malformed AGENTRUN_SEAL_KEY from none, by length, never value", async () => {
+  const { toolKeysOverStore } = await import("../dist/tool-keys-store.js");
+  // The key is checked before the store is touched.
+  for (const env of [{}, { AGENTRUN_SEAL_KEY: " " }]) {
+    assert.throws(() => toolKeysOverStore({}, env, () => {}), /tool keys are kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed over: the server does not start without one/);
+  }
+  const long = randomBytes(43).toString("base64");
+  assert.throws(() => toolKeysOverStore({}, { AGENTRUN_SEAL_KEY: long }, () => {}), saysHanded(`tool keys are kept under the server's seal key (AGENTRUN_SEAL_KEY), and ${SHAPE_60}: the server does not start with it`, long));
+});
+
+test("the server's own secrets' store tells a malformed AGENTRUN_SEAL_KEY from none, by length, never value", async () => {
+  const { openServerSecretsOverStore } = await import("../dist/server-secrets-store.js");
+  for (const env of [{}, { AGENTRUN_SEAL_KEY: "" }]) {
+    await assert.rejects(openServerSecretsOverStore({}, "/nowhere", env, []), /the server starts with its seal key \(AGENTRUN_SEAL_KEY\), made at the first start when none is handed over/);
+  }
+  const long = randomBytes(43).toString("base64");
+  await assert.rejects(openServerSecretsOverStore({}, "/nowhere", { AGENTRUN_SEAL_KEY: long }, []), saysHanded(`the server starts with its seal key (AGENTRUN_SEAL_KEY), and ${SHAPE_60}`, long));
+});
+
+test("a runner tells a malformed AGENTRUN_SEAL_KEY from none, by length, never value", async () => {
+  const { runnerLoop } = await import("../dist/runner/main.js");
+  // No seal key booted and none on the launcher's pipe: the environment's is the one read.
+  assert.throws(() => runnerLoop({}, "/nowhere", {}), /A runner needs the server's seal key \(AGENTRUN_SEAL_KEY\): start it through the server's launcher, which hands it over\./);
+  const long = randomBytes(43).toString("base64");
+  assert.throws(() => runnerLoop({}, "/nowhere", { AGENTRUN_SEAL_KEY: long }), saysHanded(`A runner needs the server's seal key (AGENTRUN_SEAL_KEY), and ${SHAPE_60}`, long));
+});
+
+test("an import's read of the server's own secrets tells a malformed AGENTRUN_SEAL_KEY from none, by length, never value", async () => {
+  const { ownSecrets } = await import("../dist/import.js");
+  // The key is checked before the store is read, so no store is needed to see the refusal.
+  const store = {};
+  for (const env of [{}, { AGENTRUN_SEAL_KEY: "" }, { AGENTRUN_SEAL_KEY: " \n" }]) {
+    await assert.rejects(ownSecrets(store, "/nowhere", env), /the server's own secrets open only under its seal key \(AGENTRUN_SEAL_KEY\), and none was handed$/);
+  }
+  const long = randomBytes(43).toString("base64");
+  await assert.rejects(ownSecrets(store, "/nowhere", { AGENTRUN_SEAL_KEY: long }), (error) => {
+    const said = String(error.message);
+    assert.ok(said.includes("the server's own secrets open only under its seal key (AGENTRUN_SEAL_KEY), and the one handed is not 32 bytes in base64 (43 characters, or 44 ending in =; it has 60)"), said);
+    assert.equal(said.split(long).length - 1, 0, "the key's value is never in the refusal");
+    return true;
+  });
+});
+
 test("the server does not start without a seal key it can keep: in words, naming AGENTRUN_SEAL_KEY", async (t) => {
   const mod = await sealKey();
   assert.ok(mod, "seal-key.js exists");

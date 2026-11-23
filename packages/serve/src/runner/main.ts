@@ -35,7 +35,7 @@ import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
-import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
+import { handedNoSealKey, SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { LAUNCH_HOOK_SECRET_ENV } from "../trigger-launch-hook.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
 import { claimViewOpener } from "../computer-live.js";
@@ -195,8 +195,12 @@ export function besideRunEnv(env: NodeJS.ProcessEnv, switches: NodeJS.ProcessEnv
  *  journal, the seal key and the model route. `booted`: the seal key startRunnerProcess booted against the store (else
  *  this process's, as it was handed or booted). Refused in words with no seal key. */
 export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv = process.env, booted?: Buffer, isolation?: RunIsolation, dial?: HostedDial): RunnerParts {
-  const sealKey = booted ?? sealKeyOf(secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV]);
-  if (!sealKey) throw new RunnerRefused(`A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
+  const handed = secret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV];
+  const sealKey = booted ?? sealKeyOf(handed);
+  if (!sealKey) {
+    const handedWhy = handedNoSealKey(handed);
+    throw new RunnerRefused(handedWhy ? `A runner needs the server's seal key (${SEAL_KEY_ENV}), and ${handedWhy}.` : `A runner needs the server's seal key (${SEAL_KEY_ENV}): start it through the server's launcher, which hands it over.`);
+  }
   const runs = runEnv(env);
   // The run's computer at its claim, composed once (runnerComputers): none for the runner's place, a box's computer by the
   // agent's setting, its keys read from the run environment first, then the store's sealed rows; a Docker computer's

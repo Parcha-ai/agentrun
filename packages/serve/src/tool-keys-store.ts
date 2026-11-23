@@ -12,7 +12,7 @@ import { decisionsOf } from "./decisions.js";
 import { ApiError, invalid } from "./errors.js";
 import { checkKey, type KeyCheck } from "./key-check.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
-import { rowSecrets, rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
+import { handedNoSealKey, rowSecrets, rowUnlocks, SEAL_KEY_ENV, sealKeyOf, type StartCheck, TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
 import { toolsView } from "./tools.js";
 import { type SealedKeys, sealColumn, sealedAt, type Settings, unsealColumn } from "./store/index.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -68,8 +68,12 @@ class ToolKeysOverStore {
 
   constructor(private readonly store: ToolKeysStore, private readonly env: NodeJS.ProcessEnv, private readonly say: (fields: Record<string, string>) => void) {
     // There is always a seal key (seal-key.ts bootSealKey): no tool key is ever kept, or read, without one.
-    const key = sealKeyOf(env[SEAL_KEY_ENV]);
-    if (!key) throw new Error(`tool keys are kept under the server's seal key (${SEAL_KEY_ENV}), and none was handed over: the server does not start without one`);
+    const handed = env[SEAL_KEY_ENV];
+    const key = sealKeyOf(handed);
+    if (!key) {
+      const handedWhy = handedNoSealKey(handed);
+      throw new Error(`tool keys are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handedWhy ? `${handedWhy}: the server does not start with it` : "none was handed over: the server does not start without one"}`);
+    }
     this.key = key;
     this.sealCheck = fingerprint(key);
   }
