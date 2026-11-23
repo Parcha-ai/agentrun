@@ -24,7 +24,8 @@ import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
-import { harnessOf, recipeHarness } from "../harness-table.js";
+import { harnessOf, recipeHarness, recipeKeysOf } from "../harness-table.js";
+import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
@@ -787,6 +788,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     serverKeyless: () => serverKeyless(keys),
     // The zone alone, from the claim's own launch's trigger: the process never reads a trigger's row.
     runZone: () => runZone(store, launch.inputOrigin),
+    // The keys saved for the claim's own harness alone (harness-keys.ts), whatever the process names: none unless that
+    // harness is a plan-billed recipe on this runner's table, and never another harness's.
+    harnessKeys: async () => {
+      const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
+      const names = harness === undefined ? undefined : recipeKeysOf(deps.env, harness);
+      return harness !== undefined && names?.length ? openHarnessKeys(store, sealKey, harness, names) : {};
+    },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
@@ -1044,9 +1052,10 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
-  // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in.
+  // plan-billed one's run that no person started (a schedule's, a trigger's) never runs on its owner's sign-in: only on
+  // keys saved for its harness.
   if (isolation.kind === "uid" && recipeHarness(deps.env ?? {}, harness)) throw new ClaimRefused(RECIPE_NEEDS_SERVER_USER);
-  refuseRecipeTriggerRun(deps.env ?? {}, harness, launch);
+  await refuseRecipeTriggerRun(deps, harness, launch);
   if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);

@@ -16,6 +16,7 @@ import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { AgentRequest, type AgentOperation } from "@/components/AgentRequest";
 import { KeysPage } from "@/components/KeysPage";
+import { HarnessKeysPage } from "@/components/HarnessKeysPage";
 import { ConnectionProvider, Unreached, useLink, useResumed } from "@/components/Connection";
 import { Settings, type SettingsPage } from "@/components/Settings";
 import { ToolsPage } from "@/components/ToolsPage";
@@ -127,15 +128,16 @@ export function route(h: string = location.hash): Where {
   m = h.match(/^#\/triggers\/([^/?]+)(\/edit)?$/);
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
-  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools, #/settings/email,
-  // #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is one more name here.
+  // Settings, a page per address: #/settings/keys (and #/settings), #/settings/harness-keys, #/settings/tools,
+  // #/settings/email, #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is
+  // one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
   if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook|slack))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|harness-keys|tools|email|computers|workspace|webhook|slack))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -490,7 +492,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
@@ -734,7 +736,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     </>}>
       {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
+            {where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
+              : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />
               : where.settings === "email" ? <EmailPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />

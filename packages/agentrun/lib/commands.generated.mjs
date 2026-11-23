@@ -1628,6 +1628,26 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "harness-keys",
+      "list"
+    ],
+    "operationId": "listHarnessKeys",
+    "method": "GET",
+    "path": "/settings/harness-keys",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The keys each plan-billed harness recipe runs on, and which are saved: names only, never a value"
+  },
+  {
+    "command": [
       "home",
       "delete"
     ],
