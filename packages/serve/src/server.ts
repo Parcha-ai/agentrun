@@ -5222,12 +5222,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // its learning folder's scrub, again).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
-        // API-only (api-only.ts): a run of an agent another system owns alone, for the backend whose inline runs made it,
-        // as it deletes that agent; a run of an agent made here is the profile's refusal, in its words, as before.
-        if (options.apiOnly) {
-          const agent = await store.agents.get(row.agentId);
-          if (!agent || !ownedElsewhere(agent)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
-        }
+        // API-only (api-only.ts) purges a run wherever its token may delete the run's whole agent, which is any agent:
+        // another system's, and one made here once archived. One run is less than all of them, so it is served alike.
         await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
