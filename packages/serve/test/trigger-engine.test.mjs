@@ -819,6 +819,52 @@ test("a firing whose run started while its hook is still open counts once: with 
   host.open[1].writeHead(200).end();
 });
 
+/** Two host starts of firing a (a host's retry), the second's read of a run under a's key made before the first wrote
+ *  its run and answered only once the first has started a with it (`sent`: a's host took it with no run; else a waits on
+ *  its retry after its hook timed out). The second answers the first's run, replayed, and writes none. */
+async function repeatedStart(t, sent) {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const stale = { next: null, entered: false };
+  // The engine's read of the run under a firing's key, as the server's (runOfOrigin); `stale.next` makes the next one a
+  // read that found no run, its answer held until the test lets it go.
+  const runOf = async (key) => {
+    const gate = stale.next;
+    if (gate) {
+      stale.next = null;
+      stale.entered = true;
+      await gate.promise;
+      return null;
+    }
+    const found = await on.store.runOfOrigin(key);
+    return found ? { run_id: found.runId } : null;
+  };
+  const host = await heldHost(t);
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, runOf }, { on });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  let a;
+  if (sent) {
+    await triggers.receive(made.id, "evt-a", "{}");
+    a = firingKey("webhook", made.id, "evt-a");
+    await until(() => host.open.length === 1, "the host has a's POST");
+    host.open[0].writeHead(200).end();
+    await until(async () => (await store.triggers.firing(made.id, a)).status === "sent", "a's host took it with no run");
+  } else a = await timedOut(triggers, store, host, made.id, "evt-a");
+
+  const read = held();
+  stale.next = read;
+  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => assert.fail("the repeated start writes no run"));
+  await until(() => stale.entered, "the second start has read no run under a's key");
+  assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-a")), { run_id: "run-a", replayed: false });
+  assert.deepEqual([(await store.triggers.firing(made.id, a)).status, (await store.triggers.firing(made.id, a)).runId], ["started", "run-a"]);
+  read.resolve();
+  assert.deepEqual(await second, { run_id: "run-a", replayed: true }, "the repeated start answers the first's run");
+  assert.equal((await store.runs.list({ agentId: "a" })).length, 1, "one run under a's key");
+}
+
+test("a host's repeated start of a firing waiting on its retry, whose first read found no run, answers the run the first start wrote meanwhile: replayed, never refused, no second run", (t) => repeatedStart(t, false));
+
+test("a host's repeated start of a firing its host took, whose first read found no run, answers the run the first start wrote meanwhile: replayed, never refused, no second run", (t) => repeatedStart(t, true));
+
 test("the keys kept for the day are capped: past the cap the oldest go first, and the log says so once", { timeout: 120_000 }, async (t) => {
   const said = [];
   const { triggers, runs } = await hookEngine(t, { seenKept: 30, say: (fields) => said.push(fields) });
