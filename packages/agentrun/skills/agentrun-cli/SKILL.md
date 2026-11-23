@@ -154,6 +154,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
+- `agentrun share RUN`: Show what sharing a run would send (--dry-run): its bundle checked and summed up, its page opened here; nothing is published
 - `agentrun skill`: install
 - `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run

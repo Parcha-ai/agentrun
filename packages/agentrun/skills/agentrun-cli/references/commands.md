@@ -1286,6 +1286,20 @@ Route: none, it runs on this machine.
 
 - `--version V` (string, this CLI's own): the version or npm tag (default: latest)
 
+## share
+
+### `agentrun share RUN`
+
+Show what sharing a run would send (--dry-run): its bundle checked and summed up, its page opened here; nothing is published.
+
+Route: `GET /runs/{run_id}/export; the page it opens is <origin>/share/{run_id}`.
+
+- `--dry-run` (boolean, this CLI's own): fetch the run's share bundle, print its summary and open its preview page; nothing is sent anywhere
+- `--out FILE` (string, this CLI's own): write the bundle as the server sent it, byte for byte (0600, never over a file); alone, it opens nothing
+- `--restore IDS` (string, this CLI's own): cut ids to keep in place, comma-separated (restorable ones only: a label, personal or jev cut)
+- `--expect SHA` (string, this CLI's own): refuse a bundle whose sha256 is another (the page's publish command carries it)
+- `--no-open` (boolean, this CLI's own): open no browser; print the page's link
+
 ## skill
 
 ### `agentrun skill install`
