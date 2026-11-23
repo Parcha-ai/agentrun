@@ -47,7 +47,7 @@ describe("demo mode's backend", () => {
     expect(caps.harnesses).toEqual([{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5" }]);
     expect(caps.models).toMatchObject({ ready: true, needs: null });
     expect(caps.tools).toEqual([{ name: "browser", available: true }]);
-    expect(demoCapabilities({})).toMatchObject({ features: { learning: "on", triggers: { routes: true } } });
+    expect(demoCapabilities({ learning: { pending: true, approve: false, approve_needs: "password" } })).toMatchObject({ features: { learning: "on", triggers: { routes: true } }, learning: { approve: true } });
   });
 
   it("lists only the templates the server ships with", async () => {
@@ -115,6 +115,16 @@ describe("demo mode's backend", () => {
     await expect(v2.answerApproval("demo-run-refund-approval", approval.id, "allow")).rejects.toMatchObject({ status: 409 });
   });
 
+  it("a declined call is not said to have run: the answer says the buyer was not told", async () => {
+    const { v2, now } = demo();
+    const waiting = await v2.getRun("demo-run-refund-approval");
+    await v2.answerApproval("demo-run-refund-approval", (waiting.pending as { id: string }).id, "deny");
+    now.ms += 60_000;
+    const answer = (await v2.getRun("demo-run-refund-approval")).result?.final_answer ?? "";
+    expect(answer).toMatch(/You declined the email, so the buyer has not been told/);
+    expect(answer).not.toMatch(/has the decision by email/);
+  });
+
   it("takes an answer to a run's question, and goes on to write its files", async () => {
     const { v2, now } = demo();
     expect((await v2.getRun("demo-run-brief-question")).pending).toMatchObject({ kind: "question" });
@@ -164,6 +174,18 @@ describe("demo mode's backend", () => {
     expect((await v2.getRun("demo-run-certificates-live")).review).not.toBeNull();
   });
 
+  it("a cancelled workflow run's graph stays as it stood, however much later it is read", async () => {
+    const { v2, now } = demo();
+    now.ms += 4_000;
+    await v2.cancel("demo-run-certificates-live");
+    const then = await v2.getRunGraph("demo-run-certificates-live");
+    now.ms += 60 * 60_000;
+    const later = await v2.getRunGraph("demo-run-certificates-live");
+    expect(then.run.status).toBe("cancelled");
+    expect({ ...later, read_at: null }).toEqual({ ...then, read_at: null });
+    expect((await v2.getRun("demo-run-certificates-live")).status).toBe("cancelled");
+  });
+
   it("counts Mission Control's figures from the same runs the lists show", async () => {
     const { v2 } = demo();
     const stats = await v2.statsOver({});
@@ -173,6 +195,15 @@ describe("demo mode's backend", () => {
     expect(stats.per_agent.reduce((n, a) => n + a.runs, 0)).toBe(all.length);
     expect(stats.runs.needs_input).toBe(2);
     expect(stats.analytics.by_day.reduce((n, d) => n + d.runs, 0)).toBe(all.length);
+    // A range and an agent narrow the analytics alone; the tiles stay the whole store's.
+    const narrowed = await v2.statsOver({ from: new Date(OPENED - 7 * 86_400_000).toISOString(), agent: "refund-desk" });
+    expect(narrowed.runs).toEqual(stats.runs);
+    expect(narrowed.cost).toEqual(stats.cost);
+    expect(narrowed.analytics.totals.runs).toBeLessThan(stats.analytics.totals.runs);
+    // An archived run leaves every figure but `archived`.
+    await v2.archiveRun("demo-run-brief-done");
+    const after = await v2.statsOver({});
+    expect([after.runs.total, after.analytics.totals.runs, after.archived?.runs]).toEqual([all.length - 1, all.length - 1, 1]);
   });
 
   it("shows the Refund desk's cost falling once its learned workflow serves", async () => {

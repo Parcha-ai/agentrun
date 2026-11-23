@@ -103,10 +103,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!kind) return null;
     const agent = agents.get(h.story.agent)!;
     const merchant = typeof h.story.input.merchant === "string" ? h.story.input.merchant : null;
-    const sample = kind === "batch" ? batchRunAt(Math.max(0, now - h.start)) : kind === "kyb" ? (h.story.review ? kybRun() : kybClean(kybRun())) : juryRun();
+    // A run stopped before its end stays as it stood then, whenever it is read.
+    const stopped = h.stopAt !== undefined && h.stopAt < h.start + GRAPH_MS[kind];
+    const at = stopped ? h.stopAt! : now;
+    const sample = kind === "batch" ? batchRunAt(Math.max(0, at - h.start)) : kind === "kyb" ? (h.story.review ? kybRun() : kybClean(kybRun())) : juryRun();
     const named = kind === "kyb" && merchant ? renamed(sample, "Corvane Analytics Inc.", merchant) : kind === "jury" && merchant ? renamed(sample, "Saltmarsh Outdoor Gear Co.", merchant) : sample;
     const g = retimed(named, h.start);
-    const stopped = h.stopAt !== undefined && !g.run.endedAt;
     return { ...g, run: { ...g.run, id: h.story.id, agent: agent.id, revision: revisionOf(agent), ...(stopped ? { status: h.cancelled ? "cancelled" : "stopped", endedAt: iso(h.stopAt!) } : {}) }, read_at: iso(now) };
   };
 
@@ -219,7 +221,10 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   // ---- Stats ----
 
   const statsOver = ({ from, agent, now = clock() }: { from?: number; agent?: string; now?: number }): Stats => {
-    const views = newestFirst(now).filter((h) => (!agent || h.story.agent === agent) && (from === undefined || h.start >= from)).map((h) => ({ h, run: viewOf(h, now) }));
+    // As the server counts: an archived run is in no figure but `archived`; the range and the agent narrow the analytics
+    // alone, and the tiles above them (runs, cost, each agent's runs) are the whole store's.
+    const store = newestFirst(now).filter((h) => !h.archivedAt).map((h) => ({ h, run: viewOf(h, now) }));
+    const views = store.filter(({ h }) => (!agent || h.story.agent === agent) && (from === undefined || h.start >= from));
     const empty = () => ({ runs: 0, completed: 0, needs_review: 0, failed: 0, runs_with_metrics: 0, runs_with_token_metrics: 0, tokens: 0, cost_usd: 0, unknown_cost_runs: 0 });
     const totals = { ...empty(), input: 0, cache_read: 0, cache_write: 0, output: 0, requests: 0, unmetered: 0 };
     const groups = { day: new Map<string, ReturnType<typeof empty> & { day: string }>(), harness: new Map<string, ReturnType<typeof empty>>(), tools: new Map<string, { calls: number; errors: number }>() };
@@ -256,13 +261,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       }
     }
     const round = <G extends { cost_usd: number }>(g: G): G => ({ ...g, cost_usd: Number(g.cost_usd.toFixed(4)) });
-    const everything = newestFirst(now).map((h) => viewOf(h, now));
     const byDay = [...groups.day.values()].sort((a, b) => a.day.localeCompare(b.day)).map(round);
     return {
       agents: list.length,
-      runs: { total: totals.runs, active: views.filter((v) => !v.run.ended_at && v.run.status !== "input_required").length, needs_input: views.filter((v) => v.run.status === "input_required").length, failed: totals.failed, needs_review: totals.needs_review, status_unknown: 0 },
-      per_agent: list.map((a) => ({ agent_id: a.id, name: a.name, runs: everything.filter((r) => r.agent_id === a.id && (from === undefined || Date.parse(r.created_at) >= from)).length })),
-      cost: { usd: Number(totals.cost_usd.toFixed(4)), basis: "estimate", unknown_runs: 0 },
+      runs: { total: store.length, active: store.filter((v) => !v.run.ended_at && v.run.status !== "input_required").length, needs_input: store.filter((v) => v.run.status === "input_required").length, failed: store.filter((v) => v.run.status === "failed").length, needs_review: store.filter((v) => v.run.review).length, status_unknown: 0 },
+      per_agent: list.map((a) => ({ agent_id: a.id, name: a.name, runs: store.filter((v) => v.run.agent_id === a.id).length })),
+      cost: { usd: Number(store.reduce((n, v) => n + (v.run.cost.usd ?? 0), 0).toFixed(4)), basis: "estimate", unknown_runs: 0 },
       archived: { agents: 0, runs: all().filter((h) => h.archivedAt).length },
       analytics: {
         filter: { from: from === undefined ? null : iso(from), to: null, agent: agent ?? null },

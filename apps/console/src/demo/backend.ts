@@ -43,6 +43,8 @@ export function demoCapabilities(real: Record<string, unknown>): Record<string, 
     harnesses: list(caps.harnesses).map((h) => ({ ...ready(h), default_model: h.id === "codex" ? "openai/gpt-6.1-sol" : models.default })),
     models: { ...(caps.models as object), source: "providers", route_prefix: null, ...models, ready: true, needs: null, priced: true },
     learning_model: { location: "server", ready: true, model: models.default, needs: null, reason: null },
+    // The demo takes the owner's OK on a learned workflow itself, whatever this session may approve on the server.
+    learning: { ...(caps.learning as object), pending: true, approve: true },
     tools: list(caps.tools).map((t) => { const { why: _why, resolves: _resolves, ...tool } = ready(t); return tool; }),
     workflows: { ...workflows, ...(workflows.decisions ? { decisions: { ...workflows.decisions, providers: list(workflows.decisions.providers).map(ready) } } : {}) },
     features: { ...features, learning: "on", triggers: { ...(features.triggers as object), routes: true, public_url: true } },

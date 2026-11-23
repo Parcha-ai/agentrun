@@ -155,7 +155,7 @@ export function refundByAgent(c: RefundCase, id: string): Beat[] {
     { k: "say", text: `Decision: ${c.decision}. Writing it down, then telling the buyer.` },
     { k: "tool", tool: "write", label: `Wrote decisions/${id}.md`, input: `decisions/${id}.md`, result: `Successfully wrote decisions/${id}.md`, ms: 250, saved: `decisions/${id}.md` },
     { k: "approval", tool: "email_send", label: `Send email to ${c.email}`, args: refundEmail(c), because: "email_send is set to ask: this agent emails buyers only with your OK", result: `Sent to ${c.email}.`, denied: "The owner declined this call. The email was not sent.", price: "not metered" },
-    { k: "final", text: `${c.decision} for ${c.buyer} on order ${c.order}${c.refund === null ? "" : `: $${money(c.refund)}`}. The buyer has the decision by email, and the note is in decisions/${id}.md.` },
+    { k: "final", text: `${c.decision} for ${c.buyer} on order ${c.order}${c.refund === null ? "" : `: $${money(c.refund)}`}. The buyer has the decision by email, and the note is in decisions/${id}.md.`, declined: `${c.decision} for ${c.buyer} on order ${c.order}. You declined the email, so the buyer has not been told. The note is in decisions/${id}.md.` },
   ];
 }
 
@@ -176,7 +176,7 @@ export function refundByWorkflow(c: RefundCase, id: string): Beat[] {
       ],
     },
     { k: "approval", tool: "email_send", label: `Send email to ${c.email}`, args: refundEmail(c), because: "email_send is set to ask: this agent emails buyers only with your OK", result: `Sent to ${c.email}.`, denied: "The owner declined this call. The email was not sent.", price: "not metered" },
-    { k: "final", text: `${c.decision} for ${c.buyer} on order ${c.order}${c.refund === null ? "" : `: $${money(c.refund)}`}. The buyer has the decision by email, and the note is in decisions/${id}.md.` },
+    { k: "final", text: `${c.decision} for ${c.buyer} on order ${c.order}${c.refund === null ? "" : `: $${money(c.refund)}`}. The buyer has the decision by email, and the note is in decisions/${id}.md.`, declined: `${c.decision} for ${c.buyer} on order ${c.order}. You declined the email, so the buyer has not been told. The note is in decisions/${id}.md.` },
   ];
 }
 

@@ -14,7 +14,8 @@ export type Beat = { /** Milliseconds before this beat, in place of its kind's u
   | { k: "ask"; question: string }
   /** A call to a tool set to ask: the run waits for the owner's allow or deny. */
   | { k: "approval"; tool: string; label: string; args: Record<string, unknown>; because: string; result: string; denied: string; price?: PendingApproval["price"] }
-  | { k: "final"; text: string }
+  /** The run's answer. `declined`: what it says in its place when the person declined a call on the way. */
+  | { k: "final"; text: string; declined?: string }
   | { k: "error"; text: string }
   | { k: "learning"; state: "merged" | "dropped"; reason: "empty" | null; detail: string }
 );
@@ -66,6 +67,7 @@ export function play(beats: readonly Beat[], { start, now, answers = [], stopAt 
   let requests = 0;
   let pending: Played["pending"] = null;
   let failed = false;
+  let declined = false;
   let played = 0;
   for (const [i, b] of beats.entries()) {
     const at = t + (b.wait ?? PAUSE[b.k]);
@@ -76,7 +78,7 @@ export function play(beats: readonly Beat[], { start, now, answers = [], stopAt 
     if (b.k === "user") push(id, t, "user_message", `You: ${clip(b.text, 160)}`, { text: b.text });
     else if (b.k === "think") push(id, t, "thinking", `Thinking: ${clip(b.text, 80)}`, { text: b.text });
     else if (b.k === "say") push(id, t, "text_block", clip(b.text, 160), { text: b.text });
-    else if (b.k === "final") push(id, t, "final_answer", clip(b.text, 160), { text: b.text });
+    else if (b.k === "final") { const said = declined && b.declined ? b.declined : b.text; push(id, t, "final_answer", clip(said, 160), { text: said }); }
     else if (b.k === "error") { push(id, t, "error", clip(b.text, 160), { text: b.text }); failed = true; }
     else if (b.k === "learning") push("learning", t, "learning", b.detail, { agent_label: "learning", text: b.detail, learning: { state: b.state, reason: b.reason, detail: b.detail } });
     else if (b.k === "tool") {
@@ -111,6 +113,7 @@ export function play(beats: readonly Beat[], { start, now, answers = [], stopAt 
       }
       t = answer.at + 800;
       const allowed = answer.decision !== "deny";
+      if (!allowed) declined = true;
       push(`${id}:r`, t, "tool_result", `${b.label}${allowed ? ": ok" : " refused"}`, { tool_name: b.tool, tool_use_id: use, tool_status: allowed ? "success" : "failed", tool_result_preview: allowed ? b.result : b.denied, tool_result_size_bytes: (allowed ? b.result : b.denied).length, round: i + 1, ...(allowed ? {} : { refused: true as const }) });
       push(`approval:${use}:after:outcome`, t, "phase", allowed ? `You allowed ${b.tool}. It ran.` : `You declined ${b.tool}. It did not run.`, { origin: "server", text: allowed ? b.result : b.denied });
     }
