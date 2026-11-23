@@ -12,8 +12,7 @@
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire } from "@parcha/agentrun-kernel";
-import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf, type RunLogin } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { modelWire, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
@@ -144,7 +143,7 @@ export function anthropicModelId(model: ModelRef): string {
  *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
 /** `headers`: what each request on serve's own gateway carries beside its key (request-metadata.ts: the run, turn and
  *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>> };
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: RunLogin; headers?: Readonly<Record<string, string>> };
 
 /** `env`'s gateway headers (gatewayHeadersOf), as a Provider's optional field. */
 const onGateway = (env: NodeJS.ProcessEnv): { headers?: Readonly<Record<string, string>> } => {

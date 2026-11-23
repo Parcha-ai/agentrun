@@ -50,6 +50,7 @@ import { type ComputerDeps, computerDepsFrom, type ComputerDepsOptions } from ".
 import { startJanitor } from "../workspace/computer-janitor.js";
 import { projectRunEnded } from "../source-sync/checkpoints.js";
 import { runEndComputers } from "../workspace/run-end-computers.js";
+import { sayLoginRunner } from "../claude-login-token.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { LoopFactory } from "./loop-contract.js";
@@ -637,6 +638,9 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
   let started: RunnerProcess;
   const runnerOf = name ?? runnerName();
+  // Said on the data folder before it claims: whether its runs on Claude Code's login stay in this process, its CLI on
+  // the login's folder (claude-login-token.ts sayLoginRunner), for a runner whose runs are users of their own to read.
+  sayLoginRunner(args.dataDir, runnerOf, isolation.kind === "uid" ? "uid" : "process");
   // The last resort, in this process only (never the library, the server's CLI or the runner beside a server): an error
   // nothing handled is said with its stack, and the process exits 1 at once (lastResort: crashing is the safe failure).
   const fatal = lastResort(runnerOf);

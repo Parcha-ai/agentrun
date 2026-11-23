@@ -1,9 +1,12 @@
 // A person's own Claude Code login on this machine, which a claude-agent session may run on in place of a model key.
 // Written for AgentRun.
 //
-// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. AgentRun
-// never reads, copies, stores or relays it: a session only tells the CLI where its login is (two directories, by
-// environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
+// The pinned CLI keeps the login where it always does, in its own files, and calls Anthropic with it itself. A session
+// either tells the CLI where its login is (two directories, by environment), and the host asks the CLI whether it is
+// signed in (`claude auth status`), reading nothing but that answer; or, where the host keeps the login out of the CLI's
+// reach (a run under a user of its own), it is handed the login's access token alone (ClaudeLoginToken), by
+// environment, asked of the host again at each start and when Anthropic refuses it. The CLI never gets a refresh token
+// then, and never renews the login itself.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +21,20 @@ export interface ClaudeAgentLogin {
   /** The directory of the CLI's Anthropic profiles. */
   profiles: string;
 }
+
+/** A login handed to the CLI as its access token alone, by a host that holds the login itself. `token()` is asked at
+ *  each start of the CLI and when Anthropic refuses the token the CLI holds: it answers the login's access token as
+ *  the host reads it now, or throws in words that say what to do. The CLI gets it as CLAUDE_CODE_OAUTH_TOKEN, with no
+ *  refresh token and no login directory. */
+export interface ClaudeLoginToken {
+  token(): Promise<string>;
+}
+
+/** Whether `login` is handed as a token (ClaudeLoginToken), not as its directories. */
+export const loginByToken = (login: ClaudeAgentLogin | ClaudeLoginToken): login is ClaudeLoginToken => typeof (login as { token?: unknown }).token === "function";
+
+/** The words a turn ends in when Anthropic refused the login's access token mid-turn and the host had no newer one. */
+export const LOGIN_TOKEN_REFUSED = "Anthropic refused Claude Code's login during the run, and no newer token was there: open Claude Code once to renew its login, then start the run again.";
 
 /** The variables that point the CLI at `login`: never its config dir (`CLAUDE_CONFIG_DIR`), which the Agent SDK copies
  *  a credentials file out of when it resumes a session. */

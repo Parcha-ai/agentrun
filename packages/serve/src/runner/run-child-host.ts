@@ -69,6 +69,7 @@ import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
+import { agentRunLogin, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
@@ -722,6 +723,16 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       if (!plan) return undefined;
       return { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
     },
+    // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
+    // the process names: its access token alone, read again at each ask; never its folder or its refresh token.
+    claudeLogin: async () => {
+      if (await runKeyed()) return undefined;
+      const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
+      const at = await loginForRun(store.settings, deps.data, deps.env ?? {}, harness, launch.place);
+      if (!at || !agentRunLogin(at, deps.data)) return undefined;
+      const tokens = loginTokensFor(at);
+      return { token: () => tokens.token() };
+    },
     signInReadsBack: () => handedSignInReadsBack(store, sealKey, run),
     runSignIn: (resolution) => {
       const vendorFetch = async () => (claimed[FAUX_ENV] ? fauxFetch(claimed, FAUX_VENDOR_API_ENV) : fetch);
@@ -1035,8 +1046,13 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  connectors, whose rows are the server's. */
 export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
-/** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
-export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on this machine's own Claude Code login (~/.claude, the `machine` place) is refused in where each run
+ *  is a user of its own: only AgentRun's own login folder is handed to such a run, as its access token. */
+export const LOGIN_MACHINE_NEEDS_SERVER_USER = `A run on this machine's own Claude Code login (~/.claude) needs runs under the server's own user, and this runner runs each run as a user of its own: switch to AgentRun's own login folder under Settings → Model keys, set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on the login is refused in where each run is a user of its own while runner `other`, on the same data
+ *  folder, runs its runs on the login in its own process, whose CLI renews the login in that folder itself. */
+export const loginRunnerInProcessWords = (other: string): string =>
+  `This runner runs each run as a user of its own, and runner ${other} on the same data folder runs Claude Code's login runs in its own process, whose CLI renews that login itself: stop ${other}, set ${RUN_USER_ENV}=same on this runner too, or give the run a model_key.`;
 /** The words a run on a harness recipe is refused in where each run is a user of its own (harness-table.ts recipeHarness). */
 export const RECIPE_NEEDS_SERVER_USER = `A run on a harness recipe needs runs under the server's own user, since its install, its check and its owner's sign-in are that user's alone, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same on this runner.`;
 export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
@@ -1044,11 +1060,13 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
 /** Whether run `runId` stays in its runner's process: runsInRunner's, and a workflow run on a server with a documents
  *  directory (launch.documents), whose reads and writes (a pdf_pages call's pages) are rooted in a folder the server's
  *  user holds and no slot's user is given; its nodes run the server's own tools alone, no agent's code. A run on Claude
- *  Code's login on this machine (claude-login.ts loginForRun) needs the login in the server's own folder, which its CLI
- *  reads and refreshes: where runs are the runner's own user (`process`) it stays in the runner; where each run is a user
- *  of its own (`uid`) it is refused at its claim (ClaimRefused, the run failed in words naming the setting), never run as
- *  the server's user. A run its caller handed a model key (model_key) runs on that key and never on the login
- *  (cli-run-spec.ts), so it is a process of its own like any other. */
+ *  Code's login on this machine (claude-login.ts loginForRun), where runs are the runner's own user (`process`), stays in
+ *  the runner, its CLI on the login's folder. Where each run is a user of its own (`uid`), a run on AgentRun's own login
+ *  folder is a process of its own handed the login's access token alone (held.ts claudeLogin, claude-login-token.ts),
+ *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (~/.claude), and
+ *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
+ *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
+ *  own like any other. */
 export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string, isolation: RunIsolation): Promise<boolean> {
   // A recipe's harness reads its install, its check's note and its owner's sign-in, each the server user's alone: never
   // opened to a slot's user (the sign-in least of all), so where each run is a user of its own it is refused here. And a
@@ -1062,10 +1080,14 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
     if (revision && isWorkflowRevision(revision)) return true;
   }
-  if ((await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) === undefined) return false;
+  const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
+  if (login === undefined) return false;
   if ((await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) !== undefined) return false;
-  if (isolation.kind === "uid") throw new ClaimRefused(LOGIN_NEEDS_SERVER_USER);
-  return true;
+  if (isolation.kind !== "uid") return true;
+  if (!agentRunLogin(login, deps.data)) throw new ClaimRefused(LOGIN_MACHINE_NEEDS_SERVER_USER);
+  const other = await loginRunnerInProcess(deps.data, deps.store.runners);
+  if (other !== undefined) throw new ClaimRefused(loginRunnerInProcessWords(other));
+  return false;
 }
 
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in

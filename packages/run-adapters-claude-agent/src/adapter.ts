@@ -22,7 +22,7 @@ import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, 
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
 import { JournalSessionStore } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
-import type { ClaudeAgentLogin } from "./login.js";
+import type { ClaudeAgentLogin, ClaudeLoginToken } from "./login.js";
 import { serialWriter } from "./serial.js";
 import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
@@ -92,8 +92,9 @@ export interface ClaudeAgentAdapterOptions {
   provider?: ClaudeAgentProvider;
   /** A person's own login on this machine (login.ts), which the CLI runs on in place of a provider: it calls Anthropic
    *  itself, with no proxy, no model URL and no key of the host's; each response is booked from its stream, billed to the
-   *  person's plan (`price` is not read), and the session has no host port. The host only says where the login is. */
-  login?: ClaudeAgentLogin;
+   *  person's plan (`price` is not read), and the session has no host port. The host says where the login is, or hands
+   *  its access token alone (ClaudeLoginToken), asked at each start of the CLI and on a 401. */
+  login?: ClaudeAgentLogin | ClaudeLoginToken;
   /** Start the CLI under the host's confinement (its own `confine()`, a `setpriv --no-new-privs` prefix, say). It may
    *  only add in front of the pinned binary and its arguments, and never touches its environment. */
   confine?: ConfineChild;

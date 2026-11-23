@@ -107,6 +107,10 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   const { runLine } = await import("../print.js");
   const { metricLine, startRunnerGauge } = await import("./runner-metrics.js");
   const name = runnerName();
+  // Said on the data folder before it claims: whether its runs on Claude Code's login stay in this process, its CLI on
+  // the login's folder (claude-login-token.ts sayLoginRunner), for a runner whose runs are users of their own to read.
+  const { sayLoginRunner } = await import("../claude-login-token.js");
+  sayLoginRunner(dataDir, name, isolation?.kind === "uid" ? "uid" : "process");
   const said = (event: RunnerEvent) => {
     for (const { line, error } of besideLines(name, event, { metricLine, troubleLine, runLine })) (onLine ?? (error ? console.error : console.log))(line);
     // The server's anonymous counts (telemetry.ts) hear a run's end: its state alone, never which run or agent.

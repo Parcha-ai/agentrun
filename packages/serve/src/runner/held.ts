@@ -67,6 +67,10 @@ export interface Held {
   projectCheckpoint(signal?: AbortSignal): Promise<ProjectCheckpoint>;
   /** The ChatGPT sign-in's reader (chatgpt-plan.ts planReaderOf), for a run whose models reach the plan; else none. */
   plan(): Promise<PlanReader | undefined>;
+  /** Claude Code's login on this machine, for a claim of a run that goes on it (claude-login.ts loginForRun, the
+   *  claim's own harness and place, and no model key of its own): its access token alone, read by the runner at each ask
+   *  (claude-login-token.ts LoginTokens), which throws in words where there is none to hand. Else none. */
+  claudeLogin(): Promise<{ token(): Promise<string> } | undefined>;
   /** Whether a browser sign-in handed to the run reads back here (sign-ins-store.ts handedSignInReadsBack). */
   signInReadsBack(): Promise<boolean>;
   /** The run's browser sign-in for vendor `resolution` (sign-ins-store.ts runSignIn). */

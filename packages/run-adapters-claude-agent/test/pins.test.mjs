@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import { CLAUDE_AGENT_CLI_VERSION, CLAUDE_AGENT_PACKAGE, CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, claudeAgentAdapter, claudeAgentExecutable, verifyClaudeAgent, verifyClaudeAgentCli, verifyClaudeAgentCliAsync } from '@parcha/agentrun-harness-claude';
 import { fakeSdk } from '@parcha/agentrun-harness-claude/testing';
@@ -181,4 +182,64 @@ test("the pinned CLI is found beside the adapter's install, whatever the process
   } finally {
     rmSync(elsewhere, { recursive: true, force: true });
   }
+});
+
+// A login handed as its token alone (login.ts ClaudeLoginToken) stands on three things of the pinned pair, none in the
+// SDK's types: the SDK takes a getOAuthToken callback and answers the CLI's oauth_token_refresh ask with it; the CLI reads
+// CLAUDE_CODE_OAUTH_TOKEN with no refresh token and no end (so it never renews); and the CLI's own write of a login,
+// which a host's runner reads (test/fixtures/credentials-cli-2.1.286.json is that shape, its values fake). Static reads
+// of the installed pin, a chunk at a time (the CLI is a single ~240 MB file); no run of it and no model call.
+
+/** The installed SDK's sdk.mjs, or none where the SDK is not installed. */
+function installedSdk() {
+  try {
+    return readFileSync(fileURLToPath(import.meta.resolve('@anthropic-ai/claude-agent-sdk')), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/** Which of `patterns` the file at `path` holds, read 16 MiB at a time with an overlap no match here spans. */
+function holds(path, patterns) {
+  const found = new Set();
+  const chunk = 16 * 2 ** 20;
+  const overlap = 4096;
+  const buffer = Buffer.alloc(chunk + overlap);
+  const fd = openSync(path, 'r');
+  try {
+    let carried = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, carried, chunk, null);
+      if (read === 0) break;
+      const total = carried + read;
+      const text = buffer.toString('latin1', 0, total);
+      for (const [name, pattern] of Object.entries(patterns)) if (!found.has(name) && pattern.test(text)) found.add(name);
+      // The last bytes read are carried to the front, so a match across two reads is whole in the next.
+      carried = Math.min(overlap, total);
+      buffer.copy(buffer, 0, total - carried, total);
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return found;
+}
+
+test('the pinned SDK takes getOAuthToken and answers the CLI\'s oauth_token_refresh ask with the host\'s token, or none', { skip: !installedSdk() && 'the pinned SDK is not installed here' }, () => {
+  const sdk = installedSdk();
+  assert.match(sdk, /getOAuthToken:[\w$]+/, 'query() reads getOAuthToken from its options');
+  assert.match(sdk, /subtype==="oauth_token_refresh"\)\{[\s\S]{0,200}?this\.getOAuthToken\(\{signal:[\w$]+[\s\S]{0,200}?\?\?null;[\s\S]{0,120}?\{accessToken:[\w$]+\}/, 'the ask is answered with the callback\'s token, null when it gives none');
+});
+
+test('the pinned CLI reads CLAUDE_CODE_OAUTH_TOKEN with no refresh token and no end, keeps its login in .credentials.json, and writes it in the fixture\'s fields', { skip: !claudeAgentExecutable() && 'no pinned CLI installed here' }, () => {
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/credentials-cli-2.1.286.json', import.meta.url), 'utf8'));
+  const fields = Object.keys(fixture.claudeAiOauth);
+  assert.deepEqual(fields, ['accessToken', 'refreshToken', 'expiresAt', 'refreshTokenExpiresAt', 'scopes', 'subscriptionType', 'rateLimitTier', 'clientId']);
+  const write = new RegExp(`return\\{${fields.map((field) => `${field}:[^,{}]+`).join(',')}\\}`);
+  const found = holds(claudeAgentExecutable(), {
+    envToken: /if\([\w$]+\.CLAUDE_CODE_OAUTH_TOKEN\)return\{accessToken:[\w$]+\.CLAUDE_CODE_OAUTH_TOKEN,refreshToken:null,expiresAt:null/,
+    storage: /storagePath:[\w$]+\([\w$]+,"\.credentials\.json"\)/,
+    write,
+    writes: /claudeAiOauth:[\w$]+\([\w$]+\.claudeAiOauth,/,
+  });
+  assert.deepEqual([...found].sort(), ['envToken', 'storage', 'write', 'writes'], 'the pinned CLI still reads the token alone, and keeps and writes its login as the fixture says');
 });

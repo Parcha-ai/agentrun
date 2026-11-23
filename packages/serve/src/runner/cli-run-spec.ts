@@ -80,7 +80,8 @@ import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
-import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginCli, loginForRun, withClaudeLogin } from "../claude-login.js";
+import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginByToken, loginCli, loginForRun, type RunLogin, withClaudeLogin } from "../claude-login.js";
+import { heldTokenLogin } from "../claude-login-token.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
@@ -467,8 +468,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   }
   // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
   // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
-  // runs on that key, and a run in a sandbox place on the model keys.
-  const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
+  // runs on that key, and a run in a sandbox place on the model keys. A run's own process (a user of its own, which
+  // cannot open the login's folder) goes on its runner's reader of the login's access token alone (held.ts claudeLogin),
+  // each token it hands held by the redactors and this process's own; its CLI then never gets a refresh token.
+  const atLogin = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
+  const login: RunLogin | undefined = !atLogin || deps.sealKey ? atLogin : heldTokenLogin(await runnerSeam()?.claudeLogin(), hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
@@ -495,8 +499,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);
   if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
-    const claude = await import("@parcha/agentrun-harness-claude");
-    await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+    // On a token: one read before the run, refused in its words (signed out, near its end) as the CLI's own check is.
+    if (loginByToken(login)) await login.token();
+    else {
+      const claude = await import("@parcha/agentrun-harness-claude");
+      await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+    }
   }
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
