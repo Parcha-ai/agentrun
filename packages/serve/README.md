@@ -228,6 +228,10 @@ handed them apart from its environment. Spans are sent in the background, so a r
 a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
 and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
 
+To send traces to Sentry (two variables: its OTLP endpoint and its `x-sentry-auth` header) or to any other backend
+through an OpenTelemetry Collector, and for what Sentry's Agents view shows of a run, see
+[Send run traces to Sentry or any OpenTelemetry backend](../../docs/traces.md).
+
 ## Anonymous usage counts
 
 The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for

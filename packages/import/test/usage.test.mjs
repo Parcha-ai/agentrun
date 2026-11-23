@@ -38,6 +38,12 @@ test("OpenRouter: prompt_tokens holds its cached and cache-written tokens, so in
   // 2000 in: 1500 read from the cache, 100 written to it, 400 neither. 300 out, 120 of them reasoning: output stays 300.
   const raw = { prompt_tokens: 2000, completion_tokens: 300, total_tokens: 2300, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 100 }, completion_tokens_details: { reasoning_tokens: 120 } };
   assert.deepEqual(normalizeUsage("openrouter", raw), { input: 400, output: 300, cacheRead: 1500, cacheWrite: 100, reasoning: 120 });
+  // A request that only wrote the cache, as OpenRouter's usage-accounting page shows one
+  // (https://openrouter.ai/docs/use-cases/usage-accounting): cached_tokens 0, cache_write_tokens 100 inside prompt_tokens
+  // 194 (total_tokens 196 is prompt_tokens + 2). Its input is the 94 left; and a trace's input is the 194 again.
+  const writeOnly = normalizeUsage("openrouter", { prompt_tokens: 194, completion_tokens: 2, total_tokens: 196, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 100, audio_tokens: 0 } });
+  assert.deepEqual(writeOnly, { input: 94, output: 2, cacheRead: 0, cacheWrite: 100 });
+  assert.deepEqual(otelUsage(writeOnly), { input: 194, output: 2, cacheRead: 0, cacheWrite: 100 });
   // No details at all: nothing cached, no reasoning named.
   assert.deepEqual(normalizeUsage("openrouter", { prompt_tokens: 10, completion_tokens: 4 }), { input: 10, output: 4, cacheRead: 0, cacheWrite: 0 });
   // A cache count over the prompt is no usage at all.
