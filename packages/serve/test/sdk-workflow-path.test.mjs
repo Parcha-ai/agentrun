@@ -44,7 +44,9 @@ async function setup(t, runtime = "claude-agent-sdk") {
       await settle(id);
     } };
   };
-  return { ...server, start, settle };
+  // Ends a run whose evidence can't complete (an open callback): an agent holds at most SDK_OPEN_PER_AGENT SDK runs open.
+  const end = async id => server.store.runs.update(await server.store.claim(id, "sdk-path-proof", { leaseMs: 60_000 }), { state: "ended" });
+  return { ...server, start, settle, end };
 }
 
 for (const [name, events, path] of [
@@ -99,6 +101,7 @@ test("SDK nesting references are checked against this run's open workflow and th
       const bad = await run.events(2, [invalid]);
       assert.equal(bad.status, 422, JSON.stringify(bad.body));
       assert.equal((await run.events(2, [])).status, 200, "rejection keeps the sequence available without partial evidence");
+      await server.end(run.id);
     });
   }
 });
