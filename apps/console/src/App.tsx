@@ -363,7 +363,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // The range and agent Mission Control's analytics are asked for; a change reads them again, the page kept meanwhile.
   const [statsRange, setStatsRange] = useState<StatsRange>("30d");
   const observedDays = statsRange === "7d" ? 7 : 30;
-  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.runsOf && !where.archived && !where.status), days: observedDays });
+  // A race's page (where.race) is under Runs too, but shows no runs list: nothing there reads observations.
+  const observations = useObservations(v2, { active: where.section === "mission" || (where.section === "runs" && !where.run && !where.race && !where.runsOf && !where.archived && !where.status), days: observedDays });
   const [statsAgent, setStatsAgent] = useState<string | null>(null);
   // Keep the selected identity through refreshes that temporarily clear the connection list.
   const [sessionSelected, setSessionSelected] = useState(false);
@@ -471,7 +472,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   }, [v2, where, refreshed]);
   const runsFilter: RunsFilter = { status: where.status, archived: where.archived };
   useEffect(() => {
-    if (where.section !== "runs" || where.run) return;
+    // A race's page reads its own runs (lib/race.ts), and its lanes keep their reads few: no runs list behind it.
+    if (where.section !== "runs" || where.run || where.race) return;
     // Only the newest request lands: a slower answer for all runs never replaces one agent's runs, or the reverse.
     const n = ++asked.current;
     setRuns(null); setError(null);

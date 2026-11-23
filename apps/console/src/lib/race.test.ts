@@ -31,6 +31,19 @@ describe("a race: the runs one race:<label> label groups", () => {
     expect(asked).toEqual([[50, null, { label: "race:x" }]]);
     expect(read.lanes.map((r) => r.run_id)).toEqual(["r1", "r2", "r3", "r4"]);
     expect(read.more).toBe(1);
+    expect(read.atLeast).toBe(false);
+  });
+
+  it("a read that comes back full says there may be more than it counted", async () => {
+    const runs = Array.from({ length: 50 }, (_, i) => run(`r${i + 1}`, { race: "x", lane: String(i + 1) }));
+    const read = await readRace({ listRuns: async () => ({ runs, next_cursor: "50" }) } as never, "x");
+    expect(read.more).toBe(46);
+    expect(read.atLeast).toBe(true);
+  });
+
+  it("a run with no lane label comes after every numbered lane", () => {
+    const runs = [run("a-hand", { race: "x" }), run("r2", { race: "x", lane: "2" }), run("r1", { race: "x", lane: "1" })];
+    expect(lanesOf(runs).map((r) => r.run_id)).toEqual(["r1", "r2", "a-hand"]);
   });
 
   it("follows each lane with a short wait, so four lanes leave the browser's six connections room", () => {

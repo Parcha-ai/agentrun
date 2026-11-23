@@ -23,16 +23,19 @@ export const raceFilter = (label: string) => `${RACE_KEY}:${label}`;
 const ENDED = new Set(["completed", "failed", "cancelled"]);
 const laneOrder = new Intl.Collator(undefined, { numeric: true });
 
-/** A race's lanes: by their lane label (a number read as a number), the run id breaking a tie, at most MAX_LANES. */
+/** A race's lanes: by their lane label (a number read as a number), the run id breaking a tie, at most MAX_LANES. A run
+ *  with no lane label (one started by hand with the race's label alone) comes after every numbered lane. */
 export function lanesOf(runs: readonly Run[]): Run[] {
-  const lane = (r: Run) => r.labels?.[LANE_KEY] ?? "";
-  return [...runs].sort((a, b) => laneOrder.compare(lane(a), lane(b)) || (a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0)).slice(0, MAX_LANES);
+  const lane = (r: Run) => r.labels?.[LANE_KEY];
+  const unnumbered = (r: Run) => (lane(r) === undefined ? 1 : 0);
+  return [...runs].sort((a, b) => unnumbered(a) - unnumbered(b) || laneOrder.compare(lane(a) ?? "", lane(b) ?? "") || (a.run_id < b.run_id ? -1 : a.run_id > b.run_id ? 1 : 0)).slice(0, MAX_LANES);
 }
 
-/** Race `label`'s lanes, and how many of its runs past MAX_LANES are not shown. */
-export async function readRace(v2: Pick<Client, "listRuns">, label: string): Promise<{ lanes: Run[]; more: number }> {
+/** Race `label`'s lanes, and how many of its runs past MAX_LANES are not shown: `atLeast` when the one read came back
+ *  full, so there may be more than it counted. Archived runs are not read (the runs list's default), so not counted. */
+export async function readRace(v2: Pick<Client, "listRuns">, label: string): Promise<{ lanes: Run[]; more: number; atLeast: boolean }> {
   const { runs } = await v2.listRuns(RACE_READ, null, { label: raceFilter(label) });
-  return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES) };
+  return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES), atLeast: runs.length >= RACE_READ };
 }
 
 /** What a lane's header says: cost (the run's own once it ended, else the newest timeline page's), tokens, tool calls

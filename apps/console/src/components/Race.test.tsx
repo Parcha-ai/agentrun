@@ -36,10 +36,10 @@ function server(runs: Run[], rowsOf: (id: string) => TimelineRow[] = () => []) {
   return { v2, reads, listed };
 }
 
-async function render(v2: unknown, label = "bench") {
+async function render(v2: unknown, label = "bench", rereadMs?: number) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(Race, { v2: v2 as never, label })));
+  act(() => root!.render(createElement(Race, { v2: v2 as never, label, ...(rereadMs ? { rereadMs } : {}) })));
   for (let i = 0; i < 30; i++) await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
   return host;
 }
@@ -89,5 +89,37 @@ describe("Race: the runs one race:<label> label groups, side by side", () => {
     const host = await render(v2);
     expect(host.querySelectorAll("[data-race-lane]").length).toBe(4);
     expect(host.textContent).toContain("2 more runs");
+    expect(host.textContent).not.toContain("At least");
+  });
+
+  it("a full read says at least that many more runs, since there may be more than it counted", async () => {
+    const { v2 } = server(Array.from({ length: 50 }, (_, i) => run(`r${i + 1}`, { race: "bench", lane: String(i + 1) })));
+    const host = await render(v2);
+    expect(host.textContent).toContain("At least 46 more runs");
+  });
+
+  it("a lane's cost shows against its cap", async () => {
+    const { v2 } = server([run("r1", { race: "bench", lane: "1" }, "completed")]);
+    const host = await render(v2);
+    expect(host.querySelector("[data-race-lane='r1'] [data-lane-cost]")?.textContent).toMatch(/ of \$1\.00$/);
+  });
+
+  it("a run with no lane, harness or model label is headed by its run id, never a bare \"Lane\"", async () => {
+    const { v2 } = server([run("r1", { race: "bench", lane: "1", harness: "pi" }), run("by-hand", { race: "bench" })]);
+    const host = await render(v2);
+    const lanes = [...host.querySelectorAll("[data-race-lane]")];
+    expect(lanes.map((l) => l.getAttribute("data-race-lane"))).toEqual(["r1", "by-hand"]);
+    expect(lanes[1]!.querySelector("a")?.textContent).toBe("by-hand");
+  });
+
+  it("reads the race again, so a lane that starts after the page opened joins it", async () => {
+    const runs = [run("r1", { race: "bench", lane: "1" })];
+    const { v2, listed } = server(runs);
+    const host = await render(v2, "bench", 40);
+    expect(host.querySelectorAll("[data-race-lane]").length).toBe(1);
+    runs.push(run("r2", { race: "bench", lane: "2" }));
+    for (let i = 0; i < 50 && host.querySelectorAll("[data-race-lane]").length < 2; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    expect([...host.querySelectorAll("[data-race-lane]")].map((l) => l.getAttribute("data-race-lane"))).toEqual(["r1", "r2"]);
+    expect(listed.length).toBeGreaterThan(1);
   });
 });

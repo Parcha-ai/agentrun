@@ -5,7 +5,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { type Client, follow } from "@/lib/client";
-import { cost, runEnded, runTitle } from "@/lib/format";
+import { costOfCap, runEnded, runTitle } from "@/lib/format";
 import { problem } from "@/lib/problem";
 import { LANE_KEY, LANE_WAIT_MS, laneStats, raceFilter, readRace } from "@/lib/race";
 import { cn } from "@/lib/utils";
@@ -20,9 +20,13 @@ const elapsed = (s: number) => {
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 };
 
+/** How often the race's runs are read again, so a lane that starts after the page opened joins it. */
+export const RACE_REREAD_MS = 15_000;
+
 /** A race (lib/race.ts): the runs its race:<label> label groups, 2 to 4 lanes side by side, each following its run's
- *  timeline. Read-only: a lane links to its run's own page for anything more. */
-export function Race({ v2, label }: { v2: Client; label: string }) {
+ *  timeline. Read-only: a lane links to its run's own page for anything more. The lanes are read again every
+ *  `rereadMs` (RACE_REREAD_MS; a test's shorter); a lane already shown keeps its place and its timeline. */
+export function Race({ v2, label, rereadMs = RACE_REREAD_MS }: { v2: Client; label: string; rereadMs?: number }) {
   const [read, setRead] = useState<Awaited<ReturnType<typeof readRace>> | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [reads, setReads] = useState(0);
@@ -32,7 +36,9 @@ export function Race({ v2, label }: { v2: Client; label: string }) {
     let live = true;
     setError(null);
     readRace(v2, label).then((r) => { if (live) setRead(r); }, (e) => { if (live) setError(e); });
-    return () => { live = false; };
+    // A later read that fails keeps the lanes shown: the next one tries again.
+    const again = setInterval(() => { readRace(v2, label).then((r) => { if (live) setRead(r); }, () => {}); }, rereadMs);
+    return () => { live = false; clearInterval(again); };
   }, [label, reads]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
@@ -58,7 +64,7 @@ export function Race({ v2, label }: { v2: Client; label: string }) {
       )}
       {read.more > 0 && (
         <p className="px-5 pb-6 text-small text-muted-foreground md:px-8">
-          {read.more} more {read.more === 1 ? "run carries" : "runs carry"} this label; the first four by lane are shown.
+          {read.atLeast ? "At least " : ""}{read.more} more {read.more === 1 ? "run carries" : "runs carry"} this label; the first four by lane are shown.
         </p>
       )}
     </div>
@@ -98,14 +104,14 @@ function RaceLane({ v2, first, now }: { v2: Client; first: Run; now: number }) {
       <header className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="min-w-0 truncate font-mono text-small font-semibold hover:underline">
-            {harness || model ? [harness, model].filter(Boolean).join(" · ") : `Lane ${lane ?? ""}`.trim()}
+            {harness || model ? [harness, model].filter(Boolean).join(" · ") : lane ? `Lane ${lane}` : run.run_id}
           </a>
           <span className="ml-auto shrink-0"><StatusBadge run={run} /></span>
         </div>
         <p className="mt-1 truncate text-small text-muted-foreground" title={runTitle(run)}>{runTitle(run)}</p>
         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-label text-muted-foreground">
           <span data-lane-clock>{elapsed(stats.seconds)}</span>
-          <span data-lane-cost>{cost(stats.cost, { ended })}</span>
+          <span data-lane-cost>{costOfCap(stats.cost, stats.cost?.cap_usd, { ended })}</span>
           <span data-lane-tools>{stats.toolCalls} {stats.toolCalls === 1 ? "tool call" : "tool calls"}{stats.failed ? ` · ${stats.failed} failed` : ""}</span>
           {stats.tokens && <span data-lane-tokens>{stats.tokens}</span>}
         </div>
