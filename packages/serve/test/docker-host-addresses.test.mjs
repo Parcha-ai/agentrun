@@ -192,7 +192,7 @@ test("a failed read is tried again in the background, waiting 15 s, 30 s, 60 s, 
   const docker = async (args) => (args[0] === "run" ? (++runs <= 2 ? { code: "timeout", stdout: "", stderr: "" } : ANSWER) : removed(args));
   const waited = [];
   const found = [];
-  await retryHostAddresses(() => readHostAddresses(env, docker, READ_MS), (read) => found.push(read), new AbortController().signal, async (ms) => void waited.push(ms));
+  await retryHostAddresses({ env, docker, read: () => readHostAddresses(env, docker, READ_MS), found: (read) => found.push(read), signal: new AbortController().signal, wait: async (ms) => void waited.push(ms) });
   assert.deepEqual(waited, [15_000, 30_000, 60_000], "a wait before each read");
   assert.deepEqual(found, [{ addresses: ["203.0.113.7"] }]);
   assert.equal(runs, 3);
@@ -200,9 +200,44 @@ test("a failed read is tried again in the background, waiting 15 s, 30 s, 60 s, 
   let failing = 8;
   const later = [];
   const kept = [];
-  await retryHostAddresses(async () => (failing-- > 0 ? { why: "it failed" } : { addresses: [] }), (read) => kept.push(read), new AbortController().signal, async (ms) => void later.push(ms));
+  await retryHostAddresses({ env: ownEnv(), read: async () => (failing-- > 0 ? { why: "it failed" } : { addresses: [] }), found: (read) => kept.push(read), signal: new AbortController().signal, wait: async (ms) => void later.push(ms) });
   assert.deepEqual(later, [15_000, 30_000, 60_000, 120_000, 240_000, 240_000, 240_000, 240_000, 240_000]);
   assert.deepEqual(kept, [{ addresses: [] }], "a read that answers stops it, though it found none");
+});
+
+test("after a read answers, the retry goes on removing the containers the failed reads left, on the same waits, until Docker says none is left; a removal whose check gets no answer ends that sweep", async () => {
+  const { retryHostAddresses } = hostRead;
+  const env = ownEnv();
+  const calls = [];
+  // Docker has the first read's container for three checks: the read that made it, the read that answers, and the
+  // retry's first sweep after the answer.
+  let there = 3;
+  let runs = 0;
+  const docker = async (args) => {
+    calls.push(args[0]);
+    if (args[0] === "run") return ++runs === 1 ? { code: "timeout", stdout: "", stderr: "" } : ANSWER;
+    if (args[0] === "rm") return { code: 0, stdout: "", stderr: "" };
+    return there-- > 0 ? { code: 0, stdout: "true\n", stderr: "" } : { code: 1, stdout: "", stderr: `Error: No such object: ${args.at(-1)}` };
+  };
+  const waited = [];
+  const found = [];
+  await retryHostAddresses({ env, docker, read: () => readHostAddresses(env, docker, READ_MS), found: (read) => found.push(read), signal: new AbortController().signal, wait: async (ms) => void waited.push(ms) });
+  assert.deepEqual(found, [{ addresses: ["203.0.113.7"] }], "found once");
+  assert.deepEqual(waited, [15_000, 30_000, 60_000, 120_000]);
+  assert.deepEqual(calls, ["run", "rm", "inspect", "rm", "inspect", "run", "rm", "inspect", "rm", "inspect"], "no read after the answer: removals alone");
+  assert.equal(runs, 2);
+
+  // Two names kept; the daemon stops answering checks: the sweep ends at the first, and the second waits.
+  const swept = ownEnv();
+  const asked = [];
+  let check = { code: 0, stdout: "true\n", stderr: "" };
+  const stuck = async (args) => (asked.push(`${args[0]} ${args.at(-1).startsWith("agentrun-host-read-") ? args.at(-1).slice(-1) : "-"}`), args[0] === "run" ? { code: 125, stdout: "", stderr: "failed\n" } : args[0] === "rm" ? { code: 0, stdout: "", stderr: "" } : check);
+  await readHostAddresses(swept, stuck, READ_MS, "agentrun-host-read-00000000000a");
+  await readHostAddresses(swept, stuck, READ_MS, "agentrun-host-read-00000000000b");
+  asked.length = 0;
+  check = { code: "timeout", stdout: "", stderr: "" };
+  await readHostAddresses(swept, stuck, READ_MS, "agentrun-host-read-00000000000c");
+  assert.deepEqual(asked, ["rm a", "inspect a", "run -", "rm c", "inspect c"]);
 });
 
 test("the retry stops at close: its pending wait ends at once and no read follows; a read in flight at the close is not taken; no timer is left", async () => {
@@ -213,7 +248,7 @@ test("the retry stops at close: its pending wait ends at once and no read follow
   const stopping = new AbortController();
   let reads = 0;
   const found = [];
-  const retried = retryHostAddresses(async () => (reads++, { addresses: ["203.0.113.7"] }), (read) => found.push(read), stopping.signal);
+  const retried = retryHostAddresses({ env: ownEnv(), read: async () => (reads++, { addresses: ["203.0.113.7"] }), found: (read) => found.push(read), signal: stopping.signal });
   assert.equal(timers(), idle + 1, "its wait's timer");
   stopping.abort();
   await retried;
@@ -222,12 +257,12 @@ test("the retry stops at close: its pending wait ends at once and no read follow
   const closing = new AbortController();
   let answer;
   const waits = [];
-  const inFlight = retryHostAddresses(() => new Promise((resolve) => (answer = resolve)), (read) => found.push(read), closing.signal, async (ms) => void waits.push(ms));
+  const inFlight = retryHostAddresses({ env: ownEnv(), read: () => new Promise((resolve) => (answer = resolve)), found: (read) => found.push(read), signal: closing.signal, wait: async (ms) => void waits.push(ms) });
   while (!answer) await new Promise(setImmediate);
   closing.abort();
   answer({ addresses: ["203.0.113.7"] });
   await inFlight;
   assert.deepEqual([waits, found], [[15_000], []]);
   // Closed before it starts: no wait, no read.
-  await retryHostAddresses(async () => assert.fail("no read after the close"), () => assert.fail("nothing found"), AbortSignal.abort(), async () => assert.fail("no wait after the close"));
+  await retryHostAddresses({ env: ownEnv(), read: async () => assert.fail("no read after the close"), found: () => assert.fail("nothing found"), signal: AbortSignal.abort(), wait: async () => assert.fail("no wait after the close") });
 });

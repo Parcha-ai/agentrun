@@ -110,12 +110,22 @@ const keptOf = (env: NodeJS.ProcessEnv): Set<string> => {
   return kept;
 };
 
+/** Removes the containers earlier reads through `env`'s docker left (keptOf), one by one, until `signal` aborts or one's
+ *  check gets no answer: a daemon that doesn't answer one wouldn't answer the next, so a sweep costs at most one
+ *  removal's bound (2 × REMOVE_MS) more than its quick ones, and the names it didn't reach wait for the next. */
+async function removeLeft(env: NodeJS.ProcessEnv, docker: DockerRun, signal?: AbortSignal): Promise<void> {
+  const kept = keptOf(env);
+  for (const left of [...kept]) {
+    if (signal?.aborted || (await removeHelper(docker, left, kept)).left === "unknown") return;
+  }
+}
+
 /** The Docker host's addresses, read through `env`'s docker as above, after removing the containers earlier reads left
- *  (keptOf). Never throws: a read that fails, or whose answer can't be read, says why; one that runs out of time or exits
- *  non-zero has its container removed by name. `docker`, `ms` and `name` are the tests'. */
+ *  (removeLeft). Never throws: a read that fails, or whose answer can't be read, says why; one that runs out of time or
+ *  exits non-zero has its container removed by name. `docker`, `ms` and `name` are the tests'. */
 export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env), ms = READ_MS, name = helperName()): Promise<HostRead> {
   const kept = keptOf(env);
-  for (const left of [...kept]) await removeHelper(docker, left, kept);
+  await removeLeft(env, docker);
   const ran = await docker(readArgsOf(name), ms);
   if (ran.code === "timeout") {
     const removal = await removeHelper(docker, name, kept);
@@ -165,16 +175,26 @@ export const RETRY_MS: readonly number[] = [15_000, 30_000, 60_000, 120_000, 240
 export type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
 const wait: Wait = (ms, signal) => delay(ms, undefined, { signal }).catch(() => undefined);
 
-/** Reads again (`read`: hostAddressesOnce, so the runner beside the server shares what it finds) after a read failed,
- *  waiting RETRY_MS before each, until one answers (`found` gets it) or `signal` aborts (the server's close): then a
- *  pending wait ends at once, no read follows, and a read in flight is not taken. */
-export async function retryHostAddresses(read: () => Promise<HostRead>, found: (read: HostRead) => void, signal: AbortSignal, waitFor: Wait = wait): Promise<void> {
+/** Reads again through `env`'s docker after a read failed (`read`: hostAddressesOnce, so the runner beside the server
+ *  shares what it finds), waiting RETRY_MS before each, until one answers (`found` gets it). An answer is kept from then
+ *  on, so no later read removes what the failed ones left: on the same waits, the retry goes on removing those
+ *  containers (removeLeft) until none is left. All of it ends when `signal` aborts (the server's close, or a start that
+ *  failed): a pending wait ends at once, nothing more is read or removed, and a read in flight is not taken. `wait` and
+ *  `docker` are the tests'. */
+export async function retryHostAddresses({ env, read, found, signal, wait: waitFor = wait, docker = dockerRun(env) }: { env: NodeJS.ProcessEnv; read: () => Promise<HostRead>; found: (read: HostRead) => void; signal: AbortSignal; wait?: Wait; docker?: DockerRun }): Promise<void> {
+  let answered = false;
   for (let tried = 0; !signal.aborted; tried++) {
     await waitFor(RETRY_MS[Math.min(tried, RETRY_MS.length - 1)]!, signal);
     if (signal.aborted) return;
-    const result = await read();
-    if (signal.aborted) return;
-    if (!("why" in result)) return found(result);
+    if (answered) await removeLeft(env, docker, signal);
+    else {
+      const result = await read();
+      if (signal.aborted) return;
+      if ("why" in result) continue;
+      answered = true;
+      found(result);
+    }
+    if (keptOf(env).size === 0) return;
   }
 }
 

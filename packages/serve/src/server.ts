@@ -1368,7 +1368,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return fake ? ((await import(pathToFileURL(resolve(fake)).href)) as { default: typeof fetch }).default : undefined;
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
+  // A start that fails aborts it too: what began on it (the host-address read's retry) stops with that start.
   const stopping = new AbortController();
+  stops.push(async () => stopping.abort());
   /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
   let schemaSealed: Promise<unknown> = Promise.resolve();
   // The start's sweep of ended runs whose stored cost is unknown (cost-heal.ts), once this server listens; stop drains it.
@@ -1538,9 +1540,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // From a container, a Docker computer keeps this server's allow-list only knowing the Docker host's own addresses: the
   // union of the read through the socket and AGENTRUN_DOCKER_HOST_ADDRESSES (docker-host-addresses.ts), the same read the
   // runner beside this server takes. Said at the start with what was found; with none, Docker isn't offered, in words.
-  // A read that failed with none known is read again in the background (retryHostAddresses) until one answers, until
-  // this server stops: the boxes are made again from it and said again, so Docker is offered with no restart. Every
-  // reader of boxOffers reads it when it is called; capabilities are composed again.
+  // A read that failed with none known is read again in the background (retryHostAddresses) until one answers and the
+  // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
+  // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
+  // are composed again.
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
     const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
@@ -1552,11 +1555,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
   if (hostAddresses?.why !== undefined && hostAddresses.addresses.length === 0) {
-    void retryHostAddresses(() => hostAddressesOnce(env), (read) => {
-      boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
-      // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
-      if (caps) recompose();
-    }, stopping.signal, options.hostReadWait);
+    void retryHostAddresses({
+      env,
+      read: () => hostAddressesOnce(env),
+      found: (read) => {
+        boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
+        // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
+        if (caps) recompose();
+      },
+      signal: stopping.signal,
+      ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
+    });
   }
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);

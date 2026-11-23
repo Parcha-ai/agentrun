@@ -226,6 +226,19 @@ test("compose's layout, the read failing at the start: the server reads again in
   assert.equal(waits.length, 2, "no wait after a read answered");
 });
 
+test("compose's layout, the read failing at the start, and a later check failing that start: the retry stops with it", { timeout: 120_000 }, async (t) => {
+  const data = await dataDir(t);
+  const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
+  withEnv(t, {}, ["AGENTRUN_DOCKER_HOST_ADDRESSES"]);
+  await writeFile(join(fake.state, "host-addresses-fail"), "");
+  const signals = [];
+  const hostReadWait = (ms, signal) => (signals.push(signal), new Promise((go) => signal.addEventListener("abort", () => go(), { once: true })));
+  await assert.rejects(serve(t, { data, faux: PROBE, fauxMountinfo: fake.mountinfo, hostReadWait, trustedProxies: ["not a proxy"] }), /trustedProxies/);
+  assert.equal(signals.length, 1, "the retry began");
+  assert.equal(signals[0].aborted, true, "and stopped with the start");
+  assert.equal(hostReads(fake).length, 1, "the start's read alone");
+});
+
 test("compose's layout under AGENTRUN_BOX_ALLOW=none: no address is needed, none is read, and Docker is offered with no network", { timeout: 120_000 }, async (t) => {
   const data = await dataDir(t);
   const fake = await containerDocker(t, COMPOSE_MOUNTS(data));
