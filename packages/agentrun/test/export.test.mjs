@@ -54,14 +54,12 @@ test("demo: agentrun export writes the agent as a package folder readPackage tak
 });
 
 test("agentrun export refuses a --out not named as the package, writes nothing and names the folder that validates; that folder exports and validates", { timeout: 120_000 }, async (t) => {
-  const { dir, env } = scratch();
-  const { data, api } = await serve(t, dir, env);
-  const cli = cliOf(env, data);
+  const { dir, api, agentrun } = await started(t);
   // The package is named after the agent's name here, not its id: the folder the id suggests is not the package's.
   const made = await api("POST", "/agents", { definition: { id: "triage-2", name: "Inbox triage", instructions: "Sort each message you are given.", tools: ["read"], skills: [], learning: false } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const wrong = join(dir, "triage-2");
-  const refused = cli(["export", "triage-2", "--out", wrong]);
+  const refused = await agentrun(["export", "triage-2", "--out", wrong]);
   assert.equal(refused.code, 2, `${refused.err}${refused.out}`);
   const printed = JSON.parse(refused.out);
   assert.equal(printed.name, "inbox-triage");
@@ -72,26 +70,24 @@ test("agentrun export refuses a --out not named as the package, writes nothing a
   assert.equal(existsSync(wrong), false, "nothing written");
 
   // The folder it names, given with a trailing slash, is written and passes validate.
-  const exported = cli(["export", "triage-2", "--out", `${right}/`]);
+  const exported = await agentrun(["export", "triage-2", "--out", `${right}/`]);
   assert.equal(exported.code, 0, exported.err);
   assert.equal(JSON.parse(exported.out).folder, right);
-  const validated = cli(["template", "validate", right]);
+  const validated = await agentrun(["template", "validate", right]);
   assert.equal(validated.code, 0, validated.err);
 });
 
 test("agentrun export of an agent with no max_cost_usd whose trigger has its own $1 cap writes a package that validates; a trigger with no cap of its own blocks it, named", { timeout: 120_000 }, async (t) => {
-  const { dir, env } = scratch();
-  const { data, api } = await serve(t, dir, env);
-  const cli = cliOf(env, data);
+  const { dir, api, agentrun } = await started(t);
   const made = await api("POST", "/agents", { definition: { id: "digest", name: "Digest", instructions: "Write the digest.", tools: ["read"], skills: [], learning: false } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const morning = await api("POST", "/triggers", { name: "morning", source: { kind: "schedule", cron: "0 9 * * *" }, target: { kind: "start_run", agent_id: "digest", input: { content: "Write the morning digest." }, max_cost_usd: 1 } });
   assert.equal(morning.status, 201, JSON.stringify(morning.body));
   const out = join(dir, "digest");
-  const exported = cli(["export", "digest", "--out", out]);
+  const exported = await agentrun(["export", "digest", "--out", out]);
   assert.equal(exported.code, 0, exported.err);
   assert.deepEqual(JSON.parse(exported.out).blocked, []);
-  const validated = cli(["template", "validate", out]);
+  const validated = await agentrun(["template", "validate", out]);
   assert.equal(validated.code, 0, validated.err);
   const { readPackage } = await import(TEMPLATES);
   const pkg = readPackage(out);
@@ -106,7 +102,7 @@ test("agentrun export of an agent with no max_cost_usd whose trigger has its own
   const { version: __, ...capped } = (await api("GET", "/agents/digest")).body.definition;
   assert.equal((await api("PUT", "/agents/digest/definition", { definition: { ...capped, max_cost_usd: 0 } })).status, 200);
   const again = join(dir, "again", "digest");
-  const refused = cli(["export", "digest", "--out", again]);
+  const refused = await agentrun(["export", "digest", "--out", again]);
   assert.equal(refused.code, 2, `${refused.err}${refused.out}`);
   assert.deepEqual(JSON.parse(refused.out).blocked.map((note) => [note.kind, note.name]), [["trigger", "evening"]]);
   assert.match(refused.err, /trigger evening: .*max_cost_usd/);
