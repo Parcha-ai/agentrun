@@ -256,3 +256,21 @@ test("on a server whose web_fetch is kernel and web_search native, an agent's pi
   const calls = await seen();
   assert.deepEqual([calls.exa, calls.dialled], [[], [PAGE, PAGE, PAGE]], "none reached Exa; each fetch dialled the page directly");
 });
+
+test("a run saved on keyless Firecrawl, followed up after the server is set to kernel for web_fetch and native for web_search: its claim follows the server's setting now, so the follow-up's fetch is the guarded direct one and nothing more reaches Firecrawl or Exa", { timeout: 120_000 }, async (t) => {
+  const { seen } = await setting(t);
+  const firecrawl = await firecrawlServer(t);
+  const { api, store } = await serve(t, { ...FAUX, fauxFirecrawl: firecrawl.url });
+  const run = await research(api, "saved-keyless", { tool_settings: { web_search: { provider: "firecrawl-keyless" }, web_fetch: { provider: "firecrawl-keyless" } } });
+  assert.deepEqual((await store.runs.launch(run.runId))?.body?.plane, { web_search: "firecrawl-keyless", web_fetch: "firecrawl-keyless" }, "saved on keyless Firecrawl");
+  assert.match(run.results.web_fetch, /"via":"firecrawl-keyless"/);
+  const before = firecrawl.got.length;
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" }, web_fetch: { provider: "kernel" } })).status, 200);
+  assert.equal((await api("POST", `/runs/${run.runId}/messages`, { content: "Fetch again." })).status, 202);
+  const { rows } = await follow(api, run.runId, ["completed", "failed"], { deadlineMs: 55_000 });
+  const fetched = rows.filter((row) => row.kind === "tool_result" && row.tool_name === "web_fetch").at(-1);
+  assert.match(fetched.tool_result_preview, /"via":"direct"/, "the follow-up's fetch: the guarded direct one");
+  assert.equal(firecrawl.got.length, before, "nothing more reached Firecrawl");
+  const calls = await seen();
+  assert.deepEqual([calls.exa, calls.dialled], [[], [PAGE]], "none reached Exa; the page was dialled directly, once");
+});

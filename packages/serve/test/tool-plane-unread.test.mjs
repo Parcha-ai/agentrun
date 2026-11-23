@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { permissionFrom } from "../dist/tool-gate.js";
-import { checkToolSettings, NATIVE_ASKS, planeFor, relaunchPlane, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { checkToolSettings, NATIVE_ASKS, planeFor, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { storedSettings } from "./gate-support.mjs";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -19,7 +19,7 @@ const GATE = { faux: fixture("faux-gate.mjs"), harnessTable: fauxTable(fixture("
 /** The server's settings as the runner reads them from the store whose row holds `value` (undefined: no row). */
 const settingsFrom = (value) => storedSettings(value).settings;
 
-test("unread server settings: an ask is never lifted under never, in the gate's permission and in the plane (planeFor, relaunchPlane)", () => {
+test("unread server settings: an ask is never lifted under never, in the gate's permission and in the plane (planeFor)", () => {
   const unread = settingsFrom("{ not json");
   const notObject = settingsFrom([]);
   const readable = settingsFrom({});
@@ -39,7 +39,6 @@ test("unread server settings: an ask is never lifted under never, in the gate's 
     const asked = planeFor(env, tooling("ask"), unread, { run: true }).web_search;
     assert.equal(asked, NATIVE_ASKS, `${harness}: under ask, native search is held off (it cannot wait for an approval)`);
     assert.equal(planeFor(env, tooling("never"), unread, { run: true }).web_search, asked, `${harness}: never over unread settings resolves as ask`);
-    assert.equal(relaunchPlane(undefined, env, tooling("never"), unread, { first: true }).web_search, asked, `${harness}: a relaunch the same`);
     assert.notEqual(planeFor(env, tooling("never"), readable, { run: true }).web_search, NATIVE_ASKS, `${harness}: with the settings read, never lifts the ask as before`);
   }
 });

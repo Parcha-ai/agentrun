@@ -454,26 +454,19 @@ export function keptVendor(plane: Plane): Plane {
  *  it is saved on. */
 export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
 
-/** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
- *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
- *  (keptFromBefore). At a launch after its first (a relaunch, a follow-up's, one after a restart) a capability set
- *  to deny is handed denied (planeFor without `run`), the tool's own refusal backing the gate's; at its `first`, as
- *  under ask, so a deny lifted while that process lives is lifted at the next call. */
-export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, tooling: Tooling | undefined, settings: ToolSettingsMap, { capped = false, first = false }: { capped?: boolean; first?: boolean } = {}): Plane {
-  const fresh = tooling ? planeFor(env, tooling, settings, { capped, run: first }) : {};
-  if (kept) return underCeilings(recheckPlane(kept, env, { fresh, permission: (name) => permissionOf(name, settings, tooling?.overrides ?? {}, tooling?.approvals ?? "ask") }), fresh, settings);
-  return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
-}
-
-/** A kept Plane under the server's ceilings today (CEILINGS): a capability kept on a keyless third party, where the
- *  server's setting now keeps it on the server, is handed today's resolution, so a relaunch sends nothing the setting
- *  keeps. */
-function underCeilings(plane: Plane, fresh: Plane, settings: ToolSettingsMap): Plane {
-  const out: Plane = { ...plane };
+/** The Plane a claim hands its run (runner/harness-loops.ts, before anything binds): `kept`, the launch's (resolved at
+ *  the run's start), under the server's `settings` now. A capability kept on a keyless third party (Firecrawl, Exa),
+ *  where the server's setting is now a ceiling over it (CEILINGS), takes today's resolution (planeFor in `env` for
+ *  `tooling`), so a resume, a follow-up or a reclaim sends nothing the setting keeps on the server. Every other value
+ *  stays as kept; the same Plane where nothing is over a ceiling. */
+export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false }: { capped?: boolean } = {}): Plane {
+  if (!PICKABLE.some((name) => ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined)) return kept;
+  const fresh = planeFor(env, tooling, settings, { capped, run: true });
+  const out: Plane = { ...kept };
   for (const name of PICKABLE) {
-    if (fresh[name] !== undefined && ceilingOver(name, settings[name]?.provider, plane[name]) !== undefined) out[name] = fresh[name];
+    if (fresh[name] !== undefined && ceilingOver(name, settings[name]?.provider, kept[name]) !== undefined) out[name] = fresh[name];
   }
-  if (out.web_search === "native" && plane.web_search !== "native" && fresh.model) out.model = fresh.model;
+  if (out.web_search === "native" && kept.web_search !== "native" && fresh.model) out.model = fresh.model;
   return out;
 }
 

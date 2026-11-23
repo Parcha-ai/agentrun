@@ -30,6 +30,10 @@ import { askRouteOf } from "./sdk-ask.js";
 import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
+import { storeSettings } from "./adapter-run-spec.js";
+import { claimPlane } from "../tool-plane.js";
+import { toolingOf } from "../tools.js";
+import type { Revision } from "../agent-rows.js";
 
 /** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). A claim
  *  refused for good, so a parked run it wakes fails too, never retried as a resume (runner.ts finish). */
@@ -80,18 +84,31 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
   };
 }
 
+/** `launch` as this claim runs it: its plane, resolved at the run's start, under the server's tool settings now
+ *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel or
+ *  web_search to native sends nothing to a keyless third party. The settings unread, none apply (the gate then refuses
+ *  every tool: storeSettings). */
+async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
+  if (!launch.plane) return launch;
+  const { settings } = await storeSettings(deps.store);
+  const plane = claimPlane(launch.plane, deps.env ?? process.env, await toolingOf(revision), settings, { capped: launch.maxCostUsd !== undefined });
+  return plane === launch.plane ? launch : { ...launch, plane };
+}
+
 /** The loop a claimed run runs on, over `deps` (the saved gateway laid over its environment). */
 async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch, runId: string): Promise<LoopFactory | undefined> {
   // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
   // revision to tell it apart from an agentic pi run.
   const run = await deps.store.runs.get(runId);
   const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
+  // The plane this claim hands every reader (the secrets, the tools, the run's process), read once here, before any binds.
+  if (revision) launch = await underServerCeilings(deps, launch, revision as unknown as Revision);
   if (revision && isWorkflowRevision(revision)) {
     // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
     // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
     // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
     // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
-    return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
+    return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}), ...(launch.plane ? { plane: launch.plane } : {}) }));
   }
   // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.

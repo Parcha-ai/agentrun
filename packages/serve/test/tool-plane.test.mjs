@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, claimPlane, recheckPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
@@ -108,7 +108,7 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
   assert.equal(resolveOnBuiltin("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's auto with the server's Parallel key is the guarded direct fetch: no URL goes to a keyless service");
 });
 
-test("the server's kernel for web_fetch and native for web_search are a ceiling an agent's pick cannot raise: a pick of keyless Firecrawl, keyless Exa or auto is kept on the server, the why says so, and a run's plane and a relaunch agree; Parallel stays the agent's pick", () => {
+test("the server's kernel for web_fetch and native for web_search are a ceiling an agent's pick cannot raise: a pick of keyless Firecrawl, keyless Exa or auto is kept on the server, the why says so, and a run's plane and its claim agree; Parallel stays the agent's pick", () => {
   const kept = (capability, override, extra = {}) => explainCapability(capability, { ...base, harness: "pi", pick: capability === "web_fetch" ? "kernel" : "native", override, ...extra });
   for (const override of ["firecrawl-keyless", "auto"]) {
     const fetch = kept("web_fetch", override);
@@ -129,9 +129,10 @@ test("the server's kernel for web_fetch and native for web_search are a ceiling 
   const tooling = { tools: ["web_search", "web_fetch"], overrides: { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "firecrawl-keyless" } } };
   assert.deepEqual(planeFor(env, tooling, ceilings), { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "the run's plane: nothing keyless");
   assert.deepEqual(explainsView(env, ceilings, tooling.overrides).web_fetch.resolves.pi, "kernel", "capabilities agree with the plane");
-  const relaunched = relaunchPlane({ web_search: "exa-keyless", web_fetch: "firecrawl-keyless" }, env, tooling, ceilings);
-  assert.deepEqual(relaunched, { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "a run kept on keyless before the ceiling was set: relaunched under it");
-  assert.deepEqual(relaunchPlane({ web_fetch: "firecrawl-keyless" }, env, { tools: ["web_fetch"] }, {}), { web_fetch: "firecrawl-keyless" }, "no ceiling: kept as it was");
+  const saved = { web_search: "exa-keyless", web_fetch: "firecrawl-keyless" };
+  assert.deepEqual(claimPlane(saved, env, tooling, ceilings), { web_search: "unavailable: no native search for pi behind a gateway", web_fetch: "kernel" }, "a run kept on keyless before the ceiling was set: its claim under it");
+  assert.equal(claimPlane(saved, env, tooling, {}), saved, "no ceiling: the kept plane itself");
+  assert.deepEqual(claimPlane({ web_fetch: "parallel" }, { ...env, PARALLEL_API_KEY: "not-a-secret" }, { tools: ["web_fetch"], overrides: { web_fetch: { provider: "parallel" } } }, ceilings), { web_fetch: "parallel" }, "Parallel kept: no ceiling over it");
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
@@ -390,12 +391,8 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
 });
 
-test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {
+test("a run launched while a capability is set to deny is handed the provider a held call would use, and the gate refuses each call", () => {
   const tooling = { harness: "pi", tools: ["web_fetch"] };
   const denied = { web_fetch: { permission: "deny" } };
   assert.equal(planeFor({}, tooling, denied, { run: true }).web_fetch, "firecrawl-keyless", "at its launch: a deny lifted mid-run is lifted at the next call");
-  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied).web_fetch, "unavailable: denied", "relaunched while denied: denied");
-  assert.equal(relaunchPlane(undefined, {}, tooling, denied).web_fetch, "unavailable: denied", "a run made before its plane was kept: denied too");
-  assert.equal(relaunchPlane({ web_fetch: "unavailable: denied" }, {}, tooling, {}).web_fetch, "firecrawl-keyless", "a deny lifted since is lifted");
-  assert.equal(relaunchPlane({ web_fetch: "kernel" }, {}, tooling, denied, { first: true }).web_fetch, "firecrawl-keyless", "its first launch, from its start: as under ask, the gate refusing each call");
 });
