@@ -1562,7 +1562,9 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
   `machine` with the default `~/.claude`, the CLI is asked and signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it reads the account in `~/.claude.json`
-  and the tokens their Claude Code keeps (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`). A run
+  and the tokens their Claude Code keeps (in `~/.claude`; on macOS the Keychain item `Claude Code-credentials`).
+  `command` there starts with `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR`, so a terminal that exports
+  either still signs in at that login. A run
   there reaches the same tokens: on macOS with `CLAUDE_SECURESTORAGE_CONFIG_DIR` set and empty, the CLI's way to name
   that item while the run has a config dir of its own; elsewhere with it set to `~/.claude`. `sign_in`
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,

@@ -37,7 +37,8 @@ export function loginEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = pr
  *  (loginCommand), the sign-in this host starts (startClaudeLogin) and the status check (claudeLoginStatus) all take
  *  these, so they cannot drift apart. Neither is a session, whose config dir stays its own (loginEnv).
  *  - On the CLI's default folder (`home`): the person's own CLI as it runs, with no config or credentials dir, in their
- *    home (`HOME`; a terminal of theirs has it already, so the shown line leaves it out). It reads and writes the account
+ *    home (`HOME`; a terminal of theirs has it already, so the shown line leaves it out, and clears the two folder
+ *    variables a terminal may export). It reads and writes the account
  *    in `<home>/.claude.json` and the tokens where that person's CLI keeps them, on every platform.
  *  - Anywhere else: the login's folder as both the config dir and the credentials dir. `auth login` writes the account it
  *    signed in to its config dir's `.claude.json` and `auth status` reads it from there. For a folder the person's own
@@ -48,10 +49,21 @@ export function signInEnv(login: ClaudeAgentLogin): Record<string, string> {
   return { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
 }
 
+/** The CLI's folder variables: where it keeps its config (the account) and its credentials. */
+const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as const;
+
 /** The line a person runs to sign the CLI in at `login` (the CLI opens a browser itself), with signInEnv's variables
- *  but HOME, which is their terminal's own. */
-export const loginCommand = (login: ClaudeAgentLogin, cli = "claude"): string =>
-  [...Object.entries(signInEnv(login)).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`), shellWord(cli), "auth", "login"].join(" ");
+ *  but HOME, which is their terminal's own. A folder variable signInEnv leaves unset (the CLI's default folder) is
+ *  cleared with `env -u` (GNU's and macOS's env both have it), since a terminal that exports it would sign in there. */
+export const loginCommand = (login: ClaudeAgentLogin, cli = "claude"): string => {
+  const env = signInEnv(login);
+  const cleared = FOLDER_VARS.filter((name) => !(name in env));
+  return [
+    ...(cleared.length ? ["env", ...cleared.flatMap((name) => ["-u", name])] : []),
+    ...Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`),
+    shellWord(cli), "auth", "login",
+  ].join(" ");
+};
 
 const shellWord = (word: string): string => (/^[A-Za-z0-9_./:@%+=-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`);
 
