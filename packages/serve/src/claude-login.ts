@@ -242,11 +242,14 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   }
 }
 
-/** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. */
+/** PUT /settings/claude-login: turned on, refused in one line where more than one person can start runs. A turn-on that
+ *  moves the login to another place first ends a sign-in this server started that still waits: its CLI signs in at the
+ *  old place, which the login no longer reads. One at the same place leaves it waiting, as it still signs in there. */
 export async function turnOnClaudeLogin(deps: ClaudeLoginDeps, body: unknown): Promise<ClaudeLoginView> {
   if (deps.refused) throw new ClaudeLoginRefused("forbidden", deps.refused);
   const asked = turnOnBody(body);
   if ("problem" in asked) throw new ClaudeLoginRefused("input_invalid", asked.problem);
+  if ((await claudeLoginSetting(deps.settings))?.place !== asked.place) await deps.signIns.stop();
   await deps.settings.put(CLAUDE_LOGIN_SETTING, settingFor(asked.place, deps.data));
   await deps.changed();
   return claudeLoginView(deps);
