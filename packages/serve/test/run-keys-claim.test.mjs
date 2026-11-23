@@ -13,7 +13,8 @@ const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { openRunLaunch, sealRunLaunch, sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
-const { declaredKeys, keysOfTools } = await import("../dist/run-keys.js");
+const { declaredKeys } = await import("../dist/run-keys.js");
+const { unlockedFields } = await import("../dist/run-secrets.js");
 const { cutDeep, heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
@@ -81,10 +82,10 @@ test("run keys are sealed with the launch secrets and opened back; a replay's MC
 });
 
 test("the keys a revision declares: each tool key field its tools read, and its template's tool keys", async () => {
-  assert.deepEqual(keysOfTools(["web_search", "read"]), ["PARALLEL_API_KEY"]);
-  assert.deepEqual(keysOfTools(["monid:faux/person/enrich"]), ["MONID_API_KEY"]);
-  assert.deepEqual(keysOfTools(["browser"]).sort(), ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"]);
-  assert.deepEqual(keysOfTools(["read", "bash"]), []);
+  assert.deepEqual(unlockedFields(["web_search", "read"]), ["PARALLEL_API_KEY"]);
+  assert.deepEqual(unlockedFields(["monid:faux/person/enrich"]), ["MONID_API_KEY"]);
+  assert.deepEqual(unlockedFields(["browser"]).sort(), ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY"]);
+  assert.deepEqual(unlockedFields(["read", "bash"]), []);
   assert.deepEqual(await declaredKeys({ kind: "agentic", body: { tools: ["read"] }, package: { id: "t", version: "1.0.0", sha: null, secrets: ["MONID_API_KEY", "OPENROUTER_API_KEY"] } }), ["MONID_API_KEY"], "a template's tool key, never its model key");
   assert.deepEqual(await declaredKeys({ kind: "agentic", body: { tools: ["web_search"] }, package: null }), ["PARALLEL_API_KEY"]);
 });

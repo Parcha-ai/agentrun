@@ -22,9 +22,6 @@ import { RUN_KEYS_ENV } from "./env-switch.js";
 /** A run's own tool keys, by name. */
 export type RunKeys = Readonly<Record<string, string>>;
 
-/** The tool keys a run of `tools` reads (run-secrets.ts unlockedFields, over tool-keys.ts TOOL_KEYS). */
-export const keysOfTools = (tools: readonly string[]): string[] => unlockedFields(tools);
-
 /** The tool keys a template's apply made `revision` with (its package's `secrets`, kept on the revision): the ones a run
  *  can carry. A model key is not one. */
 export const packageKeysOf = (revision: object): string[] => ((revision as { package?: TemplatePackage | null }).package?.secrets ?? []).filter((name) => TOOL_FIELDS.includes(name));
@@ -33,7 +30,7 @@ export const packageKeysOf = (revision: object): string[] => ((revision as { pac
  *  tools read (an agentic revision's tools, a workflow's on its nodes and calls, and its decision providers'), and its
  *  template's tool keys. */
 export const declaredFrom = (needs: RunNeeds, revision: object): string[] =>
-  [...new Set([...keysOfTools([...needs.tools, ...needs.decisionProviders.map((provider) => `decisions.${provider}`)]), ...packageKeysOf(revision)])];
+  [...new Set([...unlockedFields([...needs.tools, ...needs.decisionProviders.map((provider) => `decisions.${provider}`)]), ...packageKeysOf(revision)])];
 
 /** The names a run of `revision` may carry in `keys` (declaredFrom). */
 export async function declaredKeys(revision: Pick<Revision, "kind" | "body"> & object): Promise<string[]> {
