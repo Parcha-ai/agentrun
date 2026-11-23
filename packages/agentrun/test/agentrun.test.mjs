@@ -776,7 +776,7 @@ test("the setup skill installs with the installer and runs the command it instal
   assert.ok(commands.length >= 10, `${commands.length} commands`);
   assert.deepEqual([...new Set(commands)], ["~/.agentrun/bin/agentrun"], "every command is the installed one, by its full path");
 });
-// QA (GRE-4614): on an SSH box, the setup agent tried to add a route to the machine's shared Traefik config, with sudo
+// Found in QA: on an SSH box, the setup agent tried to add a route to the machine's shared Traefik config, with sudo
 // as its fallback. The skill names the one way to the console from a remote machine, the person's own port forward, and
 // rules out every change to the machine.
 test("the setup skill opens a remote machine's console through the person's port forward, never through the machine's proxy or sudo", () => {

@@ -165,9 +165,9 @@ const forbidden = [
   ['bearer_secret', /\bBearer\s+[A-Za-z0-9._-]{24,}/],
   ['literal_credential', /(?:api[_-]?key|password|access[_-]?token|auth[_-]?token|client[_-]?secret)['"]?\s*[=:]\s*['"][^'"\n]{8,}['"]/i],
 ];
-// Northflank's domain is an internal domain because AgentRun's own hosting runs there. The provider scorecard cites
-// Northflank's public docs as a vendor, so an https URL under that domain's /docs/ path, in that one file only, is
-// reviewed; any other mention of the domain on the same line, or the domain in any other file, still blocks.
+// Northflank's domain counts as an internal domain: an address under it names a hosted deployment. The provider
+// scorecard cites Northflank's public docs as a vendor, so an https URL under that domain's /docs/ path, in that one
+// file only, is reviewed; any other mention of the domain on the same line, or the domain in any other file, still blocks.
 const vendorDocsCitation = { path: 'packages/computer/SCORECARD.md', url: /https:\/\/northflank\.com\/docs\//g };
 const findings = [], reviewed = [], files = [];
 function scan(path, content) {

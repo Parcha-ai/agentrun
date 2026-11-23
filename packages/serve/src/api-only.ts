@@ -19,14 +19,16 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
- *  - a backend that builds runs from the MCP servers saved here reads their names (listMcpServerNames), never a URL or a
- *    credential, to hold back a job whose server isn't saved before its launch is refused for it;
+ *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
- *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
- *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped);
+ *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
+ *    agents and revisions that stay, archives and deletes any agent made here, as the whole server's token does, and with
+ *    the launch hook its apply makes schedule and feed triggers. A trigger the apply can't make here is skipped, and said
+ *    (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was: without the hook, an enabled one
+ *    still fires here on this server's keys until the agent is archived;
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names

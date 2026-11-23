@@ -22,7 +22,7 @@ import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 import { installEnvProxy } from "./env-proxy.js";
-import { startTelemetry } from "./telemetry.js";
+import { startTelemetry, type UsageEventName } from "./telemetry.js";
 // The rest of the server (server.js, the runner, the harness adapters) loads after the port is bound (listen-first.ts):
 // on a slow disk that load is most of a start. Nothing above loads more than a few files.
 import { DEFAULT_HOST, DEFAULT_PORT, listenFirst, urlOf } from "./listen-first.js";
@@ -560,6 +560,8 @@ const [{ fauxEnvOf, startServe }, { besideRunnerOptions, besideStopping, runnerB
 Object.assign(process.env, startedWith({ ...(values.port !== undefined ? { port: values.port } : {}), open: values.open === true }));
 let serve: Serve;
 let serveOptions: ServeOptions;
+// The anonymous counts start once the server has (below); a feature used before then, in the start's first moment, is not counted.
+let used: ((event: UsageEventName) => void) | undefined;
 const trustedProxies = (process.env.AGENTRUN_TRUSTED_PROXIES ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 try {
   serve = await startServe(serveOptions = {
@@ -569,6 +571,7 @@ try {
       console.error(`agentrun-serve: ${error.message}`);
       process.exit(1);
     },
+    onUsage: (event) => used?.(event),
     data, port, ...(values.port === undefined ? { nextFreePort: true } : {}), ...(early ? { listener: early } : {}), ...(values.listen ? { host: values.listen } : {}), ...(given ? { token: given } : {}), ...(givenList ? { tokens: givenList } : {}), ...(values.faux ? { faux: values.faux } : {}), ...(values["faux-browser"] ? { fauxBrowser: values["faux-browser"] } : {}), ...(values["faux-github"] ? { fauxGitHub: true } : {}), allowHosts: values["allow-host"],
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
@@ -598,8 +601,10 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server (with --no-runner it
+// counts no runs), and each use of suggested agents from the server (onUsage).
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
+used = telemetry.used;
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
 if (!values["no-runner"] && askedAt === undefined) {

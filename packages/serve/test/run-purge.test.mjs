@@ -851,7 +851,8 @@ test("a run's purge scrubs its text from its agent's learning folder: its diff f
   assert.equal(Number(git(repo, ["rev-list", "--count", "main"])), commits + 2, "two commits");
   assert.deepEqual(git(repo, ["log", "-2", "--format=%s", "main"]).split("\n"), ["host: a purged run's corrections removed", "host: a purged run's workflows removed"]);
   // c. The history reads serve none of its merges (their commits, their reasons) and no marker: the log and the view's log
-  //    leave them out, the workflow's revisions skip its merge, and its revision's digest reads as one no commit holds.
+  //    leave them out, the workflow's revisions skip its merge, and no champion is named: the gate refuses its record's
+  //    commit, so championOf skips it, and no other promotion is left.
   const after = await reads();
   const said = JSON.stringify(after);
   assert.ok(!said.includes(mark), `no history read serves the marker: ${said}`);
@@ -863,13 +864,14 @@ test("a run's purge scrubs its text from its agent's learning folder: its diff f
   }
   assert.ok(after.log.items.some(({ by }) => by.run === kept), "another run's merge stays in the log");
   assert.deepEqual([after.revisions.revisions.length, after.revisions.total], [1, 1], "the workflow's one revision left is the other run's");
-  assert.deepEqual(championOf(after, "answer"), { digest, commit: null, nodes: null, check: null }, "its digest reads as one no commit holds");
+  const servingOf = (workflow) => after.promotions.serving.filter((line) => line.workflow === workflow).map((line) => ({ digest: line.digest, champion: line.champion }));
+  assert.deepEqual(servingOf("answer"), [{ digest: null, champion: null }], "its revision is no champion: none serves, none is read");
   // The page after the one read before the purge starts where that one ended: the other run's look-back.
   const next = (await api("GET", `/agents/keeper/learning/log?limit=2&cursor=${first.next_cursor}`)).body;
   assert.deepEqual([next.items.map(({ by }) => by.run), next.next_cursor], [[kept], null], "the next page skips no change");
   // A workflow it was the last to change reads so too: the purge took it off main.
   assert.equal(git(repo, ["ls-tree", "-r", "--name-only", "main", "workflows/solo/"]), "");
-  assert.deepEqual(championOf(after, "solo"), { digest: soloDigest, commit: null, nodes: null, check: null }, "nor at main after it");
+  assert.deepEqual(servingOf("solo"), [{ digest: null, champion: null }], "nor its workflow off main");
 
   // A DELETE again re-runs the scrub (a run purged before it, its diff file left): the file goes, and nothing is committed.
   const stale = join(diffs, `${gone}.json`);

@@ -1,6 +1,7 @@
-// Anonymous usage counts (docs/telemetry.md): that a server started, that it is still running a day later, and that its
-// first run completed. Each event holds a random id made for this data directory, the server's version, the platform,
-// and how many runs ended here as a range. It never holds a prompt, a workflow, a key, a name, a path or an address.
+// Anonymous usage counts (docs/telemetry.md): that a server started, that it is still running a day later, that its
+// first run completed, and that someone used suggested agents (a scan started, a suggestion discarded, a suggested
+// agent's pull request opened). Each event holds a random id made for this data directory, the server's version, the
+// platform, and how many runs ended here as a range. It never holds a prompt, a workflow, a key, a name, a path or an address.
 //
 // Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, under a test runner, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
@@ -28,7 +29,11 @@ const ownVersion = (): string => (JSON.parse(readFileSync(new URL("../package.js
 export const TELEMETRY_NOTICE =
   "AgentRun sends anonymous usage counts (a random id, the version, the platform, how many runs as a range): never prompts, files, keys or names. Nothing was sent at this start. Turn it off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1. Every field: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md";
 
-export type TelemetryEventName = "server_started" | "heartbeat" | "first_run_completed";
+/** What someone did with suggested agents (suggestions.ts), said as the name alone: never which repository, suggestion
+ *  or agent. */
+export type UsageEventName = "suggestions_scanned" | "suggestion_discarded" | "suggested_agent_created";
+export const USAGE_EVENTS: readonly UsageEventName[] = ["suggestions_scanned", "suggestion_discarded", "suggested_agent_created"];
+export type TelemetryEventName = "server_started" | "heartbeat" | "first_run_completed" | UsageEventName;
 /** One event, as sent (and as debug prints it). `runs` is a range, never a count. */
 export interface TelemetryEvent {
   api_key: string;
@@ -93,6 +98,9 @@ export interface Telemetry {
   notice?: string;
   /** A run reached its end here. `status` is the runner's (`ended` is a completed run). */
   runEnded(status: string): void;
+  /** Someone used a feature the counts name: said at once, except during the start that printed the notice, until its
+   *  first heartbeat, when it is dropped (never held for later). A name not in USAGE_EVENTS is never sent. */
+  used(event: UsageEventName): void;
   /** Stops the heartbeat and waits for the count's last write. Sends nothing. */
   close(): Promise<void>;
 }
@@ -116,7 +124,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   const env = o.env ?? process.env;
   const key = o.key ?? TELEMETRY_KEY;
   const mode = telemetryMode(env, { ...(o.faux ? { faux: true } : {}), key });
-  const idle: Telemetry = { mode, runEnded: () => {}, close: () => Promise.resolve() };
+  const idle: Telemetry = { mode, runEnded: () => {}, used: () => {}, close: () => Promise.resolve() };
   if (mode !== "on" && mode !== "debug") return idle;
 
   const file = join(o.data, TELEMETRY_FILE);
@@ -216,6 +224,11 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
       if (completed) state.first_run = holding ? "held" : "sent";
       keepLater();
       if (completed && !holding) emit("first_run_completed");
+    },
+    used(event) {
+      // The notice's start sends nothing before its first heartbeat; a feature used then is not counted at all.
+      if (holding || !USAGE_EVENTS.includes(event)) return;
+      emit(event);
     },
     close: () => (clearInterval(beat), writing ?? Promise.resolve()),
   };

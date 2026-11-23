@@ -427,6 +427,15 @@ made a dial computer, carries that machine's bearer token over the same private 
 With neither setting, viewers stay on loopback, which is right when
 the server and its runner share a machine (the default image's command).
 
+**Runners as replicas.** Runners that are instances of one deployment (pods of a Kubernetes deployment, a platform
+service's instances) have no host name of their own that the server resolves, and a new address at each start. Give both
+settings the IPv4 block their addresses come from, such as a cluster's pod range, `AGENTRUN_RUNNER_LIVE_HOST=10.0.0.0/14`
+on each runner and `AGENTRUN_RUNNER_HOSTS=10.0.0.0/14` on the server. Each runner answers at its own address in the
+block (its one network interface address there; a runner with none, or with several, is refused at its start and fails
+`runner --check`), and the server dials any IPv4 address in the block, never one outside it. A block takes its network
+address and a prefix from /8 to /32. The block widens what a store row can make the server dial from a list of names to
+that network, so name the runners' network alone; every request on it still carries the proof.
+
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
 
 ```sh
