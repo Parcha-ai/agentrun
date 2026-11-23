@@ -173,6 +173,37 @@ test("an owner's save refused because the token changed its own server while the
   assert.equal(removed.status, 204, removed.text);
 });
 
+test("the token's refresh never undoes the owner's save made while it listed: the owner's address stands, and the refresh is refused in words, nothing written", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing (at `fake`) waits until released, once; the owner's lists at `owners`.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  const owners = await startFakeMcp({ name: "owners-mcp" });
+  t.after(() => (release(), fake.close(), owners.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists the address it read, the owner moves the server (no credential either way: the sealed column
+  // the refresh compares is the same after it).
+  const moved = await page("PUT", "/settings/mcp-servers/fake", { url: owners.url, auth: { type: "none" } });
+  assert.equal(moved.status, 200, moved.text);
+  const owned = await server.store.mcp.server("fake");
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 503, refreshed.text);
+  assert.match(refreshed.json?.error?.message ?? "", /changed while this refresh was made; nothing was saved/);
+  const row = await server.store.mcp.server("fake");
+  assert.equal(row?.url, owners.url, "the owner's address stands");
+  assert.deepEqual([row?.updatedAt, row?.listedAt, row?.serverInfo], [owned.updatedAt, owned.listedAt, owned.serverInfo], "nothing of the refresh was written");
+});
+
 test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
   const server = await serve(t);
   const token = asToken(server);
