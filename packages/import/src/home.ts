@@ -7,7 +7,8 @@ import { type CalculateCost, type Catalog, builtinCatalog, type Priced, priceReq
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
-import { packKey } from "./record-key.js";
+import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
+import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
@@ -44,8 +45,8 @@ export type HomeState = { read?: number; sources?: Partial<Record<string, Source
 /** One source's part of a HomeState. */
 type SourceState = {
   cursors: Map<string, unknown>;
-  /** Each record read (the reader's "u:"/"m:" keys, packed: packKey), with the locator (locatorKey) that read it first: the one it counts in. */
-  owners: Map<string, string>;
+  /** Each record read (the reader's "u:"/"m:" keys, packed: packInto), with the locator (locatorKey) that read it first: the one it counts in. */
+  owners: RecordIndex;
   /** For each locator, the locators whose records it found already read (its copies' owners). */
   copied: Map<string, Set<string>>;
 };
@@ -193,8 +194,8 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   for (let pass = 0; ; pass += 1) {
     let kept = state ? (state.sources ??= {})[source] : undefined;
     if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
-    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: new Map(), copied: new Map() };
-    const { owners, copied } = kept ?? { owners: new Map<string, string>(), copied: new Map<string, Set<string>>() };
+    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: recordIndex(), copied: new Map() };
+    const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;
     const unread: { locator: Locator; error: unknown }[] = [];
     const read = async (locator: Locator): Promise<SessionRead[]> => {
@@ -203,23 +204,25 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
       // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
       // holds, which a retry would take for a copy.
-      // Records are held by their packed keys (packKey): a reader asks has, then add, of one record, packed once.
-      const mine = new Map<string, string>();
+      // Records are held by their packed keys (packInto): a reader asks has, then add, of one record, packed once.
+      const me = locatorNumber(owners, key);
+      const mine = recordIndex(64);
       const found = new Set<string>();
       let asked: string | undefined;
-      let packed = "";
-      const pack = (record: string) => (record === asked ? packed : ((asked = record), (packed = packKey(record))));
+      const at = packed();
+      const pack = (record: string) => (record === asked ? at : ((asked = record), packInto(record, at)));
       const seen = {
         has: (record: string) => {
-          const at = pack(record);
-          const owner = owners.get(at) ?? mine.get(at);
-          if (owner === undefined) return false;
-          if (owner !== key) found.add(owner);
+          pack(record);
+          let owner = ownerOf(owners, at);
+          if (owner === -1) owner = ownerOf(mine, at);
+          if (owner === -1) return false;
+          if (owner !== me) found.add(owners.locators[owner]!);
           return true;
         },
         add(record: string) {
-          const at = pack(record);
-          if (!owners.has(at) && !mine.has(at)) mine.set(at, key);
+          pack(record);
+          if (ownerOf(owners, at) === -1) addRecord(mine, at, me);
           return this;
         },
       } as Set<string>;
@@ -230,13 +233,13 @@ async function readSource(home: string, source: string, readers: Readers, env: E
         // copy) skipped them, though the fresh pass counts them there: the source is read again.
         if (kept && cursor !== undefined) {
           kept.cursors.delete(key);
-          for (const [record, owner] of owners) if (owner === key) owners.delete(record);
+          dropOwner(owners, me);
           copied.delete(key);
           if ([...copied.values()].some((owners) => owners.has(key))) restarted = true;
         }
         return [];
       }
-      for (const [record, owner] of mine) owners.set(record, owner);
+      addAll(owners, mine);
       if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
       if (cursor !== undefined && !result.resumed) restarted = true;
       if (state) state.read! += result.read;

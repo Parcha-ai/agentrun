@@ -8,18 +8,17 @@ import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJs
 
 const UUID = "0f1e2d3c-4b5a-4697-8877-665544332211";
 
-test("a uuid's key packs to its 16 bytes, a message's to six bits a char, as one-byte strings", () => {
+test("a uuid's key packs to its 16 bytes, a message's to six bits a char", () => {
   const uuid = packKey(`u:${UUID}`);
   assert.equal(uuid.length, 17);
-  assert.equal(uuid.charCodeAt(0), 1);
-  assert.equal(Buffer.from(uuid.slice(1), "latin1").toString("hex"), UUID.replaceAll("-", ""));
+  assert.equal(uuid[0], 1);
+  assert.equal(Buffer.from(uuid.subarray(1)).toString("hex"), UUID.replaceAll("-", ""));
   const message = `m:msg_01AbCdEfGhIjKlMnOpQrStUv:req_011CUaBcDeFgHiJkLmNoPqRsTu`;
-  const packed = packKey(message);
-  assert.equal(packed.length, 1 + Math.ceil((message.length * 6) / 8));
-  for (const key of [uuid, packed]) assert.ok([...key].every((c) => c.charCodeAt(0) < 256));
+  assert.equal(packKey(message).length, 1 + Math.ceil((message.length * 6) / 8));
 });
 
 test("no two keys pack the same", () => {
+  const latin1 = (bytes) => Buffer.from(bytes).toString("latin1");
   const keys = new Set([
     `u:${UUID}`,
     `u:${UUID.toUpperCase()}`,
@@ -29,9 +28,9 @@ test("no two keys pack the same", () => {
     `U:${UUID}`,
     UUID,
     `l:${UUID}`,
-    // The packed uuid's own string, and the packed message's, as keys: kept as they are.
-    packKey(`u:${UUID}`),
-    packKey("m:msg_1:req_1"),
+    // The packed uuid's own bytes, and the packed message's, as keys: packed as any other.
+    latin1(packKey(`u:${UUID}`)),
+    latin1(packKey("m:msg_1:req_1")),
     "m:msg_1:req_1",
     "m:msg_1:req_10",
     "m:msg_1:req_1A",
@@ -47,8 +46,12 @@ test("no two keys pack the same", () => {
     "\0",
     "\0\0",
     "\u0001",
+    "\u0100",
+    "\u0001\u0000",
     "m:msg_é:req_1",
     "m:msg_日本:req_1",
+    "\ud800",
+    "\udc00",
     "x".repeat(5000),
     "x".repeat(4096),
   ]);
@@ -56,7 +59,7 @@ test("no two keys pack the same", () => {
   for (let n = 0; n < 12; n += 1) keys.add("0".repeat(n)).add(`${"0".repeat(n)}1`).add(`${"z".repeat(n)}`);
   const packed = new Map();
   for (const key of keys) {
-    const at = packKey(key);
+    const at = latin1(packKey(key));
     assert.equal(packed.get(at), undefined, `${JSON.stringify(key)} packs as ${JSON.stringify(packed.get(at))} does`);
     packed.set(at, key);
   }
