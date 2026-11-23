@@ -97,7 +97,8 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
  *  that is no limit resets nothing. */
 export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number };
 /** `ms` of a wait as searchBusy's seconds: rounded up, at least 1. */
-const busyFor = (ms: number): Search => ({ error: searchBusy(Math.max(1, Math.ceil(ms / 1_000))) });
+const busyWords = (ms: number): string => searchBusy(Math.max(1, Math.ceil(ms / 1_000)));
+const busyFor = (ms: number): Search => ({ error: busyWords(ms) });
 export function searchBreaker(now: () => number = Date.now): Breaker {
   let off = false;
   let until = 0;
@@ -274,6 +275,7 @@ async function backendsOf(env: NodeJS.ProcessEnv, args: Record<string, unknown>,
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS): Promise<Search> {
   const deadline = AbortSignal.any([AbortSignal.timeout(boundMs), ...(signal ? [signal] : [])]);
   let last: Search | undefined;
+  let lastOff = false;
   for (const backend of backends) {
     const breaker = breakerOf(backend.name);
     if (breaker.held()) continue;
@@ -281,12 +283,17 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
     const answer = breaker.read(await backend.ask(deadline));
     if (!("error" in answer)) return answer;
     last = answer;
+    lastOff = breaker.off();
   }
   const breakers = backends.map((backend) => breakerOf(backend.name));
   if (breakers.every((breaker) => breaker.off())) return backends.length === 1 && last ? last : { error: SEARCH_UNAVAILABLE };
-  // A backend that turned off in this call while another only waits: the run's search is not off, so it waits.
+  // A backend that turned off in this call while another only waits: the run's search is not off, so it waits, and the
+  // answer says both, the one not asked again in this run and the wait of the other, never search gone.
+  const waits = breakers.filter((breaker) => !breaker.off()).map((breaker) => breaker.left());
+  const left = Math.min(...waits);
+  if (last && "error" in last && last.error !== SEARCH_UNAVAILABLE && lastOff && left > 0) return { error: `${last.error}; ${busyWords(left)}` };
   if (last && !("error" in last && last.error === SEARCH_UNAVAILABLE)) return last;
-  return busyFor(Math.min(...breakers.filter((breaker) => !breaker.off()).map((breaker) => breaker.left())));
+  return busyFor(left);
 }
 
 /** Breakers by backend name, made at first use: one run's (webSearchTool), or one call's (searchFor). */

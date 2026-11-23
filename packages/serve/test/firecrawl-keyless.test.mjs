@@ -163,6 +163,28 @@ test("both keyless backends out for the run: web_search answers SEARCH_UNAVAILAB
   assert.equal(asked, 2, "neither asked again");
 });
 
+test("Firecrawl's quota spent while Exa waits out a rate limit: the answer says each backend's state truly, Firecrawl not asked again in this run and search busy for Exa's wait, never search gone; Exa is asked once its wait ends", async (t) => {
+  const fc = await firecrawlServer(t, () => refusal("KEYLESS_QUOTA_EXHAUSTED"));
+  let now = 0;
+  const breakers = new Map();
+  const breakerOf = (name) => breakers.get(name) ?? breakers.set(name, searchBreaker(() => now)).get(name);
+  let exaAsked = 0;
+  const backends = [
+    { name: "firecrawl-keyless", ask: async (signal) => { const found = await firecrawlSearch("widgets", 2, { endpoint: fc.url, signal }); return "error" in found ? { answer: { error: found.error }, ...(found.limit ? { limit: found.limit } : {}) } : { answer: found }; } },
+    { name: "exa-keyless", ask: async () => ((exaAsked += 1), { answer: { provider: "exa-keyless", query: "widgets", results: [] } }) },
+  ];
+  breakerOf("exa-keyless").read({ answer: { error: EXA_RATE_LIMITED }, limit: { kind: "rate", retryAfter: 30 } });
+  const first = await searchInTurn(backends, breakerOf);
+  assert.match(first.error, /^Keyless Firecrawl will not serve this server's searches now \(.*\): it is not asked again in this run; search is busy; try again in 30 s, or answer from what you have$/, first.error);
+  assert.equal(exaAsked, 0, "Exa held: not asked");
+  now = 10_000;
+  assert.deepEqual(await searchInTurn(backends, breakerOf), { error: "search is busy; try again in 20 s, or answer from what you have" });
+  assert.equal(fc.calls("firecrawl_search"), 1, "Firecrawl not asked again");
+  now = 30_000;
+  assert.equal((await searchInTurn(backends, breakerOf)).provider, "exa-keyless", "the search was never gone");
+  assert.equal(exaAsked, 1);
+});
+
 test("Firecrawl out of quota for web_fetch: the page comes from the guarded direct fetch, and the run's later fetches go straight there", async (t) => {
   const fc = await firecrawlServer(t, () => refusal("KEYLESS_QUOTA_EXHAUSTED"));
   const { env } = await keyless(t, fc.url);

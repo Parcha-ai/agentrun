@@ -1830,7 +1830,9 @@ only the code is read, never its words or its sign-up link: `KEYLESS_QUOTA_EXHAU
 `KEYLESS_TOOL_NOT_AVAILABLE` turn Firecrawl off for the rest of the run, and the same call goes to the backend behind it
 (keyless Exa for `web_search`, the guarded direct fetch for `web_fetch`); `KEYLESS_LIMIT_REACHED` or a `429` is a rate
 limit, and Firecrawl is held for the wait it names (60 s where it names none), with no cutoff. With Firecrawl and Exa both
-off for a run, `web_search` answers `search is unavailable for the rest of this run; answer from what you have`.
+off for a run, `web_search` answers `search is unavailable for the rest of this run; answer from what you have`. A call
+that turns Firecrawl off while Exa waits out a rate limit says both: Firecrawl is not asked again in this run, and search
+is busy for the seconds left of Exa's wait.
 
 `web_fetch` through keyless Firecrawl sends Firecrawl each URL it reads: Firecrawl, a third party, fetches the page and
 sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
