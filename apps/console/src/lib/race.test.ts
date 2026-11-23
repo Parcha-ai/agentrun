@@ -49,6 +49,18 @@ describe("a race: the runs one race:<label> label groups", () => {
     expect(read.atLeast).toBe(false);
   });
 
+  it("counts a run once when a run started between page reads shifts the next page onto one already read", async () => {
+    // Pages by offset, newest first: a run started after the first read pushes r3 onto the second page too.
+    const pages: Record<string, { runs: Run[]; next_cursor: string | null }> = {
+      first: { runs: Array.from({ length: 50 }, (_, i) => run(`r${52 - i}`, { race: "x", lane: String(52 - i) })), next_cursor: "p2" },
+      p2: { runs: [run("r3", { race: "x", lane: "3" }), run("r2", { race: "x", lane: "2" }), run("r1", { race: "x", lane: "1" })], next_cursor: null },
+    };
+    const v2 = { listRuns: async (...args: unknown[]) => pages[(args[1] as string | null) ?? "first"]! };
+    const read = await readRace(v2 as never, "x");
+    expect(read.lanes.map((r) => r.run_id)).toEqual(["r1", "r2", "r3", "r4"]);
+    expect(read.more).toBe(52 - 4);
+  });
+
   it("stops after RACE_PAGES pages, and then says there may be more than it counted", async () => {
     let reads = 0;
     const v2 = { listRuns: async () => { reads++; return { runs: Array.from({ length: 50 }, (_, i) => run(`p${reads}-${i}`, { race: "x", lane: String(i + 1) })), next_cursor: "more" }; } };

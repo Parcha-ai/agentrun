@@ -39,15 +39,17 @@ export function lanesOf(runs: readonly Run[]): Run[] {
  *  first four. `atLeast` when pages were left unread, so there may be more than it counted. Archived runs are not read
  *  (the runs list's default), so not counted. */
 export async function readRace(v2: Pick<Client, "listRuns">, label: string): Promise<{ lanes: Run[]; more: number; atLeast: boolean }> {
-  const runs: Run[] = [];
+  // By run id: GET /runs pages by offset, so a run started between two page reads shifts the next page onto a run
+  // already read, which counts once.
+  const runs = new Map<string, Run>();
   let cursor: string | null = null;
   for (let page = 0; page < RACE_PAGES; page++) {
     const read: { runs: Run[]; next_cursor: string | null } = await v2.listRuns(RACE_READ, cursor, { label: raceFilter(label) });
-    runs.push(...read.runs);
+    for (const run of read.runs) if (!runs.has(run.run_id)) runs.set(run.run_id, run);
     cursor = read.next_cursor;
     if (!cursor) break;
   }
-  return { lanes: lanesOf(runs), more: Math.max(0, runs.length - MAX_LANES), atLeast: cursor !== null };
+  return { lanes: lanesOf([...runs.values()]), more: Math.max(0, runs.size - MAX_LANES), atLeast: cursor !== null };
 }
 
 /** A race starts with at least this many lanes. */
