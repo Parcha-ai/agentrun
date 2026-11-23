@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
-import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
+import { ACTIVE_GAP_MS, readSession } from "@parcha/agentrun-import";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";

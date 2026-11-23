@@ -1,0 +1,177 @@
+// Every session under a home, as totals: what each used, its subagents' requests with it, and what it cost. A session is
+// one per source and id, however many files write it (a Codex thread resumed in a new file, a Claude Code session copied
+// into a resumed one's); a subagent's is no session of its own but its parent's.
+import { createHash } from "node:crypto";
+import { relative, sep } from "node:path";
+import { type Catalog, builtinCatalog, priceRequests } from "./price.js";
+import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
+import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
+import { READERS, SOURCES, type Source } from "./readers/index.js";
+import { addTokens, noTokens, type Tokens } from "./usage.js";
+
+export type SessionTotals = {
+  /** The sha256 (hex) of the session's first file's path relative to the home, with "/" between its parts, and
+   *  `#<session id>` after it for a file that holds many sessions (its locator names the id). */
+  key: string;
+  /** That path. */
+  file: string;
+  source: string;
+  /** The source's own id for the session. */
+  id: string;
+  /** Its requests' tokens, its subagents' with them. */
+  tokens: Tokens;
+  /** Of `tokens.output`, the part spent reasoning, where the source says (0 where it does not). */
+  reasoning: number;
+  /** USD: the source's own cost when it wrote one, else its requests' (its subagents' with them) at the catalog's list
+   *  prices; null when neither is known. */
+  cost: number | null;
+  /** The person's turns: the session's user messages (a subagent's prompts are its parent agent's, not counted). */
+  turns: number;
+  /** Model requests, its subagents' with them, each once. */
+  calls: number;
+  /** The subagents' sessions counted in it. */
+  subagents: number;
+};
+
+/** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own) and the records each
+ *  source has seen, so a second pass reads only what was written since. Its contents are the package's; `read` is the
+ *  last pass's bytes. */
+export type HomeState = { read?: number; sources?: Partial<Record<string, { seen: Set<string>; cursors: Map<string, unknown> }>> };
+
+export type ParseOptions = {
+  /** The sources to read (default: every registered one). */
+  sources?: readonly (Source | (string & {}))[];
+  /** The readers to read them with (default: the registry's). */
+  readers?: Readers;
+  /** Kept across calls: a pass goes on from where the last one stopped (see HomeState). */
+  state?: HomeState;
+  /** The catalog to price requests with; false prices none (cost is then the source's own or null). Default: pi-ai's. */
+  catalog?: Catalog | false;
+  /** Where the readers look for a source's own directory (CLAUDE_CONFIG_DIR, CODEX_HOME). Default: none, the home's. */
+  env?: Env;
+};
+
+type Part = { locator: Locator; read: SessionRead };
+
+/** Every session of `sources` under `home`, as totals, sorted by key. */
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, env }: ParseOptions = {}): Promise<SessionTotals[]> {
+  let prices: Promise<Catalog | undefined> | undefined;
+  const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
+  const out: SessionTotals[] = [];
+  if (state) state.read = 0;
+  for (const source of sources) {
+    const { tops, children } = await readSource(home, source, readers, env, state);
+    out.push(...(await totalsOf(home, source, tops, children, priceWith)));
+  }
+  return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`.
+ *  A pass handed a state goes on from its cursors; when a locator it read before is gone, or its reader could not go on
+ *  from its cursor (a new inode, truncated, rewritten), the whole source is read again: a record that file held may
+ *  have been counted as a copy in another. */
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[] }> {
+  const reader = readerOf(source, readers);
+  const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
+  const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
+  const present = new Set([...listed.map(({ locator }) => locatorKey(locator)), ...childList.map(({ locator }) => locatorKey(locator))]);
+  for (let pass = 0; ; pass += 1) {
+    let kept = state ? (state.sources ??= {})[source] : undefined;
+    if (kept && [...kept.cursors.keys()].some((key) => !present.has(key))) kept = undefined;
+    if (state && !kept) kept = state.sources![source] = { seen: new Set(), cursors: new Map() };
+    const seen = kept?.seen ?? new Set<string>();
+    let restarted = false;
+    const read = async (locator: Locator): Promise<SessionRead[]> => {
+      const key = locatorKey(locator);
+      const cursor = kept?.cursors.get(key);
+      const result = await reader.read(locator, cursor, { turns: false, seen }).catch(() => undefined);
+      if (!result) return [];
+      if (cursor !== undefined && !result.resumed) restarted = true;
+      if (state) state.read! += result.read;
+      kept?.cursors.set(key, result.cursor);
+      return result.sessions;
+    };
+    const tops: Part[] = [];
+    for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
+    const children: (Part & { of: Locator })[] = [];
+    for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
+    // A locator its reader could not go on in: read the source again, from nothing.
+    if (!restarted || pass > 0) return { tops, children };
+    state!.sources![source] = undefined;
+  }
+}
+
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>): Promise<SessionTotals[]> {
+  // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
+  // parent's, as is each one beside a session's (Claude Code's subagents).
+  const sessions = new Map<string, { parts: Part[]; children: Part[] }>();
+  const named: { part: Part; parent: string }[] = [];
+  for (const part of tops) {
+    const { session } = part.read;
+    if (session.child && session.parent) {
+      named.push({ part, parent: session.parent });
+      continue;
+    }
+    const held = sessions.get(session.id) ?? sessions.set(session.id, { parts: [], children: [] }).get(session.id)!;
+    held.parts.push(part);
+  }
+  const byLocator = new Map(tops.map((part) => [locatorKey(part.locator), part.read.session.id]));
+  const untied: Part[] = [];
+  for (const child of children) {
+    const id = byLocator.get(locatorKey(child.of));
+    const held = id !== undefined ? sessions.get(id) : undefined;
+    if (held) held.children.push(child);
+    else untied.push(child);
+  }
+  // A thread's parent is a session, or another thread that names its own parent: up the chain to the session.
+  const parentOf = new Map(named.map(({ part, parent }) => [part.read.session.id, parent]));
+  for (const { part, parent } of named) {
+    let at: string | undefined = parent;
+    const visited = new Set<string>();
+    while (at !== undefined && !sessions.has(at) && !visited.has(at)) {
+      visited.add(at);
+      at = parentOf.get(at);
+    }
+    const held = at !== undefined ? sessions.get(at) : undefined;
+    if (held) held.children.push(part);
+    else untied.push(part);
+  }
+  for (const part of untied) sessions.set(`\0${locatorKey(part.locator)}`, { parts: [part], children: [] });
+  const out: SessionTotals[] = [];
+  for (const { parts, children: subagents } of sessions.values()) {
+    const first = parts[0]!;
+    const tokens = noTokens();
+    let reasoning = 0;
+    let calls = 0;
+    const requests = [...parts, ...subagents].flatMap(({ read }) => read.requests.map((request) => ({ model: request.model ?? read.session.model, usage: request.usage })));
+    for (const { usage } of requests) {
+      calls += 1;
+      if (!usage) continue;
+      addTokens(tokens, usage);
+      reasoning += usage.reasoning ?? 0;
+    }
+    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total (a moved
+    // session's copy goes on from the original's), so the highest; another source prices each request, so their sum.
+    const written = parts.flatMap(({ read }) => (read.session.costUsd !== undefined ? [read.session.costUsd] : []));
+    let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
+    if (cost === undefined) {
+      const catalog = await priceWith();
+      cost = catalog ? await priceRequests(requests, catalog) : undefined;
+    }
+    const file = relative(home, first.locator.file).split(sep).join("/");
+    const id = first.locator.id;
+    out.push({
+      key: createHash("sha256").update(id === undefined ? file : `${file}#${id}`).digest("hex"),
+      file,
+      source,
+      id: first.read.session.id,
+      tokens,
+      reasoning,
+      cost: cost ?? null,
+      turns: parts.reduce((n, { read }) => n + read.session.users, 0),
+      calls,
+      subagents: subagents.length,
+    });
+  }
+  return out;
+}

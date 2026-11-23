@@ -8,13 +8,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
+import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -54,10 +54,11 @@ export async function exportRemoteHistory(
   if (target.selector.kind !== 'project') throw new Error('Session logs do not reliably identify named agents or profiles. Select the project to import its history.');
   const now=options.now??Date.now(), cursor=options.cursor??0;
   if(!Number.isSafeInteger(cursor)||cursor<0)throw new Error('Invalid history cursor.');
-  const project=await realpath(target.project), selected:Pick<Session,'source'|'id'|'file'>[]=[], skipped=new Map<string,number>(),stamps=new Map<string,string>();
-  const sourceEnv=options.env??process.env,configRoot=target.runtime==='claude-code'?sourceEnv.CLAUDE_CONFIG_DIR:sourceEnv.CODEX_HOME;
+  const project=await realpath(target.project), selected:Pick<Session,'source'|'id'|'file'|'within'>[]=[], skipped=new Map<string,number>(),stamps=new Map<string,string>();
+  const sourceEnv=options.env??process.env;
   const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
-  for(const {file,stats} of await inOrder(await sessionFiles(options.home??homedir(),target.runtime,configRoot),target.runtime)){
+  for(const {locator,stats} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
+    const file=locator.file;
     if(stats.size>MAX_SESSION_BYTES){skip('Source session project could not be checked: file exceeds the metadata limit.');continue;}
     // Stop once a complete metadata record names its project. An opening prompt may itself be over 128 KiB;
     // the probe is bounded by the same byte limit as a remotely importable session, without scanning its secrets.
@@ -68,10 +69,10 @@ export async function exportRemoteHistory(
     if(stats.size>REMOTE_HISTORY_SOURCE_BYTES){skip('Source session file exceeds the remote import size limit.');continue;}
     if(header.child){skip('Subagent history is not a separate session.');continue;}
     if(now-stats.mtimeMs<LIVE_MS){skip('Still being written or modified within ten minutes.');continue;}
-    selected.push({source:target.runtime,id:header.id,file});stamps.set(file,remoteHistoryStamp(stats));
+    selected.push({source:target.runtime,id:header.id,file,...(locator.id===undefined?{}:{within:locator.id})});stamps.set(locatorKey(locator),remoteHistoryStamp(stats));
   }
   const groups=byRun(selected).sort((a,b)=>a[0]!.id.localeCompare(b[0]!.id));
-  const inventory=hash(JSON.stringify({project,runtime:target.runtime,groups:groups.map(files=>({id:files[0]!.id,files:files.map(file=>({path:file.file,stamp:stamps.get(file.file)})).sort((a,b)=>a.path.localeCompare(b.path))}))}));
+  const inventory=hash(JSON.stringify({project,runtime:target.runtime,groups:groups.map(files=>({id:files[0]!.id,files:files.map(file=>({path:locatorKey(locatorOf(file)),stamp:stamps.get(locatorKey(locatorOf(file)))})).sort((a,b)=>a.path.localeCompare(b.path))}))}));
   if((cursor>0 && options.inventory===undefined) || (options.inventory!==undefined && options.inventory!==inventory))throw new Error('The selected history inventory changed or is missing. Restart the import from its preview; previously imported sessions are safe to retry.');
   const report=()=>[...skipped].map(([reason,count])=>({reason,count}));
   if(options.preview)return {sessions:[],skipped:report(),next_cursor:null,total:groups.length,inventory};
@@ -83,9 +84,9 @@ export async function exportRemoteHistory(
     const parts:Session[]=[],seen=new Set<string>();let changed=false,child=false;
     for(const listed of groups[index]!){
       const before=await stat(listed.file).catch(()=>undefined);
-      const approvedStamp=stamps.get(listed.file);
+      const approvedStamp=stamps.get(locatorKey(locatorOf(listed)));
       if(!before || remoteHistoryStamp(before)!==approvedStamp || now-before.mtimeMs<LIVE_MS || before.size>REMOTE_HISTORY_SOURCE_BYTES){changed=true;break;}
-      const part=await readSession(listed.file,target.runtime,{seen}).catch(()=>undefined),after=await stat(listed.file).catch(()=>undefined);
+      const part=await readSession(locatorOf(listed),target.runtime,{seen}).catch(()=>undefined),after=await stat(listed.file).catch(()=>undefined);
       if(!part || !after || remoteHistoryStamp(after)!==approvedStamp || !part.cwd || (await realpath(part.cwd).catch(()=>part.cwd))!==project || part.id!==listed.id){changed=true;break;}
       // Opening metadata is only a candidate: a later record can identify a child session.
       // The full parser remains authoritative before any transcript can leave the machine.
@@ -236,11 +237,11 @@ export type ProjectPlan = {
   sessions: Session[];
 };
 /** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
- *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the files of each
- *  session's subagents, whose usage is its run's: Claude Code's by the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
+ *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the locators of each
+ *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
  *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). `stopped`: `signal` ended the listing with session files still unlisted. */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
 export type ImportReport = {
   agents: {
     id: string;
@@ -353,15 +354,15 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       const parts: Session[] = [];
       const budget = budgetOf();
       let over = false;
-      for (const { file } of files) {
-        const stats = await stat(file).catch(() => null);
+      for (const entry of files) {
+        const stats = await stat(entry.file).catch(() => null);
         if (stats && !fits(budget, stats.size)) {
           over = true;
           break;
         }
-        const part = stats ? await readSession(file, listed.source, { seen }).catch(() => undefined) : undefined;
+        const part = stats ? await readSession(locatorOf(entry), listed.source, { seen }).catch(() => undefined) : undefined;
         if (!part || !stats) continue;
-        stamps.set(file, stampOf(stats));
+        stamps.set(locatorKey(locatorOf(entry)), stampOf(stats));
         parts.push(part);
       }
       if (over) {
@@ -378,7 +379,7 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       if (!subagents) continue;
       for (const child of subagents) {
         const stats = await stat(child.file).catch(() => null);
-        if (stats) stamps.set(child.file, stampOf(stats));
+        if (stats) stamps.set(locatorKey(locatorOf(child)), stampOf(stats));
       }
       add(await keysInSessions(subagents));
     }
@@ -426,8 +427,8 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   let already = 0;
   const held: string[] = [];
   const found: Found[] = [];
-  const children = new Map<string, string[]>();
-  const child = (owner: string, file: string) => void children.set(owner, [...(children.get(owner) ?? []), file]);
+  const children = new Map<string, Locator[]>();
+  const child = (owner: string, locator: Locator) => void children.set(owner, [...(children.get(owner) ?? []), locator]);
   const untied: Plan["untied"] = [];
   const projects = new Map<string, ProjectPlan>();
   let stopped = false;
@@ -435,12 +436,13 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
-    for (const { file, stats } of await inOrder(await sessionFiles(home, source), source)) {
+    for (const { locator, stats } of await inOrder(await sessionLocators(home, source), source)) {
+      const { file } = locator;
       if (signal?.aborted) {
         stopped = true;
         break;
       }
-      const known = seen.get(hash(file));
+      const known = seen.get(hash(locatorKey(locator)));
       if (sameFile(known, stats)) {
         already += 1;
         held.push(known!.run);
@@ -455,14 +457,14 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
-      const session = await readSession(file, source, { turns: false }).catch((error: unknown) => leave(unread(file, error), source));
+      const session = await readSession(locator, source, { turns: false }).catch((error: unknown) => leave(unread(file, error), source));
       if (!session) continue;
       session.id = await idOf(session.id, scan);
       if (session.parent) session.parent = await idOf(session.parent, scan);
       // A subagent's session is no run of its own: its usage is its parent's, when its file names the parent (a Codex
       // thread's, whichever of its files); else it counts in the totals alone, where its project would.
       if (session.child && session.parent) {
-        child(`${source}:${session.parent}`, file);
+        child(`${source}:${session.parent}`, locator);
         continue;
       }
       if (!session.cwd) {
@@ -487,7 +489,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         }
       }
       if (session.child) {
-        untied.push({ file, source });
+        untied.push({ locator, source });
         continue;
       }
       let project = projects.get(cwd);
@@ -504,7 +506,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       rank.set(session, rank.size);
       project.sessions.push(session);
     }
-    if (source === "claude-code") for (const { file, of } of await childFiles(home)) child(of, file);
+    for (const { locator, of } of await childrenOf(home, source)) child(locatorKey(of), locator);
   }
   ownRuns(projects, rank);
   // The owner's choice, once each session has its one project: a project not chosen is no part of the plan.
@@ -558,7 +560,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
           over = true;
           break;
         }
-        const part = await readSession(listed.file, listed.source, { seen: seen(listed.source) }).catch(() => undefined);
+        const part = await readSession(locatorOf(listed), listed.source, { seen: seen(listed.source) }).catch(() => undefined);
         if (part) read.push(part);
       }
       if (over) {
@@ -599,10 +601,10 @@ export async function untiedFound(plan: Plan): Promise<Found[]> {
   const counted = (source: Source) => seen.get(source) ?? seen.set(source, new Set()).get(source)!;
   // A thread resumed in a second file of the same id is one: its own subagents, which name it, count once with it.
   const threads = new Map<string, Session[]>();
-  for (const { file, source } of plan.untied) {
-    const stats = await stat(file).catch(() => null);
+  for (const { locator, source } of plan.untied) {
+    const stats = await stat(locator.file).catch(() => null);
     if (!stats || stats.size > MAX_SESSION_BYTES) continue;
-    const session = await readSession(file, source, { seen: counted(source) }).catch(() => undefined);
+    const session = await readSession(locator, source, { seen: counted(source) }).catch(() => undefined);
     if (session) threads.set(`${source}:${session.id}`, [...(threads.get(`${source}:${session.id}`) ?? []), session]);
   }
   const found: Found[] = [];
@@ -691,19 +693,6 @@ function merged(parts: readonly Session[]): Session {
   };
 }
 
-/** The files of `source`, each with its stats (one gone since it was listed is passed over), in the import's order:
- *  Claude Code's by project folder, oldest written first (the first file holding a copied record keeps it); Codex's and
- *  pi's as their dated names sort. */
-async function inOrder(files: readonly string[], source: Source): Promise<{ file: string; stats: Stats }[]> {
-  const out: { file: string; stats: Stats }[] = [];
-  for (const file of files) {
-    const stats = await stat(file).catch(() => null);
-    if (stats) out.push({ file, stats });
-  }
-  if (source === "claude-code") out.sort((a, b) => dirname(a.file).localeCompare(dirname(b.file)) || a.stats.mtimeMs - b.stats.mtimeMs || a.file.localeCompare(b.file));
-  return out;
-}
-
 /** A session that holds only records an earlier file of the import holds (a resumed session's copy of them). */
 const ownless = (session: Session) => session.copies > 0 && !session.turns.some((turn) => turn.role !== "note");
 
@@ -734,22 +723,23 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
   const out: Session[] = [];
   const visited = new Set<string>();
   const under = async (owner: string): Promise<void> => {
-    for (const file of plan.children.get(owner) ?? []) {
-      if (visited.has(file)) continue;
-      visited.add(file);
-      const stats = await stat(file).catch(() => null);
+    for (const locator of plan.children.get(owner) ?? []) {
+      const key = locatorKey(locator);
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const stats = await stat(locator.file).catch(() => null);
       if (!stats) continue;
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
       // No subagent is passed over for its size: the run would be kept without its usage.
       if (!fits(budget, stats.size)) throw new RunTooLarge();
-      const child = await readSession(file, session.source, { seen }).catch(() => undefined);
+      const child = await readSession(locator, session.source, { seen }).catch(() => undefined);
       if (!child) continue;
       out.push(child);
       // A subagent's own subagents (Codex names each one's parent thread) are the run's too.
       await under(`${session.source}:${child.id}`);
     }
   };
-  for (const part of parts) await under(part.file);
+  for (const part of parts) await under(locatorKey(locatorOf(part)));
   await under(`${session.source}:${session.id}`);
   return out;
 }
@@ -1038,19 +1028,14 @@ export function transcriptOf(
 async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<ReadonlyMap<string, readonly Listed[]>>): Promise<number | undefined> {
   // Unknown when one answer priced here has unknown tokens (a failed one's counts are its own, as runMetricsOf reads them).
   if (runMetricsOf(entries.filter((entry) => entry.kind === "pi.assistant")).unmetered > 0) return undefined;
-  const { calculateCost } = await import("@earendil-works/pi-ai");
-  let total = 0;
-  for (const entry of entries) {
+  // Each answer's request at its own provider's entry, as @parcha/agentrun-import prices a session's totals.
+  const requests = entries.flatMap((entry) => {
     const answer = entry.kind === "pi.assistant" ? (entry.model?.[0] as { provider?: string; model?: string; usage?: Record<string, number> } | undefined) : undefined;
-    if (!answer?.usage) continue;
+    if (!answer?.usage) return [];
     const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cacheWrite1h } = answer.usage;
-    if (input + output + cacheRead + cacheWrite === 0) continue;
-    const cost = answer.provider && answer.model ? (await catalog()).get(answer.model)?.find((entry) => entry.provider === answer.provider)?.cost : undefined;
-    if (!cost) return undefined;
-    const usage = { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}), totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-    total += calculateCost({ cost } as never, usage).total;
-  }
-  return Math.round(total * 1e6) / 1e6;
+    return [{ ...(answer.provider && answer.model ? { model: `${answer.provider}/${answer.model}` } : {}), usage: { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}) } }];
+  });
+  return priceRequests(requests, await catalog());
 }
 
 /** What an imported agent is told when its project has no CLAUDE.md or AGENTS.md (or the harness's own file): an agentic
@@ -1216,13 +1201,15 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // copies the import leaves out.
       let titled: { at: number; title: string } | undefined;
       let changed = false;
-      for (const { file } of files) {
+      for (const entry of files) {
+        const { file } = entry;
+        const key = locatorKey(locatorOf(entry));
         const stats = await stat(file).catch(() => null);
         if (stats && !fits(budget, stats.size)) {
           over = true;
           break;
         }
-        const part = stats ? await readSession(file, listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
+        const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
         if (!part || !stats) continue;
         searched.push(part);
         if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
@@ -1231,9 +1218,9 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
           report.skipped.push({ what: file, why: "holds only records of sessions imported already", kind: "copies" });
           continue;
         }
-        read ??= { path_sha256: hash(file), size: stats.size, mtime_ms: stats.mtimeMs };
+        read ??= { path_sha256: hash(key), size: stats.size, mtime_ms: stats.mtimeMs };
         parts.push(part);
-        if (scannedAs.get(file) !== stampOf(stats)) changed = true;
+        if (scannedAs.get(key) !== stampOf(stats)) changed = true;
       }
       if (over) {
         report.skipped.push(tooLarge(listed));
@@ -1254,7 +1241,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         report.skipped.push(tooLarge(listed));
       });
       if (!subagents) continue;
-      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(child.file) !== stampOf((await stat(child.file).catch(() => null)) ?? { size: -1, mtimeMs: -1 })));
+      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await stat(child.file).catch(() => null)) ?? { size: -1, mtimeMs: -1 })));
       if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
       // so its timeline's usage row counts what its metrics do, one number for the run.

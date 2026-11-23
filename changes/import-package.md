@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-import, @parcha/agentrun-serve
+kind: feature
+---
+New package `@parcha/agentrun-import`: the session readers serve's import used (Claude Code, Codex, pi), as a library of their own, with a registry a new source joins in one line. A reader discovers locators (`{ file, id? }`, the id for a file that holds many sessions) under a home and reads one into sessions from a cursor it owns. serve's import, its summary, eval-previous and the remote history export now read through it; `import-sources.ts` is gone from serve. What changed in the numbers:
+- Claude Code: a request written as several lines (one per content block, same `message.id` and `requestId`) counts at its last line's usage, which holds the final counts; serve used the first line's.
+- One usage reading for every source, `normalizeUsage`: `input` is the input neither read from nor written to the cache (Anthropic's `input_tokens` as written; OpenAI's and Codex's with `cached_input_tokens` taken out), `cacheWrite1h` its own bucket, and `reasoning` kept beside `output` where the source gives it. Codex counts each request's `last_token_usage`, never `total_token_usage`.
+- `parseHome(home, { sources })` returns each session's totals, its subagents' requests counted under it and not again as sessions of their own. A JSONL file's cursor (device, inode, byte offset) lets a second pass read only the bytes appended since; a truncated or replaced file is read from its start, and a last line still being written is not consumed.
+- `node packages/import/dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer` prints one JSONL line per session, sorted by key (the sha256 of its path relative to the home): tokens, cost (null when unknown), turns and calls. Numbers only: no content, titles, directories or paths. The CLI compiles with `bun build --compile` and prints the same bytes as under Node.
