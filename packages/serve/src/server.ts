@@ -1567,7 +1567,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
    *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
   const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
-  stops.push(async () => claudeSignIns.stop());
+  stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
     signIns: claudeSignIns,
     settings: store.settings,
@@ -6673,6 +6673,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(localSourceTimer);
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
     plan.close();
+    // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
+    // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
+    const signInStopped = claudeSignIns.close();
     const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
@@ -6690,6 +6693,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await importing;
     await schemaSealed;
     await installStopped;
+    await signInStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.

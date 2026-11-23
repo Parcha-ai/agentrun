@@ -1568,7 +1568,7 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   says what became of that sign-in while the server runs: `waiting` for the browser since `started_at`, `signed_in`,
   `timed_out` (no answer from the browser within 10 minutes, so it was ended and a sign-in page still open can't
   finish), `failed` (the CLI ended without signing in, with its `exit_code`), or `not_started`. A second start ends a
-  sign-in that still waits, and so does turning the mode off.
+  sign-in that still waits, and so do turning the mode off and stopping the server, which waits for that CLI to exit.
 - `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no

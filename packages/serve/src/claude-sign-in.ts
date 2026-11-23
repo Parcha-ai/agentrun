@@ -51,6 +51,8 @@ export class ClaudeSignIns {
   #turn = 0;
   // Starts and stops, one after another, so two presses at once never leave two CLIs waiting on one port.
   #queue: Promise<unknown> = Promise.resolve();
+  // Set at the server's stop (close): no start after it spawns a CLI.
+  #closed = false;
 
   constructor(options: { limitMs?: number; now?: () => number } = {}) {
     this.limitMs = options.limitMs ?? SIGN_IN_LIMIT_MS;
@@ -68,6 +70,10 @@ export class ClaudeSignIns {
       await this.#end();
       const turn = ++this.#turn;
       const started = { started_at: new Date(this.#now()).toISOString(), limit_ms: this.limitMs };
+      if (this.#closed) {
+        this.#current = { view: { ...started, state: "not_started", ended_at: started.started_at, error: "this server is stopping" } };
+        return this.view()!;
+      }
       let handle: ClaudeSignIn;
       try {
         handle = begin(this.limitMs);
@@ -85,11 +91,18 @@ export class ClaudeSignIns {
     return next;
   }
 
-  /** End a sign-in that waits, and forget the one there is (a turn-off, the server's stop). */
+  /** End a sign-in that waits, and forget the one there is (a turn-off). */
   stop(): Promise<void> {
     const next = this.#queue.then(() => this.#end());
     this.#queue = next.catch(() => {});
     return next;
+  }
+
+  /** The server's stop: as stop(), resolving once a CLI that waited is gone, and a start asked after it (a request still
+   *  in flight) spawns nothing. A CLI left waiting would keep the browser's callback port from the next server's sign-in. */
+  close(): Promise<void> {
+    this.#closed = true;
+    return this.stop();
   }
 
   async #end(): Promise<void> {
