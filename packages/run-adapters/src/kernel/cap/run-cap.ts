@@ -21,6 +21,8 @@ type Verdict = { refuse?: string; forGood?: boolean; figures?: RefusalFigures; h
 
 /** The session a run's workflow decisions book under. */
 export const DECISION_SESSION = "decisions";
+/** The prefix of the model key a decision books under (`decision:<id>`). */
+const DECISION_KEY = "decision:";
 
 export interface RunCapOptions {
   /** The run's sessions: every key it has and each one's records (the journal's). */
@@ -112,7 +114,11 @@ export function overCapOf(records: readonly SessionRecord[], othersUsd: number, 
 export function runCap(options: RunCapOptions): RunCap {
   /** Each decision under way's model, as the rule prices it (decisionAsk), by the model key its request books under. */
   const deciding = new Map<string, CapModel>();
-  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? options.modelOf(id, route) };
+  // A decision's model key is never read by the run's model reader: a decision goes to its own provider, priced by the
+  // model it is admitted at (`deciding`) or, with no cap, by none. The run's reader may answer the run's model for any
+  // id (a CLI session's one model), which would mark an uncapped decision the plan's or a free model's: $0 to the run
+  // whatever its provider charged, or a known $0 for one whose charge was lost.
+  const pricing = { modelOf: (id: string, route?: string) => deciding.get(id) ?? (id.startsWith(DECISION_KEY) ? undefined : options.modelOf(id, route)) };
   const rule = beforeRequestOf({
     capUsd: options.capUsd,
     ...pricing,
@@ -176,7 +182,7 @@ export function runCap(options: RunCapOptions): RunCap {
           // Under no cap a decision is not priced: nothing is read, nothing refused (its model may be "unreadable").
           if (capUsd !== undefined && request.model === "unreadable") throw new DecisionPriceUnreadable();
           const asked = capUsd === undefined || request.model === "unreadable" ? undefined : decisionAsk(request);
-          const key = `decision:${request.id}`;
+          const key = `${DECISION_KEY}${request.id}`;
           if (asked) deciding.set(key, { ...asked.model, id: key });
           return steps.book(request.id, { model: key, ...(asked ? { inputTokensMax: asked.inputTokens, ...(asked.output === null ? {} : { outputTokensAsked: asked.output, outputTokensLeast: asked.output }), ...(asked.feeUsd > 0 ? { feeUsd: asked.feeUsd } : {}) } : { inputTokensMax: request.inputTokens }) });
         },
