@@ -514,6 +514,8 @@ export interface StartOptions {
   readonly from?: MessageOrigin;
   /** The names of the tool keys the run carries (`keys`, run-keys.ts; their values go only into `sealed`). */
   readonly keys?: readonly string[];
+  /** The firing the run starts, in the run's own write (store.runs.create `firing`): a launch hook's host's start. */
+  readonly firing?: { triggerId: string; key: string };
 }
 
 /** A no-op redactor, when the server gives none: no secret is cut (the switch wires the real shown for a learning run). */
@@ -555,7 +557,7 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys, firing }: StartOptions = {}): Promise<RunRow> {
   if (sourceSyncOf(entry.revision?.body)) {
     // Re-delivery of a firing that already admitted a run is not a new start and needs no new project preparation.
     if (origin) {
@@ -577,7 +579,7 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.

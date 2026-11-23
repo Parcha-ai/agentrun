@@ -979,6 +979,12 @@ test("a host releases a firing it answered 2xx and will start no run for: with m
   assert.deepEqual(released.body, listed, "answered as the firings list shows it");
   // One failure in the streak toward the trigger's auto-pause (the next firing's hand, a success, clears it).
   assert.equal((await w.api("GET", `/triggers/${w.id}`)).body.failures_in_a_row, 1, "one failure in the trigger's streak, toward its auto-pause");
+  // A released firing takes no run after it: its host's start is refused naming the release, and nothing is written.
+  const late = await hostStart(w.api, "triage", w.id, a);
+  assert.equal(late.status, 422, JSON.stringify(late.body));
+  assert.deepEqual(late.body.error.fields.map((f) => [f.field, f.reason, f.code]), [["trigger_firing.firing_id", "not_due", "host_released"]], JSON.stringify(late.body));
+  assert.match(late.body.error.fields[0].message, /released by the launch hook's host/);
+  assert.deepEqual(await runsOf(w.api, "triage"), [], "no run written");
 
   // Its room is free: the waiting firing goes on the engine's next poll, not at start_by.
   await w.poll();
@@ -1012,6 +1018,7 @@ test("a release is refused in words where it does not fit: its run started (not_
   const ran = await release(api, nightly, first.key);
   assert.equal(ran.status, 422, JSON.stringify(ran.body));
   assert.deepEqual(ran.body.error.fields.map((f) => [f.field, f.reason]), [["firing_id", "not_due"]]);
+  assert.deepEqual(ran.body.error.fields.map((f) => [f.field, f.reason, f.code]), [["firing_id", "not_due", "run_started"]], "a code the host matches, beside the words");
   assert.match(ran.body.error.fields[0].message, new RegExp(`its run ${first.run_id} started`));
 
   clock.to("2026-06-01T00:15:00Z");

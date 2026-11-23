@@ -33,7 +33,7 @@ import { agentDeleting, purgedAgent } from "./agents.js";
 import { ownedElsewhere } from "./agents-store.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
-import { AgentArchived, type FiringChange, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
+import { AgentArchived, type FiringChange, FiringMoved, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
 import { carriesPrevious, type Clock, PAYLOAD_KEPT_BYTES, type PollResult, second, type Source, type TriggerAdapter, validZone } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { type Handed, handToHost, HookFailed, type HookFiring, LAUNCH_HOOK_LATE_START_MS, type LaunchHook } from "./trigger-launch-hook.js";
@@ -62,6 +62,9 @@ export const HANDED_NO_RUN = "Handed to the host by the launch hook, which start
 export const HOST_RELEASED = "host_released";
 /** The reason of such a firing; its error's message is the host's own words. */
 export const HOST_RELEASED_REASON = "Released by the launch hook's host, which took it and will start no run for it.";
+/** The code on the not_due field of a release refused because the firing's run started (Triggers.release), for a host to
+ *  match beside the words, which name the run. */
+export const RUN_STARTED = "run_started";
 /** The most characters of the host's words a release keeps. */
 export const RELEASE_WORDS_MAX = 500;
 /** The most of a webhook's payload a firing passes on: the rest is cut, at a character's start (trigger-adapter.ts). */
@@ -157,7 +160,9 @@ export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?
 /** A host's start of a firing the launch hook handed it (Triggers.handedStart): the firing's key, the trigger, input
  *  origin and title a start here would give the run, and the target and previous-result flag it starts on
  *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
- *  host may lower the cap, and its effort holds when the target sets none). */
+ *  host may lower the cap, and its effort holds when the target sets none). The start writes its run with the firing's
+ *  start in the same write (store.runs.create `firing`), so a release of the firing meanwhile, on any server, refuses
+ *  it (FiringMoved) and leaves no run. */
 export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
@@ -319,6 +324,10 @@ const failedReason = (error: unknown): string | undefined => (error instanceof H
 /** A firing its launch hook's host took (a 2xx) with no run yet: sent with no run, and a startBy, which only such a
  *  firing has. startBy is kept in the retry_at column: no column of its own, no migration. */
 const tookWithNoRun = (firing: FiringRow): boolean => firing.status === "sent" && firing.runId === null && firing.startBy !== null;
+/** Whether firing `firing` is one its launch hook's host released (Triggers.release). */
+const released = (firing: FiringRow): boolean => firing.status === "failed" && firing.error?.code === HOST_RELEASED;
+/** The refusal of a host start of firing `key`, which its host released: code HOST_RELEASED, for a host to match. */
+const releasedRefusal = (key: string) => invalid([{ field: "trigger_firing.firing_id", reason: "not_due", code: HOST_RELEASED, message: `Firing ${key} was released by the launch hook's host, which said it will start no run for it: no run starts for it now.` }]);
 /** How long a host start of such a firing holds its trigger's room from its check, at least: a startBy sooner than this
  *  is pushed out to it before the run is written (handedStart), so the window never closes while the run is written. */
 const START_WINDOW_MS = 60_000;
@@ -1327,13 +1336,22 @@ export class Triggers {
     let run: { run_id: string } | undefined;
     try {
       const attrs = room.firing.attrs as Record<string, string> | null | undefined;
-      run = await start({
-        key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
-        target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
-      });
+      try {
+        run = await start({
+          key, trigger: { id: triggerId, firing_key: key, name: trigger.name, ...(attrs && Object.keys(attrs).length ? { attrs } : {}) }, from: this.originOf(trigger), title: this.titleOf(trigger, room.firing),
+          target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
+        });
+      } catch (error) {
+        // The run's write found the firing moved since its room was checked (its host released it, on any server):
+        // nothing was written, and the start is refused in words that say what it is now.
+        if (error instanceof FiringMoved) throw await this.movedRefusal(triggerId, key);
+        throw error;
+      }
       room.ran(run);
       try {
-        await this.handedRan(triggerId, key, run.run_id);
+        // The run's write started the firing (store.runs.create `firing`): said here. One a start wrote without it is
+        // started by handedRan, which says so.
+        if (!(await this.handedRan(triggerId, key, run.run_id))) this.deps.say({ condition: "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
       } catch (error) {
         // Its run is written but the firing's start is not: the firing's next turn starts it with the run under its key,
         // so the run is counted while it works.
@@ -1403,6 +1421,7 @@ export class Triggers {
     };
     const firing = await this.store.triggers.firing(trigger.id, key);
     if (!firing) throw refused("not_found", `Trigger ${trigger.id} has no firing ${key}.`);
+    if (released(firing)) throw releasedRefusal(key);
     const now = this.clock.now();
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     if (tookWithNoRun(firing)) {
@@ -1422,10 +1441,21 @@ export class Triggers {
   /** Run `runId`, which the host started for firing `key` (handedStart), started: a firing with no run yet, still due
    *  (being handed, or waiting on its retry after the hook failed) or one its host took first, is made started here, as
    *  handed() makes it when the run came first, so the overlap check, max_active_runs and last_run_id count it. A failed
-   *  or settled firing is left as it is. */
-  async handedRan(triggerId: string, key: string, runId: string): Promise<void> {
+   *  or settled firing is left as it is. Whether it started it here. */
+  async handedRan(triggerId: string, key: string, runId: string): Promise<boolean> {
     const firing = await this.store.triggers.firing(triggerId, key);
-    if (firing && (firing.status === "due" ? firing.runId === null : tookWithNoRun(firing))) await this.started(triggerId, key, runId);
+    if (!firing || !(firing.status === "due" ? firing.runId === null : tookWithNoRun(firing))) return false;
+    await this.started(triggerId, key, runId);
+    return true;
+  }
+
+  /** The refusal of a host start of firing `key` whose run's write found the firing moved (FiringMoved): released by
+   *  its host, or another not_due naming what it is now. */
+  private async movedRefusal(triggerId: string, key: string): Promise<ApiError> {
+    const firing = await this.store.triggers.firing(triggerId, key);
+    if (firing && released(firing)) return releasedRefusal(key);
+    const now = firing ? `${firing.status}${firing.reason ? ` (${firing.reason})` : ""}` : "gone";
+    return invalid([{ field: "trigger_firing.firing_id", reason: "not_due", message: `Firing ${key} moved while its run was written, and is ${now}: no run started for it.` }]);
   }
 
   /** Firing `key` of trigger `triggerId` released by the host the launch hook handed it to: the host answered it 2xx and
@@ -1435,8 +1465,10 @@ export class Triggers {
    *  trigger's streak and a trigger.failed, as any failed firing. Its trigger's room is free from that write, so a firing
    *  waiting on it is driven on the next tick. The same call on a firing it released already answers that firing as it
    *  is. Refused in words: 422 not_allowed on a server with no launch hook, not_due for a firing whose run started, one
-   *  still due (not handed yet) or any other; 404 for a trigger or firing this server does not have. A host start of the
-   *  firing being written on this server is waited for first: a run it writes makes the firing started, and refused. */
+   *  still due (not handed yet) or any other, with code RUN_STARTED on the field when its run started; 404 for a trigger or
+   *  firing this server does not have. A host start of the firing being written on this server is waited for first: a run
+   *  it writes makes the firing started, and refused. One on another server is decided by the store: its run's write and
+   *  this release's are each conditional on the firing being sent with no run, so one of them finds it moved. */
   async release(triggerId: string, key: string, body: Json, cut: (text: string) => string) {
     if (!this.deps.launchHook) throw invalid([{ field: "firing_id", reason: "not_allowed", message: "This server has no launch hook: only a firing the hook handed to its host is released by that host." }]);
     await this.need(triggerId);
@@ -1449,7 +1481,7 @@ export class Triggers {
       const starting = this.starting.get(key);
       if (starting) {
         const run = await starting;
-        if (run) throw this.notDue(key, `its run ${run.run_id} started`);
+        if (run) throw this.notDue(key, `its run ${run.run_id} started`, RUN_STARTED);
         continue;
       }
       const firing = await this.checked(triggerId, () => this.releaseOnce(triggerId, key, message));
@@ -1464,12 +1496,12 @@ export class Triggers {
   private async releaseOnce(triggerId: string, key: string, message: string): Promise<FiringRow | undefined> {
     const firing = await this.store.triggers.firing(triggerId, key);
     if (!firing) throw new ApiError("not_found", `Trigger ${triggerId} has no firing ${key}.`);
-    if (firing.status === "failed" && firing.error?.code === HOST_RELEASED) return firing;
+    if (released(firing)) return firing;
     // A run already under its key is its run, linked or not (a stop between its write and handedRan).
     const ran = firing.status === "started" ? firing.runId : firing.status === "due" || tookWithNoRun(firing) ? (await this.deps.runOf(key))?.run_id : undefined;
     if (ran) {
       await this.handedRan(triggerId, key, ran);
-      throw this.notDue(key, `its run ${ran} started`);
+      throw this.notDue(key, `its run ${ran} started`, RUN_STARTED);
     }
     if (firing.status === "due") throw this.notDue(key, "it has not been handed to the launch hook's host yet");
     if (!tookWithNoRun(firing)) throw this.notDue(key, `it is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}, not a firing the launch hook's host took with no run`);
@@ -1481,9 +1513,9 @@ export class Triggers {
     return failed;
   }
 
-  /** A release refused for firing `key`, `why` saying what it is. */
-  private notDue(key: string, why: string) {
-    return invalid([{ field: "firing_id", reason: "not_due", message: `Firing ${key} is not released: ${why}.` }]);
+  /** A release refused for firing `key`, `why` saying what it is, and `code` when a host matches it (RUN_STARTED). */
+  private notDue(key: string, why: string, code?: string) {
+    return invalid([{ field: "firing_id", reason: "not_due", message: `Firing ${key} is not released: ${why}.`, ...(code ? { code } : {}) }]);
   }
 
   /** Each sent firing whose host's run is in the store under its key, though the server stopped before the firing was

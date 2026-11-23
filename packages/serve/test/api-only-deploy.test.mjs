@@ -60,7 +60,7 @@ async function deployServer(t, options, manifest = MANIFEST) {
 async function send(server, method, path, { token = true, body } = {}) {
   const res = await fetch(`${server.url}${path}`, {
     method,
-    headers: { ...(token ? { authorization: `Bearer ${server.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(token ? { authorization: `Bearer ${typeof token === "string" ? token : server.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await res.text();
@@ -366,8 +366,17 @@ test("an API-only server with the launch hook takes the backend's release of a f
   const [{ sent }] = await until(() => hook.got.length && hook.got, 20_000, "the schedule's firing never reached the backend");
   await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", 20_000, "the firing was never recorded sent");
 
+  // Only a credential that may start the firing's run may release it: the server's own token, as for that start. None,
+  // or any other, is refused at the door, and the firing stays sent.
+  const path = `/v2/triggers/${made.id}/firings/${sent.firing_id}/release`;
+  for (const [token, what] of [[false, "no token"], [`${server.token}x`, "another token"]]) {
+    const refused = await send(server, "POST", path, { token, body: { error: "The job failed at launch (launch_failed)." } });
+    assert.equal(refused.status, 401, `${what}: ${JSON.stringify(refused.body)}`);
+  }
+  assert.equal((await server.store.triggers.firing(made.id, sent.firing_id)).status, "sent", "no refusal touched it");
+
   // The backend's job failed at launch: it says so, and the firing holds its trigger's room no longer.
-  const released = await send(server, "POST", `/v2/triggers/${made.id}/firings/${sent.firing_id}/release`, { body: { error: "The job failed at launch (launch_failed)." } });
+  const released = await send(server, "POST", path, { body: { error: "The job failed at launch (launch_failed)." } });
   assert.equal(released.status, 200, JSON.stringify(released.body));
   assert.deepEqual([released.body.key, released.body.status, released.body.error], [sent.firing_id, "failed", { code: "host_released", message: "The job failed at launch (launch_failed)." }]);
   assert.equal((await server.store.triggers.activeKeys(made.id, clock.now())).length, 0, "its room is free");
