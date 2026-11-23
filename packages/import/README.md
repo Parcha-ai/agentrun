@@ -19,7 +19,10 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's per-request cost), else the
   requests at pi-ai's list prices (an optional peer), else `null`.
 - `turns` counts the person's messages; `calls` the model requests, its subagents' with them, each once.
-- `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since.
+- `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since, and
+  returns what a fresh call would. When a file holding a copied record now comes before the file it counts in (an append
+  moved the original after its resumed copy, or a new file sorts before one it shares records with), that source is read
+  again from the start.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 
 ## Known answer

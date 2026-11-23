@@ -33,10 +33,19 @@ export type SessionTotals = {
   subagents: number;
 };
 
-/** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own) and the records each
- *  source has seen, so a second pass reads only what was written since. Its contents are the package's; `read` is the
- *  last pass's bytes. */
-export type HomeState = { read?: number; sources?: Partial<Record<string, { seen: Set<string>; cursors: Map<string, unknown> }>> };
+/** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
+ *  source has read with the locator that read each first, and which locators found a record another read first, so a
+ *  second pass reads only what was written since. Its contents are the package's; `read` is the last pass's bytes. */
+export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
+
+/** One source's part of a HomeState. */
+type SourceState = {
+  cursors: Map<string, unknown>;
+  /** Each record read (the reader's "u:"/"m:" keys), with the locator (locatorKey) that read it first: the one it counts in. */
+  owners: Map<string, string>;
+  /** For each locator, the locators whose records it found already read (its copies' owners). */
+  copied: Map<string, Set<string>>;
+};
 
 export type ParseOptions = {
   /** The sources to read (default: every registered one). */
@@ -69,23 +78,41 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
 }
 
 /** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`.
- *  A pass handed a state goes on from its cursors; when a locator it read before is gone, or its reader could not go on
- *  from its cursor (a new inode, truncated, rewritten), the whole source is read again: a record that file held may
- *  have been counted as a copy in another. */
+ *  A pass handed a state goes on from its cursors, and comes out as a fresh pass would: a record copied into many files
+ *  counts in the first of them in the order as it is now. The whole source is read again when a locator it read before is
+ *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
+ *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
+ *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
 async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
-  const present = new Set([...listed.map(({ locator }) => locatorKey(locator)), ...childList.map(({ locator }) => locatorKey(locator))]);
+  // Each locator's place in this pass's order of reading.
+  const place = new Map([...listed.map(({ locator }) => locatorKey(locator)), ...childList.map(({ locator }) => locatorKey(locator))].map((key, at) => [key, at]));
+  // Whether a locator holds a copy of a record that now counts after it: the fresh pass would count it in that locator.
+  const outOfOrder = (kept: SourceState) => [...kept.copied].some(([key, owners]) => [...owners].some((owner) => place.get(owner)! > place.get(key)!));
   for (let pass = 0; ; pass += 1) {
     let kept = state ? (state.sources ??= {})[source] : undefined;
-    if (kept && [...kept.cursors.keys()].some((key) => !present.has(key))) kept = undefined;
-    if (state && !kept) kept = state.sources![source] = { seen: new Set(), cursors: new Map() };
-    const seen = kept?.seen ?? new Set<string>();
+    if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
+    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: new Map(), copied: new Map() };
+    const { owners, copied } = kept ?? { owners: new Map<string, string>(), copied: new Map<string, Set<string>>() };
     let restarted = false;
     const read = async (locator: Locator): Promise<SessionRead[]> => {
       const key = locatorKey(locator);
       const cursor = kept?.cursors.get(key);
+      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted.
+      const seen = {
+        has: (record: string) => {
+          const owner = owners.get(record);
+          if (owner === undefined) return false;
+          if (owner !== key) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
+          return true;
+        },
+        add(record: string) {
+          if (!owners.has(record)) owners.set(record, key);
+          return this;
+        },
+      } as Set<string>;
       const result = await reader.read(locator, cursor, { turns: false, seen }).catch(() => undefined);
       if (!result) return [];
       if (cursor !== undefined && !result.resumed) restarted = true;
@@ -97,8 +124,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
     const children: (Part & { of: Locator })[] = [];
     for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
-    // A locator its reader could not go on in: read the source again, from nothing.
-    if (!restarted || pass > 0) return { tops, children };
+    // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
+    // again, from nothing.
+    if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children };
     state!.sources![source] = undefined;
   }
 }
