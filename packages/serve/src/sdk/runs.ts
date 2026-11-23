@@ -17,6 +17,7 @@ import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secret
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
+import { serialBy } from "../files.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
@@ -105,6 +106,10 @@ const STARTED_SKEW_MS = 60_000,
  *  or its inbox closes (up to SDK_MAX_OPEN_MS while its batches keep coming), so without a cap one token's heartbeats
  *  could hold every loop for a day while every other start queued. A cap, not a park: the loop's wait stays as it is. */
 export const SDK_OPEN_PER_AGENT = 8;
+/** Each agent's SDK starts, admitted one at a time: the open count is read and the run made in one turn, so starts sent at
+ *  once never pass the cap together. One process holds a store (its owner lock), so this queue is every start's. */
+const sdkStarts = new Map<string, Promise<unknown>>();
+const overCap = () => new ApiError("rate_limited", `This agent has ${SDK_OPEN_PER_AGENT} SDK runs open, the most it holds at once: complete or cancel one, or let its inbox close, then start again.`);
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
@@ -304,8 +309,9 @@ export class SdkRuns {
         return this.receipt(known.runId, consoleOrigin);
       }
     }
-    if (!cli && (await this.store.runs.counts(entry.agent.id)).live >= SDK_OPEN_PER_AGENT)
-      throw new ApiError("rate_limited", `This agent has ${SDK_OPEN_PER_AGENT} SDK runs open, the most it holds at once: complete or cancel one, or let its inbox close, then start again.`);
+    // Refused early, before the work a start does, where the cap is plainly full; the count that holds is admit's, below.
+    const full = async () => !cli && (await this.store.runs.counts(entry.agent.id)).live >= SDK_OPEN_PER_AGENT;
+    if (await full()) throw overCap();
     const startedAt = reportedAt === undefined ? undefined : startedWithin(reportedAt, Date.now());
     const cleanedInput = this.clean({ input }).input;
     const pinned = await deps.pinnedOf(entry, {});
@@ -344,6 +350,8 @@ export class SdkRuns {
     }
     const revision = entry.revision;
     const admit = async (): Promise<string> => {
+      // In the agent's start queue (sdkStarts): no other start of it makes a run between this count and this run's.
+      if (await full()) throw overCap();
       // The reset deletes the agent's learning in this queue after setting its watermark (learning-reset.ts): a seed
       // read at or before it is of learning the reset deleted, so the start is refused, to start again on a new seed.
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
@@ -419,7 +427,9 @@ export class SdkRuns {
     // agent's learning deletes it in: either the reset comes first, and the seed read before it is refused above, or this
     // run's row is made first, and the reset refuses while it goes (409 learning_busy). No check of a draft the reset
     // deleted is reserved, and no run starts on it.
-    const runId = learning ? await withAgentRepo(this.data, entry.agent.id, admit) : await admit();
+    // An SDK start is admitted in its agent's start queue too, outside the learning one (nothing takes them the other way).
+    const admitted = () => (learning ? withAgentRepo(this.data, entry.agent.id, admit) : admit());
+    const runId = cli ? await admitted() : await serialBy(sdkStarts, entry.agent.id, admitted);
     return this.receipt(runId, consoleOrigin);
   }
   async receipt(runId: string, consoleOrigin: string) {

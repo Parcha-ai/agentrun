@@ -134,6 +134,37 @@ test("a label that holds a server secret is refused on every run's start, the SD
   assert.ok(!JSON.stringify(plain.body).includes(token) && !JSON.stringify(sdk.body).includes(token), "the refusal never repeats it");
 });
 
+test("a label KEY that is a server secret is refused too, the SDK's start and RunCreate's, and the refusal names no key", async (t) => {
+  const { start, api, token } = await fixture(t);
+  const { LABEL_KEY } = await import("../dist/run-labels.js");
+  // The server's token as a key: one the key's own format takes, so only the secret check stands between it and the run.
+  const key = token;
+  assert.match(key, LABEL_KEY, `the token (${token.length} characters) fits a label key's format`);
+  const agent = { id: "plain", name: "plain", instructions: "Say hi.", tools: [] };
+  assert.equal((await api("POST", "/agents", { definition: agent })).status, 201);
+  for (const [name, call] of [["sdk", () => start({ labels: { [key]: "acme" } })], ["plain", () => api("POST", "/agents/plain/runs", { input: { content: "hi" }, labels: { [key]: "acme" } })]]) {
+    const answer = await call();
+    assert.equal(answer.status, 422, `${name}: ${JSON.stringify(answer.body)}`);
+    assert.equal(answer.body.error.fields?.[0]?.field, "labels", `${name}: ${JSON.stringify(answer.body)}`);
+    assert.ok(!JSON.stringify(answer.body).includes(key), `${name}: the refusal never repeats it`);
+  }
+  // One that does not fit the format is refused for that, still without the secret in the words.
+  const long = await start({ labels: { [`x${token}:`]: "acme" } });
+  assert.equal(long.status, 422, JSON.stringify(long.body));
+  assert.ok(!JSON.stringify(long.body).includes(key), "a key out of format that holds a secret is not echoed");
+});
+
+test("starts sent at once never hold more than SDK_OPEN_PER_AGENT SDK runs open", async (t) => {
+  const { start, store } = await fixture(t);
+  const { SDK_OPEN_PER_AGENT } = await import("../dist/sdk/runs.js");
+  const answers = await Promise.all(Array.from({ length: SDK_OPEN_PER_AGENT + 4 }, () => start()));
+  const made = answers.filter((answer) => answer.status === 201);
+  assert.equal(made.length, SDK_OPEN_PER_AGENT, answers.map((answer) => answer.status).join(","));
+  assert.ok(answers.every((answer) => answer.status === 201 || answer.body.error?.code === "rate_limited"), answers.map((answer) => answer.status).join(","));
+  const agent = (await store.runs.get(made[0].body.run_id)).agentId;
+  assert.equal((await store.runs.counts(agent)).live, SDK_OPEN_PER_AGENT);
+});
+
 test("an agent holds at most SDK_OPEN_PER_AGENT SDK runs open at once: the next start is refused in words until one ends, and another agent's starts are its own", async (t) => {
   const { start, api, store } = await fixture(t);
   const { SDK_OPEN_PER_AGENT } = await import("../dist/sdk/runs.js");

@@ -45,7 +45,7 @@ function valueProblem(value: unknown): string | undefined {
 }
 
 /** A create body's `labels`, field by field: an object of at most MAX_LABELS keys, each matching LABEL_KEY, each value text
- *  of 1 to MAX_LABEL_VALUE characters with no control character, and none holding a value of `secrets` (every read of the
+ *  of 1 to MAX_LABEL_VALUE characters with no control character, and no key or value holding one of `secrets` (every read of the
  *  run serves its labels as given, so one is refused, never kept). Absent is none. One rule for every run's start: an
  *  agent's, an inline one's and an SDK run's. */
 export function labelsIssues(labels: unknown, secrets: readonly string[]): InputIssue[] {
@@ -55,6 +55,11 @@ export function labelsIssues(labels: unknown, secrets: readonly string[]): Input
   const keys = Object.keys(labels);
   if (keys.length > MAX_LABELS) issues.push({ field: "labels", reason: "too_many", message: `labels holds at most ${MAX_LABELS} keys; it holds ${keys.length}.` });
   for (const key of keys) {
+    // A key is served as given too: one that holds a secret is refused first, by no name (the field would repeat it).
+    if (redacted(key, secrets) !== key) {
+      issues.push({ field: "labels", reason: "not_allowed", message: "A label's key holds a value this server keeps secret, and every read of the run serves its labels as given: keep credentials out of labels." });
+      continue;
+    }
     if (!LABEL_KEY.test(key)) {
       issues.push({ field: `labels.${key}`, reason: "bad_format", message: `A label's key is 1 to 63 letters, digits, '.', '_', '-' or '/', starting with a letter or a digit: ${JSON.stringify(key)} is not one.` });
       continue;
