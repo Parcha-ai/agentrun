@@ -531,6 +531,12 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         continue;
       }
       // Its project is checked as any session's is: one in a temp folder or a deleted one stays out of the default totals.
+      const orphanStats = await stat(locator.file).catch(() => null);
+      if (!orphanStats) continue;
+      if (orphanStats.size > MAX_SESSION_BYTES) {
+        leave({ what: locator.file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
+        continue;
+      }
       const orphan = await readSession(locator, source, { turns: false }).catch((error: unknown) => leave(unread(locator.file, error), source));
       if (!orphan) continue;
       if (!orphan.cwd) {

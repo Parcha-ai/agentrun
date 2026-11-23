@@ -2,10 +2,10 @@
 // summary's totals), as a Codex subagent naming no parent does, and is no session or run. Claude Code's lives in
 // <session id>/subagents/ beside its session's .jsonl.
 import assert from "node:assert/strict";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { planImport, untiedFound } from "../dist/import.js";
+import { MAX_SESSION_BYTES, planImport, untiedFound } from "../dist/import.js";
 import { claudeSession, claudeSubagent } from "./fixtures/import-sessions.mjs";
 import { scratch } from "./support.mjs";
 
@@ -41,4 +41,17 @@ test("an orphan subagent's project is checked as a session's is: one in a temp f
   const all = await untiedFound(await planImport({ ...options, all: true }));
   assert.equal(all.length, 1);
   assert.deepEqual([all[0].metrics.input, all[0].metrics.output], [11 + 17, 13 + 19]);
+});
+
+test("an orphan subagent file over the cap is left out as too large, as a session file is, and is not read", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "big-orphan");
+  mkdirSync(project, { recursive: true });
+  const file = claudeSubagent(home, project, 4, 1);
+  // A hole to the cap and past it: its size is what the plan reads, never its bytes.
+  truncateSync(file, MAX_SESSION_BYTES + 1);
+  const plan = await planImport({ home, env: { PATH: "/usr/bin" }, temp: join(root, "tmp"), sources: ["claude-code"] });
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["large", file]]);
+  assert.deepEqual(await untiedFound(plan), []);
 });
