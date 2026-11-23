@@ -1029,8 +1029,12 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
      *  a user of its own too. */
     run_isolation: isolation,
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
-    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
-    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
+    // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here. Served `available` is
+    // whether a run of it can start now on some model it offers: one whose every model lacks a key or the sign-in
+    // (noModelRuns: pi with neither) is not, though a save and a run read it as a harness that runs here (runnable.ts), so
+    // their words name the model it lacks. One whose default lacks a key while another model runs is (its `needs` says
+    // what the default lacks).
+    harnesses: harnesses.map(({ keys: _keys, noModelRuns, ...offer }) => ({ ...offer, available: offer.available && !noModelRuns, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
