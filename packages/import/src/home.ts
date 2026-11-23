@@ -8,6 +8,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
+import type { Usage } from "./types.js";
 
 export type SessionTotals = {
   /** The sha256 (hex) of the session's first file's path relative to the home, with "/" between its parts, and
@@ -64,7 +65,15 @@ export type ParseOptions = {
   /** Where each locator its reader could not read goes (unopenable, an I/O error midway); the rest are totalled. Without
    *  it, parseHome throws ReadFailures instead: an unreadable file is never taken for an empty one. */
   failures?: ReadFailure[];
+  /** Called with each session as it is totalled: its totals, and its requests (its subagents' with them, each once) with
+   *  their times and models, text-free as the totals are. `started`: the time (ms) of the first request of the session's
+   *  own files (not its subagents'), absent when it has none. For a caller that buckets the same numbers (wrapped.ts). */
+  requests?: (totals: SessionTotals, requests: readonly SessionRequest[], started: number | undefined) => void;
 };
+
+/** One model request of a session: when (ms), by which model ("provider/model", the session's when the request names none),
+ *  and its tokens where the source counted them. */
+export type SessionRequest = { at: number; model?: string; usage?: Usage };
 
 /** A locator its reader could not read: its key (as SessionTotals'), its file, and the reader's error. */
 export type ReadFailure = { key: string; file: string; source: string; error: unknown };
@@ -88,7 +97,7 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
 type Part = { locator: Locator; read: SessionRead };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests }: ParseOptions = {}): Promise<SessionTotals[]> {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
@@ -96,7 +105,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   if (state) state.read = 0;
   for (const source of sources) {
     const { tops, children, unread } = await readSource(home, source, readers, env, state);
-    out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
+    out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
@@ -176,7 +185,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -238,7 +247,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
     }
     const { key, file } = keyOf(home, first.locator);
-    out.push({
+    const totals: SessionTotals = {
       key,
       file,
       source,
@@ -251,7 +260,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       turns: untied || parts.every(({ read }) => read.session.child) ? 0 : parts.reduce((n, { read }) => n + read.session.users, 0),
       calls,
       subagents: subagents.length,
-    });
+    };
+    out.push(totals);
+    if (sink) {
+      const times = parts.flatMap(({ read }) => read.requests.map(({ at }) => at)).filter(Number.isFinite);
+      sink(totals, [...parts, ...subagents].flatMap(({ read }) => read.requests.map(({ at, model, usage }): SessionRequest => ({ at, ...((model ?? read.session.model) ? { model: (model ?? read.session.model)! } : {}), ...(usage ? { usage } : {}) }))), times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
+    }
   }
   return out;
 }
