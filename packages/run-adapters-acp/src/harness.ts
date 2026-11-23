@@ -479,6 +479,11 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (unasked) cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
       cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input } satisfies PermissionRecord);
       await cur.journal.flush();
+    } else if (options.gate) {
+      // Asked before and still unanswered, with a gate: settlePermissions answers every request a turn left waiting before
+      // the agent starts, so this should not be. Where it is, a start skipped that step and the pick above (an answered id
+      // before an unanswered one) may not be the call the person meant. Said, so a host's log shows it.
+      log("acp: a request matched one still waiting for the person, which the resume should have answered before the agent started", { callId, toolCallId: call.toolCallId });
     }
     let refused: { deny: string } | undefined;
     if (options.gate) {

@@ -25,7 +25,7 @@
 
 ## 0.1.0-beta.51 (2026-11-21)
 
-- An ACP agent's own tool call (Cursor's shell) that parked on a person no longer loops once answered: the resume takes the answer before the agent starts, and the recovery note says what the person decided. Before, restarted Cursor asked for a different command, the answer was never taken, and the run restarted every few seconds until the plan's turn limit. <!-- changes/acp-parked-permission-settled.md -->
+- An ACP agent's own tool call (Cursor's shell) that parked on a person no longer loops once answered: the resume takes the answer before the agent starts, and the recovery note says what the person decided. Before, restarted Cursor asked for a different command, the answer was never taken, and the run restarted every few seconds until the plan's turn limit. An agent that keeps asking the person about other commands instead of the one they allowed ends its turn with `ACP_REASK_LIMIT`. <!-- changes/acp-parked-permission-settled.md -->
 - An ACP agent (Cursor) that skipped a command the person allowed no longer has its turn cut after three more commands its tool setting allows: only commands that wait for the person count toward `REASK_LIMIT`. An allow-once is now used once: if a later agent process in the same turn asks for the same command again, the person is asked again instead of the old allow running it a second time. <!-- changes/acp-reask-parks-only.md -->
 
 ## 0.1.0-beta.48 (2026-11-20)

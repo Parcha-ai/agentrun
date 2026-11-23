@@ -61,6 +61,13 @@ test("a text ending on a long key's start, a short key being that start's head, 
   assert.equal(piecesLeft(cut, LONG), 0, `the cut text holds ${piecesLeft(cut, LONG)} pieces of the long key`);
 });
 
+test("a live tail ending on a long key's start, a short key being that start's head, holds no piece of the long key", async (t) => {
+  const agent = agentSaying(t, `vendor: refused ${LONG.slice(0, 20)}`, [LONG.slice(0, 8), LONG], true);
+  const tail = await until(() => (agent.stderrTail().includes('vendor: refused') ? agent.stderrTail() : undefined), 'its stderr to arrive');
+  assert.equal(agent.alive(), true, 'read while the agent runs');
+  assert.equal(piecesLeft(tail, LONG), 0, `the live tail holds ${piecesLeft(tail, LONG)} pieces of the long key`);
+});
+
 test("the stderr a live agent keeps, read while it is still writing its key, holds no piece of it", async (t) => {
   const agent = agentSaying(t, `vendor: refused ${KEY.slice(0, 20)}`, [KEY], true);
   const tail = await until(() => (agent.stderrTail().includes('vendor: refused') ? agent.stderrTail() : undefined), 'its stderr to arrive');
