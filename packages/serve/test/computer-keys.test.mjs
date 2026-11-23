@@ -49,6 +49,8 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY }, { daytonaConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   // A self-hosted target's attach relay reaches Daytona's create() as attachEgress, beside its connect.
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_ATTACH_EGRESS: "192.0.2.40:18443" }, { daytonaConnect: "dial" }), { ok: true, options: { apiKey: KEY, attachEgress: "192.0.2.40:18443", connect: "dial" } });
+  // Create's wait for Daytona's eventually consistent label listing, in ms: no secret, so never on the launcher's list.
+  assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_LISTED_MS: "45000" }), { ok: true, options: { apiKey: KEY, listedMs: "45000" } });
   assert.deepEqual(providerOptions("e2b", { E2B_API_KEY: KEY }, { e2bConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalConnect: "dial" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "agentrun", connect: "dial" } });
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
