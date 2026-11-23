@@ -822,12 +822,13 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): its URLs' query values elided, then redacted by its
-   *  redactor, else the rows' own, cut at `calls.result`; a web call's every url whole, only its long texts cut
-   *  (web-calls.ts). Elided first, so the redactor reads the text as it is shown: redactedCall reads only the head that
-   *  is shown, and an elision after it would bring text past that head into the cut. */
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its
+   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut
+   *  (web-calls.ts). Every secret check reads the text as it came, never as shown: elided, a URL's query and userinfo are
+   *  cut apart, and a held value in one no longer reads as itself. The served redactor (redactedCall) elides each piece it
+   *  read after redacting it, so what it returns is already as shown and the elision here changes nothing in it. */
   const wholeRedact = options.calls?.redact ?? options.redact;
-  const callShown = (text: string) => (wholeRedact ? wholeRedact(scrubUrls(text)) : scrubUrls(text));
+  const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
     const web = webShownOf(tool, text, callShown);
