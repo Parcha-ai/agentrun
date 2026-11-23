@@ -2150,8 +2150,6 @@ export class RunsMadeFromLeft extends StoreConstraint {
   }
 }
 
-/** A run made from a purged run (its launch's `replay.of` or `audit.of` names it): refused, nothing written. Its source's
- *  input is gone, and a copy of it is never made again (Runs.create). `runId`: the purged run. */
 /** A run's firing (Runs.create `firing`) that no longer takes it: no longer due or sent with a start_by, or it has a run. */
 export class FiringMoved extends Error {
   constructor(readonly triggerId: string, readonly key: string) {
@@ -2160,6 +2158,8 @@ export class FiringMoved extends Error {
   }
 }
 
+/** A run made from a purged run (its launch's `replay.of` or `audit.of` names it): refused, nothing written. Its source's
+ *  input is gone, and a copy of it is never made again (Runs.create). `runId`: the purged run. */
 export class RunPurged extends Error {
   constructor(readonly runId: string, readonly made: string) {
     super(`run ${made} is made from run ${runId}, which is purged: it is not started`);
