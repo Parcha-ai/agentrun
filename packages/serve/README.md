@@ -3300,13 +3300,17 @@ The 10 minutes run from the answer, not from `fired_at`, so a firing that reache
 waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
 firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
 would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
-firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed. A start that
+begins by `start_by` holds the room until its run is written: when `start_by` is less than a minute away, the server
+moves it to a minute after the start began, before it writes the run.
 
 The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of
 another agent's triggers) is refused with 422. A due firing takes its start only while its trigger has room for it,
 by the overlap check and `max_active_runs` the server applies before it hands a firing over: one waiting on its retry
-whose place another firing's run has taken since is refused with 422 `not_due`, which says why.
+whose place another firing's run has taken since is refused with 422 `not_due`, which says why. So is one whose place
+another firing is taking: a firing whose hook has not answered yet, or whose host's start is being written, holds the
+room as a run in progress until that is done.
 
 A hook that does not take the firing is a failed try of it, as a refused run is, unless the host started its run by
 then. The firing's `error.code` is `hook_failed`, and its `reason` names the cause: the status the host answered,
