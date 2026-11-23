@@ -89,19 +89,91 @@ const MAX_FRAME_BYTES = 64 << 20;
 /** The most input calls a watch has in flight at once: one more is refused as limit, never queued. */
 const MAX_INPUTS_IN_FLIGHT = 8;
 
+/** The characters of each part of a login and of a secret-named parameter, one character at a time. */
+const LOGIN_USER = /[\w.+-]/;
+const LOGIN_PASSWORD = /[^\s@/'"]/;
+const LOGIN_HOST = /[\w.-]/;
+const PARAM_NAME = /[\w-]/;
+const PARAM_VALUE = /[^\s&"';,]/;
+const PARAM_SECRET = /token|password|passwd|secret|key|jwt|auth|code|signingKey|credential/i;
+
+/** The characters the login and secret-parameter scans read in the last redactWords call, for tests: a few per character. */
+export let redactWordsReads = 0;
+
+/** The end of the run of `part` characters that starts at `from`. */
+function runEnd(words: string, from: number, part: RegExp): number {
+	let at = from;
+	while (at < words.length && part.test(words[at])) at++;
+	redactWordsReads += at - from + 1;
+	return at;
+}
+
+/**
+ * A login in a host's place, user:password@host, each part one or more characters. A user part runs to the end of its
+ * run, so every start in a run meets the same colon, password and @ host, and fails when the first does. The scan then
+ * goes on past the password: a user part that starts inside it ends at a colon whose password ends where this one
+ * did, or at that end itself, which is no colon. So each character is read about twice, where the regex this replaces
+ * read to the end of the run from every start in it.
+ */
+function cutLogins(words: string): string {
+	let cut = "";
+	let kept = 0;
+	let at = 0;
+	while (at < words.length) {
+		const userEnd = runEnd(words, at, LOGIN_USER);
+		if (userEnd === at || words[userEnd] !== ":") {
+			at = userEnd + 1;
+			continue;
+		}
+		const passwordEnd = runEnd(words, userEnd + 1, LOGIN_PASSWORD);
+		if (passwordEnd > userEnd + 1 && words[passwordEnd] === "@") {
+			const hostEnd = runEnd(words, passwordEnd + 1, LOGIN_HOST);
+			if (hostEnd > passwordEnd + 1) {
+				cut += `${words.slice(kept, at)}[a login]`;
+				kept = at = hostEnd;
+				continue;
+			}
+		}
+		at = passwordEnd + 1;
+	}
+	return cut + words.slice(kept);
+}
+
+/**
+ * A secret-named parameter, its name with a prefix or suffix too (api_key=, access_token=, client_secret=): a run of
+ * [\w-] holding a secret word, then = and a value. The cut starts at the run's first word character, where \b holds,
+ * so a leading dash is kept. The value is read only when it is cut, so a run that fails is read once.
+ */
+function cutSecretParams(words: string): string {
+	let cut = "";
+	let kept = 0;
+	let at = 0;
+	while (at < words.length) {
+		const nameEnd = runEnd(words, at, PARAM_NAME);
+		if (nameEnd < words.length - 1 && words[nameEnd] === "=" && PARAM_VALUE.test(words[nameEnd + 1])) {
+			const name = words.slice(at, nameEnd);
+			redactWordsReads += name.length;
+			if (PARAM_SECRET.test(name)) {
+				const valueEnd = runEnd(words, nameEnd + 1, PARAM_VALUE);
+				cut += `${words.slice(kept, at + name.search(/\w/))}[a secret]`;
+				kept = at = valueEnd;
+				continue;
+			}
+		}
+		at = nameEnd + 1;
+	}
+	return cut + words.slice(kept);
+}
+
 /**
  * Words with no URL and no secret: a URL of any scheme, a login, a bearer, a secret-named parameter, a key- or
  * token-shaped value and an endpoint (a host or an IPv4 address with a port) are taken out.
  */
 export function redactWords(words: string): string {
+	redactWordsReads = 0;
+	const loginsCut = cutLogins(words.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]"));
 	return (
-		words
-			.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[a URL]")
-			// A login in a host's place: user:password@host.
-			.replace(/[\w.+-]+:[^\s@/'"]+@[\w.-]+/g, "[a login]")
-			.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]")
-			// A secret-named parameter, its name with a prefix or suffix too: api_key=, access_token=, client_secret=.
-			.replace(/\b[\w-]*(?:token|password|passwd|secret|key|jwt|auth|code|signingKey|credential)[\w-]*=[^\s&"';,]+/gi, "[a secret]")
+		cutSecretParams(loginsCut.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "[a secret]"))
 			.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]*/g, "[a secret]")
 			.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, "[a secret]")
 			.replace(/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "[a secret]")
