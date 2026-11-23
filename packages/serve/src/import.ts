@@ -244,10 +244,11 @@ export type ProjectPlan = {
 };
 /** `already`: the session files an earlier import took whole, left unread; `held`, the runs an import would not take
  *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the locators of each
- *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
- *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
+ *  session's subagents, whose usage is its run's: Claude Code's by the locator (locatorKey) of the session file beside them, Codex's by `source:thread`; `mirrorsBelow`, the runs (`source:id`) a subagent of
+ *  which leaves a request to another source's session (`mirrors`): runImport writes them after the rest. `untied`, those
+ *  of subagents whose file names no parent, counted in a summary's totals alone. `found`: each other planned session measured,
  *  when the plan was made to (`measure`). `stopped`: `signal` ended the listing with session files still unlisted. */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, Locator[]>; mirrorsBelow?: Set<string>; untied: { locator: Locator; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
 export type ImportReport = {
   agents: {
     id: string;
@@ -448,6 +449,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   // Each subagent read here, by locatorKey, as its own subagents name it (`source:id`): what holdBack walks down.
   const childIds = new Map<string, string>();
+  // Each subagent read here whose requests name another source's session (`mirrors`): its run is written after the rest.
+  const mirroring = new Set<string>();
+  const mirrorsBelow = new Set<string>();
   const tie = async (locator: Locator, source: Source, size: LocatorSize): Promise<void> => {
     const listed = size.bytes > MAX_SESSION_BYTES ? undefined : await readSession(locator, source, { turns: false }).catch(() => undefined);
     // One over the cap is not read: its parent is what its reader tells without reading it (an OpenCode row's, a Codex
@@ -499,6 +503,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       if (session.child && session.parent) {
         child(`${source}:${session.parent}`, locator);
         childIds.set(locatorKey(locator), `${source}:${session.id}`);
+        if (session.mirrors?.length) mirroring.add(locatorKey(locator));
         continue;
       }
       if (!session.cwd) {
@@ -552,6 +557,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       if (!holds.has(key)) holds.set(key, await holdBack(children, parts, childIds, now));
       const why = holds.get(key);
       if (why) leave({ what: locatorKey(locatorOf(parts[0]!)), ...why, session: key }, parts[0]!.source, project.cwd);
+      else if (subagentsOf(children, parts, childIds).some((locator) => mirroring.has(locatorKey(locator)))) mirrorsBelow.add(key);
     }
     project.sessions = project.sessions.filter((session) => !holds.get(`${session.source}:${session.id}`));
     if (!project.sessions.length) projects.delete(project.cwd);
@@ -572,7 +578,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     }
     skipped.splice(0, skipped.length, ...ofChosen);
   }
-  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied, ...(stopped ? { stopped: true } : {}) };
+  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, mirrorsBelow, untied, ...(stopped ? { stopped: true } : {}) };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
@@ -768,30 +774,35 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
 const LIVE_CHILD: Pick<Skipped, "why" | "kind"> = { why: "a subagent of it was written in the last 10 minutes: it comes in with it", kind: "live" };
 const LARGE_CHILD: Pick<Skipped, "why" | "kind"> = { why: `a subagent of it is over ${MAX_SESSION_BYTES} bytes`, kind: "large" };
 
-/** Why a run waits, if it does: the first of its subagents, theirs, and so on down (the import's children relation,
- *  as readChildren walks it), that cannot be read now by its size now: still written, or over the cap. */
-async function holdBack(children: Plan["children"], parts: readonly Session[], childIds: ReadonlyMap<string, string>, now: number): Promise<Pick<Skipped, "why" | "kind"> | undefined> {
-  const source = parts[0]!.source;
+/** A run's subagents, theirs, and so on down, each once (the import's children relation, as readChildren walks it):
+ *  `childIds` names each subagent the plan read, so its own subagents are found. */
+function subagentsOf(children: Plan["children"], parts: readonly Session[], childIds: ReadonlyMap<string, string>): Locator[] {
+  const out: Locator[] = [];
   const visited = new Set<string>();
-  const under = async (owner: string): Promise<Pick<Skipped, "why" | "kind"> | undefined> => {
+  const under = (owner: string): void => {
     for (const locator of children.get(owner) ?? []) {
       const key = locatorKey(locator);
       if (visited.has(key)) continue;
       visited.add(key);
-      const size = await sizeNow(locator, source);
-      if (size && size.bytes > MAX_SESSION_BYTES) return LARGE_CHILD;
-      if (size && now - size.mtimeMs < LIVE_MS) return LIVE_CHILD;
+      out.push(locator);
       const id = childIds.get(key);
-      const deeper = id === undefined ? undefined : await under(id);
-      if (deeper) return deeper;
+      if (id !== undefined) under(id);
     }
-    return undefined;
   };
-  for (const part of parts) {
-    const why = await under(locatorKey(locatorOf(part)));
-    if (why) return why;
+  for (const part of parts) under(locatorKey(locatorOf(part)));
+  under(`${parts[0]!.source}:${parts[0]!.id}`);
+  return out;
+}
+
+/** Why a run waits, if it does: the first of its subagents (subagentsOf) that cannot be read now by its size now: still
+ *  written, or over the cap. */
+async function holdBack(children: Plan["children"], parts: readonly Session[], childIds: ReadonlyMap<string, string>, now: number): Promise<Pick<Skipped, "why" | "kind"> | undefined> {
+  for (const locator of subagentsOf(children, parts, childIds)) {
+    const size = await sizeNow(locator, parts[0]!.source);
+    if (size && size.bytes > MAX_SESSION_BYTES) return LARGE_CHILD;
+    if (size && now - size.mtimeMs < LIVE_MS) return LIVE_CHILD;
   }
-  return await under(`${source}:${parts[0]!.id}`);
+  return undefined;
 }
 
 /** A run's subagents, theirs, and so on down, each file once, read with the import's `seen`: those beside each of its
@@ -1384,9 +1395,9 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     const seen = await seenIn(store, project.agentId);
     const place: Place = { project, line, revisions, seen };
     for (const files of byRun(project.sessions)) {
-      // A run that may leave a request to another session (`mirrors`) is written after every other run: the request is
-      // that session's only once it is saved.
-      if (files.some((part) => part.mirrors?.length)) later.push({ place, files });
+      // A run that may leave a request to another session (`mirrors`), itself or a subagent of it (the plan's
+      // mirrorsBelow), is written after every other run: the request is that session's only once it is saved.
+      if (files.some((part) => part.mirrors?.length) || plan.mirrorsBelow?.has(`${files[0]!.source}:${files[0]!.id}`)) later.push({ place, files });
       else if ((await writeRun(place, files)) === "stopped") break;
     }
     report.agents.push(line);

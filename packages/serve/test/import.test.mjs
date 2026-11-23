@@ -2629,3 +2629,27 @@ test("an OpenCode session whose size cannot be queried is left out as unreadable
   const plan = await planImport(options(h));
   assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["unread", `${file}#ses_x`]]);
 });
+
+test("an OpenCode subagent's request run through Claude Code counts once when the Claude Code session's project is written after its parent's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const [first, second] = [join(h.at, "code", "a"), join(h.at, "code", "b")];
+  for (const dir of [first, second]) mkdirSync(dir, { recursive: true });
+  claudeSession(h.at, second, 1);
+  openCodeDb(h.at, [
+    // The parent mirrors nothing itself: its subagent does.
+    { id: "ses_P", cwd: first, answers: [{ input: 3, output: 2, cost: 0.5 }] },
+    { id: "ses_C", parent: "ses_P", cwd: first, prompt: "Find the notes.", answers: [{ input: 4, output: 1, cost: 0.25, mirrors: sessionId(1) }, { input: 5, output: 1, cost: 0.125 }] },
+  ]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  assert.deepEqual(runs.map((r) => r.importedFrom.source).sort(), ["claude-code", "opencode"]);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  // A run with a subagent: its metrics hold the subagent's models too, which its transcript's marks do not (metricsOf).
+  const metrics = await storedMetrics(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 8, 3], "the subagent's mirrored request counts in the Claude Code run alone");
+  assert.equal(timelineOf(await entriesOf(store, run.id), { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, 2, "the timeline's usage row counts the same");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.625);
+});
