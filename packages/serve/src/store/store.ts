@@ -937,6 +937,8 @@ export interface Triggers {
   /** How many of the trigger's runs are in progress at `now` (the triggers' clock): started with a run not ended (a run
    *  reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its startBy. */
   activeRuns(triggerId: string, now: number): Promise<number>;
+  /** The keys of the firings activeRuns counts: the trigger's firings in progress at `now`, in no order. */
+  activeKeys(triggerId: string, now: number): Promise<string[]>;
   /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
    *  startBy not passed): its key, or undefined. */
   held(triggerId: string, now: number): Promise<string | undefined>;

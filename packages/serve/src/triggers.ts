@@ -327,10 +327,12 @@ export class Triggers {
   /** Each trigger's firings, driven one after another in the order asked: a firing's overlap check reads what the one
    *  before it settled to. */
   private readonly turns = new Map<string, Promise<void>>();
-  /** Each trigger's firings mid-hand on this server, by key: drive found room for it (busy) and has not yet written what
-   *  came of it (sent, started, a failed try), or a host start found room for it and has not yet started it with its
-   *  run. Neither is in the store as a run in progress meanwhile, so busy counts each, but the one it checks, here. */
-  private readonly handing = new Map<string, Set<string>>();
+  /** Each trigger's firings mid-hand on this server, by key, with how many hold each: drive found room for it (busy) and
+   *  has not yet written what came of it (sent, started, a failed try), or a host start is writing its run and has not
+   *  yet started the firing with it. Either may hold a firing the other holds (its host starts it before its hook
+   *  answers), so a firing leaves only once both let go. busy counts each here, but the one it checks, once with the
+   *  store's firings in progress. */
+  private readonly handing = new Map<string, Map<string, number>>();
   /** Each trigger's room checks on this server (drive's, a host start's), one after another: a check's hold (handing, a
    *  start_by pushed out) is in place before the next one reads, so two never both take the one place. Removed once idle. */
   private readonly checks = new Map<string, Promise<void>>();
@@ -824,15 +826,19 @@ export class Triggers {
     return done;
   }
 
-  /** Firing `key` of `triggerId` held mid-hand (handing) until the returned release; a key already held is left to its
-   *  holder, and its release here does nothing. */
+  /** Firing `key` of `triggerId` held mid-hand (handing) until the returned release, counted: held while any of its
+   *  holders has not released. A release lets go once, however often it is called. */
   private hold(triggerId: string, key: string): () => void {
     let keys = this.handing.get(triggerId);
-    if (!keys) this.handing.set(triggerId, (keys = new Set()));
-    if (keys.has(key)) return () => {};
+    if (!keys) this.handing.set(triggerId, (keys = new Map()));
     const held = keys;
-    held.add(key);
+    held.set(key, (held.get(key) ?? 0) + 1);
+    let released = false;
     return () => {
+      if (released) return;
+      released = true;
+      const left = held.get(key)! - 1;
+      if (left > 0) return void held.set(key, left);
       held.delete(key);
       if (held.size === 0 && this.handing.get(triggerId) === held) this.handing.delete(triggerId);
     };
@@ -1165,16 +1171,16 @@ export class Triggers {
    *  many of the trigger's runs have not ended: a capped trigger starts a run per firing and never skips. A trigger whose
    *  source starts a run per firing (its adapter's concurrent) is never skipped either: with no cap it starts, the server's
    *  run limit still holding through retry. A firing its launch hook's host took with no run yet holds the room as a run in
-   *  progress until it starts or its startBy passes (the store's activeRuns and held): with a cap, a firing waits on it (on
+   *  progress until it starts or its startBy passes (the store's activeKeys and held): with a cap, a firing waits on it (on
    *  its key while the trigger has no run), and the overlap check skips for it. So does a firing mid-hand on this server
    *  (handing), other than `firing`: one whose hook has not answered yet, or whose host's start is being written. */
   private async busy(trigger: Trigger, firing: FiringRow): Promise<{ skipped: string } | { waitsOn: string; reason: string } | undefined> {
     const now = this.clock.now();
-    // Read before the store: a firing whose hand ends meanwhile is in the store by then, counted twice at worst, never not
-    // at all.
-    const mid = [...(this.handing.get(trigger.id) ?? [])].filter((key) => key !== firing.key);
+    // Read before the store: a firing whose hand ends meanwhile is in the store by then, so it is counted, and counted
+    // once (a key in both is one firing).
+    const mid = [...(this.handing.get(trigger.id)?.keys() ?? [])].filter((key) => key !== firing.key);
     if (trigger.maxActiveRuns !== null) {
-      const active = (await this.store.triggers.activeRuns(trigger.id, now)) + mid.length;
+      const active = new Set([...(await this.store.triggers.activeKeys(trigger.id, now)), ...mid]).size;
       if (active < trigger.maxActiveRuns) return undefined;
       const on = trigger.lastRunId ?? (await this.store.triggers.held(trigger.id, now)) ?? mid[0];
       if (!on) return undefined;
@@ -1297,8 +1303,9 @@ export class Triggers {
    *  what holds its room until `release`. Refused, in words, unless the firing is due (being handed over, or waiting on
    *  its retry) with room by drive's own check (busy: max_active_runs, the overlap, firings mid-hand), then held mid-hand
    *  until its run starts; or is one its host took with no run, up to its startBy (the host may answer first and start
-   *  the run after), then that startBy pushed out to at least START_WINDOW_MS from now if it is sooner, so the firing
-   *  holds its room while its run is written. Undefined when the push was not written: the firing moved meanwhile. */
+   *  the run after), then held mid-hand the same way, however long its run takes to write. Its startBy is pushed out to
+   *  at least START_WINDOW_MS from now if it is sooner, so the store holds its room too, for another server's checks.
+   *  Undefined when the push was not written: the firing moved meanwhile. */
   private async startRoom(trigger: Trigger, key: string): Promise<{ firing: FiringRow; release: () => void } | undefined> {
     const refused = (reason: string, message: string) => invalid([{ field: "trigger_firing.firing_id", reason, message }]);
     const firing = await this.store.triggers.firing(trigger.id, key);
@@ -1307,9 +1314,9 @@ export class Triggers {
     const minutes = LAUNCH_HOOK_LATE_START_MS / 60_000;
     if (tookWithNoRun(firing)) {
       if (now > firing.startBy!) throw refused("not_due", `Firing ${key}'s host answered without starting its run, and the ${minutes} minutes after its host answered in which it may still start it have passed (start_by ${iso(firing.startBy!)}).`);
-      if (firing.startBy! >= now + START_WINDOW_MS) return { firing, release: () => {} };
+      if (firing.startBy! >= now + START_WINDOW_MS) return { firing, release: this.hold(trigger.id, key) };
       const pushed = await this.store.triggers.settle(trigger.id, key, { status: "sent", reason: firing.reason, keepAttrs: true, startBy: now + START_WINDOW_MS, from: "sent", holdsAt: now });
-      return pushed && { firing: pushed.firing, release: () => {} };
+      return pushed && { firing: pushed.firing, release: this.hold(trigger.id, key) };
     }
     if (firing.status !== "due") throw refused("not_due", `Firing ${key} is ${firing.status}${firing.reason ? ` (${firing.reason})` : ""}: a run starts only for a firing the launch hook is handing over, or one its host took within ${minutes} minutes of its answer.`);
     // Another firing's run, or another hand or start on this server, may have taken its trigger's room since it was handed.

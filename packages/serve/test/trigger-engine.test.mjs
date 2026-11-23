@@ -773,7 +773,10 @@ test("a firing held by both its open hook and its host's start holds the room un
   assert.equal(await store.runs.get("run-b"), undefined, "one run: the trigger's one place");
 });
 
-test("a host start of a sent firing holds the room until its run is written, however long that takes: with max_active_runs 1 and the run still being written an hour past start_by, another firing's host start is refused", async (t) => {
+/** With max_active_runs 1, firing a's host took it with no run, and its host's start begins (`atStartBy`: at a's
+ *  start_by, so the start pushes it out) and is still writing its run an hour past any start_by: another firing's host
+ *  start is refused, and a's run is the one. */
+async function slowStart(t, atStartBy) {
   const host = await heldHost(t);
   const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook });
   const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
@@ -784,16 +787,22 @@ test("a host start of a sent firing holds the room until its run is written, how
   host.open[1].writeHead(200).end();
   await until(async () => (await store.triggers.firing(made.id, a)).status === "sent", "a's host took it with no run");
   const { startBy } = await store.triggers.firing(made.id, a);
+  if (atStartBy) clock.to(new Date(startBy).toISOString());
   const startA = heldStart(triggers, store, made.id, a, "run-a");
   await until(() => startA.entered, "a's host start is writing its run");
-  // Past start_by and any window the start pushed it out by: only the start itself still holds the room.
+  if (atStartBy) assert.equal((await store.triggers.firing(made.id, a)).startBy, startBy + 60_000, "the start pushed a's start_by out");
+  // Past start_by and any push of it: only the start itself still holds the room.
   clock.to(new Date(startBy + 3_600_000).toISOString());
   assert.equal(await store.triggers.activeRuns(made.id, clock.now()), 0, "the store holds nothing for a by now");
   await assert.rejects(triggers.handedStart({ trigger_id: made.id, firing_id: b }, "a", hostRun(store, b, "run-b")), notDue(/max_active_runs 1/));
   startA.writing.resolve();
   assert.deepEqual(await startA.done, { run_id: "run-a", replayed: false });
   assert.equal(await store.runs.get("run-b"), undefined, "one run: the trigger's one place");
-});
+}
+
+test("a host start of a sent firing holds the room until its run is written, however long that takes: with max_active_runs 1 and the run still being written an hour past start_by, another firing's host start is refused", (t) => slowStart(t, false));
+
+test("a host start at a sent firing's start_by pushes it out and holds the room until its run is written, however long that takes: with max_active_runs 1 and the run still being written an hour past the pushed start_by, another firing's host start is refused", (t) => slowStart(t, true));
 
 test("a firing whose run started while its hook is still open counts once: with max_active_runs 2 and that run the one in progress, another firing's host start is taken", async (t) => {
   const host = await heldHost(t);

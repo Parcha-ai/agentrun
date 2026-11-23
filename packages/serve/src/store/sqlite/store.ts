@@ -1207,6 +1207,10 @@ class SqliteStore implements Store {
         (await db.get<{ n: number }>(
           `SELECT COUNT(*) AS n FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
         ))!.n,
+      activeKeys: async (triggerId, clockNow) =>
+        (await db.all<{ key: string }>(
+          `SELECT f.key FROM trigger_firings f LEFT JOIN runs r ON r.id = f.run_id WHERE f.trigger_id = ? AND ${inProgress("f", "r")}`, triggerId, clockNow,
+        )).map((r) => r.key),
       held: async (triggerId, clockNow) =>
         (await db.get<{ key: string }>(
           `SELECT f.key FROM trigger_firings f WHERE f.trigger_id = ? AND ${holdsRoom("f")} ORDER BY f.at DESC, f.${d.firingOrder} DESC LIMIT 1`, triggerId, clockNow,
