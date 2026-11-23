@@ -45,10 +45,17 @@ test("started_at is the run's created_at, within a minute ahead and seven days b
   const { start, api, store } = await fixture(t);
   const earlier = new Date(Date.now() - 3 * 86_400_000);
   earlier.setUTCMilliseconds(250);
+  const arrived = Date.now();
   const started = await start({ started_at: earlier.toISOString() });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   const read = (await api("GET", "/runs/" + started.body.run_id)).body;
   assert.equal(read.created_at, earlier.toISOString());
+  // The run's start column stays its arrival: the claim queue, the learning reset window, the hold cadence and the
+  // audits order by it, so a backdated start neither jumps the queue nor drops out of the runs after a reset.
+  const row = await store.runs.get(started.body.run_id);
+  assert.ok(row.startedAt >= arrived && row.startedAt <= Date.now(), `the row's start is its arrival, not the reported time (${row.startedAt})`);
+  const listed = (await api("GET", "/runs?agent=sdk-fields")).body.runs.find((run) => run.run_id === started.body.run_id);
+  assert.equal(listed.created_at, earlier.toISOString(), "a listing serves the reported time too");
   const inbox = await store.settings.get(inboxKey(started.body.run_id));
   assert.ok(inbox.created_at > earlier.getTime() + 86_400_000, "the deadline is still counted from the start request");
   assert.equal(inbox.expires_at - inbox.created_at, HOUR);
@@ -98,18 +105,57 @@ test("a start retried after its answer was lost gets its run's receipt, though i
   assert.equal(other.body.error?.code, "idempotency_mismatch", JSON.stringify(other.body));
 });
 
-test("title names the run, trimmed, up to 200 characters", async (t) => {
+test("title names the run under every run's title rule: trimmed, whitespace collapsed, cut at 80 characters", async (t) => {
   const { start, api } = await fixture(t);
+  const { runTitle } = await import("../dist/runs-over-store.js");
   const started = await start({ title: "  Nightly   release check\n" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   assert.equal((await api("GET", "/runs/" + started.body.run_id)).body.title, "Nightly release check");
   const long = "é".repeat(200);
-  const fits = await start({ title: long });
-  assert.equal(fits.status, 201, JSON.stringify(fits.body));
-  assert.equal((await api("GET", "/runs/" + fits.body.run_id)).body.title, long);
-  await refused(start({ title: "x".repeat(201) }), /1 to 200 characters/);
-  await refused(start({ title: "   " }), /1 to 200 characters/);
+  const cut = await start({ title: long });
+  assert.equal(cut.status, 201, JSON.stringify(cut.body));
+  const shown = (await api("GET", "/runs/" + cut.body.run_id)).body.title;
+  assert.equal(shown, runTitle(long, []), "cut as a trigger's title is, never refused");
+  assert.ok([...shown].length <= 80, shown);
+  await refused(start({ title: "   " }), /title/);
   await refused(start({ title: 42 }), /title/);
+});
+
+test("a label that holds a server secret is refused on every run's start, the SDK's and RunCreate's alike", async (t) => {
+  const { start, api, token } = await fixture(t);
+  const sdk = await start({ labels: { tenant: `acme ${token}` } });
+  assert.equal(sdk.status, 422, JSON.stringify(sdk.body));
+  assert.equal(sdk.body.error.fields?.[0]?.field, "labels.tenant", JSON.stringify(sdk.body));
+  const agent = { id: "plain", name: "plain", instructions: "Say hi.", tools: [] };
+  assert.equal((await api("POST", "/agents", { definition: agent })).status, 201);
+  const plain = await api("POST", "/agents/plain/runs", { input: { content: "hi" }, labels: { tenant: `acme ${token}` } });
+  assert.equal(plain.status, 422, JSON.stringify(plain.body));
+  assert.equal(plain.body.error.fields?.[0]?.field, "labels.tenant", JSON.stringify(plain.body));
+  assert.ok(!JSON.stringify(plain.body).includes(token) && !JSON.stringify(sdk.body).includes(token), "the refusal never repeats it");
+});
+
+test("an agent holds at most SDK_OPEN_PER_AGENT SDK runs open at once: the next start is refused in words until one ends, and another agent's starts are its own", async (t) => {
+  const { start, api, store } = await fixture(t);
+  const { SDK_OPEN_PER_AGENT } = await import("../dist/sdk/runs.js");
+  assert.ok(Number.isSafeInteger(SDK_OPEN_PER_AGENT) && SDK_OPEN_PER_AGENT > 0);
+  const open = [];
+  for (let i = 0; i < SDK_OPEN_PER_AGENT; i++) {
+    const made = await start();
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    open.push(made.body.run_id);
+  }
+  const over = await start();
+  assert.equal(over.status, 429, JSON.stringify(over.body));
+  assert.equal(over.body.error.code, "rate_limited");
+  assert.match(over.body.error.message, new RegExp(`${SDK_OPEN_PER_AGENT} SDK runs open`));
+  const other = { id: "sdk-other", name: "sdk-other", instructions: "Keep the application policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] };
+  assert.equal((await api("POST", "/agents", { definition: other })).status, 201);
+  assert.equal((await api("POST", "/agents/sdk-other/sdk-runs", startBody, { "Idempotency-Key": "other-1" })).status, 201, "another agent is not held by this one's runs");
+  // One ends, as its runner ends it (a completion, or its inbox closing; an SDK run is never cancelled here): the next start
+  // is taken, and the one after it is refused again.
+  await store.runs.update(await store.claim(open[0], "runner-test", { leaseMs: 60_000 }), { state: "ended" });
+  assert.equal((await start()).status, 201, "a slot an ended run left is taken");
+  assert.equal((await start()).status, 429, "and the cap holds again");
 });
 
 test("labels are kept on the run and found by GET /runs?label=", async (t) => {
@@ -214,5 +260,6 @@ test("an expiry close that loses its replace to a batch that moved the deadline 
 test("capabilities advertise the SDK run start fields and the longest open time", async (t) => {
   const { api } = await serve(t, { runner: false });
   const caps = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.sdk_runs, { started_at: true, title: true, labels: true, max_open_s: 86_400 });
+  const { SDK_OPEN_PER_AGENT } = await import("../dist/sdk/runs.js");
+  assert.deepEqual(caps.features.sdk_runs, { started_at: true, title: true, labels: true, max_open_s: 86_400, max_open_per_agent: SDK_OPEN_PER_AGENT });
 });

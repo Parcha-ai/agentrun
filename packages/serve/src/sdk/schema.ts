@@ -1,4 +1,4 @@
-import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "../run-labels.js";
+import { RUN_LABELS } from "../run-labels.js";
 import { MCP_TOOL_KEY_PATTERN } from "../tool-names.js";
 import { SDK_RUNTIMES, SDK_PLATFORM_MAX_LENGTH, SDK_PLATFORM_PATTERN } from "./runtimes.js";
 
@@ -91,7 +91,7 @@ export const SDK_PATHS = {
       operationId: "startSdkRun",
       summary: "Register a task executed by an existing backend SDK",
       description:
-        "Requires an SDK agent definition. Captures the actual original policy and input, pins promoted workflows and any compiled shadow-check candidate separately, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key. The run takes evidence until an hour after this request; each events batch moves that deadline to an hour after the batch, up to 24 hours after this request (capabilities.features.sdk_runs.max_open_s).",
+        "Requires an SDK agent definition. Captures the actual original policy and input, pins promoted workflows and any compiled shadow-check candidate separately, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key. The run takes evidence until an hour after this request; each events batch moves that deadline to an hour after the batch, up to 24 hours after this request (capabilities.features.sdk_runs.max_open_s). An agent holds at most capabilities.features.sdk_runs.max_open_per_agent SDK runs open at once: a start past it is 429 rate_limited until one completes, is cancelled or its inbox closes.",
       parameters: [id("agent_id"), { ...key, required: true }],
       requestBody: body(
         sdkObject(
@@ -109,14 +109,8 @@ export const SDK_PATHS = {
             }, ["name", "description", "input_schema", "permission"]) },
             workflow_adapters: { type: "array", maxItems: 2, uniqueItems: true, items: { enum: ["runNode", "runJudge"] }, description: "Optional backend callbacks available for workflow model and decision nodes. Default empty; requires workflow_tools." },
             started_at: { ...text, format: "date-time", description: "When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request." },
-            title: { ...text, minLength: 1, maxLength: 200, description: "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input." },
-            labels: {
-              type: "object",
-              maxProperties: MAX_LABELS,
-              propertyNames: { pattern: LABEL_KEY.source },
-              additionalProperties: { type: "string", minLength: 1, maxLength: MAX_LABEL_VALUE },
-              description: "The caller's own labels for the run, under the same rules as RunCreate.labels: kept on the run, served on every read of it and matched by GET /runs' label. Put no secret in one: a label holding a server secret is refused.",
-            },
+            title: { ...text, minLength: 1, maxLength: 128000, description: "The run's title, under every run's title rule: one line, whitespace collapsed, cut at 80 characters (never refused for its length). Absent: its input's." },
+            labels: { ...RUN_LABELS, description: "The caller's own labels for the run, under the same rules as RunCreate.labels: kept on the run, served on every read of it and matched by GET /runs' label. Put no secret in one: a label holding a server secret is 422 under `labels.<key>`." },
           },
           ["input", "instructions"],
         ),
@@ -132,6 +126,7 @@ export const SDK_PATHS = {
           }),
         ),
         ...errors,
+        429: { description: "This agent already holds capabilities.features.sdk_runs.max_open_per_agent SDK runs open (rate_limited)." },
       },
     },
   },

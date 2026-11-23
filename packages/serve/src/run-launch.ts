@@ -17,6 +17,10 @@ import { ID, isObject, type Json } from "./validate.js";
 import type { Place } from "./workspace/place.js";
 import { relativeSegments } from "./workspace/paths.js";
 
+/** Who of the owner started a run (RunLaunch.startedBy). */
+export type StartedBy = "owner_session" | "token";
+const STARTED_BY: readonly string[] = ["owner_session", "token"];
+
 /** What a run is launched with: everything its runner needs to build the run's spec at its claim, nothing derived later.
  *  The server writes it once at start; the runner reads it at each claim (its claim rebuilds the run from the store, this
  *  body included). `harness` picks the loop's adapter (absent, the revision's harness is used); `input` is the start
@@ -83,6 +87,15 @@ export interface RunLaunch {
   readonly audit?: Replay;
   /** The trigger and firing that started the run, or none for a person's run. */
   readonly trigger?: RunTrigger;
+  /** The owner's own request that started the run: under the API token (`token`) or the owner's signed-in session
+   *  (`owner_session`), stamped by the start routes alone (runs-over-store.ts startRun, startInline) from the request.
+   *  Absent for every run the owner did not start: a schedule's or trigger's, a learned workflow's audit shadow or replay,
+   *  and a start on a server with no owner's account. A plan-billed recipe runs on its owner's sign-in only for a run
+   *  that carries it (runner/harness-loops.ts refuseRecipeRunNoPerson). */
+  readonly startedBy?: StartedBy;
+  /** When the caller says the run started (an SDK start's `started_at`, ms), served as the run's created_at; the run's
+   *  row keeps when it arrived. Absent: created_at is the arrival. */
+  readonly startedAt?: number;
   /** Who the first message is from, when not the person: kept only through the fail-safe below. */
   readonly inputOrigin?: MessageOrigin;
   /** A run that re-asks its agent after it ends (a trigger's follow-up). */
@@ -207,6 +220,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
     ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
+    ...(launch.startedBy ? { started_by: launch.startedBy } : {}),
+    ...(launch.startedAt !== undefined ? { started_at: launch.startedAt } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
     ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
@@ -274,6 +289,8 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(readReplay(stored.audit) ? { audit: readReplay(stored.audit)! } : {}),
     ...(trigger ? { trigger } : {}),
+    ...(typeof stored.started_by === "string" && STARTED_BY.includes(stored.started_by) ? { startedBy: stored.started_by as StartedBy } : {}),
+    ...(typeof stored.started_at === "number" && Number.isFinite(stored.started_at) ? { startedAt: stored.started_at } : {}),
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),

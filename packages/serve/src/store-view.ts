@@ -97,6 +97,9 @@ export interface ViewDeps {
    *  the reads that answer a run as a whole pass it (a run's own read, its archive): absent, the view has no `recordings`,
    *  so a list, a poll or a status read opens no file. */
   readonly recordings?: (agentId: string, runId: string, endedAt: number | null) => Promise<RecordingView[]>;
+  /** The one line a run of harness `harness` on its owner's own sign-in carries (HarnessEntry.signInWarning), else
+   *  undefined. None: no run carries one. */
+  readonly signInWarning?: (harness: string) => string | undefined;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -812,7 +815,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     // reclaim shows a new runner and a higher epoch. Additive on the Run (openapi claim/1).
     claim: run.live ? { runner: runRow.runner!, epoch: runRow.epoch, until: iso(runRow.claimedUntil!) } : null,
     ...(launch?.effort ? { effort: launch.effort } : {}),
-    created_at: iso(runRow.startedAt),
+    // When its caller says it started (an SDK run's started_at, kept on its launch), else when it arrived here: the row's
+    // started_at stays its arrival, which the store's ordering and retention read.
+    created_at: iso(launch?.startedAt ?? runRow.startedAt),
     updated_at: iso(run.updatedAtMs),
     ended_at: endedAtMs === null ? null : iso(endedAtMs),
     result,
@@ -828,6 +833,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     budget_refused_calls: run.windDown.refusedCalls,
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
+    // A person's run on its owner's own sign-in: the line the terminal's sign-in says first (the vendor's terms may not
+    // cover it), which the console's run page shows. Absent on every other run.
+    ...signInWarningOf(deps, launch),
     // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
     // (store-reads/learning.ts pathViewOf).
     ...pathViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
@@ -848,6 +856,13 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     poll_after_ms: settled ? 0 : 1000,
     last_progress_at: run.lastProgressAt,
   };
+}
+
+/** `sign_in_warning` for a run its owner started (launch.startedBy) on a harness whose person's runs go on the owner's own
+ *  sign-in (ViewDeps.signInWarning); nothing for any other run. */
+function signInWarningOf(deps: ViewDeps, launch: RunLaunch | undefined): { sign_in_warning?: string } {
+  const warning = launch?.harness !== undefined && launch.startedBy !== undefined ? deps.signInWarning?.(launch.harness) : undefined;
+  return warning ? { sign_in_warning: warning } : {};
 }
 
 /** The run list's answer from the store, byte-identical to runs.ts's summary: the view's subset a list shows. */

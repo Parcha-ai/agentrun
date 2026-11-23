@@ -3814,7 +3814,7 @@ export const COMMANDS = [
         "name": "title",
         "type": "string",
         "required": false,
-        "description": "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input."
+        "description": "The run's title, under every run's title rule: one line, whitespace collapsed, cut at 80 characters (never refused for its length). Absent: its input's."
       },
       {
         "name": "platform",

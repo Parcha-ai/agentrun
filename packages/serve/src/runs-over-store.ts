@@ -31,7 +31,7 @@ import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
-import { type LaunchDisk, launchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
+import { type LaunchDisk, launchBody, sourceProjectOf, type RunLaunch, type StartedBy } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
@@ -514,6 +514,9 @@ export interface StartOptions {
   readonly from?: MessageOrigin;
   /** The names of the tool keys the run carries (`keys`, run-keys.ts; their values go only into `sealed`). */
   readonly keys?: readonly string[];
+  /** The person who started it, by how their request was let in (run-launch.ts StartedBy): the owner's signed-in session
+   *  or the API token. Absent: no person's request started it (a trigger's firing, an audit, a learning batch). */
+  readonly startedBy?: StartedBy;
 }
 
 /** A no-op redactor, when the server gives none: no secret is cut (the switch wires the real shown for a learning run). */
@@ -555,7 +558,7 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
  *  (store.runs.create), which a runner reads at its claim. No process, no door, no setup file: where the run runs is the
  *  runner's. Under `origin`, a key that already started a run gets that run (the store's one-run-per-key), so a retry never
  *  starts a second. */
-export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys }: StartOptions = {}): Promise<RunRow> {
+export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed, keys, startedBy }: StartOptions = {}): Promise<RunRow> {
   if (sourceSyncOf(entry.revision?.body)) {
     // Re-delivery of a firing that already admitted a run is not a new start and needs no new project preparation.
     if (origin) {
@@ -572,7 +575,8 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   }
   if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
-  const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
+  const { launch: prepared, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
+  const launch = startedBy ? { ...prepared, startedBy } : prepared;
   keyedOrRefused(deps, launch, revision.kind, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   try {
@@ -700,7 +704,7 @@ const bodyConflict = ({ source, kind, id, version }: InlineAgent["external"]): A
  *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
-export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, options: Pick<StartOptions, "origin" | "sealed" | "keys"> = {}): Promise<RunRow> {
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, options: Pick<StartOptions, "origin" | "sealed" | "keys" | "startedBy"> = {}): Promise<RunRow> {
   const ref = externalKey(inline.external);
   // A reference's first starts that overlap in this server share one agent id: each prepares its launch, and in Mode 2
   // places its files (uploads-archil.ts place), under the id the agent is written with, whichever start's transaction
@@ -726,7 +730,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
 /** The agent id each reference's first starts in progress share, and a failed first start's kept (startInline). */
 const tentativeAgents = new Map<string, { readonly id: string; starts: number }>();
 
-async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed, keys }: Pick<StartOptions, "origin" | "sealed" | "keys">, newAgentId: string): Promise<RunRow> {
+async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed, keys, startedBy }: Pick<StartOptions, "origin" | "sealed" | "keys" | "startedBy">, newAgentId: string): Promise<RunRow> {
   const { external, revision, stored: storedRevision } = inline;
   const ref = externalKey(external);
   // A version's body never changes here: a different one is refused before anything else is read or written.
@@ -748,7 +752,8 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
-  const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision, ...(keys ? { keys } : {}) });
+  const { launch: prepared } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision, ...(keys ? { keys } : {}) });
+  const launch = startedBy ? { ...prepared, startedBy } : prepared;
   keyedOrRefused(deps, launch, (storedRevision ?? revision).kind as Revision["kind"], sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
@@ -769,6 +774,11 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
     throw error;
   }
 }
+
+/** A run's title as every run shows it (its page, the runs list, Mission Control), from its starter's title or its input:
+ *  one line, each held value redacted before a long one is cut (a cut key could no longer be found), at most 80
+ *  characters. One rule for an agent's run, a trigger's and an SDK run's: a long title is cut, never refused. */
+export const runTitle = (given: string, secrets: readonly string[]): string => clip(redacted(given.trim().replace(/\s+/g, " "), secrets), 80);
 
 /** A run's launch from its create body, with every check the old start made before a run started, in the same order and
  *  words: the body's fields, the revision it pins, the input against its schema, the cap rules, the plane this host
@@ -858,7 +868,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(nativeLaunch ? { native: nativeLaunch } : {}),
     input,
     ...(picked.repo !== undefined ? { repo: picked.repo } : {}),
-    title: clip(redacted(title.trim().replace(/\s+/g, " "), deps.serverSecrets()), 80),
+    title: runTitle(title, deps.serverSecrets()),
     place,
     harness: harnessOfBody(revision.body),
     ...(effort !== undefined ? { effort } : {}),

@@ -109,6 +109,10 @@ export interface HarnessEntry {
   /** What its owner reads before running it (capabilities' `card`): who bills it, what stops it, whose terms it runs
    *  under. None for a harness that runs on this server's keys and cap. */
   card?(env: NodeJS.ProcessEnv): string | undefined;
+  /** The one line its owner's terminal sign-in says first (harness-sign-in.ts signInWarning), where a person's run of it
+   *  goes on their own sign-in (a plan-billed recipe with a signIn on a --harness-sign-in server): each such run's read
+   *  carries it (sign_in_warning), and the console's run page shows it. None for every other harness. */
+  readonly signInWarning?: string;
 }
 
 /** What one run of a module's adapter harness is given (HarnessModuleKit.adapterEntry): the model as its provider names it,

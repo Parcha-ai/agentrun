@@ -10,13 +10,13 @@ import { auxiliaryAdmitter } from "./source-sync/auxiliary.js";
 import { openRunPlacement, sourceSnapshotReader } from "./source-sync/workspace.js";
 import { SOURCE_FAILURES, configurationDigest, type SourceFailureCode } from "./source-sync/registry.js";
 import type { SourceSnapshot } from "./native/source-snapshot-types.js";
-import type {RunLaunch} from "./run-launch.js";
+import type {RunLaunch, StartedBy} from "./run-launch.js";
 import { CliLearningConnections } from "./cli-learning/connections.js";
 import { ObservationLearning } from "./observation/learning.js";
 import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { SDK_MAX_OPEN_MS, SDK_OPEN_PER_AGENT, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
@@ -1075,9 +1075,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       /** /settings/slack: one Slack incoming-webhook URL each of `events` is posted to as a readable message (slack.ts); the
        *  URL kept sealed, never shown. */
       slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
+      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, the most seconds it stays open, and the most of one
+       *  agent's open at once. */
+      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000, max_open_per_agent: SDK_OPEN_PER_AGENT },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
-      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, and the most seconds it stays open. */
-      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000 },
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
@@ -1135,7 +1136,7 @@ export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
  *  it as its own user (`ownUser`: runIsolationOf's `process`), never under --no-runner or a user of their own; and one
  *  person starts them, as Claude Code's login on this machine asks (claude-login.ts whyNotOneOwner): an owner, and one
  *  API token. A check, a schedule and a shared server run on a key (HARNESS.md#sign-in). */
-export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens">, data: string, ownUser: boolean): string | undefined {
+export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publicUrl" | "runnerApart" | "apiOnly" | "token" | "tokens" | "accounts">, data: string, ownUser: boolean): string | undefined {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
@@ -1143,6 +1144,9 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
     ...(loopback(host) ? [] : [`listens on ${host}, past loopback`]),
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
+    // The owner's account (accounts on): a run on the sign-in is the owner's own, started under their password session or
+    // the one token (server.ts startedByOf). With accounts off, whoever opens the console's launch link starts runs.
+    ...(!options.apiOnly && options.accounts !== true ? ["has no owner's account (AGENTRUN_ACCOUNTS=0), so whoever opens its console link starts runs"] : []),
     ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
     ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
     ...(options.runnerApart ? ["runs no runner beside it (--no-runner)"] : []),
@@ -2007,7 +2011,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
+  // A person's run on its owner's own sign-in carries the line the terminal's sign-in says first (its harness entry's,
+  // harness-recipe-entry.ts), on every read of it: the console's run page and the API's answer alike.
+  const signInWarningFor = (harness: string): string | undefined => (Object.hasOwn(harnessTable(base), harness) ? harnessTable(base)[harness]!.signInWarning : undefined);
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses, signInWarning: signInWarningFor });
   // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
@@ -3742,6 +3749,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
   }
 
+  /** The person a start's request came from (run-launch.ts StartedBy): the owner's password session, else the API token.
+   *  None for an accounts-off console session, whose launch link names no owner: a plan-billed recipe's run is refused it
+   *  at its claim (runner/harness-loops.ts refuseRecipeRunNoPerson). */
+  const startedByOf = (req: IncomingMessage): StartedBy | undefined => (byOwnerSession(req) ? "owner_session" : tokenUsed.has(req) ? "token" : undefined);
+
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
     const { body, handed } = handedLaunchSecrets(await bodyOf(req));
@@ -3770,7 +3782,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       const secrets = await handed();
       const seal = startSeal(secrets);
-      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      const by = startedByOf(req);
+      const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets), ...(by ? { startedBy: by } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
     });
@@ -3825,7 +3838,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       const secrets = await handed();
       const seal = startSeal(secrets);
-      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      const by = startedByOf(req);
+      const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets), ...(by ? { startedBy: by } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
   }
@@ -3890,7 +3904,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (body.file_ids !== undefined && !Array.isArray(body.file_ids)) issues.push({ field: "file_ids", reason: "wrong_type", message: "file_ids is a list of file ids" });
     if (body.workflow_first !== undefined && typeof body.workflow_first !== "boolean") issues.push({ field: "workflow_first", reason: "wrong_type", message: "workflow_first is true or false" });
     if (body.learning !== undefined && body.learning !== RUN_LEARNING_USE) issues.push({ field: "learning", reason: "not_an_option", message: `learning is "${RUN_LEARNING_USE}" (the run starts from what its agent learned and keeps nothing), or absent (its agent's own)` });
-    issues.push(...labelsIssues(body.labels));
+    issues.push(...labelsIssues(body.labels, serverSecrets()));
     return issues;
   }
 

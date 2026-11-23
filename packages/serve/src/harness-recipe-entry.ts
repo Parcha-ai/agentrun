@@ -3,13 +3,12 @@
 // (serverRoute). Only a single-owner server on its owner's own machine (--harness-sign-in) runs one on its owner's own
 // sign-in, handing the agent the folder's path and nothing else. AgentRun never reads, refreshes or sends the agent's
 // token (HARNESS.md#sign-in): nothing here opens a file at all.
-import { existsSync } from "node:fs";
 import type { AcpRecipe } from "@parcha/agentrun-harness-acp";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
-import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
+import { archivePlatform } from "./harness-archive.js";
 import { type EgressProxy, egressProxy, egressVars } from "./harness-egress.js";
-import { installDirOf } from "./harness-install.js";
-import { checkedOf, loadRecipe, pinnedDigest, pinnedTree, type Recipe, type RecipeArchive, recipeBinaryOf, recipeCheckLine, recipeInstallLine, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
+import { checkedOf, installedPins, loadRecipe, noRelease, pinsHold, type Recipe, type RecipeArchive, recipeBinaryOf, recipeCheckLine, recipeInstallLine, recipeSignInLine, releaseFor, signedIn, signInHomeOf } from "./harness-recipe.js";
+import { signInWarning } from "./harness-sign-in.js";
 import { acpEntryOf, type AcpEntryHost, type HarnessEntry } from "./harness-table.js";
 import { HarnessUnavailable } from "./provider.js";
 
@@ -138,18 +137,16 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
   const { recipe } = loaded;
   const platform = archivePlatform();
   const release = releaseFor(recipe, platform);
-  if (!platform || !release) throw new Error(`harness recipe ${loaded.file}: ${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
+  if (!platform || !release) throw new Error(`harness recipe ${loaded.file}: ${noRelease(recipe, platform)}`);
   const binary = recipeBinaryOf(data, recipe, release);
-  const installed = installDirOf(data, recipe.id);
   const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn });
   /** Why it cannot run on `env`, in words that end with the command that fixes it; undefined when it can. Nothing is
    *  digested here (each start is, beforeStart): the pins and the check's note are compared. */
   const why = (env: NodeJS.ProcessEnv): string | undefined => {
-    const pin = pinnedDigest(data, recipe, release, platform);
-    const tree = pinnedTree(data, recipe, release, platform);
-    if (!existsSync(binary) || !pin || !tree) return `HARNESS_NOT_INSTALLED: ${recipe.label} ${recipe.release.version} is not installed in ${installed}. Install it with: ${recipeInstallLine(loaded.file, data, env)}`;
+    const pins = installedPins(data, recipe, platform, recipeInstallLine(loaded.file, data, env));
+    if ("code" in pins) return `${pins.code}: ${pins.words}`;
     const checked = checkedOf(data, recipe.id);
-    if (!checked || checked.recipe !== loaded.sha256 || checked.binary !== pin.sha256 || checked.tree !== tree.sha256 || checked.platform !== platform) {
+    if (!checked || checked.recipe !== loaded.sha256 || checked.binary !== pins.pin.sha256 || checked.tree !== pins.tree.sha256 || checked.platform !== platform) {
       return `${HARNESS_NOT_CHECKED}: ${recipe.label} runs on this server once harness-check passes for this recipe and this install${checked ? " (the recipe or its install changed since the last check that passed)" : ""}. Check it with: ${recipeCheckLine(loaded.file, data, env)}`;
     }
     const on = route(env);
@@ -162,7 +159,10 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
   const hosts = recipe.model.billing === "plan" ? (recipe.model.hosts ?? []) : [];
   let egress: Promise<EgressProxy> | undefined;
   let egressUrl: string | undefined;
-  return recipeEntryOf({
+  // Where its person's runs go on the owner's own sign-in, the warning the terminal's sign-in says first rides on each of
+  // them too, for a run started from the console or the API (the run's read, sign_in_warning).
+  const warning = signIn && recipe.model.billing === "plan" && recipe.signIn ? signInWarning(recipe.label, recipe.signIn.terms) : undefined;
+  const entry = recipeEntryOf({
     recipe,
     binary,
     release,
@@ -177,12 +177,10 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
     },
     // The binary and every file beside it, digested again before each start: one swapped since the check never runs.
     beforeStart: async (command) => {
-      const pin = pinnedDigest(data, recipe, release, platform);
-      const tree = pinnedTree(data, recipe, release, platform);
-      const now = await digestOf(command).catch(() => undefined);
-      if (!pin || now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} has sha256 ${now ?? "(unreadable)"}, not its pin's. Install it again with: ${recipeInstallLine(loaded.file, data)}`);
-      const files = await acpPackage()!.treeDigest(installed).catch(() => undefined);
-      if (!tree || files !== tree.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} have the tree sha256 ${files ?? "(unreadable)"}, not their pin's. Install it again with: ${recipeInstallLine(loaded.file, data)}`);
+      const line = recipeInstallLine(loaded.file, data);
+      const pins = installedPins(data, recipe, platform, line);
+      if ("code" in pins) throw new Error(`${pins.code}: ${pins.words}`);
+      await pinsHold(command, pins.installed, pins.pin, pins.tree, line);
     },
     missing: async (env) => {
       const lacks = why(env);
@@ -197,4 +195,5 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
     },
     hidden: why,
   });
+  return warning ? { ...entry, signInWarning: warning } : entry;
 }

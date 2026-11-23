@@ -923,7 +923,10 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
   if (!base) throw new Error(`the launch of ${workflow.name} at ${digest}'s replay could not be read`);
   const source = sourceSyncOf((await store.agents.revision(launch.revision))?.body);
   if (base.sourceProject || source && !deps.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
-  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest } };
+  // The runner's own run, never its person's: the agent run's mark of who started it, and the time its caller said it
+  // started, stay with that run (a plan-billed recipe's replay is refused at its claim, harness-loops.ts).
+  const { startedBy: _by, startedAt: _at, ...kept } = base;
+  const replay: RunLaunch = { ...kept, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest } };
   const sealed = await handedTo(deps, launch, id);
   try {
     if (source) return (await deps.admitAuxiliary!({ runId: id, agentId, revisionId: launch.revision, launch: replay, ...(sealed ? { sealed } : {}) })).created;
