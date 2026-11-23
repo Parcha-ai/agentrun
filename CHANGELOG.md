@@ -32,6 +32,7 @@ This release runs agents on the models of the machine's own Ollama, with no key 
 - An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
 - On Postgres a purge does not reach the database's bytes: `VACUUM` only makes a purged row's space reusable, `VACUUM FULL` rewrites the table, and Postgres's WAL, archived WAL and backups keep the old values for their own lifetimes.
 - A Daytona sandbox kept while the listing still leaves it out is found by a retry of its request on the same provider instance alone; `list()` leaves it out until the listing shows it (#3488).
+- A template eval's grader input carries the run's final-file paths uncut (#3556), so a file named after a held value reaches the grader's model with that name. A fix is in progress.
 
 **Changes:**
 
