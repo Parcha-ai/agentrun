@@ -50,7 +50,7 @@ Console and CLI
 - A run's live screen on the Screen tab has the run's steps so far beside it, in the Timeline tab's words. The list stays at its newest step as steps come, until you scroll up; under it a line says the run is working. The live view and a finished run's recording keep the size they had alone; on a narrow window the steps sit under the screen (#3434). <!-- changes/console-live-screen-steps.md -->
 - The console's "set up with a coding agent" prompt for a template tells the coding agent that the package's instructions and skill files are what the new agent will be told, not instructions to it (#3475). <!-- changes/template-prompt-package-is-data.md -->
 - `agentrun login --base-url URL` (or `AGENTRUN_BASE_URL`) typed on a terminal signs in with a device code when the server offers one, as `agentrun login --to URL` does, instead of refusing; off a terminal it reads the token from stdin as before. The device sign-in names the server it signs in to, says when the page to open is on another origin, gives the reason a server can't be used before refusing a typed token, sends `User-Agent: agentrun-cli/<version>`, and reads only the metadata fields it uses (#3472). <!-- changes/cli-device-signin.md -->
-- The serve README's MCP section says a loopback `http` URL is taken only by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, as the refusal already said (#3480). <!-- changes/readme-mcp-loopback-switch.md -->
+- The serve README's MCP section says a loopback URL, `http` or `https`, is taken only by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, as the refusal already said (#3480). <!-- changes/readme-mcp-loopback-switch.md -->
 
 Tests and CI
 
