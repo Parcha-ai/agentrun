@@ -53,6 +53,9 @@ type EmailScope = (typeof EMAIL_SCOPES)[number];
  * catalog grants).
  */
 export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch", "browser", "ask_person"] as const;
+/** web_fetch's guarded direct fetch, by its id: "kernel", the kernel's own fetch, never the Kernel browser provider.
+ *  Named once here, so the scan of vendor ids (scripts/check-vendor-ids.mjs) counts it once. */
+const DIRECT_FETCH = "kernel" as const;
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, for web_search the
  *  native search where there is one (never on claude-agent, where Claude's own search is picked as `native`), else
  *  Parallel where the server holds its key, else keyless Firecrawl; for web_fetch the guarded direct fetch where the
@@ -65,7 +68,7 @@ export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch",
  *  provider whose keys the server holds (Browserbase, else Kernel); a browser provider's id (`browserbase`, `kernel`:
  *  BROWSER_VENDOR_IDS), that one alone; `chrome`, a Chrome on the server's own host, which no server sets up yet
  *  (browserBy). */
-export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"] as const, web_fetch: ["auto", "firecrawl-keyless", "kernel", "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
+export const PROVIDERS = Object.freeze({ web_search: ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"] as const, web_fetch: ["auto", "firecrawl-keyless", DIRECT_FETCH, "parallel"] as const, browser: Object.freeze(["auto", ...browserProviderIds(), "chrome"]) });
 export type Pickable = keyof typeof PROVIDERS;
 export const PICKABLE = Object.keys(PROVIDERS) as Pickable[];
 /** The permissions `name` may be set to: ask is offered for the tools whose approved call the kernel runs itself, outside
@@ -152,7 +155,7 @@ export const sortedPin = (pin: Pin): Pin => canonicalPin(pin);
 export type ToolSettingsMap = Partial<Record<string, ToolSetting>>;
 /** What a capability resolves to on a run: the native tool, the kernel's own, keyless Firecrawl (keyless Exa behind it),
  *  keyless Exa, Parallel, or why not. */
-export type Resolution = "native" | "kernel" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
+export type Resolution = "native" | typeof DIRECT_FETCH | "firecrawl-keyless" | "exa-keyless" | "parallel" | "browserbase" | `unavailable: ${string}`;
 export const NO_PARALLEL_KEY: Resolution = "unavailable: parallel picked, no PARALLEL_API_KEY";
 /** web_search with `off` picked: no search leaves the server. */
 export const SEARCH_OFF: Resolution = "unavailable: web_search is turned off in settings";
@@ -252,9 +255,9 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (chosen === "off") return { resolves: SEARCH_OFF, why: "turned off in settings" };
   if (chosen === "parallel") return input.parallelKey ? { resolves: "parallel", why: `Parallel, ${picked}: ${key}` } : { resolves: NO_PARALLEL_KEY, why: `Parallel is picked, and it needs ${keyNeeded([PARALLEL_KEY_ENV])}` };
   if (capability === "web_fetch") {
-    if (chosen === "kernel") return { resolves: "kernel", why: `the guarded direct fetch, ${picked}` };
+    if (chosen === DIRECT_FETCH) return { resolves: DIRECT_FETCH, why: `the guarded direct fetch, ${picked}` };
     if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_FETCH}` };
-    return input.parallelKey ? { resolves: "kernel", why: `the guarded direct fetch: the server holds ${key}, so no URL goes to a keyless service` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+    return input.parallelKey ? { resolves: DIRECT_FETCH, why: `the guarded direct fetch: the server holds ${key}, so no URL goes to a keyless service` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
   }
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
