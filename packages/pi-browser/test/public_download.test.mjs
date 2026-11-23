@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import net from "node:net";
 import test from "node:test";
-import { BrowserFailureError, publicDownload } from "../dist/index.js";
+import { BrowserFailureError, publicDownload, publicFetch } from "../dist/index.js";
 
 const PUBLIC = "93.184.216.34";
 // Private addresses the guard must refuse, each named once here for review. A name the guard refuses by its suffix
@@ -119,6 +119,25 @@ test("the guard's refusals hold for a download, each before anything is dialled:
   const hop = network({ names: { "inside.example": [PRIVATE_B] }, answers: { "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location: "http://inside.example/secret" } }) } });
   await assert.rejects(publicDownload("https://cdn.example/f", { ...hop, maxBytes: MAX }), refused(/inside\.example is not a public host/));
   assert.deepEqual(hop.dialled, ["https://cdn.example/f"], "the private hop was never requested");
+});
+
+test("httpsOnly: an http URL, or a redirect to one, is refused before it is dialled; without it, http is followed", async () => {
+  for (const url of ["http://cdn.example/f", "ftp://cdn.example/f"]) {
+    const net = network();
+    await assert.rejects(publicDownload(url, { ...net, maxBytes: MAX, httpsOnly: true }), refused(/^refused: [a-z]+: is not https$/), url);
+    assert.deepEqual([net.looked, net.dialled], [[], []], url);
+  }
+  const answers = {
+    "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location: "http://cdn.example/x.mp3" } }),
+    "http://cdn.example/x.mp3": () => new Response(BINARY, { status: 200, headers: { "content-type": "audio/mpeg" } }),
+  };
+  const hop = network({ answers });
+  await assert.rejects(publicDownload("https://cdn.example/f", { ...hop, maxBytes: MAX, httpsOnly: true }), refused(/^refused: a redirect left https$/));
+  assert.deepEqual(hop.dialled, ["https://cdn.example/f"], "the http hop was never requested");
+  const open = network({ answers });
+  assert.equal((await publicDownload("https://cdn.example/f", { ...open, maxBytes: MAX })).bytes.length, 256, "without httpsOnly the http hop is followed");
+  const fetched = network({ answers: { "http://cdn.example/p": () => new Response("hi", { status: 200, headers: { "content-type": "text/plain" } }) } });
+  await assert.rejects(publicFetch("http://cdn.example/p", { ...fetched, httpsOnly: true }), refused(/^refused: http: is not https$/), "publicFetch takes it too");
 });
 
 test("the signal: aborted before the call, nothing is looked up or dialled; a deadline ends a body that never finishes", async () => {

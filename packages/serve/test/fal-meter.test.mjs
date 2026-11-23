@@ -31,9 +31,16 @@ const PRICES = {
   "fal-ai/whisper": [0.001111111, "compute seconds"],
   "fal-ai/elevenlabs/dubbing": [0.6, "minutes"],
   "veed/fabric-1.0": [0.08, "seconds"],
+  "fal-ai/bytedance/omnihuman/v1.5": [0.16, "seconds"],
+  "fal-ai/infinitalk": [0.2, "seconds"],
+  "fal-ai/ffmpeg-api/merge-audio-video": [0.0002, "seconds"],
 };
 const KLING = "fal-ai/kling-video/v2.5-turbo/pro/text-to-video";
 const TTS = "fal-ai/elevenlabs/tts/eleven-v3";
+const FABRIC = "veed/fabric-1.0";
+const OMNIHUMAN = "fal-ai/bytedance/omnihuman/v1.5";
+/** The byte cap a talking head's voice is read under (fal-price.ts VOICE_MAX_BYTES). */
+const VOICE_MAX_BYTES = 32 * 1024 * 1024;
 
 /** A run_model reply as fal's reads: `status`, the job's handles, and its result when completed. */
 const reply = (args, { status = "completed", result, replayed = false } = {}) => ({
@@ -46,7 +53,7 @@ const reply = (args, { status = "completed", result, replayed = false } = {}) =>
 async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, gate, media, now = () => T0, url, ledger = true } = {}) {
   const fake = await startFakeMcp({ token: TOKEN, ...(gate ? { gate } : {}) });
   t.after(() => fake.close());
-  const asked = { pricing: [], jobs: [], media: [] };
+  const asked = { pricing: [], jobs: [], media: [], reads: [] };
   // get_pricing takes exactly { endpoint_id }: the fake refuses any other argument, as an eval's fake matches by equality.
   fake.tools.get_pricing = {
     description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false },
@@ -77,8 +84,9 @@ async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, ga
     now,
     // A pin at fal's own address is sent to the fake.
     ...(url ? { fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(url, fake.url), init) } : {}),
-    media: async (at) => {
+    media: async (at, _signal, read) => {
       asked.media.push(at);
+      asked.reads.push(read ?? null);
       if (!media || !(at in media)) throw new Error("the host answered 404");
       return media[at];
     },
@@ -267,22 +275,93 @@ test("only an endpoint fal bills by the length of the media it is given is price
   const dub = await setup(t, { media, run: (args) => reply(args, { status: "processing" }) });
   await dub.call("submit_job", { endpoint_id: "fal-ai/elevenlabs/dubbing", input: { video_url: "https://media.example/clip.mp4", target_lang: "es" } });
   near(dub.admits[0].holdUsd, (4 / 60) * 0.6, "dubbing: the 4 s clip at $0.60 a minute");
-  // veed/fabric-1.0 makes a talking video from a picture and a voice: fal bills it per second of its output.
-  const job = { endpoint_id: "veed/fabric-1.0", input: { image_url: "https://media.example/face.png", audio_url: "https://media.example/voice.mp3", resolution: "480p" } };
+  // LatentSync bills per second of its output video, with a minimum up to 40 s that get_pricing does not state;
+  // infinitalk and merge-audio-video bill an output no input states either.
   const capped = await setup(t, { media });
-  const refused = await capped.call("run_model", job);
-  assert.match(textOf(refused), /^mcp:fal\/run_model was not sent: fal bills veed\/fabric-1\.0 per second, and this job's input names no length/);
+  for (const [endpoint_id, input] of [
+    ["fal-ai/latentsync", { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" }],
+    ["fal-ai/infinitalk", { image_url: "https://media.example/face.png", audio_url: "https://media.example/voice.mp3", prompt: "a host speaks" }],
+    ["fal-ai/ffmpeg-api/merge-audio-video", { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" }],
+  ]) {
+    const refused = await capped.call("run_model", { endpoint_id, input });
+    assert.match(textOf(refused), new RegExp(`^mcp:fal/run_model was not sent: fal bills ${endpoint_id.replaceAll("/", "\\/")} per second, and this job's input names no length`), endpoint_id);
+  }
   assert.equal(capped.received("run_model"), 0, "never sent under a cap");
-  assert.deepEqual(capped.asked.media, [], "its media were never read");
-  // LatentSync bills per second of its output video, with a minimum up to 40 s that get_pricing does not state.
-  const lipsync = await capped.call("run_model", { endpoint_id: "fal-ai/latentsync", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
-  assert.match(textOf(lipsync), /^mcp:fal\/run_model was not sent: fal bills fal-ai\/latentsync per second, and this job's input names no length/);
-  assert.equal(capped.received("run_model"), 0, "LatentSync never sent under a cap");
-  assert.deepEqual(capped.asked.media, [], "its media were never read either");
+  assert.deepEqual(capped.asked.media, [], "their media were never read");
   const open = await setup(t, { capUsd: null, media, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
-  await open.call("run_model", job);
+  await open.call("run_model", { endpoint_id: "fal-ai/latentsync", input: { video_url: "https://media.example/clip.mp4", audio_url: "https://media.example/voice.mp3" } });
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
   assert.deepEqual(await open.turns(), [null], "booked as an unknown charge");
+});
+
+// A talking head (veed/fabric-1.0, fal-ai/bytedance/omnihuman/v1.5) makes a video as long as the voice it is given: fal
+// bills it per second of that video, in whole seconds. Its hold is that voice's length, read from the audio at its
+// audio_url alone (never its image, never a length its input states), https only and under a byte cap.
+const TALKING_MEDIA = { "https://media.example/face.png": SAMPLES.mp4.bytes, "https://media.example/voice.mp3": SAMPLES.mp3Info.bytes, "https://media.example/voice.wav": SAMPLES.wav.bytes, "https://media.example/page.html": new TextEncoder().encode("<html></html>") };
+const head = (endpoint_id, input) => ({ endpoint_id, input: { image_url: "https://media.example/face.png", audio_url: "https://media.example/voice.mp3", ...input } });
+
+test("a talking head is held at its voice's length in whole seconds, read before the call from its audio_url alone, https only, under the voice's byte cap", async (t) => {
+  const run = await setup(t, { media: TALKING_MEDIA, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4", content_type: "video/mp4" } } }) });
+  const fabric = await run.call("run_model", head(FABRIC, { resolution: "480p" }));
+  assert.equal(fabric.isError, undefined, textOf(fabric));
+  assert.deepEqual(run.asked.media, ["https://media.example/voice.mp3"], "only the voice was read, never the image");
+  assert.deepEqual(run.asked.reads, [{ maxBytes: VOICE_MAX_BYTES, httpsOnly: true }], "read https only, under the voice's cap");
+  near(run.admits[0].holdUsd, 4 * 0.08, "the 3.096 s voice, billed as 4 whole seconds, at $0.08 a second");
+  assert.equal(run.admits[0].basis, "fal's price for veed/fabric-1.0: $0.08 per second × 4 (its voice at audio_url, read before the call, in whole seconds), from get_pricing at 2026-11-20T12:00:00.000Z");
+  // Fabric's output states no length: it is booked at its hold, the voice's length.
+  near(run.spent(), 0.32, "booked at the hold");
+
+  const omni = await setup(t, { media: TALKING_MEDIA, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" }, duration: 2.4 } }) });
+  // A length its input states is not what fal bills: the voice is.
+  await omni.call("run_model", head(OMNIHUMAN, { audio_url: "https://media.example/voice.wav", duration: 1 }));
+  assert.deepEqual(omni.asked.media, ["https://media.example/voice.wav"], "only the voice was read");
+  near(omni.admits[0].holdUsd, 2 * 0.16, "the 2 s voice at $0.16 a second, not the 1 s its input states");
+  // OmniHuman's output states the length fal billed ("Duration of audio input/video output as used for billing"): it
+  // settles there, in whole seconds.
+  near(omni.spent(), 3 * 0.16, "settled at the 2.4 s it states, billed as 3 whole seconds");
+});
+
+test("a talking head whose voice can't be read, or whose rate get_pricing doesn't state, is refused unsent under a cap", async (t) => {
+  const run = await setup(t, { media: TALKING_MEDIA });
+  const refusedFor = async (job) => {
+    const result = await run.call("run_model", job);
+    assert.equal(result.isError, true, JSON.stringify(job));
+    return textOf(result);
+  };
+  // Fabric at 720p costs more than the 480p rate get_pricing states; its resolution has no default, so one not sent is
+  // not priced either.
+  for (const resolution of ["720p", undefined, "480"]) {
+    const text = await refusedFor(head(FABRIC, resolution === undefined ? {} : { resolution }));
+    assert.match(text, /^mcp:fal\/run_model was not sent: fal bills veed\/fabric-1\.0 per second at the rate get_pricing states only for resolution "480p"/, String(resolution));
+  }
+  assert.deepEqual(run.asked.media, [], "no voice was read for a rate that can't be priced");
+  // A voice that is not at an https URL is never read.
+  for (const audio_url of ["http://media.example/voice.mp3", "ftp://media.example/voice.mp3", "", 3, undefined]) {
+    const text = await refusedFor(head(OMNIHUMAN, { audio_url }));
+    assert.match(text, /^mcp:fal\/run_model was not sent: fal bills fal-ai\/bytedance\/omnihuman\/v1\.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL/, String(audio_url));
+  }
+  assert.deepEqual(run.asked.media, [], "never read");
+  // A voice whose length can't be read: not there, not media, or refused by the reader (too big, a private host, its
+  // deadline): fail closed.
+  for (const audio_url of ["https://media.example/gone.mp3", "https://media.example/page.html"]) {
+    const text = await refusedFor(head(FABRIC, { resolution: "480p", audio_url }));
+    assert.equal(text, `mcp:fal/run_model was not sent: fal bills veed/fabric-1.0 per second of the voice at its audio_url, and the length of ${audio_url} could not be read, so a run with a spend cap can't send it. Nothing was sent.`);
+  }
+  assert.equal(run.received("run_model"), 0, "nothing was sent");
+  assert.deepEqual(await run.records(), [], "nothing booked");
+
+  // A hold over the cap: refused unsent, its voice read and its price stated.
+  const small = await setup(t, { capUsd: 0.3, media: TALKING_MEDIA });
+  const over = await small.call("run_model", head(FABRIC, { resolution: "480p" }));
+  assert.match(textOf(over), /^spend_cap_reached: Not sent: this run has spent \$0 of its \$0\.30 cap, and the next step, mcp:fal\/run_model, could cost up to \$0\.32 \(fal's price for veed\/fabric-1\.0: \$0\.08 per second × 4 \(its voice at audio_url, read before the call, in whole seconds\)/);
+  assert.equal(small.received("run_model"), 0, "fal never received the job");
+  near(small.spent(), 0, "nothing booked");
+
+  // With no cap a talking head whose voice can't be read runs, booked as an unknown charge, never $0.
+  const open = await setup(t, { capUsd: null, media: TALKING_MEDIA, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
+  await open.call("run_model", head(FABRIC, { resolution: "720p" }));
+  assert.equal(open.received("run_model"), 1, "with no cap it runs");
+  assert.deepEqual(await open.turns(), [null], "an unknown charge");
 });
 
 test("submit_jobs is held at the sum of its jobs; one job that can't be priced refuses the whole call under a cap", async (t) => {

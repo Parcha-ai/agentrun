@@ -86,10 +86,58 @@ test("a job that names no length is billed by its input media only where fal bil
   assert.deepEqual(unitsBefore("fal-ai/elevenlabs/dubbing", "minutes", { video_url: "https://m.example/v.mp4", target_lang: "es" }), { media: ["https://m.example/v.mp4"] });
   // fal bills these by their output's length, which no input states.
   assert.ok("unknown" in unitsBefore("fal-ai/latentsync", "seconds", { video_url: "https://m.example/v.mp4", audio_url: "https://m.example/a.mp3" }), "LatentSync, per second of its output video");
-  assert.ok("unknown" in unitsBefore("veed/fabric-1.0", "seconds", { image_url: "https://m.example/i.png", audio_url: "https://m.example/a.mp3", resolution: "480p" }), "a talking video made from a voice");
+  assert.ok("unknown" in unitsBefore("fal-ai/infinitalk", "seconds", { image_url: "https://m.example/i.png", audio_url: "https://m.example/a.mp3" }), "infinitalk, per second of its output video");
+  assert.ok("unknown" in unitsBefore("fal-ai/ffmpeg-api/merge-audio-video", "seconds", { video_url: "https://m.example/v.mp4", audio_url: "https://m.example/a.mp3" }), "a merge");
   assert.ok("unknown" in unitsBefore("fal-ai/some/concat", "seconds", { video_urls: ["https://m.example/1.mp4", "https://m.example/2.mp4"] }), "a concat");
   // A named length wins over the media beside it.
   assert.equal(unitsBefore("fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "seconds", { image_url: "https://m.example/i.png", duration: "10" }).units, 10);
+});
+
+test("a talking head is billed by the voice at its audio_url alone, https only; Fabric only at the 480p rate get_pricing states", async () => {
+  const { unitsBefore } = await load();
+  const face = "https://m.example/i.png";
+  const voice = "https://m.example/a.mp3";
+  assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, resolution: "480p" }), { voice });
+  assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice }), { voice });
+  assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice, resolution: "720p" }), { voice }, "one rate at any resolution");
+  // A length the input states is not what fal bills.
+  assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice, duration: 1 }), { voice });
+  assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, resolution: "480p", duration_seconds: 1 }), { voice });
+  // Fabric's 720p rate is not get_pricing's, and its resolution has no default.
+  for (const resolution of ["720p", undefined, "480", 480]) {
+    const units = unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, ...(resolution === undefined ? {} : { resolution }) });
+    assert.match(units.unknown ?? "", /^fal bills veed\/fabric-1\.0 per second at the rate get_pricing states only for resolution "480p"/, String(resolution));
+  }
+  for (const audio_url of ["http://m.example/a.mp3", "ftp://m.example/a.mp3", "not a url", "", 3, null, undefined]) {
+    const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
+    assert.match(units.unknown ?? "", /^fal bills fal-ai\/bytedance\/omnihuman\/v1\.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL$/, String(audio_url));
+  }
+});
+
+test("a media read is capped at web_save's 200 MiB, or the lower cap its caller asks, and https only, redirects included, when asked", async () => {
+  const { publicMedia } = await load();
+  const { SAVE_MAX_BYTES } = await import("../dist/web-save.js");
+  const dialled = [];
+  const body = () => new Response(new Uint8Array(100), { status: 200, headers: { "content-type": "audio/mpeg" } });
+  const answers = {
+    "https://m.example/a.mp3": body,
+    "http://m.example/a.mp3": body,
+    "https://m.example/hop": () => new Response(null, { status: 302, headers: { location: "http://m.example/a.mp3" } }),
+    "https://m.example/big": () => new Response(new Uint8Array(1), { status: 200, headers: { "content-type": "audio/mpeg", "content-length": String(SAVE_MAX_BYTES + 1) } }),
+  };
+  const guard = async () => ({ lookup: async () => ["93.184.216.34"], fetchImpl: async (url) => (dialled.push(url.href), (answers[url.href] ?? (() => new Response("no", { status: 404 })))()) });
+  const read = publicMedia(guard);
+  const signal = new AbortController().signal;
+  assert.equal((await read("https://m.example/a.mp3", signal)).length, 100);
+  assert.equal((await read("https://m.example/a.mp3", signal, { maxBytes: 100 })).length, 100, "exactly the cap");
+  await assert.rejects(read("https://m.example/a.mp3", signal, { maxBytes: 99 }), /over 99 bytes/);
+  await assert.rejects(read("https://m.example/big", signal, { maxBytes: SAVE_MAX_BYTES * 2 }), /over 200 MiB/, "never above web_save's cap");
+  dialled.length = 0;
+  await assert.rejects(read("http://m.example/a.mp3", signal, { httpsOnly: true }), /http: is not https/);
+  assert.deepEqual(dialled, [], "an http URL is never dialled");
+  await assert.rejects(read("https://m.example/hop", signal, { httpsOnly: true }), /a redirect left https/);
+  assert.deepEqual(dialled, ["https://m.example/hop"], "the http hop is never dialled");
+  assert.equal((await read("https://m.example/hop", signal)).length, 100, "without httpsOnly an http hop is followed, as web_save's is");
 });
 
 test("ffmpeg's compose is billed by its timeline's end: the last keyframe's end across its tracks, in milliseconds", async () => {
