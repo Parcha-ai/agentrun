@@ -121,12 +121,13 @@ function applied(pages) {
   return [...rows.values()].sort((a, b) => a.seq - b.seq);
 }
 
-async function closedPort() {
-  const server = createNetServer();
+/** A server that is never reached: a listener of this test's own, open until the test ends, that drops every connection
+ *  it takes (Node 24's fetch then fails with the cause UND_ERR_SOCKET). */
+async function dropping(t) {
+  const server = createNetServer((socket) => socket.destroy());
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  return `http://127.0.0.1:${server.address().port}/v2`;
 }
 
 test("runs start --wait, runs wait and runs timeline --follow: exit by how the run ended, the stream resumed with no change twice, the token in no output", { timeout: 180_000 }, async (t) => {
@@ -207,10 +208,9 @@ test("runs start --wait, runs wait and runs timeline --follow: exit by how the r
     const cancelled = await cli(["runs", "wait", id, ...data]);
     assert.deepEqual([cancelled.code, cancelled.json().status], [1, "cancelled"]);
 
-    const port = await closedPort();
-    const nowhere = await cli(["runs", "wait", id, "--base-url", `http://127.0.0.1:${port}/v2`], { AGENTRUN_API_KEY: "fake-test-key" });
-    assert.equal(nowhere.code, 3);
-    assert.match(nowhere.err, /Cannot reach the server/);
+    const nowhere = await cli(["runs", "wait", id, "--base-url", await dropping(t)], { AGENTRUN_API_KEY: "fake-test-key" });
+    assert.equal(nowhere.code, 3, nowhere.err);
+    assert.match(nowhere.err, /Cannot reach the server at .+ \(UND_ERR_SOCKET\)/);
     assert.equal((await cli(["runs", "wait", id, "--timeout", "soon", ...data])).code, 2);
     assert.equal((await cli(["runs", "get", id, "--wait", ...data])).code, 2, "--wait is runs start's alone");
   });
