@@ -61,7 +61,11 @@ const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a 
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
-// SKIP (follow-up #2360): pi's native web_search has no model to search on, on the runner
+// SKIP: waits on a decision about how --faux reaches pi's native search. It needs no live key: on the runner, pi's
+// hosted search goes through the session's model route, which under --faux is the faux model (it answers "done." with
+// no results), so the faux upstream this case serves is never asked. Either the faux route sends a hosted-tool request
+// to the faux upstream, or this case drops pi's part (and the seam with it). The runner's hosted search itself is pinned
+// by native-search-runner.test.mjs and runner-pi-native-search.test.mjs.
 test.skip("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
