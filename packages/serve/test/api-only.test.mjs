@@ -124,6 +124,10 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   // The store's schema and runner floor beside this build's, for a deploy's skew check (runnerfloor/1).
   const { version, runner_floor: floor, known } = capabilities.body.store_schema;
   assert.ok(Number.isSafeInteger(known) && version === known && Number.isSafeInteger(floor) && floor <= known, JSON.stringify(capabilities.body.store_schema));
+  // Whether a per-run Composio server here takes each run's own account (composioperrun/1), read by the backend in
+  // front from this answer: the API document stays refused here.
+  assert.equal(capabilities.body.features.mcp_client.composio_per_run, true, "the per-run Composio binding is said");
+  assert.equal((await send(server, "GET", "/v2/openapi.json")).status, 404, "the API document is not served here");
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
   assert.equal((await send(server, "GET", "/v2/usage")).status, 200, "usage");
