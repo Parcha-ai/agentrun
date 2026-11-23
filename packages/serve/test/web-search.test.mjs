@@ -555,7 +555,7 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   const { fakedPlane, fakeFetch, fakeSearch } = await import("../dist/web-fake.js");
   // Claude's and Codex's own search answer in place of the run's web_search where the plane says native (adapters.ts
   // nativeOptions): a faked run's plane never does, and leaves every other tool's pick as it was.
-  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "exa-keyless", web_fetch: "parallel" });
+  assert.deepEqual(fakedPlane({ web_search: "native", web_fetch: "parallel" }), { web_search: "firecrawl-keyless", web_fetch: "parallel" });
   assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
   assert.equal(fakedPlane(undefined), undefined);
   assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });

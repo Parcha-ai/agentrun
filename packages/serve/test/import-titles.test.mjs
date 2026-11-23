@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { planImport, runImport } from "../dist/import.js";
-import * as sources from "../dist/import-sources.js";
+import * as sources from "@parcha/agentrun-import";
 import { openSqliteStore } from "../dist/store/index.js";
 import { listRuns } from "../dist/store-reads/runs.js";
 import { at, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";

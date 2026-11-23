@@ -304,6 +304,7 @@ export interface components {
     learning_usd?: number | null;
     tools_usd?: number | null;
     all_in_usd?: number | null;
+    degraded?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -412,11 +413,11 @@ export interface components {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -485,10 +486,10 @@ export interface components {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -609,9 +610,15 @@ export interface components {
     computers?: {
       kinds: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
     };
+    claude_login?: boolean;
     tool_keys?: {
       routes: boolean;
       at_rest: "sealed";
+    };
+    harness_keys?: {
+      routes: boolean;
+      at_rest: "sealed";
+      harnesses: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -2249,6 +2256,10 @@ export interface operations {
     body: never;
     answer: never;
   };
+  deleteHarnessKey: {
+    body: never;
+    answer: never;
+  };
   deleteHomeFile: {
     body: never;
     answer: never;
@@ -2989,6 +3000,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {
@@ -3851,11 +3863,11 @@ export interface operations {
     body: never;
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -3870,10 +3882,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
@@ -4556,6 +4568,17 @@ export interface operations {
       }[];
     };
   };
+  listHarnessKeys: {
+    body: never;
+    answer: {
+      harnesses: {
+        id: string;
+        label: string;
+        keys: components["SecretMeta"][];
+        ready: boolean;
+      }[];
+    };
+  };
   listHomeFiles: {
     body: never;
     answer: {
@@ -4836,6 +4859,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -5588,11 +5612,11 @@ export interface operations {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -5656,10 +5680,10 @@ export interface operations {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5668,11 +5692,11 @@ export interface operations {
     };
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -5687,10 +5711,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5925,6 +5949,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6267,12 +6292,13 @@ export interface operations {
   };
   saveComposioServer: {
     body: {
-      api_key: string;
       toolkit: string;
       tools: string[];
       user_id?: string;
       auth_config_id?: string;
       price_usd?: number;
+      api_key?: string;
+      api_key_env?: "COMPOSIO_API_KEY";
     };
     answer: {
       server: {
@@ -6283,6 +6309,7 @@ export interface operations {
         auth: {
           type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
           headers?: string[];
+          api_key_env?: "COMPOSIO_API_KEY";
         };
         credential: "sealed" | "unreadable" | "expired" | null;
         oauth?: {
@@ -6401,6 +6428,12 @@ export interface operations {
       password_unreadable: boolean;
     };
   };
+  saveHarnessKey: {
+    body: {
+      value: string;
+    };
+    answer: never;
+  };
   saveMcpServer: {
     body: {
       url: string;
@@ -6420,6 +6453,7 @@ export interface operations {
       auth: {
         type: "none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run";
         headers?: string[];
+        api_key_env?: "COMPOSIO_API_KEY";
       };
       credential: "sealed" | "unreadable" | "expired" | null;
       oauth?: {

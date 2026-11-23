@@ -51,13 +51,16 @@ export async function made(api, id, extra) {
   assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
 }
 
-/** `check`'s answer once it is truthy, read every 10 ms for up to `ms`; its last answer when the time runs out. For what the
- *  server does after the change a test can await (a sender told of a pause that follows it), so the assert after it reads
- *  the outcome, not the timing. */
-export async function until(check, ms = 5_000) {
+/** `check`'s answer once it is truthy, read every 10 ms for up to `ms`; its last answer when the time runs out, or, given
+ *  `what`, a failed assert in those words. For what the server does after the change a test can await (a sender told of a
+ *  pause that follows it), so the assert after it reads the outcome, not the timing. */
+export async function until(check, ms = 5_000, what = undefined) {
   for (const end = Date.now() + ms; ; await sleep(10)) {
     const answer = await check();
-    if (answer || Date.now() >= end) return answer;
+    if (answer || Date.now() >= end) {
+      if (!answer && what !== undefined) assert.fail(what);
+      return answer;
+    }
   }
 }
 
@@ -81,13 +84,9 @@ export async function firings(api, id, n) {
 /** The path a launch-hook fake takes firings at. */
 const HOOK_PATH = "/agentrun/firings";
 
-/** A host's launch hook on 127.0.0.1. Only a POST to its path (with any query the hook URL carries, as `?token=…`) is the
- *  install's: each is kept in `got`, in order (method, headers, raw body, and `sent`, the body read as JSON), and
- *  answered by `answer(res, sent, n)`, `n` the POSTs so far; by default 202 `{}`. Any other request (another method or
- *  path, as the GET / a dev tool on the box sends to each new listener) is answered 404, never read or kept, so `got`
- *  counts the firings handed, which the guards against a paid run handed twice assert. A POST its sender cut short (its
- *  bound passed mid-body, or the test's end) or whose body is not JSON is answered 400; nothing a request sends throws
- *  out of the handler. */
+/** A host's launch hook on 127.0.0.1. Only a POST to its path (any query) is kept in `got` and answered by
+ *  `answer(res, sent, n)` (default 202 `{}`); any other request gets 404 unread, so `got` counts the firings handed. A
+ *  POST cut short or not JSON gets 400. */
 export async function hookServer(t, answer = (res) => res.writeHead(202, { "content-type": "application/json" }).end("{}")) {
   const got = [];
   const server = createServer(async (req, res) => {
@@ -119,12 +118,3 @@ export async function hookServer(t, answer = (res) => res.writeHead(202, { "cont
   }));
   return { url: `http://127.0.0.1:${server.address().port}${HOOK_PATH}`, got };
 }
-
-/** A port probe at the server behind `url`, as a dev tool on the box sends one to each new listener on 127.0.0.1: GET /,
- *  no body. Its answer's status. */
-export async function portProbe(url) {
-  const res = await fetch(new URL("/", url));
-  await res.arrayBuffer();
-  return res.status;
-}
-
