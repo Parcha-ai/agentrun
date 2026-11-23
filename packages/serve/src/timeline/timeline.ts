@@ -311,8 +311,10 @@ export type TimelineOptions = {
    *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
    *  far (the rows' own `redact` stops at the head a row shows).
    *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
-   *  digits); such a number is shown as "[redacted]". */
-  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
+   *  digits); such a number is shown as "[redacted]". `holds`: whether a text holds a held value no cut in place takes
+   *  (key-refusal.ts withheldWhole); a web call's strings, each redacted on its own, are read joined with it, so a value
+   *  split across two withholds the result (web-calls.ts webShownOf). */
+  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean; holds?: (text: string) => boolean };
 };
 
 /** A tool's calls in a run, and how many failed. */
@@ -831,7 +833,7 @@ function createProjector(options: TimelineOptions) {
   const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
     if (!text) return null;
-    const web = webShownOf(tool, text, callShown);
+    const web = webShownOf(tool, text, callShown, options.calls!.holds);
     return web ? webWithin(web, options.calls!.result) : cut(callShown(text), options.calls!.result);
   };
   /** The `tool_result` row of a finished call, named `named`; `parent` is a nested call's caller. */

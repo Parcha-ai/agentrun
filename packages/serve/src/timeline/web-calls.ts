@@ -30,6 +30,17 @@ function eachString(value: unknown, each: (text: string) => string): unknown {
   return value;
 }
 
+/** Every string in `value`, property names aside, in order. */
+function stringsOf(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const item of value) stringsOf(item, out);
+  else if (isObj(value)) for (const item of Object.values(value)) stringsOf(item, out);
+  return out;
+}
+
+/** What a web call withheld whole shows. */
+const WITHHELD: WebShown = () => "[redacted]";
+
 /** How many of `links`, in order, fit in `keep` characters of JSON. */
 function linksWithin(links: readonly unknown[], keep: number): number {
   let used = 0;
@@ -62,8 +73,10 @@ export function webCut(tool: string, text: string, cut: (text: string) => string
 /** `text`, a call of `tool`'s output, as a grader reads it (WebShown), each of its strings through `each` first (the
  *  run's redaction, its URLs' query values elided), so a cut never falls inside what that takes out. Undefined for a
  *  tool other than web_search and web_fetch, or an output that is not its JSON. A page's links past a cut are counted
- *  in `links_cut`. */
-export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part): WebShown | undefined {
+ *  in `links_cut`. `holds`, whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole): it
+ *  reads the strings as they came, joined by line breaks, then the lines after the JSON, so a held value split across
+ *  two strings, which `each` reads one at a time, withholds the output whole, as "[redacted]". */
+export function webShownOf(tool: string, text: string, each: (text: string) => string = (part) => part, holds?: (text: string) => boolean): WebShown | undefined {
   if (tool !== WEB_SEARCH && tool !== WEB_FETCH) return undefined;
   const end = text.indexOf("\n");
   let read: unknown;
@@ -75,9 +88,11 @@ export function webShownOf(tool: string, text: string, each: (text: string) => s
   const shown = eachString(read, each);
   if (!isObj(shown)) return undefined;
   const after = end < 0 ? "" : each(text.slice(end));
+  const withheld = () => holds?.(`${stringsOf(read).join("\n")}${end < 0 ? "" : text.slice(end)}`) ?? false;
   if (tool === WEB_SEARCH) {
     const results = shown.results;
     if (!Array.isArray(results) || !results.every(isObj)) return undefined;
+    if (withheld()) return WITHHELD;
     return (keep) => {
       const hits = results.map((hit) => (typeof hit.snippet === "string" ? { ...hit, snippet: clip(hit.snippet, keep) } : hit));
       return `${JSON.stringify({ ...shown, ...(typeof shown.text === "string" ? { text: clip(shown.text, keep) } : {}), results: hits })}${after}`;
@@ -86,6 +101,7 @@ export function webShownOf(tool: string, text: string, each: (text: string) => s
   if (typeof shown.url !== "string" || typeof shown.text !== "string") return undefined;
   const page = shown as Obj & { text: string };
   const links = Array.isArray(page.links) ? page.links : undefined;
+  if (withheld()) return WITHHELD;
   return (keep) => {
     const kept = links ? linksWithin(links, keep) : 0;
     const cut = links ? links.length - kept : 0;
