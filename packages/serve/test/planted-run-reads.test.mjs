@@ -37,7 +37,7 @@ const RUN_READS = {
   getRun: (run) => [`/runs/${run.id}`],
   getTimeline: (run) => [`/runs/${run.id}/timeline`],
   listRunFiles: (run) => [`/runs/${run.id}/files`],
-  readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`],
+  readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`, `/runs/${run.id}/files/${run.file}?cut=run`],
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
   getRunTrace: (run) => [`/runs/${run.id}/trace`],
   getRunUsage: (run) => [`/runs/${run.id}/usage`],
@@ -56,7 +56,9 @@ const WAITS = {};
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
- *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). */
+ *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). Its
+ *  cut read (`?cut=run`) is not exempt: it holds no planted value, each cut in place (the sign-in ref it was handed, the
+ *  saved key, the secret store's value), and a withheld run's is refused too. */
 /** Runs whose input holds the plants, so their title does too: read here without their title, which the handed and
  *  withheld runs' own cases check (and skip, naming its fix), so every other field of theirs is checked now. */
 export const TITLE_READ_ELSEWHERE = new Set(["workflow", "workflowWithheld", "parked", "parkedWithheld", "asked"]);
@@ -357,7 +359,11 @@ test("no planted secret in a run's words shows on any run read route: a run hand
           if (TITLE_READ_ELSEWHERE.has(kind)) res.text = withoutTitles(res.text);
           // A withheld run's file is refused, as its view withholds its words.
           if (operation === "readRunFile" && kind === "withheld") assert.equal(res.status, 403, `${one}: a withheld run's file is refused`);
-          if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
+          if (operation === "readRunFile" && one.endsWith("?cut=run") && run.fileText !== undefined && kind !== "withheld") {
+            // Its cut read: the text, every planted value it holds cut in place.
+            assert.equal(res.status, 200, one);
+            assert.equal(res.body.toString("utf8"), run.values.reduce((text, value) => text.replaceAll(value, "[redacted]"), run.fileText), `${one}: each value cut in place`);
+          } else if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
             // Exempt (EXEMPT): served as it was written, byte for byte, never a planted value it didn't hold.
             assert.equal(res.status, 200, one);
             assert.ok(res.body.equals(Buffer.from(run.fileText)), `${one}: the bytes written`);
