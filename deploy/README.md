@@ -496,8 +496,9 @@ Nothing converts an earlier volume.
 
 ## Troubleshooting
 
-- `docker compose up` sits at "Creating" and `docker events` shows no create: dockerd is stuck (disk or IO). Retry
-  with a fresh project name (`docker compose -p <new name> up -d`).
+- `docker compose up` sits at "Creating" and `docker events` shows no create: dockerd is stuck (disk or IO). On a
+  first start, retry with a fresh project name (`docker compose -p <new name> up -d`). The data volume is named after
+  the project (`<project>_agentrun-data`), so a fresh name starts an empty server: for one that has data, keep its name.
 
 ## The walks
 

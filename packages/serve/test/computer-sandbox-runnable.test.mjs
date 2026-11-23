@@ -30,7 +30,7 @@ const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", ke
 /** The words runnable.ts says of a place this server can't run as a box. */
 const PLACE_WORDS = /This agent's place is sandbox on [a-z0-9-]+, and this server cannot run it there/;
 /** No provider key comes from this process's environment: each is the one saved here, or none. */
-const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
+const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CONTEXT", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
 
 /** A fake `docker` first on PATH, so the server's start-time probe of the Docker box (boxes.ts: `docker version`) never
  *  reaches a real one: it names a daemon's version when `answers`, else fails as a CLI with no daemon does. Every other
