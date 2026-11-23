@@ -12,7 +12,7 @@ import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Mac
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } from "./hosted/provider.js";
 import { boundOf, orThrow, seconds, pause as sleep, words } from "./hosted/process.js";
-import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { allPages, httpsBase, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { dialLaunch, shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
@@ -718,8 +718,7 @@ export class DaytonaProvider extends HostedProvider {
 		const refused = kindRefusal(DAYTONA, { kind: hosted.kind, connect: via });
 		if (refused !== undefined) throw new Error(refused);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
-		const base = new URL(apiUrl);
-		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
+		const base = httpsBase(apiUrl, "the Daytona API URL");
 		if (arch !== "amd64" && arch !== "arm64") throw new Error(`options.arch is amd64 or arm64, not ${String(arch)}`);
 		if (sandboxClass !== "container" && sandboxClass !== "linux-vm") throw new Error(`options.sandboxClass is container or linux-vm, not ${String(sandboxClass)}`);
 		const minutes = (name: string, value: unknown) => {
@@ -740,7 +739,7 @@ export class DaytonaProvider extends HostedProvider {
 		const host = new DaytonaHost({
 			// On dial its capabilities declare no GPU (DIAL_NO_GPU).
 			descriptor: { ...DAYTONA, ...mountsOf(DAYTONA, set), ...(via === "dial" ? { capabilities: DAYTONA.capabilities.map(({ gpu: _gpu, ...rest }) => rest) } : {}) },
-			rest: rest({ base: apiUrl, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
+			rest: rest({ base, headers: () => headers, vendor: "daytona", fetch: fetcher ?? fetch, timeoutMs: requestMs, retry: { attempts: RETRY_ATTEMPTS, baseMs: retryMs, ...(pause ? { pause } : {}) }, explain }),
 			headers,
 			webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as WebSocketLike),
 			arch,
