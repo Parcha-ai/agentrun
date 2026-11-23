@@ -1363,7 +1363,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   await toolKeys.load();
   // The keys each plan-billed harness recipe this server names runs on, saved for that harness alone (harness-keys.ts):
   // sealed rows in the store, loaded once here and kept in step with every save, so its listing reads them at once.
-  const harnessKeys = new HarnessKeysOverStore(store, seal.key, planRecipesOf(base));
+  const harnessKeys = new HarnessKeysOverStore(store, seal.key, planRecipesOf(base), data);
   await harnessKeys.load();
   // A key's check as it is saved (key-check.ts) goes to its provider; under faux only to the tests' fake for that provider,
   // the one its runs are given (monid, Parallel, TypeSafe's Jev), never to the network: one with no fake is not checked.
@@ -2070,8 +2070,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
     // A trigger never messages a run on a plan-billed recipe whose keys are not all saved: its turn would run on its
-    // owner's own sign-in. With them saved, the turn runs on them (harness-keys.ts).
-    planRecipe: (harness: string) => recipeHarness(base, harness) === "plan" && !harnessKeysSavedHere(harness),
+    // owner's own sign-in. With them saved, the turn runs on them (harness-keys.ts), and a claim that opens not every one
+    // is refused (cli-run-spec.ts).
+    planRecipe: (harness: string) => recipeHarness(base, harness) === "plan" && !harnessKeysSavedHere(data, harness),
     // Read when a firing's message is sent (declared below, with the delete turn).
     runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,

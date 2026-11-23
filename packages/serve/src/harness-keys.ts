@@ -67,13 +67,19 @@ export function keysLaid(env: NodeJS.ProcessEnv, names: readonly string[]): bool
   });
 }
 
-/** The harnesses whose every key this process's server holds saved (HarnessKeysOverStore keeps it in step with its
- *  snapshot): what a server's route reads (harness-recipe-entry.ts `route`) where its own environment carries no key, so
- *  its listing and offers see a save with no restart. It holds no value: a start still runs only on the keys its claim
- *  laid (keysLaid), and one whose claim laid none is refused by the adapter (ACP_KEY_MISSING) before the agent starts. A
- *  runner apart has its own process, so this is empty there and its route reads only what its claim laid. */
-const savedHere = new Set<string>();
-export const harnessKeysSavedHere = (harness: string): boolean => savedHere.has(harness);
+/** For each data directory a server in this process serves, the harnesses whose every key it holds saved
+ *  (HarnessKeysOverStore keeps its own in step with its snapshot; another server's writes never touch it): what that
+ *  server's listing, offers and trigger checks read (harness-recipe-entry.ts `why`), so a save shows with no restart. A
+ *  start never reads it: it runs only on the keys its claim laid (keysLaid). The snapshot is loaded at the server's start,
+ *  so a second server on the same store sees another's write at its next start; its runs fail closed meanwhile, since
+ *  each claim opens the rows itself. */
+const savedHere = new Map<string, ReadonlySet<string>>();
+export const harnessKeysSavedHere = (data: string, harness: string): boolean => savedHere.get(data)?.has(harness) === true;
+
+/** The words a run no person started (a schedule's, a trigger's) on a plan-billed recipe is refused in at its claim
+ *  (runner/harness-loops.ts, runner/cli-run-spec.ts): such a run takes keys saved for that harness, never its owner's
+ *  own sign-in, and not every one is saved, or not every one opened. */
+export const RECIPE_SIGN_IN_PERSON_ONLY = `A scheduled or triggered run on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and not every one of its keys is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}), start this run yourself, or run the agent on a harness billed through this server's model proxy.`;
 
 /** Lays `keys` on `env` where only a direct read finds them: never enumerable, so no spread, copy or child environment
  *  built from `env` carries them (claim-secrets.ts withModelKeys). */
@@ -94,13 +100,12 @@ export class HarnessKeysOverStore {
   private retired = new Map<string, { row: string; value: string; at: number }[]>();
 
   /** `recipes`: the plan-billed recipes this server is started with (harness-table.ts planRecipesOf), the only harnesses
-   *  whose keys it saves or shows. */
-  constructor(private readonly store: HarnessKeysStore, private readonly sealKey: Buffer, readonly recipes: readonly PlanRecipe[]) {}
+   *  whose keys it saves or shows. `data`: its data directory, which its registry (harnessKeysSavedHere) is kept under. */
+  constructor(private readonly store: HarnessKeysStore, private readonly sealKey: Buffer, readonly recipes: readonly PlanRecipe[], private readonly data: string) {}
 
-  /** The process's registry (harnessKeysSavedHere) set from the snapshot: each recipe whose every key is saved. */
+  /** This server's registry (harnessKeysSavedHere) set from the snapshot: each recipe whose every key is saved. */
   private mark(): void {
-    savedHere.clear();
-    for (const recipe of this.recipes) if (this.saved(recipe)) savedHere.add(recipe.id);
+    savedHere.set(this.data, new Set(this.recipes.filter((recipe) => this.saved(recipe)).map((recipe) => recipe.id)));
   }
 
   /** Reads every harness key row once: each current one opened, each retired one opened for the cut. A row that does not
@@ -173,13 +178,13 @@ export class HarnessKeysOverStore {
     await this.store.flush();
   }
 
-  /** DELETE: `key`'s value for `recipe`'s harness gone from its runs, kept as a retired row for the cut. */
+  /** DELETE: `key`'s value for `recipe`'s harness gone from its runs, kept as a retired row for the cut. A row the snapshot
+   *  does not hold (one that does not open under this server's seal key) is removed too, so no claim counts it saved. */
   async remove(recipe: PlanRecipe, key: string): Promise<void> {
     known(recipe, key);
     const row = harnessKeyRow(recipe.id, key);
     const was = this.current.get(row);
-    if (!was) return;
-    await this.retire(recipe.id, key, was.value);
+    if (was) await this.retire(recipe.id, key, was.value);
     await removeSealedKey(this.store, row);
     this.current.delete(row);
     this.mark();

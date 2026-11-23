@@ -360,7 +360,12 @@ function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): Har
 /** What a run of a plan-billed ACP agent is given (acpEntryOf's plan branch): its model as its vendor names it (`default`
  *  for the vendor's own), a log, the confinement its process starts under and the server's environment. No provider or
  *  price: its vendor bills its owner's plan, and no request of it reaches a proxy of ours. */
-export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills">;
+export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
+  /** Set where the adapter is built only to say whether it would run (the entry's refusal: offers, a save's or a start's
+   *  check), never to start its agent: a recipe's route reads its server's listing then, and only what a claim laid when
+   *  its agent starts (harness-recipe-entry.ts). */
+  readonly probe?: boolean;
+};
 
 /** What serve gives acpEntryOf for an ACP agent billed to its owner's plan (its facts' wire `plan`): Cursor's entry and
  *  harness-check's plan-billed recipes. Not the kit's: a module's acpEntry is proxy-billed. `missing` may throw a
@@ -384,7 +389,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
   const { id, label } = facts;
   if (modelWire(facts.wire)) throw new Error(`${id} runs on a model wire of ours, so its ACP entry is the proxy-billed one`);
   const prefix = `${id}/`;
-  const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
+  const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds, probe = false): Promise<AgentAdapter> => {
     const { fixOf, harnessLog } = await import("./adapters.js");
     // What no key fixes is said first, as for the built-in harnesses' binaries.
     const lacks = await options.missing?.(env);
@@ -394,7 +399,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
     try {
-      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env }));
+      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}) }));
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
       return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
     } catch (error) {
@@ -423,11 +428,12 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
       return { model: { provider: id, modelId } };
     },
     priceModel: (_env, model) => model,
-    adapter: make,
+    adapter: (env, needs) => make(env, needs),
+    // Built only to check it (a probe), never started.
     refusal: async (env, given, { atStart }) => {
       const { startReason } = await import("./adapters.js");
       try {
-        const adapter = await make(env, given ?? { model: { provider: id, modelId: PLAN_DEFAULT_MODEL }, models: { getModel: () => undefined } });
+        const adapter = await make(env, given ?? { model: { provider: id, modelId: PLAN_DEFAULT_MODEL }, models: { getModel: () => undefined } }, true);
         const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
         return problems.length ? { reason: problems.join(" ") } : undefined;
       } catch (error) {

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 import {
   HarnessKeysOverStore, RETIRED_KEPT, harnessKeyRow, harnessKeysSaved, harnessKeysSavedHere, keysLaid, layHarnessKeys,
-  openHarnessKeys, planRecipeOr404,
+  openHarnessKeys, planRecipeOr404, sealedHarnessKeyBytes,
 } from "../dist/harness-keys.js";
 import { ApiError } from "../dist/errors.js";
 
@@ -19,7 +19,7 @@ const ORG = "acme-org-abcdefgh";
 
 async function keysOn(t, { recipes = [ACME, OTHER], seal = SEAL } = {}) {
   const { store, file } = await storeOn(t);
-  const keys = new HarnessKeysOverStore(store, seal, recipes);
+  const keys = new HarnessKeysOverStore(store, seal, recipes, file);
   await keys.load();
   return { store, file, keys };
 }
@@ -58,7 +58,7 @@ test("a row sealed under another seal key reads as not saved, never a clear fall
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
   const other = randomBytes(32);
   assert.deepEqual(await openHarnessKeys(store, other, "acme", ["ACME_API_KEY"]), {});
-  const again = new HarnessKeysOverStore(store, other, [ACME]);
+  const again = new HarnessKeysOverStore(store, other, [ACME], "elsewhere");
   await again.load();
   assert.equal(again.view(ACME).keys[0].set, false);
   assert.deepEqual(again.values(), []);
@@ -68,7 +68,7 @@ test("a reload reads the saved and retired values back from the store", async (t
   const { store, keys } = await keysOn(t);
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
   await keys.save(ACME, "ACME_API_KEY", { value: `${VALUE}-next` });
-  const again = new HarnessKeysOverStore(store, SEAL, [ACME]);
+  const again = new HarnessKeysOverStore(store, SEAL, [ACME], "elsewhere");
   await again.load();
   assert.deepEqual(new Set(again.values()), new Set([VALUE, `${VALUE}-next`]));
   assert.deepEqual(await openHarnessKeys(store, SEAL, "acme", ["ACME_API_KEY"]), { ACME_API_KEY: `${VALUE}-next` });
@@ -133,13 +133,30 @@ test("laid keys are found by a direct read alone: no spread or copy carries them
   assert.equal(keysLaid({}, []), false, "no keys is never laid");
 });
 
-test("the server's registry says which harnesses have every key saved, in step with each write", async (t) => {
-  const { keys } = await keysOn(t);
-  assert.equal(harnessKeysSavedHere("acme"), false);
+test("the server's registry says which harnesses have every key saved, in step with each write, for its own data directory alone", async (t) => {
+  const { keys, file } = await keysOn(t);
+  const { keys: beside, file: besideFile } = await keysOn(t);
+  assert.equal(harnessKeysSavedHere(file, "acme"), false);
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
   await keys.save(ACME, "ACME_ORG", { value: ORG });
-  assert.equal(harnessKeysSavedHere("acme"), true);
-  assert.equal(harnessKeysSavedHere("other"), false);
+  assert.equal(harnessKeysSavedHere(file, "acme"), true);
+  assert.equal(harnessKeysSavedHere(file, "other"), false);
+  // Another server in this process, on its own data, saved none: its registry is its own, and its writes leave this one's.
+  assert.equal(harnessKeysSavedHere(besideFile, "acme"), false);
+  await beside.save(OTHER, "ACME_API_KEY", { value: VALUE });
+  assert.equal(harnessKeysSavedHere(besideFile, "other"), true);
+  assert.equal(harnessKeysSavedHere(file, "acme"), true, "a write beside it clears nothing of this one's");
   await keys.remove(ACME, "ACME_ORG");
-  assert.equal(harnessKeysSavedHere("acme"), false);
+  assert.equal(harnessKeysSavedHere(file, "acme"), false);
+});
+
+test("a remove clears a key's row that does not open here (sealed under another key), which the snapshot never held", async (t) => {
+  const { store, keys } = await keysOn(t);
+  const row = harnessKeyRow("acme", "ACME_API_KEY");
+  await store.sealedKeys.put(row, sealedHarnessKeyBytes(randomBytes(32), "acme", "ACME_API_KEY", VALUE));
+  assert.equal(await harnessKeysSaved(store, "acme", ["ACME_API_KEY"]), true, "a count says saved");
+  assert.equal(keys.view(ACME).keys[0].set, false, "the view says not saved");
+  await keys.remove(ACME, "ACME_API_KEY");
+  assert.equal(await store.sealedKeys.get(row), undefined, "the row is gone, so no count says saved");
+  assert.equal(await harnessKeysSaved(store, "acme", ["ACME_API_KEY"]), false);
 });

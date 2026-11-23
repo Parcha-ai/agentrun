@@ -31,7 +31,7 @@ import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
 import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
-import { layHarnessKeys, openHarnessKeys } from "../harness-keys.js";
+import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -67,7 +67,7 @@ import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
-import type { Claim } from "./loop-contract.js";
+import { type Claim, ClaimRefused } from "./loop-contract.js";
 import { bookedSpend, cliModelWorked, cliRunMetrics, costBasisOf, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
@@ -475,11 +475,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // redactors, and laid on the adapter's environment alone, never enumerable (layHarnessKeys): the tools' plane copies
   // `claimed`, never `env`, and no spread or child environment built from `env` carries them. The ACP adapter reads each
   // by name for the agent's start, and only keys laid here take a run onto the keys route (harness-recipe-entry.ts).
+  // The run environment copies the runner's own (cliRunEnv), so a key's name the operator's shell exported is dropped
+  // first: the agent reads a saved key or none. All or nothing: a claim that opened not every key lays none, and a run
+  // no person started (a schedule's, a trigger's, and a trigger's turn into a run) is refused then, before any route
+  // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
   if (name !== undefined && recipeKeys?.length) {
+    for (const key of recipeKeys) delete env[key];
     const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
     hold(Object.values(opened));
-    layHarnessKeys(env, opened);
+    if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
+    else if (launch.trigger !== undefined) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
   }
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);

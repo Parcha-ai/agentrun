@@ -30,12 +30,13 @@ export const HARNESS_KEYS_NOT_SAVED = "HARNESS_KEYS_NOT_SAVED";
 export type RecipeRoute = { readonly on: "keys" } | { readonly on: "sign-in"; readonly home: string };
 
 /** The route a server runs `recipe`'s agent on, or why there is none. Proxy-billed: the model proxy. Plan-billed: keys
- *  saved for its harness alone (harness-keys.ts), which come first: those a claim laid on `env` (keysLaid), or `saved`,
- *  every one held by the server in this process (harnessKeysSavedHere), whose claims lay them. Its owner's own
- *  sign-in only where `signIn` (the server's --harness-sign-in: one owner, on their own machine, its runs as its own
- *  user, which the start proved) and only for a person's run (a scheduled or triggered one with no keys saved is refused
- *  at its claim, harness-loops.ts refuseRecipeTriggerRun). Else HARNESS_KEYS_NOT_SAVED, naming the console's page.
- *  harness-check never takes this route: it runs on the recipe's keys from the shell alone. */
+ *  saved for its harness alone (harness-keys.ts), which come first: for a start, only those its claim laid on `env`
+ *  (keysLaid); for the server's listing and offers, `saved` too, every one held saved by the server on this data
+ *  directory (harnessKeysSavedHere), whose claims lay them. Its owner's own sign-in only where `signIn` (the server's
+ *  --harness-sign-in: one owner, on their own machine, its runs as its own user, which the start proved) and only for a
+ *  person's run: a scheduled or triggered one whose claim laid not every key is refused at its claim, before this
+ *  (runner/cli-run-spec.ts, harness-keys.ts RECIPE_SIGN_IN_PERSON_ONLY). Else HARNESS_KEYS_NOT_SAVED, naming the
+ *  console's page. harness-check never takes this route: it runs on the recipe's keys from the shell alone. */
 export function serverRoute(recipe: Recipe, file: string, data: string, env: NodeJS.ProcessEnv, { signIn, saved = false }: { signIn: boolean; saved?: boolean }): RecipeRoute | { refused: string; message: string } {
   if (recipe.model.billing === "proxy") return { on: "keys" };
   if (saved || keysLaid(env, recipe.keys)) return { on: "keys" };
@@ -85,7 +86,8 @@ export interface RecipeEntryOptions extends AcpEntryHost {
   readonly recipe: Recipe;
   readonly binary: string;
   readonly release: RecipeArchive;
-  route(env: NodeJS.ProcessEnv): RecipeRoute;
+  /** `probe`: the adapter is built only to check it (harness-table.ts PlanLaunch.probe), not to start its agent. */
+  route(env: NodeJS.ProcessEnv, probe?: boolean): RecipeRoute;
   beforeStart(command: string): Promise<void>;
   /** The variables beside the recipe's env at each start: the egress proxy's (harness-egress.ts egressVars). */
   vars(): Readonly<Record<string, string>>;
@@ -123,7 +125,7 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
       }, host)
     : acpEntryOf({
         facts: { ...acp.cursorFacts, id: recipe.id, label: recipe.label },
-        recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env), { vars: options.vars(), model: launch.model }),
+        recipe: (launch) => acpRecipeFor(recipe, binary, release, options.route(launch.env, launch.probe === true), { vars: options.vars(), model: launch.model }),
         beforeStart: options.beforeStart,
         ...checks,
         ...(options.hidden ? { hidden: options.hidden } : {}),
@@ -145,11 +147,12 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
   if (!platform || !release) throw new Error(`harness recipe ${loaded.file}: ${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
   const binary = recipeBinaryOf(data, recipe, release);
   const installed = installDirOf(data, recipe.id);
-  // The keys route when its claim laid them, or when this process's server holds every one saved (harnessKeysSavedHere):
-  // the server's listing and its offers' probe, whose environment holds none, and a start beside it, whose claim lays
-  // them. A start that holds none of them is refused by the adapter before its agent starts (ACP_KEY_MISSING), never put
-  // on the sign-in.
-  const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn, saved: harnessKeysSavedHere(recipe.id) });
+  // What the server's listing, offers and checks read (`why`, and the adapter built as a probe): the keys route when its
+  // server holds every one saved on this data directory (harnessKeysSavedHere), whose claims lay them. An agent's start
+  // reads only what its claim laid (`start`): never what the server lists, which a removal can have outrun, nor the
+  // shell's variable of a key's name.
+  const route = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn, saved: harnessKeysSavedHere(data, recipe.id) });
+  const start = (env: NodeJS.ProcessEnv) => serverRoute(recipe, loaded.file, data, env, { signIn });
   /** Why it cannot run on `env`, in words that end with the command that fixes it; undefined when it can. Nothing is
    *  digested here (each start is, beforeStart): the pins and the check's note are compared. */
   const why = (env: NodeJS.ProcessEnv): string | undefined => {
@@ -178,8 +181,8 @@ export function recipeServerEntry(file: string, data: string, { signIn = false }
       if (!egressUrl) throw new HarnessUnavailable(`${recipe.label}'s egress proxy is not running, so its agent does not start`);
       return egressVars(egressUrl);
     },
-    route: (env) => {
-      const on = route(env);
+    route: (env, probe) => {
+      const on = probe ? route(env) : start(env);
       if ("refused" in on) throw new HarnessUnavailable(`${on.refused}: ${on.message}`);
       return on;
     },

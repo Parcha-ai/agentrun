@@ -513,14 +513,22 @@ seal key in the store, named `harness:<id>:<KEY>`, so a key saved for one harnes
 even under the same name. Saving or removing one is a secret write: the owner's signed-in session alone, never the API
 token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}`.
 
-Each claim of a run on the harness opens that harness's keys, and no other's. A runner apart opens them for its run's
-own process. They are laid on the agent's start alone, never on the run's tools or the environment the tools see, and
-they are cut from the timeline, errors and the agent's output. A value that is replaced or removed stays sealed, up to
-eight per key, so a timeline written while it was live stays cut.
+Each claim of a run on the harness opens that harness's keys, and lays no other harness's. A runner apart opens them
+for its run's own process. They are laid all or none, and only on the agent's start: the vendor's agent process gets
+each one by design, since it signs in with it, and never the run's tools or the environment the tools see. The agent
+keeps them off the vendor's own tools only because `harness-check` stage 2 passes only with those tools off (`tools_off`). A variable of a
+key's name in the server's own environment (one exported for `harness-check`) is never handed to a run. Laid keys are
+cut from the timeline, errors and the agent's output. The cut holds every saved value in the store, as it does for tool
+keys, and not only the run's own harness's. A value that is replaced or removed stays sealed, up to eight per key, so a
+timeline written while it was live stays cut.
 
 With every key saved, its runs run on them ahead of its owner's own sign-in, and its scheduled and triggered runs and a
-`message_run` trigger's turns run too. `harness-check` does not read them: it reads its keys from your shell's
-environment alone, as [Check it](#check-it) shows.
+`message_run` trigger's turns run too. What runs a start is what its claim opened, not what the console lists: a
+scheduled or triggered run whose claim opened not every key (one removed since, or sealed under another seal key) is
+refused at its claim, never put on the sign-in. A key that does not open under the server's seal key reads as not saved;
+saving it again replaces it, and removing it deletes its row. A second server on the same store lists another's save or
+removal at its next start; meanwhile its runs still go only on what each claim opens. `harness-check` does not read the saved keys: it reads its keys from
+your shell's environment alone, as [Check it](#check-it) shows.
 
 On your own machine, a server you start with `--harness-sign-in` runs a person's runs of a plan-billed recipe that names
 a `signIn` on your own sign-in:

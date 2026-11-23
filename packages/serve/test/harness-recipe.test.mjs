@@ -1,7 +1,7 @@
 // The five rules (HARNESS.md#the-five-rules), the owner's install and harness-check.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
@@ -12,6 +12,8 @@ import { storeOn } from "./store-helpers.mjs";
 import { zipOf } from "./fixtures/zip-of.mjs";
 import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
 import { planRecipesOf } from "../dist/harness-table.js";
+import { launchBody, readLaunchBody } from "../dist/run-launch.js";
+import { putSealedKey } from "../dist/server-keys.js";
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -952,7 +954,7 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   assert.equal(keyedEntry.hidden(laid), undefined);
   // The server's listing reads its own saved keys (harnessKeysSavedHere), where its environment holds none.
   const { store } = await storeOn(t);
-  const saved = new HarnessKeysOverStore(store, randomBytes(32), planRecipesOf(keyedEnv));
+  const saved = new HarnessKeysOverStore(store, randomBytes(32), planRecipesOf(keyedEnv), keyed.data);
   await saved.load();
   assert.deepEqual(saved.recipes, [{ id: "model-agent", label: "Model Agent", keys: ["MODEL_AGENT_API_KEY"] }]);
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY", { value: "saved-test-key" });
@@ -1047,11 +1049,11 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   await loops.refuseRecipeTriggerRun(deps, "pi", scheduled);
   // A key saved for another harness, under the same name, is not this one's: still refused.
   const seal = randomBytes(32);
-  const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"] }]);
+  const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"] }], data);
   await other.save(other.recipe("other-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
   // With every key saved for its harness, it runs, on every path.
-  const saved = new HarnessKeysOverStore(real, seal, planRecipesOf(own));
+  const saved = new HarnessKeysOverStore(real, seal, planRecipesOf(own), data);
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled);
   assert.equal(await host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), false);
@@ -1271,4 +1273,59 @@ test("a shared server runs a plan-billed recipe on the keys its owner saved for 
   assert.equal(died.last.status, "failed", JSON.stringify(died.last));
   const text = JSON.stringify([(await second.api("GET", `/runs/${leaked.run_id}`)).body, (await second.api("GET", `/runs/${leaked.run_id}/timeline`)).body]);
   assert.deepEqual(findPlanted([{ where: "the leaking run's reads", text }, { where: "the store's bytes", text: storeBytes(second.data).toString("latin1") }], [leakKey]), []);
+});
+
+test("a scheduled run on a plan-billed recipe whose key rows are counted but do not open (removed or sealed under another key between the count and the claim) is refused at its claim, never run on its owner's sign-in", { skip: linux, timeout: 180_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
+  // A person's run goes on the sign-in: its agent and revision are the schedule's.
+  const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  // Its key's row is there, so the claim's count says saved, and it does not open under this server's seal key: the
+  // claim lays nothing.
+  await putSealedKey(server.store, randomBytes(32), "harness:model-agent:MODEL_AGENT_GEMINI_API_KEY", "fake-unopenable-key");
+  const row = await server.store.runs.get(person.run_id);
+  const launch = await server.store.runs.launch(person.run_id);
+  const scheduled = randomUUID();
+  const before = origin.messages().length;
+  await server.store.runs.create({ id: scheduled, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), trigger: { id: "trg_nightly", firing_key: "k1" } }), sealed: launch.sealed });
+  const { last } = await follow(server.api, scheduled, ["completed", "failed"], { deadlineMs: 120_000 });
+  const read = (await server.api("GET", `/runs/${scheduled}`)).body;
+  assert.equal(last.status, "failed", JSON.stringify(read));
+  assert.match(JSON.stringify(read), /never on its owner's own sign-in/);
+  assert.equal(origin.messages().length, before, "the vendor heard nothing: no turn went on the sign-in");
+});
+
+test("a start runs only on the keys its claim laid: the server's listing holding them saved, or the operator's shell exporting one, never puts it on the keys route", { skip: linux, timeout: 240_000 }, async (t) => {
+  const shell = plantedValue("operator-shell-key");
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), MODEL_AGENT_API_KEY: shell });
+  // Its owner saves the recipe's key: its runs go on that key, never the shell's.
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true });
+  const saved = plantedValue("harness-vendor-key");
+  assert.equal((await (await asOwnerAndToken(server)).owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: saved })).status, 204);
+  const on = await startRun(server.api, "on-keys", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, on.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  const heard = origin.messages().length;
+  assert.ok(heard >= 1 && origin.messages().every((r) => r.headers["x-api-key"] === saved), "every vendor request on the saved key");
+
+  // Its row is gone from the store behind the server's back (another server on this store removed it, or a removal
+  // landed between the listing and the claim): the server still lists the key saved, its next claim lays nothing, and
+  // that start is refused for its keys. The shell's key of that name never stands in, and the vendor hears nothing more.
+  await server.store.sealedKeys.remove("harness:model-agent:MODEL_AGENT_API_KEY");
+  const next = await startRun(server.api, "row-gone", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" }).catch((error) => ({ error }));
+  if (next.run_id) {
+    const ended = await follow(server.api, next.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+    const read = (await server.api("GET", `/runs/${next.run_id}`)).body;
+    assert.equal(ended.last.status, "failed", JSON.stringify(read));
+    assert.match(JSON.stringify(read), /HARNESS_KEYS_NOT_SAVED/);
+  } else assert.match(String(next.error?.message), /HARNESS_KEYS_NOT_SAVED/);
+  const more = origin.messages().slice(heard);
+  assert.equal(more.length, 0, `the vendor heard nothing more: ${JSON.stringify(more.map((r) => (r.headers["x-api-key"] === shell ? "the shell's key" : "another")))}`);
 });
