@@ -403,6 +403,43 @@ const CASES = [
       exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
     };
   })(),
+  // A held value of many lines is found by its parts too: each line of 40 characters or more, and its body (the lines
+  // between its armor) with the line breaks gone. So the first lines of a held key, or its body without the armor,
+  // show no line; and a held JSON value's multi-line string (a service account's private key) is held as itself.
+  ...(() => {
+    const { lines, pem } = fakePem(25);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const account = JSON.stringify({
+      type: "service_account",
+      project_id: "made-up-project",
+      private_key_id: "0123456789abcdef0123456789abcdef01234567",
+      private_key: `${pem}\n`,
+      client_email: "probe@made-up-project.iam.gserviceaccount.com",
+      client_id: "123456789012345678901",
+    }, null, 2);
+    return [
+      {
+        name: "the first 11 lines of a held PEM-like value (head -n 11) show no line of it",
+        text: `$ head -n 11 key.pem\n${pem.split("\n").slice(0, 11).join("\n")}\n`,
+        values: [pem],
+        hides: lines.slice(0, 10).map((line) => line.slice(0, 12)),
+        exact: all(`$ head -n 11 key.pem\n${Array(11).fill("[redacted]").join("\n")}\n`),
+      },
+      {
+        name: "a held PEM-like value's body, its armor stripped, shows no line of it",
+        text: `body:\n${lines.join("\n")}\n`,
+        values: [pem],
+        hides: lines.map((line) => line.slice(0, 12)),
+        exact: all(`body:\n${Array(25).fill("[redacted]").join("\n")}\n`),
+      },
+      {
+        name: "a held service account JSON's private key, printed alone, shows no line of it",
+        text: `$ jq -r .private_key sa.json\n${pem}\n`,
+        values: [account],
+        hides: lines.map((line) => line.slice(0, 12)),
+      },
+    ];
+  })(),
   // A held value with line breaks written in JSON: escaped once ("\n"), it is cut in place where it stands; escaped
   // twice (JSON in a JSON string, "\\n"), or with its line breaks written "\r\n", it is found in the text decoded and
   // withholds the text.
