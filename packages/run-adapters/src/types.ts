@@ -511,6 +511,11 @@ export interface AdapterFacts {
   /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
    *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
   readonly ownToolSearch?: true;
+  /** Its tool list is the one its thread was started with: a resume takes no new one (Codex's app-server takes
+   *  `dynamicTools` on thread/start alone; thread/resume and its settings updates take none). So the host never leaves a
+   *  tool out at a claim for a reason a later claim of the same run may lift (a per_run MCP server's credential, handed
+   *  with a message): that tool would never come back. Absent: it takes the host's tools again at every claim. */
+  readonly toolsFixedAtStart?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its

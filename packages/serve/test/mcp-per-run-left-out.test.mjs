@@ -1,8 +1,11 @@
-// A per_run MCP server a run was handed no credential for (no mcp_auth for it): its tools are left out of the run's, so
+// A per_run MCP server a run was handed no credential for (no mcp_auth for it). On a harness that takes its tools again at
+// each claim (pi here; Claude Code, OpenCode and the ACP agents the same way), its tools are left out of the claim's, so
 // the model is never offered a tool whose every call would be refused, and the run's timeline says which server and why
-// (mcp-probe.ts unconnectedWords). A run handed one is offered its tools as before, and its call reaches the server. Both
-// spec builders: pi's (adapter-run-spec.ts) and a CLI harness's (cli-run-spec.ts, Codex's stand-in here). A fake MCP
-// server on loopback; no key, no network.
+// (mcp-probe.ts unconnectedWords); a message that hands the credential brings them back at the run's next claim. Codex
+// keeps the dynamic tools its thread was started with (thread/resume takes none: AdapterFacts.toolsFixedAtStart), so its
+// run is given the server's tools from the start, a call of one refused unsent until the credential comes, and then
+// answered. One run each, its first claim with no mcp_auth and a message carrying it. A fake MCP server on loopback; no
+// key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -35,16 +38,27 @@ async function addGw(t, api) {
   return fake;
 }
 
-/** `id` run once to its end with `content` (and `mcp_auth`, when given): its timeline's rows and its final answer. */
-async function runOnce(api, id, content, mcp_auth) {
-  const started = await retried(api)("POST", `/agents/${id}/runs`, { input: { content }, ...(mcp_auth ? { mcp_auth } : {}) });
+/** `id` started with `content` and run to its end: its id, timeline rows and final answer. */
+async function start(api, id, content) {
+  const started = await retried(api)("POST", `/agents/${id}/runs`, { input: { content } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  const { rows, last } = await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
-  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind === "phase" || row.kind.startsWith("tool"))));
-  return { rows, answer: String((await api("GET", `/runs/${started.body.run_id}`)).body.result?.final_answer ?? "") };
+  return { id: started.body.run_id, ...(await settled(api, started.body.run_id)) };
 }
 
-test("pi: a run handed no credential for a per_run server is offered none of its tools and is told why on its timeline; a run handed one is offered them and its call reaches the server", { timeout: 120_000 }, async (t) => {
+/** Run `runId` sent `content` with `mcp_auth` and run to its end again: its timeline rows and final answer. */
+async function message(api, runId, content, mcp_auth) {
+  const sent = await api("POST", `/runs/${runId}/messages`, { content, mcp_auth });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  return settled(api, runId);
+}
+
+async function settled(api, runId) {
+  const { rows, last } = await follow(api, runId, ["completed", "failed"], { after: 0, deadlineMs: 60_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind === "phase" || row.kind.startsWith("tool"))));
+  return { rows, answer: String((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "") };
+}
+
+test("pi: a run's first claim, handed no credential for a per_run server, is offered none of its tools and says why on the timeline; a message that hands the credential brings them back on the same run, and its call reaches the server", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const offered = join(dir, "offered.jsonl");
   withEnv(t, { [OFFERED_ENV]: offered, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
@@ -54,16 +68,16 @@ test("pi: a run handed no credential for a per_run server is offered none of its
   assert.equal(save.status, 201, JSON.stringify(save.body));
   const offeredNames = () => readFileSync(offered, "utf8").trim().split("\n").flatMap((line) => JSON.parse(line));
 
-  const bare = await runOnce(api, "reader", "Hi");
+  const bare = await start(api, "reader", "Hi");
   assert.deepEqual(offeredNames().filter((name) => name.startsWith("mcp__gw__")), [], `no tool of gw offered: ${JSON.stringify([...new Set(offeredNames())])}`);
   assert.deepEqual(notesOf(bare.rows), [unconnectedWords("gw")], "one note naming the server and why");
   assert.deepEqual(callsOf(fake), [], "nothing sent to the server");
 
-  const given = await runOnce(api, "reader", 'Call mcp__gw__add with {"a":2,"b":3}', handed);
-  assert.ok(offeredNames().includes("mcp__gw__add"), "the handed run is offered the server's tool");
+  const given = await message(api, bare.id, 'Call mcp__gw__add with {"a":2,"b":3}', handed);
+  assert.ok(offeredNames().includes("mcp__gw__add"), "the next claim of the same run is offered the server's tool");
   assert.equal(given.answer, "The tool said: 5");
   assert.deepEqual(callsOf(fake), ["add"], "its call reached the server");
-  assert.deepEqual(notesOf(given.rows), [], "and no note");
+  assert.deepEqual(notesOf(given.rows), [unconnectedWords("gw")], "and no second note");
 });
 
 /** serve's gateway on loopback: each Responses request answered with the text it carries. */
@@ -81,11 +95,11 @@ async function echoGateway(t) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
-test("codex: a run handed no credential for a per_run server is given none of its tools and is told why on its timeline; a run handed one is given them and its call reaches the server", { timeout: 120_000 }, async (t) => {
+test("codex: a run handed no credential for a per_run server is given its tools from its thread's start, a call of one refused unsent with no note; a message that hands the credential reaches the same thread, and its call reaches the server", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const standIn = join(dir, "codex-stand-in.mjs");
   await copyStandIn(standIn);
-  // The stand-in's own note of the dynamic tools each thread is given (FAKE_CODEX_OFFERED).
+  // The stand-in's own note of the dynamic tools its thread has, at each start and resume (FAKE_CODEX_OFFERED).
   const offeredFile = join(dir, "offered.jsonl");
   const offered = () => readFileSync(offeredFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   withEnv(t, {
@@ -101,17 +115,15 @@ test("codex: a run handed no credential for a per_run server is given none of it
   const save = await retried(api)("POST", "/agents", agent("codex-reader", { harness: "codex", tools: ["mcp:gw/add"], tool_settings: ALLOW }));
   assert.equal(save.status, 201, JSON.stringify(save.body));
 
-  const bare = await runOnce(api, "codex-reader", "Hi");
+  const bare = await start(api, "codex-reader", 'call mcp_gw__add {"a":2,"b":3}');
   const [first] = offered();
-  assert.ok(Array.isArray(first), "the run's thread was started");
-  assert.deepEqual(first.filter((name) => name.includes("gw")), [], `no tool of gw given: ${JSON.stringify(first)}`);
-  assert.deepEqual(notesOf(bare.rows), [unconnectedWords("gw")], "one note naming the server and why");
+  assert.ok(first.includes("mcp_gw__add"), `the thread is started with the server's tool: ${JSON.stringify(first)}`);
+  assert.match(bare.answer, /^mcp_gw__add failed: .*this run was handed none/, "its call refused in the per_run missing words");
   assert.deepEqual(callsOf(fake), [], "nothing sent to the server");
+  assert.deepEqual(notesOf(bare.rows), [], "no note: nothing was left out");
 
-  const given = await runOnce(api, "codex-reader", 'call mcp_gw__add {"a":2,"b":3}', handed);
-  const second = offered().at(-1);
-  assert.ok(second.includes("mcp_gw__add"), `the handed run is given the server's tool: ${JSON.stringify(second)}`);
+  const given = await message(api, bare.id, 'call mcp_gw__add {"a":2,"b":3}', handed);
+  assert.ok(offered().length >= 2 && offered().at(-1).includes("mcp_gw__add"), `the resumed thread still has the server's tool: ${JSON.stringify(offered())}`);
   assert.equal(given.answer, "mcp_gw__add returned: 5");
-  assert.deepEqual(callsOf(fake), ["add"], "its call reached the server");
-  assert.deepEqual(notesOf(given.rows), [], "and no note");
+  assert.deepEqual(callsOf(fake), ["add"], "its call reached the server with the message's credential");
 });

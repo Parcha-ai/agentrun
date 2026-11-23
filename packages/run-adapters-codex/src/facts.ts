@@ -24,6 +24,9 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
   ownModel: false,
   // Its own code mode runs the model's scripts, each nested call one of the host's tools through its bridge.
   ownCodemode: true,
+  // Its dynamic tools are given at thread/start alone: thread/resume and thread/settings/update take none (the pinned
+  // binary's own app-server schema, ThreadResumeParams and ThreadSettingsUpdateParams).
+  toolsFixedAtStart: true,
   normalizeModel: (model: { provider: string; modelId: string }) => model,
   install: Object.freeze({ npmLine: CODEX_INSTALL, spec: `@openai/codex@${CODEX_VERSION}`, codes: Object.freeze({ install: "CODEX_NOT_INSTALLED", pins: "CODEX_PIN_MISMATCH" }) }),
   // The shapes Codex drops or retypes in a host tool's schema (a run's MCP tool's among them), measured on the pinned
