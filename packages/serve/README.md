@@ -2774,7 +2774,8 @@ tried again, a later one can start first.
 
 Such a trigger can fill the runner's places and the queue behind them, starving other triggers and the runs people
 start. Give it `max_active_runs` (1 to 100; `null` clears it): past that many of its runs active, a firing waits due and
-is tried again, and is never skipped. It counts the runs this trigger started while they work, kept apart
+is tried again, and is never skipped. It counts the runs this trigger started while they work (with the launch hook,
+also a firing its host took, until that firing's run starts or its `start_by` passes), kept apart
 from its history (so a long run counts however many firings follow it) and read again at each check; a run a person
 opens again after it ended is that person's follow-up, not counted. Any `start_run` trigger of a pushed source (a
 webhook) takes it, with or without `accept`: set, each event starts its own run, never skipped behind the last, up to the
@@ -3297,7 +3298,9 @@ The host can start the run before it answers or after. A firing it answered 2xx 
 `start_by`, 10 minutes after that answer, takes that one start until then, and is refused with 422 `not_due` after.
 The 10 minutes run from the answer, not from `fired_at`, so a firing that reaches the host late (a catch-up, one that
 waited on `max_active_runs`, one handed again after a restart) gets the same time. The server never hands a `sent`
-firing over again, and until its run starts, the overlap check cannot see it.
+firing over again. Until its run starts or its `start_by` passes, it holds its trigger's room as a run in progress
+would: with `max_active_runs`, a later firing waits for that room, and without it the overlap check skips a later
+firing, naming the held one. Once `start_by` passes it holds nothing, and a waiting firing is handed.
 
 The firing is the run's key, so a second start for the same firing answers the same run, and the request takes no
 `Idempotency-Key` (422 with one). A firing that is neither due nor taken by its host (failed, skipped, or one of

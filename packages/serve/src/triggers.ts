@@ -10,12 +10,13 @@
 // While the trigger's last run is active (working, or waiting on a person), a firing is `skipped`, never queued: a firing
 // queued behind a run parked on a person would wait for as long as the person does. A source whose adapter says each
 // firing is its own work (concurrent: a webhook with accept) starts a run per firing instead. With max_active_runs set, a
-// firing past it waits for a run of the trigger to end.
+// firing past it waits for a run of the trigger to end. A firing handed to the launch hook's host with no run yet is a run
+// in progress for both, until its run starts or its start_by passes.
 // One retry policy, kept in the store: a failed try (a full server, a thrown error, a store that could not read) keeps
 // the firing due with its next try in retry_at, after the wait BACKOFF_MS gives for its attempts; past the table it fails.
-// Every failed try counts toward the trigger's streak, and FAILURES_TO_PAUSE in a row turn the trigger off. A firing past
-// its trigger's max_active_runs is no failure: it waits (waits_on, no try counted) and is driven again once a run of the
-// trigger ends, read from the store by one query per tick for every waiting firing (the runner is another process: the
+// Each failed firing counts once toward the trigger's streak, however many tries it took, and FAILURES_TO_PAUSE in a row
+// turn the trigger off. A firing past its trigger's max_active_runs is no failure: it waits (waits_on, no try counted) and
+// is driven again once a run of the trigger ends, read from the store by one query per tick for every waiting firing (the runner is another process: the
 // store is all the two share). One timer, at the soonest next time of an enabled trigger, next try of a due firing, or
 // WAIT_POLL_MS while a firing waits, is armed again after each change. A next time is reckoned from the last nominal time, never from the clock, so a
 // late timer does not drift. Of the times that came while the server was down, or its timer late past LATE_MS, the
@@ -773,7 +774,7 @@ export class Triggers {
         if (firing.status === "failed") await this.notifyFailed(firing.triggerId, firing.key);
         else if (firing.waitsOn === null && !this.driving.has(firing.key) && (firing.retryAt === null || firing.retryAt <= now)) void this.inTurn(firing.triggerId, firing.key);
       }
-      const waiting = await this.store.triggers.waiting();
+      const waiting = await this.store.triggers.waiting(now);
       this.waiting = waiting.length > 0;
       for (const firing of waiting) if (firing.free && !this.driving.has(firing.key)) void this.inTurn(firing.triggerId, firing.key);
     } catch (error) {
@@ -1112,16 +1113,23 @@ export class Triggers {
    *  active), or, with max_active_runs (a pushed trigger's, with or without accept), waiting on the last run while that
    *  many of the trigger's runs have not ended: a capped trigger starts a run per firing and never skips. A trigger whose
    *  source starts a run per firing (its adapter's concurrent) is never skipped either: with no cap it starts, the server's
-   *  run limit still holding through retry. */
+   *  run limit still holding through retry. A firing its launch hook's host took with no run yet holds the room as a run in
+   *  progress until it starts or its startBy passes (the store's activeRuns and held): with a cap, a firing waits on it (on
+   *  its key while the trigger has no run), and the overlap check skips for it. */
   private async busy(trigger: Trigger, firing: FiringRow): Promise<{ skipped: string } | { waitsOn: string; reason: string } | undefined> {
+    const now = this.clock.now();
     if (trigger.maxActiveRuns !== null) {
-      const active = await this.store.triggers.activeRuns(trigger.id);
-      if (active < trigger.maxActiveRuns || !trigger.lastRunId) return undefined;
-      return { waitsOn: trigger.lastRunId, reason: `${active} of this trigger's runs have not ended (max_active_runs ${trigger.maxActiveRuns}).` };
+      const active = await this.store.triggers.activeRuns(trigger.id, now);
+      if (active < trigger.maxActiveRuns) return undefined;
+      const on = trigger.lastRunId ?? (await this.store.triggers.held(trigger.id, now));
+      if (!on) return undefined;
+      return { waitsOn: on, reason: `${active} of this trigger's runs have not ended (max_active_runs ${trigger.maxActiveRuns}).` };
     }
     if (this.adapter(trigger.source)?.concurrent?.(trigger.source)) return undefined;
     const earlier = (await this.store.triggers.pending()).some((f) => f.triggerId === trigger.id && f.status === "due" && f.key !== firing.key && f.at < firing.at);
     if (earlier) return { skipped: "An earlier firing is still waiting to start its run." };
+    const held = await this.store.triggers.held(trigger.id, now);
+    if (held) return { skipped: `The last firing, ${held}, was handed to the launch hook's host, which may still start its run.` };
     const last = trigger.lastRunId;
     if (!last) return undefined;
     const status = await this.deps.statusOf(last);

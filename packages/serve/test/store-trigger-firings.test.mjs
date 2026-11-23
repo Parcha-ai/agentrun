@@ -99,10 +99,10 @@ test("active runs: the trigger's started firings whose run has not ended", async
     await store.triggers.record("trg-1", [due(`fir-${n}`)]);
     await store.triggers.fire({ triggerId: "trg-1", key: `fir-${n}` }, { id: `run-${n}`, agentId: "agent-1", revisionId: "rev-1" });
   }
-  assert.equal(await store.triggers.activeRuns("trg-1"), 3);
+  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 3);
   const claim = await store.claim("run-2", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await store.triggers.activeRuns("trg-1"), 2, "an ended run is not active");
+  assert.equal(await store.triggers.activeRuns("trg-1", Date.now()), 2, "an ended run is not active");
   assert.equal((await store.triggers.firing("trg-1", "fir-1")).status, "started", "fire moved the due firing to started");
 });
 

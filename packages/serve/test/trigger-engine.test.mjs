@@ -610,7 +610,7 @@ for (const [write, answer, on] of [["sent", 204, "runOf"], ["failed", 400, "runO
   const row = await opened.store.triggers.firing(made.id, key);
   assert.deepEqual([row.status, row.runId, row.attempts, row.error], ["started", "run-host", 0, null], JSON.stringify(row));
   assert.equal((await opened.store.triggers.get(made.id)).failuresInARow, 0, "no failure counted");
-  assert.equal(await opened.store.triggers.activeRuns(made.id), 1, "the host's run counts toward max_active_runs");
+  assert.equal(await opened.store.triggers.activeRuns(made.id, opened.clocks.current.now()), 1, "the host's run counts toward max_active_runs");
   // The next firing is driven after this one's turn ends: it waits on the host's run, and nothing was told.
   await triggers.receive(made.id, "evt-2", "{}");
   const second = firingKey("webhook", made.id, "evt-2");
