@@ -27,6 +27,13 @@ const P24 = ["Zq8VbN3xLmT6pR2w", "Yk9HsD4fGj7Ac5Ue"];
 const login = (user, password) => [user, password].join(":");
 const SIZE = 256 * 1024;
 const fill = (unit, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+/** A made-up PEM-like key: `count` body lines of 64 characters (turns of the base64 of "fake-body-not-a-real-key", each
+ *  numbered), its armor built in pieces. */
+const fakePem = (count) => {
+  const body = "ZmFrZS1ib2R5LW5vdC1hLXJlYWwta2V5".repeat(3);
+  const lines = Array.from({ length: count }, (_, i) => `${String(i).padStart(4, "0")}${body.slice(i % 32, (i % 32) + 60)}`);
+  return { lines, pem: [`-----BEGIN ${"PRIVATE KEY"}-----`, ...lines, `-----END ${"PRIVATE KEY"}-----`].join("\n") };
+};
 
 /** Each case: the text, the held values, what no entry point shows (`hides`), and where an entry point's contract fixes
  *  its answer, that answer (`exact`). `entries` narrows a case to the entry points whose contract it is. */
@@ -374,6 +381,25 @@ const CASES = [
         exact: both(`${"y ".repeat(100)}[redacted] next ${tail}`),
       },
     ];
+  })(),
+  // A held value whose head is glued to the end of a run too long to read, its rest after the run: the run shows as
+  // "[redacted]" and its tail is read with what follows it, so no part of the value shows.
+  {
+    name: "a held value whose head is glued to the end of a run too long to read, its rest past a line break, withholds the text",
+    text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}\n${CUT_KEY.slice(16)} end`,
+    values: [CUT_KEY],
+    hides: [CUT_KEY.slice(16, 24)],
+    exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
+  },
+  (() => {
+    const { lines, pem } = fakePem(6);
+    return {
+      name: "a held PEM-like value whose armor is glued to the end of a run too long to read withholds the text",
+      text: `${"Z".repeat(20_000)}${pem} end`,
+      values: [pem],
+      hides: lines.map((line) => line.slice(0, 12)),
+      exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]" },
+    };
   })(),
   // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
   // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
