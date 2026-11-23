@@ -27,7 +27,9 @@ export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, laun
 /** The census a launch whose census is `census` and sealed bytes `sealed` takes when `next` is written as its sealed
  *  bytes: as it is when `next` holds none, or an end counted what it held before (its census); CENSUS_PENDING when it
  *  never held any; CENSUS_UNSCANNED over a CENSUS_PENDING whose sealed bytes an end erased without writing a census (a
- *  runner from before the census), so the files that end left are still read as uncounted. */
+ *  runner from before the census), so the files that end left are still read as uncounted. On Postgres the table holds
+ *  the same rule too (migration 0027's trigger), for a server of an earlier build still writing during a rolling deploy.
+ *  A SQLite store has one server, so no earlier server writes beside this one: the rule lives here alone. */
 export function censusOnSeal(census: string | null, sealed: Uint8Array | null, next: Uint8Array | null): string | null {
   if (next === null) return census;
   if (census === null) return CENSUS_PENDING;

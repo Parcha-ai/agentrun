@@ -268,3 +268,41 @@ test("a census stays small: a file past CENSUS_RANGES_MAX cuts is cut whole, ent
   const huge = JSON.stringify({ v: 1, files: { "a.txt": { mac: mac(Buffer.from("a")), cut: [] }, pad: { mac: "x".repeat(CENSUS_JSON_MAX), cut: [] } } });
   assert.equal(readAfter(huge, "a.txt", "a"), "withheld", "a census past CENSUS_JSON_MAX is no census");
 });
+
+test("Postgres holds the census rule for an earlier build's writes during a rolling deploy: its launch with sealed bytes takes pending, its seal over a pending an end erased turns it unscanned, and this build's census stays", postgresOnly("the run_launch census trigger"), async (t) => {
+  const { openPostgresStore } = await import("../dist/store/index.js");
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const store = await openPostgresStore({ url: PG_URL, schema });
+  try {
+    await liveAndPlain(store);
+    await store.runs.create({ id: "older", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Answer." } }, sealed: null });
+  } finally {
+    await store.close();
+  }
+  const census = JSON.stringify({ v: 1, files: {} });
+  const c = await client(schema);
+  const at = async (id) => (await c.query("SELECT sealed IS NOT NULL AS held, census FROM run_launch WHERE run_id = $1", [id])).rows[0];
+  try {
+    // An earlier server's insert names no census.
+    await c.query("DELETE FROM run_launch WHERE run_id = 'older'");
+    await c.query("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES ('older', '{}', $1, 1)", [Buffer.from([7, 7, 7, 3])]);
+    assert.deepEqual(await at("older"), { held: true, census: CENSUS_PENDING }, "an earlier server's launch holding sealed bytes: pending");
+    // An earlier runner's end erases them and writes no census: still pending, read as uncounted.
+    await c.query("UPDATE run_launch SET sealed = NULL WHERE run_id = 'older'");
+    assert.deepEqual(await at("older"), { held: false, census: CENSUS_PENDING });
+    // An earlier server's message seals anew over it: that end counted nothing.
+    await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'older'", [Buffer.from([7, 7, 7, 4])]);
+    assert.deepEqual(await at("older"), { held: true, census: CENSUS_UNSCANNED }, "unscanned, not pending: the files that end left stay withheld");
+    // An earlier server's seal on a launch that never held any: pending.
+    await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'plain'", [Buffer.from([7, 7, 7, 5])]);
+    assert.deepEqual(await at("plain"), { held: true, census: CENSUS_PENDING });
+    // This build's end writes its census as it erases; a later seal keeps it, as censusOnSeal does.
+    await c.query("UPDATE run_launch SET census = $1, sealed = NULL WHERE run_id = 'live'", [census]);
+    assert.deepEqual(await at("live"), { held: false, census });
+    await c.query("UPDATE run_launch SET sealed = $1 WHERE run_id = 'live'", [Buffer.from([7, 7, 7, 6])]);
+    assert.deepEqual(await at("live"), { held: true, census }, "an earlier end's census stays");
+  } finally {
+    await c.end();
+  }
+});
