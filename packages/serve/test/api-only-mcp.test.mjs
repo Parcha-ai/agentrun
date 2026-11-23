@@ -16,6 +16,7 @@ import { asOwner, follow, serve, serverLog, storeBytes, withEnv } from "./suppor
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
+const { mcpSourceKey, ownersRecord } = await import("../dist/mcp-sources.js");
 const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
 
 const KEY_ENV = "COMPOSIO_API_KEY";
@@ -188,6 +189,57 @@ test("full profile: the owner's Composio server saved with its key sealed is 403
   assert.ok(String(refused.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), refused.body.error?.message);
   assert.equal(s.composio.calls.length, from, "nothing reached Composio");
   assert.ok(await s.server.store.mcp.server("mail"), "it stays");
+});
+
+// The token saves over a server only where it saved that server (the delete's rule): an owner's server stays the owner's
+// under every save route the token reaches, sealed or not, and nothing it made at Composio is removed.
+/** What a test compares of a row to say it is unchanged. */
+const rowOf = async (store, name) => {
+  const row = await store.mcp.server(name);
+  return row && { url: row.url, auth: row.auth, createdAt: row.createdAt, updatedAt: row.updatedAt, sealed: row.sealed, credentialChangedAt: row.credentialChangedAt, instructions: row.instructions };
+};
+
+test("full profile: the token's ordinary save moving the owner's Composio server (api_key_env, sealing nothing) to another address is 403: nothing reaches Composio, and the row and its records are unchanged", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  // The address the token's save names: one that lists tools, so only the refusal stops the save.
+  const elsewhere = await startFakeMcp();
+  t.after(() => elsewhere.close());
+  const s = await setup(t, { full: true });
+  assert.equal((await asOwner(s.server)("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const store = s.server.store;
+  assert.equal((await store.mcp.server("mail")).sealed, null, "it seals nothing");
+  const [row, made, source] = [await rowOf(store, "mail"), await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))];
+  const from = s.composio.calls.length;
+  const moved = await s.token("PUT", "/settings/mcp-servers/mail", { url: elsewhere.url, auth: { type: "none" } });
+  assert.equal(moved.status, 403, JSON.stringify(moved.body));
+  assert.ok(String(moved.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), moved.body.error?.message);
+  const sent = s.composio.calls.slice(from);
+  assert.deepEqual(sent.filter((call) => call.method === "DELETE").map((call) => call.path), [], "no DELETE of its MCP server, account or auth config");
+  assert.deepEqual(sent, [], "nothing reached Composio");
+  assert.deepEqual(elsewhere.log, [], "the other address got nothing");
+  assert.deepEqual(await rowOf(store, "mail"), row, "the row is unchanged");
+  assert.deepEqual([await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))], [made, source], "its records are unchanged");
+});
+
+test("API-only: the token's Composio save over a Composio server it did not save (sealing nothing) is 403: nothing reaches Composio, and the row and its records are unchanged", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t);
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const store = s.server.store;
+  // The owner's: its record without the token's mark, as the owner's save over it leaves it (or a save before the mark).
+  await store.settings.put(mcpSourceKey("mail"), ownersRecord(await store.settings.get(mcpSourceKey("mail"))));
+  const [row, made, source] = [await rowOf(store, "mail"), await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))];
+  const from = s.composio.calls.length;
+  const again = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
+  assert.equal(again.status, 403, JSON.stringify(again.body));
+  assert.ok(String(again.body.error?.message).startsWith(SECRET_WRITE_REFUSAL), again.body.error?.message);
+  assert.deepEqual(s.composio.calls.slice(from), [], "nothing reached Composio");
+  assert.deepEqual(await rowOf(store, "mail"), row, "the row is unchanged");
+  assert.deepEqual([await store.settings.get(composioMadeKey("mail")), await store.settings.get(mcpSourceKey("mail"))], [made, source], "its records are unchanged");
+  // The token's own is still the token's to save again.
+  await store.settings.put(mcpSourceKey("mail"), { ...source, by: "token" });
+  const own = await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE);
+  assert.equal(own.status, 200, JSON.stringify(own.body));
 });
 
 test("API-only: the token saves no server at an address of its own: the generic save, the list and the read are refused (404), and the address gets nothing", async (t) => {
