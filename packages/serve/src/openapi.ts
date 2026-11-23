@@ -2896,7 +2896,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-server-names": {
     get: {
       operationId: "listMcpServerNames", tags: ["local"], summary: "The names of the MCP servers saved here, and nothing else of them",
-      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), which serves no other settings route.",
+      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), whose only other settings routes are a Composio server's save, a server's delete and the outbound webhook's.",
       responses: { "200": json({ type: "object", additionalProperties: false, required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } }, "The saved servers' names."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "mcpservernames/1",
     },
@@ -3240,15 +3240,16 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/webhook": {
     get: {
       operationId: "getWebhook", tags: ["local"], summary: "The webhook this server POSTs run notices to, if one is set; never its secret",
+      description: "Served on an API-only server (AGENTRUN_API_ONLY=1) too, with the token.",
       responses: { "200": json(WEBHOOK_VIEW, "The webhook, or `configured: false`."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
     put: {
       operationId: "saveWebhook", tags: ["local"], summary: "Set the webhook's URL",
-      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a turn a person stopped, \`budget\` for a run paused at its spend cap, \`browser\` or \`computer\` for an agent's ask for the person in its browser or on its desktop or phone: always the run read's own \`pending.kind\`; no \`pending\` when the run waits on nothing named, as when its harness ended its turn on its own) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, agent_name, status, title, url}\`, \`url\` the run on the page; and \`trigger.failed\` when a trigger's firing could not start its run (/triggers), with \`data: {trigger_id, name, agent_id, agent_name, firing_key, nominal_at, error: {code, message}, auto_paused}\`, \`agent_id\` the agent the trigger runs as (a start_run target's agent, or the agent of the run a message_run target names, so always present), \`auto_paused\` true when it was the ${FAILURES_TO_PAUSE}th in a row and turned the trigger off, its \`webhook-id\` the same for the same firing, after a restart too. \`agent_name\` in each is the agent's name as the message is built, or its \`agent_id\` when it has none. Never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT of the same URL keeps it, turns the webhook on again and answers 200, and one of a new URL makes a new secret. POST /settings/webhook/secret makes a new secret for the same URL. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters.`,
+      description: `Messages follow the Standard Webhooks spec (standardwebhooks.com), so a receiver verifies them with any of its libraries. Each is POSTed to \`url\` as JSON \`{type, timestamp, data}\`: \`run.needs_input\` when a run comes to need its person (status input_required; \`data.pending.kind\` \`question\` for an ask_person question, \`approval\` for a tool call that waits for a person's approval, \`stopped\` for a turn a person stopped, \`budget\` for a run paused at its spend cap, \`browser\` or \`computer\` for an agent's ask for the person in its browser or on its desktop or phone: always the run read's own \`pending.kind\`; no \`pending\` when the run waits on nothing named, as when its harness ended its turn on its own) and \`run.ended\` when it ends (completed, failed or cancelled), with \`data: {run_id, agent_id, agent_name, status, title, url}\`, \`url\` the run on the page; and \`trigger.failed\` when a trigger's firing could not start its run (/triggers), with \`data: {trigger_id, name, agent_id, agent_name, firing_key, nominal_at, error: {code, message}, auto_paused}\`, \`agent_id\` the agent the trigger runs as (a start_run target's agent, or the agent of the run a message_run target names, so always present), \`auto_paused\` true when it was the ${FAILURES_TO_PAUSE}th in a row and turned the trigger off, its \`webhook-id\` the same for the same firing, after a restart too. \`agent_name\` in each is the agent's name as the message is built, or its \`agent_id\` when it has none. Never a tool's arguments, an output or an input, which the API reads. Headers: \`webhook-id\` (the same on every try, the receiver's idempotency key), \`webhook-timestamp\` (Unix seconds) and \`webhook-signature: v1,<base64 HMAC-SHA256 of "{id}.{timestamp}.{body}">\` under the secret's 32 bytes; a receiver refuses a timestamp more than 5 minutes from its clock. A try not answered 2xx in 15 s (no redirect followed) is tried again after about 5 s, 5 min, 30 min, 2 h, 5 h and 10 h, with jitter, then logged as failed; pending messages go on after a restart. A 410 turns the webhook off until it is set again. The first PUT makes the secret and answers 201 with it, once; a later PUT of the same URL keeps it, turns the webhook on again and answers 200, and one of a new URL makes a new secret. POST /settings/webhook/secret makes a new secret for the same URL. 422 for a URL that is not http or https, holds a user or password, or is over 2048 characters. Served on an API-only server (AGENTRUN_API_ONLY=1) too, with the token, under the same checks of the URL: the backend in front of it is the receiver, so its token is shown the secret.`,
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", format: "uri", maxLength: 2048 } } } } } },
       responses: {
-        "201": json({ oneOf: [closed({ ...WEBHOOK_SET_FIELDS, signing_secret: WEBHOOK_SECRET }), closed({ ...WEBHOOK_SET_FIELDS, note: { type: "string", description: "To the API token, which is never shown the secret: the words that send the person to the console for it." } })] }, "Set, with its secret as `signing_secret`, shown this once to the owner's signed-in session; to the API token, its metadata and the words in its place."),
+        "201": json({ oneOf: [closed({ ...WEBHOOK_SET_FIELDS, signing_secret: WEBHOOK_SECRET }), closed({ ...WEBHOOK_SET_FIELDS, note: { type: "string", description: "To the API token, which is never shown the secret: the words that send the person to the console for it." } })] }, "Set, with its secret as `signing_secret`, shown this once to the owner's signed-in session, or to an API-only server's token; to any other server's API token, its metadata and the words in its place."),
         "200": json(WEBHOOK_SET, "Changed; the secret is kept."),
         ...errors(400, 401, 409, 415, 422, 429, 500),
       },
@@ -3256,9 +3257,9 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     delete: {
       operationId: "deleteWebhook", tags: ["local"], summary: "Remove the webhook; its pending messages are dropped, the log of attempts is kept",
-      description: "A secret write: its signing secret goes with it. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the webhook kept.",
-      // The owner's password session alone (secret-writes.ts), never the document's bearer.
-      security: [{ ownerSession: [] }],
+      description: "A secret write: its signing secret goes with it. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the webhook kept. On an API-only server (AGENTRUN_API_ONLY=1), which has no owner, the token removes it: the backend in front of it is the receiver, and the secret its own.",
+      // The owner's password session (secret-writes.ts); the bearer on an API-only server alone (trigger-secrets-shown.ts).
+      security: [{ ownerSession: [] }, { bearer: [] }],
       responses: { "204": { description: "Removed." }, ...errors(401, 403, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
@@ -3266,11 +3267,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/webhook/secret": {
     post: {
       operationId: "rotateWebhookSecret", tags: ["local"], summary: "The webhook's new signing secret, shown once; the old one signs nothing from now on",
-      description: "A new secret for the URL set now; the webhook is otherwise as it was (its URL, and off if a 410 turned it off). The old secret is retired at once: every try from now on is signed with the new one, a message queued before the rotation included, so the receiver needs the new secret before its next message. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 404 when no webhook is set; 422 for any body, `{}` too, refused before it rotates: the new secret is made here, never given.",
+      description: "A new secret for the URL set now; the webhook is otherwise as it was (its URL, and off if a 410 turned it off). The old secret is retired at once: every try from now on is signed with the new one, a message queued before the rotation included, so the receiver needs the new secret before its next message. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. On an API-only server (AGENTRUN_API_ONLY=1), which has no owner, the token rotates it and is shown the new one: the backend in front of it is the receiver, and the secret its own. 404 when no webhook is set; 422 for any body, `{}` too, refused before it rotates: the new secret is made here, never given.",
       // No body to mark a field in: the operation is marked whole, a secret write all the same.
       "x-agentrun-secret": true,
-      // The owner's password session alone (secret-writes.ts), never the document's bearer.
-      security: [{ ownerSession: [] }],
+      // The owner's password session (secret-writes.ts); the bearer on an API-only server alone (trigger-secrets-shown.ts).
+      security: [{ ownerSession: [] }, { bearer: [] }],
       responses: { "200": json(closed({ ...WEBHOOK_SET_FIELDS, signing_secret: WEBHOOK_SECRET }), "The webhook, with the new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },
@@ -3278,7 +3279,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/webhook/test": {
     post: {
       operationId: "testWebhook", tags: ["local"], summary: "Send a `webhook.test` message now, once, and say how it went",
-      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log. 409 webhook_off when a 410 turned the webhook off: nothing is sent until a PUT sets it again.",
+      description: "The body is `{type: \"webhook.test\", timestamp, data: {}}`, signed as every message is. It is tried once, never again, and kept in the log. 409 webhook_off when a 410 turned the webhook off: nothing is sent until a PUT sets it again. Served on an API-only server (AGENTRUN_API_ONLY=1) too, with the token; the log of attempts and its redeliver are not.",
       responses: { "200": json(WEBHOOK_ATTEMPT, "Its attempt."), ...errors(401, 404, 409, 429, 500) },
       "x-agentrun-serve": "webhook/1",
     },

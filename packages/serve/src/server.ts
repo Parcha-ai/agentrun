@@ -181,7 +181,7 @@ import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oa
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
 import { SLACK_EVENTS, SlackPosts } from "./slack.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
-import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, webhookSecretHeld, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -6011,13 +6011,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
         // Never through `idempotent`: its record would keep the answer, and the first one holds the secret.
-        // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words.
+        // Its minted secret to the owner's session alone (trigger-secrets-shown.ts); the token gets its metadata and the words,
+        // but an API-only server's token, the receiver's own, is shown it (api-only.ts).
         const saved = await webhooks.save(await bodyOf(req));
-        return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
+        return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, webhookSecretHeld(mayHoldSecrets(req), options.apiOnly === true)));
       }
       case "rotateWebhookSecret": {
-        // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts). Never
-        // through `idempotent`, whose record would keep the secret. It takes no body, as a trigger's rotation takes none.
+        // A secret write: the dispatch's one check let only the owner's session this far, or an API-only server's token
+        // (trigger-secrets-shown.ts webhookSecretRefused). Never through `idempotent`, whose record would keep the secret.
+        // It takes no body, as a trigger's rotation takes none.
         if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
           throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating the webhook's secret takes no body: send none, and the new secret is made here." }]);
         }

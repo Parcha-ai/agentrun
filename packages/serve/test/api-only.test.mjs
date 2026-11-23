@@ -3,7 +3,10 @@
 // read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, triggers and their
 // webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
 // Composio server by api_key_env and deletes a server, and lists the servers' names (GET /settings/mcp-server-names);
-// their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
+// their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). Its token owns the
+// outbound webhook, the backend being its receiver: it sets it (shown the secret once), reads it, rotates its secret,
+// sends a test and removes it, the URL checked as on a whole server; the log of attempts and its redeliver are refused.
+// The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
 // (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
@@ -15,6 +18,7 @@ import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
+import { ofType, receiver, verifies } from "./webhook-support.mjs";
 
 const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
 const { API_ONLY_ENV, switchFrom } = await import("../dist/env-switch.js");
@@ -22,6 +26,7 @@ const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
+const { writesSecretFor } = await import("../dist/secret-writes.js");
 /** A password or key for a request the profile refuses before reading it, plainly no secret (as mcp.test.mjs makes them). */
 const notSecret = (name) => `not-a-secret-${name}`;
 /** The learning reads the profile serves, for the backend whose inline runs made the agent: the loop, the promotions,
@@ -76,11 +81,16 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
     // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
+    // The outbound webhook, whose receiver is the backend: read, set, its secret rotated, a test sent, removed.
+    ["GET", "/v2/settings/webhook"], ["HEAD", "/v2/settings/webhook"], ["PUT", "/v2/settings/webhook"], ["DELETE", "/v2/settings/webhook"],
+    ["POST", "/v2/settings/webhook/secret"], ["POST", "/v2/settings/webhook/test"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
-    ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
+    ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["GET", "/v2/settings/tools"],
+    // The webhook's log of attempts and its redeliver; Slack, whose URL is a credential of another service.
+    ["GET", "/v2/settings/webhook/deliveries"], ["POST", "/v2/settings/webhook/deliveries/msg_1/redeliver"], ["PUT", "/v2/settings/slack"], ["GET", "/v2/settings/slack"],
     ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
     ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
     // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
@@ -352,6 +362,102 @@ test("an API-only server's computers list says the run's folder each provider's 
   for (const row of computers.body.kinds.flatMap((kind) => kind.providers)) assert.ok(["bind", "archil", "sync", null].includes(row.folder), `${row.id}: ${JSON.stringify(row.folder)}`);
 });
 
+/** The operator's switch that lets the webhook send to this machine (the tests' receivers are on 127.0.0.1). */
+const PRIVATE_TARGETS = "AGENTRUN_WEBHOOK_PRIVATE_TARGETS";
+
+test("the outbound webhook's rotation and removal are refused the token as secret writes on a whole server, and served it on an API-only server", async () => {
+  for (const operation of ["rotateWebhookSecret", "deleteWebhook"]) {
+    assert.equal(await writesSecretFor(operation, undefined, { params: [], store: undefined }), true, `${operation}: a whole server's token is refused`);
+    assert.equal(await writesSecretFor(operation, undefined, { params: [], store: undefined, apiOnly: false }), true, `${operation}: apiOnly false is a whole server`);
+    assert.equal(await writesSecretFor(operation, undefined, { params: [], store: undefined, apiOnly: true }), false, `${operation}: an API-only server's token takes it`);
+  }
+});
+
+test("an API-only server's token sets the webhook (201, its secret once), reads it back with no secret, rotates the secret, and removes it; a run's end is POSTed there, signed with the secret it holds", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { [PRIVATE_TARGETS]: "1" });
+  const hook = await receiver(t);
+  const server = await serve(t, { apiOnly: true });
+  const none = await send(server, "GET", "/v2/settings/webhook");
+  assert.deepEqual([none.status, none.body.configured], [200, false], JSON.stringify(none.body));
+
+  const saved = await send(server, "PUT", "/v2/settings/webhook", { body: { url: hook.url } });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const first = saved.body.signing_secret;
+  assert.match(first ?? "", /^whsec_[A-Za-z0-9+/]{43}=$/, "the first save answers the secret, to the token");
+  assert.equal(saved.body.note, undefined, "and not the words that send a person to the console, which this server has not");
+  assert.deepEqual([saved.body.configured, saved.body.secret.name, saved.body.secret.set], [true, "webhook:outbound", true]);
+
+  const read = await send(server, "GET", "/v2/settings/webhook");
+  assert.deepEqual([read.status, read.body.configured, read.body.secret.set], [200, true, true], JSON.stringify(read.body));
+  assert.ok(!JSON.stringify(read.body).includes("whsec_"), "a read never shows the secret");
+  const again = await send(server, "PUT", "/v2/settings/webhook", { body: { url: hook.url } });
+  assert.deepEqual([again.status, again.body.signing_secret], [200, undefined], "a save of the same URL keeps the secret and shows none");
+
+  const tested = await send(server, "POST", "/v2/settings/webhook/test");
+  assert.deepEqual([tested.status, tested.body.status_code], [200, 200], JSON.stringify(tested.body));
+  assert.ok(verifies(first, hook.got[0]), "the test send is signed with the secret the save answered");
+
+  const rotated = await send(server, "POST", "/v2/settings/webhook/secret");
+  assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
+  const second = rotated.body.signing_secret;
+  assert.match(second ?? "", /^whsec_/, "the rotation answers the new secret, to the token");
+  assert.notEqual(second, first);
+
+  // A run's end goes to the backend's URL, signed with the new secret alone.
+  const { run_id: run } = await inlineRun(server, "notice-1", "What is six times seven.");
+  await ended(server.api, run);
+  const [end] = ofType(await hook.when((got) => ofType(got, "run.ended").some((r) => JSON.parse(r.body).data.run_id === run), `the run.ended of run ${run}`, server.data), "run.ended").filter((r) => JSON.parse(r.body).data.run_id === run);
+  assert.ok(verifies(second, end), "the run.ended is signed with the rotated secret");
+  assert.ok(!verifies(first, end), "and not the old one");
+
+  const removed = await send(server, "DELETE", "/v2/settings/webhook");
+  assert.equal(removed.status, 204, JSON.stringify(removed.body));
+  const gone = await send(server, "GET", "/v2/settings/webhook");
+  assert.deepEqual([gone.body.configured, gone.body.secret.set], [false, false], JSON.stringify(gone.body));
+  for (const [method, path] of [["GET", "/v2/settings/webhook"], ["PUT", "/v2/settings/webhook"], ["POST", "/v2/settings/webhook/secret"], ["DELETE", "/v2/settings/webhook"]]) {
+    assert.equal((await send(server, method, path, { token: false, ...(method === "PUT" ? { body: { url: hook.url } } : {}) })).status, 401, `${method} ${path} still takes the token`);
+  }
+});
+
+test("an API-only server checks the webhook's URL as a whole server does: a user and password is 422, and a private target is refused unless the operator's switch allows it", async (t) => {
+  withEnv(t, {}, [PRIVATE_TARGETS]);
+  const hook = await receiver(t);
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const withUser = Object.assign(new URL("https://hooks.example.com/hook"), { username: "user", password: "pass" }).href;
+  const userinfo = await send(server, "PUT", "/v2/settings/webhook", { body: { url: withUser } });
+  assert.deepEqual([userinfo.status, userinfo.body.error?.code, userinfo.body.error?.fields?.map((f) => f.field)], [422, "input_invalid", ["url"]], JSON.stringify(userinfo.body));
+  assert.ok(!JSON.stringify(userinfo.body).includes("pass@"), "the refusal does not echo the password");
+  const local = await send(server, "PUT", "/v2/settings/webhook", { body: { url: hook.url } });
+  assert.deepEqual([local.status, local.body.error?.code, local.body.error?.fields?.map((f) => f.field)], [422, "input_invalid", ["url"]], JSON.stringify(local.body));
+  assert.match(local.body.error.fields[0].message, /private network or this machine.*AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1/);
+  assert.equal((await send(server, "GET", "/v2/settings/webhook")).body.configured, false, "nothing set");
+  for (const path of ["/v2/settings/webhook/secret", "/v2/settings/webhook/test"]) assert.equal((await send(server, "POST", path)).status, 404, `${path}: no webhook set is the route's own 404`);
+  await server.stop();
+
+  // The same store under the operator's switch: the URL on this machine is taken.
+  process.env[PRIVATE_TARGETS] = "1";
+  const allowed = await serve(t, { apiOnly: true, runner: false, data: server.data });
+  const set = await send(allowed, "PUT", "/v2/settings/webhook", { body: { url: hook.url } });
+  assert.equal(set.status, 201, JSON.stringify(set.body));
+  assert.match(set.body.signing_secret ?? "", /^whsec_/);
+});
+
+test("off by default: a whole server's token sets the webhook but is shown no secret, and is refused its rotation and removal as secret writes", async (t) => {
+  withEnv(t, { [PRIVATE_TARGETS]: "1" });
+  const hook = await receiver(t);
+  const server = await serve(t, { runner: false });
+  const saved = await send(server, "PUT", "/v2/settings/webhook", { body: { url: hook.url } });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.equal(saved.body.signing_secret, undefined, "no secret to the token");
+  assert.equal(typeof saved.body.note, "string", "the words that send the person to the console");
+  for (const [method, path] of [["POST", "/v2/settings/webhook/secret"], ["DELETE", "/v2/settings/webhook"]]) {
+    const refused = await send(server, method, path);
+    assert.deepEqual([refused.status, refused.body.error?.code], [403, "forbidden"], `${method} ${path}: ${JSON.stringify(refused.body)}`);
+    assert.ok(!JSON.stringify(refused.body).includes("whsec_"), `${method} ${path}: no secret in the refusal`);
+  }
+  assert.equal((await send(server, "GET", "/v2/settings/webhook")).body.configured, true, "the webhook is kept");
+});
+
 const REFUSED = [
   ["the console", "GET", "/", { token: false, headers: { accept: "text/html" } }],
   ["the console's assets", "GET", "/assets/index.js", { token: false }],
@@ -372,6 +478,8 @@ const REFUSED = [
   ["a computer key's save", "PUT", "/v2/computers/faux-sandbox/keys", { body: { FAUX_SANDBOX_KEY: notSecret("key") } }],
   ["a computer provider's test", "POST", "/v2/computers/faux-sandbox/test", {}],
   ["a computer key's choices", "GET", "/v2/computers/faux-sandbox/choices", {}],
+  ["the webhook's log of attempts", "GET", "/v2/settings/webhook/deliveries", {}],
+  ["a webhook message redelivered", "POST", "/v2/settings/webhook/deliveries/msg_1/redeliver", {}],
 ];
 
 for (const [what, method, path, options] of REFUSED) {
@@ -412,6 +520,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save, a server's delete and the outbound webhook are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });

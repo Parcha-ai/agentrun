@@ -224,7 +224,8 @@ export const unguardedOperations = (doc: Json): string[] =>
 // beside `secret: SecretMeta`, and only in the owner session's minting answer (the create, a rotate, the first save):
 // so far `signing_secret` alone (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
 // webhook's, its first PUT /settings/webhook). A token caller's create answer says `secret_set: true` beside secret.set,
-// and no value. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
+// and no value; the one exception is an API-only server's token (api-only.ts), the outbound webhook's receiver, shown
+// that webhook's secret by its first PUT and its rotation (trigger-secrets-shown.ts webhookSecretHeld). MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
 // (test/fixtures/planted-secrets.mjs) allows a value only in an answer its plant declares as minting (`mints`), to the
 // owner's session, and flags it anywhere else: any GET, a token caller's answer, a later answer, the journal, the
 // store's rows, the log, an export.

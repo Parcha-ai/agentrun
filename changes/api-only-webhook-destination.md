@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+An API-only server (`AGENTRUN_API_ONLY=1`) now serves the outbound webhook to its token, so a backend in front of one can set where its `run.needs_input`, `run.ended` and `trigger.failed` notices go. Before, every `/settings/webhook` route was refused there, and the only way to set the webhook was to start a full server on the same store. The token reads the webhook (`GET /settings/webhook`, never the secret), sets it (`PUT`, whose first save answers the signing secret once), rotates the secret (`POST /settings/webhook/secret`), removes it (`DELETE`) and sends a test (`POST /settings/webhook/test`). The secret is the receiver's own key to check what it is sent, and the backend is the receiver, so on this server its token holds it; on a full server the token is still shown no secret and still refused the rotation and the removal. The URL is checked as before: `http` or `https`, no user or password, at most 2048 characters, and no private network or this machine unless `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. The log of attempts and its redeliver stay refused on an API-only server.
