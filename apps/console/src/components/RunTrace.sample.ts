@@ -108,3 +108,17 @@ export const USAGE_CLI: RunUsage = {
   infra_usd: 0,
   reason: null,
 };
+
+/** A run one turn of which was worked twice: its first attempt made two requests before its runner was cut, and a second
+ *  attempt worked the turn again to its end. The cut attempt's line is not billable, and `infra_usd` is its cost:
+ *  $0.0312 of the run's $0.4587 (0.0312 + 0.4125 + 0.015). */
+export const USAGE_REDO: RunUsage = {
+  ...USAGE_CLI,
+  total: { usd: 0.4587 },
+  lines: [
+    { meter: "tokens", model: "claude-sonnet-5-5", provider: null, charged_by: null, quantity: 14_060, unit: "token", basis: "reported", attempt: 1, billable: false, usd: 0.0312, requests: 2, tokens: { input: 620, output: 440, cache_read: 0, cache_write: 13_000 } },
+    { ...USAGE_CLI.lines![0]!, attempt: 2 },
+    { ...USAGE_CLI.lines![1]!, attempt: 2, not_metered_calls: 0 },
+  ],
+  infra_usd: 0.0312,
+};

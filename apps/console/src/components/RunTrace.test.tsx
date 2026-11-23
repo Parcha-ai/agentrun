@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { RunTrace } from "@/components/RunTrace";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI } from "@/components/RunTrace.sample";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_REDO } from "@/components/RunTrace.sample";
 import { messageFeatures } from "@/fixtures";
 import type { Run, RunTrace as Trace, RunUsage } from "@/lib/v2";
 
@@ -402,6 +402,24 @@ describe("the Dev tools tab", () => {
       ["daytona · H100 GPUComputer time", "900 GPU-seconds", "Unknown", "No price"],
       ["daytona · diskComputer time1 computer still running when read", "0.000064 GB-months", "Unknown", "No price"],
     ]);
+  });
+
+  it("says which attempt a cost line was made in and what the redone work cost, where an attempt was cut and worked again", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_REDO), view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect([...cost.querySelectorAll("[role=region] tbody tr")].map((tr) => tr.children[0]!.textContent)).toEqual([
+      "claude-sonnet-5-5TokensAttempt 1: cut and worked again", "claude-sonnet-5-5TokensAttempt 2", "monid · toolsTool chargesAttempt 2",
+    ]);
+    // The split's parts say the attempt too: two of them are one model's.
+    expect([...cost.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["claude-sonnet-5-5 · attempt 1$0.0312 · 7%", "claude-sonnet-5-5 · attempt 2$0.4125 · 90%", "monid · tools · attempt 2$0.0150 · 3%"]);
+    // The server's own sum of the cut attempt's lines, with its share of the run's cost: $0.0312 of $0.4587.
+    expect(cost.querySelector("[data-redo]")!.textContent).toMatch(/^Redone work: \$0\.0312 · 7%\. An attempt at a turn was cut/);
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toContain("$0.0312 went on work done twice1 of the run's 3 cost lines is of an attempt that was cut and worked again: 7% of the run's cost.");
+  });
+  it("says nothing of attempts on a run none of whose attempts was cut", async () => {
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => USAGE_CLI), view: "breakdown" });
+    expect(host.querySelector("[data-redo]")).toBeNull();
+    expect(host.textContent).not.toMatch(/Attempt \d|done twice/);
   });
 
   it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {

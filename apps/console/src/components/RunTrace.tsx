@@ -8,7 +8,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -399,7 +399,9 @@ function lineParts(lines: readonly UsageLine[]) {
   return lines.map((line) => {
     const tone = line.meter === "browser_time" || line.meter === "compute_time" ? BROWSER_TONE
       : line.meter === "tokens" ? MODEL_TONES[Math.min(seen.tokens++, MODEL_TONES.length - 1)]! : TOOL_TONES[Math.min(seen.tools++, TOOL_TONES.length - 1)]!;
-    return { word: lineName(line), tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
+    // Two lines of one name differ by the attempt they were made in: the part says which, where the run's lines do.
+    const attempt = attemptWords(line, lines) !== null && line.attempt !== null ? ` · attempt ${line.attempt}` : "";
+    return { word: `${lineName(line)}${attempt}`, tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
   });
 }
 
@@ -423,7 +425,8 @@ function CostLines({ lines }: { lines: readonly UsageLine[] }) {
           <thead><tr className="border-b">{["Line", "Quantity", "Cost", "Basis"].map((h) => <th key={h} scope="col" className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {lines.map((line, i) => {
-              const notes = lineNotes(line);
+              // The attempt a line was made in goes first: it says which of two lines of one name this is.
+              const notes = [attemptWords(line, lines), ...lineNotes(line)].filter((note): note is string => note !== null);
               const kind = line.meter === "tokens" ? `Tokens${line.provider ? ` · sent to ${line.provider}` : ""}` : line.meter === "tools" ? "Tool charges" : line.meter === "compute_time" ? "Computer time" : "Browser time";
               return (
                 <tr key={i} className="border-b last:border-b-0">
@@ -468,6 +471,7 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
   const parts = lineParts(lines);
   const whole = parts.reduce((sum, part) => sum + part.n, 0);
   const free = lines.length > 0 && lines.every((line) => line.usd === 0);
+  const redo = redoOf(usage);
   return (
     <>
       <Heading level="h2" aside={usage.total ? bookedWords(usage.total) : undefined}>Where the cost went</Heading>
@@ -475,6 +479,12 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
         : whole > 0 ? <Split label="Where the cost went" whole={whole} say={dollars} parts={parts} />
         : <p className="text-body text-muted-foreground">{free ? "Every line of this run's cost was $0." : "No line of this run's cost is known yet."}</p>}
       <p className="mt-2 max-w-prose text-small text-muted-foreground">The run's cost as the server booked it: a line for each model, each vendor that charged for a tool, and each browser provider.</p>
+      {redo && (
+        <p className="mt-3 max-w-prose text-small" data-redo>
+          <span className="font-semibold">Redone work: {redo.usd !== null ? dollars(redo.usd) : "Unknown"}{redo.share !== null ? ` · ${percent(redo.share)}` : ""}.</span>{" "}
+          <span className="text-muted-foreground">An attempt at a turn was cut (its runner drained, crashed or lost its lease, or the turn was tried again) and another worked the turn again, so its requests and paid calls were made twice. Their lines say so, and their cost is in the run's.</span>
+        </p>
+      )}
       {lines.length > 0 && <CostLines lines={lines} />}
     </>
   );
@@ -486,7 +496,7 @@ function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usag
   const totals = useMemo(() => traceTotals(trace, now), [trace, now]);
   const tools = useMemo(() => byTool(trace.spans, now), [trace, now]);
   const models = useMemo(() => byModel(trace.spans, trace.model_requests === "priced"), [trace]);
-  const found = useMemo(() => findings(trace, now), [trace, now]);
+  const found = useMemo(() => findings(trace, now, { usage }), [trace, now, usage]);
   const split = useMemo(() => costSplit(trace.spans), [trace]);
   const vital = useMemo(() => vitals(trace.spans, now), [trace, now]);
   // The figures every run has, in one order: what a browser's vitals are to a page load.
