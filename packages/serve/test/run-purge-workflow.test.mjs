@@ -634,6 +634,36 @@ test("champions kept before the newest never crowd out a decision just written: 
   );
 });
 
+// A champion before is kept whole or not at all: its promote and its newest record (a hold since, here) go together.
+// The room the newest leave is one record: kept alone, x's old promote would read as x's champion once the run that
+// wrote b is purged, and the revision held for its answers would serve again.
+test("a champion before that does not fit whole is dropped whole: its promote never stays without the hold after it", async () => {
+  const { championOf, PROMOTIONS_KEPT, trimPromotions } = await import("../dist/learn/promote.js");
+  const rec = (workflow, digest, decided, commit) => ({ workflow, digest, at: "t", decided, reason: "r", commit });
+  const champions = Array.from({ length: PROMOTIONS_KEPT / 2 - 2 }, (_, z) => rec(`z${z}`, "p", "promote", `z${z}`));
+  const fillers = Array.from({ length: PROMOTIONS_KEPT / 2 }, (_, i) => rec("other", `o${i}`, "hold", `o${i}`));
+  const items = [rec("x", "a", "promote", "ca"), rec("x", "a", "hold", "ca"), ...fillers, rec("x", "b", "promote", "cb"), ...champions];
+  assert.equal(items.length, PROMOTIONS_KEPT + 1);
+  const kept = trimPromotions(items);
+  const purgedB = (one) => one.commit === "cb";
+  const a = kept.filter((one) => one.workflow === "x" && one.digest === "a").map((one) => one.decided);
+  assert.deepEqual(
+    { length: kept.length, promoteWithoutHold: a.includes("promote") && !a.includes("hold"), champion: championOf(kept, "x", purgedB)?.digest ?? null },
+    { length: PROMOTIONS_KEPT, promoteWithoutHold: false, champion: null },
+    "x's promote of a is never kept without its hold since, so once b's run is purged none serves",
+  );
+
+  // One further back, c, would fit where a did not: it is not kept past a, or c would serve in a's place (a, held since,
+  // serves none).
+  const deeper = [rec("x", "c", "promote", "cc"), ...items];
+  const cutAt = trimPromotions(deeper);
+  assert.deepEqual(
+    { length: cutAt.length, c: cutAt.some((one) => one.workflow === "x" && one.digest === "c"), champion: championOf(cutAt, "x", purgedB)?.digest ?? null },
+    { length: PROMOTIONS_KEPT, c: false, champion: null },
+    "the chain is cut at a: c is not kept past it, so once b's run is purged none serves",
+  );
+});
+
 /** Agent `agentId` (learning on, no runner here) with one ended run, `<agentId>-served`, that its learned workflow
  *  `answer` served first: its id. */
 const servedRunOf = async (api, store, agentId) => {
