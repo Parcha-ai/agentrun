@@ -737,9 +737,6 @@ __all__ = [
     "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
     "ListRunningComputersResponse",
-    "ListRunningComputersResponseComputersItem",
-    "ListRunningComputersResponseComputersItemComputer",
-    "ListRunningComputersResponseComputersItemComputerHeld",
     "ListRunsResponse",
     "ListSlackDeliveriesResponse",
     "ListSlackDeliveriesResponseAttemptsItem",
@@ -5357,38 +5354,304 @@ class ListMcpServerNamesResponse(TypedDict):
 
 
 class ListRunningComputersResponse(TypedDict):
-    computers: list[ListRunningComputersResponseComputersItem]
+    runs: list[Run]
 
 
-class ListRunningComputersResponseComputersItem(TypedDict):
+class _RunRequired(TypedDict):
     run_id: Id
     agent_id: Id
-    title: str
+    agent_version: int
+    sha: CommitSha | None
     status: RunStatus
     state: RunState
+    title: str
     created_at: Timestamp
-    computer: ListRunningComputersResponseComputersItemComputer
+    updated_at: Timestamp
+    ended_at: Timestamp | None
+    result: RunResult | None
+    error: RunError | None
+    cost: Cost
+    poll_after_ms: int
+    revision: str
+    kind: Literal["agentic", "workflow"]
+    archived_at: str | None
+    place: RunPlace1 | RunPlace2
 
 
-class _ListRunningComputersResponseComputersItemComputerRequired(TypedDict):
+class Run(_RunRequired, total=False):
+    effort: Effort
+    sdk: RunSdk | RunSdk2
+    cli_learning: RunCliLearning
+    native: RunNative
+    console_url: str
+    labels: dict[str, str]
+    stopped_for: Literal["budget"] | None
+    budget_refused_calls: int
+    approvals: Literal["ask", "never"]
+    last_progress_at: str | None
+    recordings: list[RunRecordingsItem]
+    input: dict[str, Any] | None
+    file_ids: list[str]
+    claim: RunClaim | None
+    computer: RunComputer
+    learning: RunLearning | None
+    review: RunReview | None
+    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
+    imported_from: RunImportedFrom | None
+    trigger: RunTrigger | None
+    audit_of: str | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    workflow: RunWorkflow | None
+
+
+class _RunResultRequired(TypedDict):
+    output: Any
+    final_answer: str | None
+
+
+class RunResult(_RunResultRequired, total=False):
+    output_error: str
+
+
+class RunSdk(TypedDict):
+    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdkUsage | None
+
+
+class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdk2Usage | None
+
+
+class RunSdk2Usage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunCliLearning(TypedDict):
+    runtime: Literal["codex-cli", "claude-code-cli"]
+    session_id: str
+    turn_id: str
+    model: str | None
+    learning_revision: str | None
+    seed_observed: bool
+    policy_complete: bool
+    evidence_complete: bool
+    usage: RunCliLearningUsage | None
+
+
+class RunCliLearningUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunNative(TypedDict):
+    runtime: str
+    project: str
+    selector: RunNativeSelector
+    machine_id: str
+    fingerprint: str
+    session_id: str | None
+    model: str | None
+    learning_revision: str | None
+    usage: RunNativeUsage
+    model_requests: None
+
+
+class _RunNativeSelectorRequired(TypedDict):
+    kind: Literal["project", "agent", "profile"]
+
+
+class RunNativeSelector(_RunNativeSelectorRequired, total=False):
+    name: str
+
+
+class RunNativeUsage(TypedDict):
+    task: RunNativeUsageTask | None
+    reflection: list[RunNativeUsageReflectionItem]
+
+
+class RunNativeUsageTask(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunNativeUsageReflectionItem(TypedDict):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunRecordingsItem(TypedDict):
+    path: str
+    computer: str
+    seconds: float
+    bytes: int
+    finished: bool
+
+
+class RunClaim(TypedDict):
+    runner: str
+    epoch: int
+    until: str
+
+
+class RunPlace1(TypedDict):
+    mode: Literal["runner"]
+
+
+class RunPlace2(TypedDict):
+    mode: Literal["sandbox"]
+    box: Literal["docker", "modal", "daytona"]
+
+
+class _RunComputerRequired(TypedDict):
     kind: Literal["sandbox", "desktop", "phone", "browser"]
     provider: str
     state: Literal["starting", "ready", "taken_over", "ended", "failed"]
 
 
-class ListRunningComputersResponseComputersItemComputer(_ListRunningComputersResponseComputersItemComputerRequired, total=False):
+class RunComputer(_RunComputerRequired, total=False):
     why: str
-    held: ListRunningComputersResponseComputersItemComputerHeld
+    held: RunComputerHeld
 
 
-class _ListRunningComputersResponseComputersItemComputerHeldRequired(TypedDict):
+class _RunComputerHeldRequired(TypedDict):
     state: Literal["starting", "waiting", "started", "ended", "released"]
     minutes: int
 
 
-class ListRunningComputersResponseComputersItemComputerHeld(_ListRunningComputersResponseComputersItemComputerHeldRequired, total=False):
+class RunComputerHeld(_RunComputerHeldRequired, total=False):
     until: str
     why: Literal["timeout", "lost"]
+
+
+class _RunLearningRequired(TypedDict):
+    state: Literal["seeded", "reflecting", "merged", "dropped"]
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    detail: str | None
+    at: str
+
+
+class RunLearning(_RunLearningRequired, total=False):
+    workflows: list[RunLearningWorkflowsItem]
+
+
+class _RunLearningWorkflowsItemRequired(TypedDict):
+    file: str
+    name: str
+
+
+class RunLearningWorkflowsItem(_RunLearningWorkflowsItemRequired, total=False):
+    pending: Literal[True]
+
+
+class RunReview(TypedDict):
+    kind: str | None
+    node: str | None
+    reason: str
+    at: str
+
+
+class RunPending1(TypedDict):
+    kind: Literal["question"]
+    question: str
+    asked_at: str
+
+
+class _RunPending2Required(TypedDict):
+    kind: Literal["approval"]
+    id: str
+    tool: str
+    call_id: str
+    args_preview: str
+    requested_at: str
+
+
+class RunPending2(_RunPending2Required, total=False):
+    summary: str
+    asks_because: str
+    price: float | Literal["not metered"] | Literal["priced by usage"]
+    destructive: Literal[True]
+
+
+class _RunPending3Required(TypedDict):
+    kind: Literal["budget"]
+    cap_usd: float
+    said: str
+    at: str
+
+
+class RunPending3(_RunPending3Required, total=False):
+    spent_usd: float
+    held_usd: float
+    needs_usd: float
+    least_cap_usd: float
+    suggested_cap_usd: float
+    node: str | None
+
+
+class RunPending4(TypedDict):
+    kind: Literal["browser"]
+    instruction: str
+    completion_condition: str
+    asked_at: str
+    expires_at: str
+
+
+class RunPending5(TypedDict):
+    kind: Literal["computer"]
+    computer: Literal["desktop", "phone"]
+    instruction: str
+    completion_condition: str
+    asked_at: str
+    expires_at: str
+
+
+class RunPending6(TypedDict):
+    kind: Literal["stopped"]
+
+
+class RunImportedFrom(TypedDict):
+    source: Literal["claude-code", "codex", "pi"]
+    session: str
+
+
+class RunTrigger(TypedDict):
+    id: str
+    firing_key: str
+
+
+class RunWorkflow(TypedDict):
+    name: str | None
+    digest: str | None
+    repick: Literal["found", "missed"] | None
 
 
 class ListSuggestionsResponse(TypedDict):
@@ -6758,303 +7021,6 @@ class RunCreateInlineArchilDisk(TypedDict):
 
 
 CreateInlineRunResponse: TypeAlias = "Run"
-
-
-class _RunRequired(TypedDict):
-    run_id: Id
-    agent_id: Id
-    agent_version: int
-    sha: CommitSha | None
-    status: RunStatus
-    state: RunState
-    title: str
-    created_at: Timestamp
-    updated_at: Timestamp
-    ended_at: Timestamp | None
-    result: RunResult | None
-    error: RunError | None
-    cost: Cost
-    poll_after_ms: int
-    revision: str
-    kind: Literal["agentic", "workflow"]
-    archived_at: str | None
-    place: RunPlace1 | RunPlace2
-
-
-class Run(_RunRequired, total=False):
-    effort: Effort
-    sdk: RunSdk | RunSdk2
-    cli_learning: RunCliLearning
-    native: RunNative
-    console_url: str
-    labels: dict[str, str]
-    stopped_for: Literal["budget"] | None
-    budget_refused_calls: int
-    approvals: Literal["ask", "never"]
-    last_progress_at: str | None
-    recordings: list[RunRecordingsItem]
-    input: dict[str, Any] | None
-    file_ids: list[str]
-    claim: RunClaim | None
-    computer: RunComputer
-    learning: RunLearning | None
-    review: RunReview | None
-    pending: RunPending1 | RunPending2 | RunPending3 | RunPending4 | RunPending5 | RunPending6 | None
-    imported_from: RunImportedFrom | None
-    trigger: RunTrigger | None
-    audit_of: str | None
-    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
-    workflow: RunWorkflow | None
-
-
-class _RunResultRequired(TypedDict):
-    output: Any
-    final_answer: str | None
-
-
-class RunResult(_RunResultRequired, total=False):
-    output_error: str
-
-
-class RunSdk(TypedDict):
-    runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
-    model: str | None
-    session_id: str | None
-    learning_revision: str | None
-    usage: RunSdkUsage | None
-
-
-class RunSdkUsage(TypedDict, total=False):
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    cost_usd: float | None
-
-
-class RunSdk2(TypedDict):
-    runtime: Literal["external"]
-    platform: str
-    model: str | None
-    session_id: str | None
-    learning_revision: str | None
-    usage: RunSdk2Usage | None
-
-
-class RunSdk2Usage(TypedDict, total=False):
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    cost_usd: float | None
-
-
-class RunCliLearning(TypedDict):
-    runtime: Literal["codex-cli", "claude-code-cli"]
-    session_id: str
-    turn_id: str
-    model: str | None
-    learning_revision: str | None
-    seed_observed: bool
-    policy_complete: bool
-    evidence_complete: bool
-    usage: RunCliLearningUsage | None
-
-
-class RunCliLearningUsage(TypedDict, total=False):
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    cost_usd: float | None
-
-
-class RunNative(TypedDict):
-    runtime: str
-    project: str
-    selector: RunNativeSelector
-    machine_id: str
-    fingerprint: str
-    session_id: str | None
-    model: str | None
-    learning_revision: str | None
-    usage: RunNativeUsage
-    model_requests: None
-
-
-class _RunNativeSelectorRequired(TypedDict):
-    kind: Literal["project", "agent", "profile"]
-
-
-class RunNativeSelector(_RunNativeSelectorRequired, total=False):
-    name: str
-
-
-class RunNativeUsage(TypedDict):
-    task: RunNativeUsageTask | None
-    reflection: list[RunNativeUsageReflectionItem]
-
-
-class RunNativeUsageTask(TypedDict):
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    cost_usd: float | None
-
-
-class RunNativeUsageReflectionItem(TypedDict):
-    input_tokens: int | None
-    output_tokens: int | None
-    cache_read_tokens: int | None
-    cache_write_tokens: int | None
-    cost_usd: float | None
-
-
-class RunRecordingsItem(TypedDict):
-    path: str
-    computer: str
-    seconds: float
-    bytes: int
-    finished: bool
-
-
-class RunClaim(TypedDict):
-    runner: str
-    epoch: int
-    until: str
-
-
-class RunPlace1(TypedDict):
-    mode: Literal["runner"]
-
-
-class RunPlace2(TypedDict):
-    mode: Literal["sandbox"]
-    box: Literal["docker", "modal", "daytona"]
-
-
-class _RunComputerRequired(TypedDict):
-    kind: Literal["sandbox", "desktop", "phone", "browser"]
-    provider: str
-    state: Literal["starting", "ready", "taken_over", "ended", "failed"]
-
-
-class RunComputer(_RunComputerRequired, total=False):
-    why: str
-    held: RunComputerHeld
-
-
-class _RunComputerHeldRequired(TypedDict):
-    state: Literal["starting", "waiting", "started", "ended", "released"]
-    minutes: int
-
-
-class RunComputerHeld(_RunComputerHeldRequired, total=False):
-    until: str
-    why: Literal["timeout", "lost"]
-
-
-class _RunLearningRequired(TypedDict):
-    state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
-    detail: str | None
-    at: str
-
-
-class RunLearning(_RunLearningRequired, total=False):
-    workflows: list[RunLearningWorkflowsItem]
-
-
-class _RunLearningWorkflowsItemRequired(TypedDict):
-    file: str
-    name: str
-
-
-class RunLearningWorkflowsItem(_RunLearningWorkflowsItemRequired, total=False):
-    pending: Literal[True]
-
-
-class RunReview(TypedDict):
-    kind: str | None
-    node: str | None
-    reason: str
-    at: str
-
-
-class RunPending1(TypedDict):
-    kind: Literal["question"]
-    question: str
-    asked_at: str
-
-
-class _RunPending2Required(TypedDict):
-    kind: Literal["approval"]
-    id: str
-    tool: str
-    call_id: str
-    args_preview: str
-    requested_at: str
-
-
-class RunPending2(_RunPending2Required, total=False):
-    summary: str
-    asks_because: str
-    price: float | Literal["not metered"] | Literal["priced by usage"]
-    destructive: Literal[True]
-
-
-class _RunPending3Required(TypedDict):
-    kind: Literal["budget"]
-    cap_usd: float
-    said: str
-    at: str
-
-
-class RunPending3(_RunPending3Required, total=False):
-    spent_usd: float
-    held_usd: float
-    needs_usd: float
-    least_cap_usd: float
-    suggested_cap_usd: float
-    node: str | None
-
-
-class RunPending4(TypedDict):
-    kind: Literal["browser"]
-    instruction: str
-    completion_condition: str
-    asked_at: str
-    expires_at: str
-
-
-class RunPending5(TypedDict):
-    kind: Literal["computer"]
-    computer: Literal["desktop", "phone"]
-    instruction: str
-    completion_condition: str
-    asked_at: str
-    expires_at: str
-
-
-class RunPending6(TypedDict):
-    kind: Literal["stopped"]
-
-
-class RunImportedFrom(TypedDict):
-    source: Literal["claude-code", "codex", "pi"]
-    session: str
-
-
-class RunTrigger(TypedDict):
-    id: str
-    firing_key: str
-
-
-class RunWorkflow(TypedDict):
-    name: str | None
-    digest: str | None
-    repick: Literal["found", "missed"] | None
 
 
 CreateRunComputerViewerBody: TypeAlias = "dict[str, Any]"
@@ -11791,7 +11757,7 @@ class LocalResource(Group):
         return self._call("listMcpServerNames", (), None, None, timeout=timeout)
 
     def list_running_computers(self, *, timeout: float | None = None) -> ListRunningComputersResponse:
-        """The computers up now: every run still going that has a computer (GET /computers/running)."""
+        """Every run still going that has a computer (GET /computers/running)."""
         return self._call("listRunningComputers", (), None, None, timeout=timeout)
 
     def list_suggestions(self, *, repo: str | None = None, status: Literal["open", "created", "discarded", "all"] | None = None, timeout: float | None = None) -> ListSuggestionsResponse:

@@ -2411,7 +2411,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "The computers up now: every run still going that has a computer"
+    "summary": "Every run still going that has a computer"
   },
   {
     "command": [

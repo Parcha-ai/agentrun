@@ -776,7 +776,7 @@ Route: `GET /settings/mcp-server-names`.
 
 ### `agentrun local list-running-computers`
 
-The computers up now: every run still going that has a computer.
+Every run still going that has a computer.
 
 Route: `GET /computers/running`.
 

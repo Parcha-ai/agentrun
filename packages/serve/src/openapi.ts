@@ -1186,20 +1186,11 @@ const RUN_COMPUTER = {
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
-/** GET /computers/running (computers-running.ts runningComputers): each run still going that has a computer. */
 const RUNNING_COMPUTERS = closed({
-  computers: {
+  runs: {
     type: "array",
-    items: closed({
-      run_id: ref("schemas/Id"),
-      agent_id: ref("schemas/Id"),
-      title: { type: "string", description: "The run's title, as its read shows it." },
-      status: ref("schemas/RunStatus"),
-      state: ref("schemas/RunState"),
-      created_at: ref("schemas/Timestamp"),
-      computer: RUN_COMPUTER,
-    }),
-    description: "The runs still going whose agent has a computer, newest first. A run with no computer, and one that has ended, is not here.",
+    items: ref("schemas/Run"),
+    description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
   },
 });
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
@@ -2468,8 +2459,8 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/computers/running": {
     get: {
-      operationId: "listRunningComputers", tags: ["local"], summary: "The computers up now: every run still going that has a computer",
-      description: "One row for each run that is queued, working, paused or waiting on its person and whose agent has a computer (a sandbox, a desktop, a phone or a browser): the run's id, agent, title, status and state as GET /runs/{run_id} says them, and its `computer` as that read carries it (its kind and provider, `starting`, `ready` or `taken_over`, and a held run's hold). The runs list carries no computer, so this is the one read for a list of the computers up across runs and agents. It costs a run read for each such run and nothing for a run with no computer. An agent's own computer kept between runs is on the agent's read (`own_computer`), and a paired computer on GET /computers (`paired`); neither is a row here.",
+      operationId: "listRunningComputers", tags: ["local"], summary: "Every run still going that has a computer",
+      description: "Each run that is queued, working, paused or waiting on its person and whose agent has a computer (a sandbox, a desktop, a phone or a browser), as GET /runs/{run_id} answers it: its `computer` says the kind and provider, `starting`, `ready` or `taken_over`, and a held run's hold. The runs list carries no computer, so this is the one read of the computers up across runs and agents. It costs a run read for each such run and nothing for a run with no computer. An agent's own computer kept between runs is on the agent's read (`own_computer`), and a paired computer on GET /computers (`paired`); neither is a run here.",
       responses: { "200": json(RUNNING_COMPUTERS, "The runs still going that have a computer, newest first."), ...errors(401, 429, 500) },
       ...COMPUTER_MARK,
     },

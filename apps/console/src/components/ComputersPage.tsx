@@ -1,28 +1,19 @@
 import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageClass } from "@/components/Settings";
 import { pasteFromClipboard } from "@/lib/paste";
-import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
+import { ArrowUpRight, Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { SecretRow } from "@/components/SecretRow";
+import { StatusBadge } from "@/components/StatusBadge";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { Picker } from "@/components/ui/picker";
 import { type Client, ClientError, problemOf } from "@/lib/client";
-import { BY_THE_MINUTE, METERED } from "@/lib/computers";
-import { clock, runLabel, when } from "@/lib/format";
+import { BY_THE_MINUTE, DRIVES, KIND_ICONS, METERED, providerOf, wordsOf } from "@/lib/computers";
+import { clock, runLabel, runTitle, when } from "@/lib/format";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
-import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing, RunningComputer } from "@/lib/v2";
-
-/** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
-const KIND_WORDS: Record<string, { label: string; gives: string }> = {
-  none: { label: "None", gives: "The run's folder only." },
-  sandbox: { label: "Sandbox", gives: "A Linux container." },
-  desktop: { label: "Desktop", gives: "A screen, with a pointer and keys." },
-  phone: { label: "Phone", gives: "A phone's screen and its apps." },
-  browser: { label: "Browser", gives: "A browser the agent drives." },
-};
-const wordsOf = (kind: string) => KIND_WORDS[kind] ?? { label: kind, gives: "" };
+import type { ApiError, ComputerChoices, ComputerKeyChoices, ComputerKindView, ComputerProvider, Computers, PairedComputer, Pairing, RunningRun } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
@@ -153,67 +144,57 @@ export function ComputersPage({ v2, writable, whyNot = "sign_in" }: {
   );
 }
 
-const RUN_KIND_ICON = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const;
-/** A run's computer state as the list says it: the run read's `computer.state`, in the Screen tab's words. */
-const RUNNING_STATE: Record<RunningComputer["computer"]["state"], { words: string; tone: "active" | "success" | "error" | "muted" }> = {
-  starting: { words: "Starting", tone: "muted" },
-  ready: { words: "Ready", tone: "success" },
-  taken_over: { words: "You drive", tone: "active" },
-  failed: { words: "Failed", tone: "error" },
-  ended: { words: "Ended", tone: "muted" },
-};
-/** What a run that isn't working says beside its computer's state: it waits on its person, is paused, or is queued. */
-const RUN_WAITS: Partial<Record<RunningComputer["status"], string>> = { input_required: "Waiting for you", paused: "Paused", queued: "Queued" };
-
 /** Running now: each run still going whose agent has a computer (GET /v2/computers/running), newest first, read when
- *  the page opens and again every RUNNING_POLL_MS. A row says the run and its agent, the computer's kind and provider
- *  (the provider's name as Settings → Computers lists it, else its id), its state as the run read says it, what a run
- *  that isn't working waits on, and a held run's hold; its link opens the run, whose Screen tab is the live view and
- *  the take-over. A read that fails keeps the last list and says so; with none going, the section says that. An
- *  agent's own computer kept between runs is on its agent's page, and a paired computer in the section below. */
+ *  the page opens and every RUNNING_POLL_MS after while the page is shown (and again when it is shown), one read at a time. A row is the run as the agent page's Live jobs list shows one (its
+ *  status, its title) with its computer: kind, provider by the name this page lists it under, when it started, You
+ *  drive while its owner has it, and a held run's hold; the row opens the run, whose Screen tab is the live view. A
+ *  read that fails keeps the last list and says so. */
 function RunningSection({ v2, kinds }: { v2: Client; kinds: ComputerKindView[] }) {
-  const [running, setRunning] = useState<RunningComputer[] | null>(null);
+  const [runs, setRuns] = useState<RunningRun[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   useEffect(() => {
+    // One read at a time: each costs the server a run read for every run listed.
     let alive = true;
-    const read = () => v2.runningComputers().then(
-      (answer) => { if (alive) { setRunning(Array.isArray(answer?.computers) ? answer.computers : []); setProblem(null); } },
-      (e) => { if (alive) setProblem(problemOf(e)); },
-    );
-    void read();
-    const poll = setInterval(() => void read(), RUNNING_POLL_MS);
-    return () => { alive = false; clearInterval(poll); };
+    let reading = false;
+    const read = () => {
+      if (reading) return;
+      reading = true;
+      v2.runningComputers()
+        .then((answer) => { if (alive) { setRuns(answer.runs); setProblem(null); } }, (e) => { if (alive) setProblem(problemOf(e)); })
+        .finally(() => { reading = false; });
+    };
+    const readVisible = () => { if (!document.hidden) read(); };
+    read();
+    window.addEventListener("focus", readVisible);
+    document.addEventListener("visibilitychange", readVisible);
+    const timer = window.setInterval(readVisible, RUNNING_POLL_MS);
+    return () => { alive = false; window.clearInterval(timer); window.removeEventListener("focus", readVisible); document.removeEventListener("visibilitychange", readVisible); };
   }, [v2]);
-  const providerName = (kind: string, id: string) => kinds.find((k) => k.kind === kind)?.providers.find((p) => p.id === id)?.name ?? id;
   return (
     <SettingsSection label="Running now" title="Running now"
-      note={<p>Each run still going that has a computer. Open one to watch its screen or take it over.</p>}>
+      note={<p>Each run still going that has a computer. Open one, then its Screen tab, to watch it or take it over.</p>}>
       {problem && <p role="alert" className="border border-destructive/50 px-4 py-2.5 font-mono text-small text-destructive-text">The running computers could not be read: {problem}</p>}
-      {running === null ? (!problem && <ListSkeleton label="Loading the running computers" rows={1} />)
-        : running.length === 0 ? <p className="border bg-card p-4 text-body text-muted-foreground">No run with a computer is going now.</p>
+      {runs === null ? (!problem && <ListSkeleton label="Loading the running computers" rows={1} />)
+        : runs.length === 0 ? <p className="border bg-card p-4 text-body text-muted-foreground">No run with a computer is going now.</p>
         : (
           <ul className="divide-y border bg-card">
-            {running.map((r) => {
-              const Icon = RUN_KIND_ICON[r.computer.kind];
-              const state = RUNNING_STATE[r.computer.state];
-              const waits = RUN_WAITS[r.status];
-              const held = r.computer.held;
+            {runs.map((run) => {
+              const { kind, provider, state, held } = run.computer;
+              const Icon = KIND_ICONS[kind];
               return (
-                <li key={r.run_id} data-running={r.run_id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
-                  <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                  <div className="min-w-0 flex-1 basis-56">
-                    <p className="truncate text-body font-semibold" title={r.title}>{r.title || `Run ${runLabel(r.run_id)}`}</p>
-                    <p className="mt-0.5 truncate font-mono text-small text-muted-foreground">
-                      {r.agent_id} · {wordsOf(r.computer.kind).label} · {providerName(r.computer.kind, r.computer.provider)} · started {when(r.created_at)}
-                    </p>
-                    {held && held.state !== "released" && <p className="mt-0.5 text-small text-muted-foreground">Held for you{held.until ? ` until ${clock(held.until)}` : ""}.</p>}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Chip tone={state.tone}>{state.words}</Chip>
-                    {waits && <Chip tone="warning">{waits}</Chip>}
-                  </div>
-                  <a href={`#/runs/${encodeURIComponent(r.run_id)}`} className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label={`Open ${r.title || `run ${runLabel(r.run_id)}`}`}>
-                    {r.computer.kind === "sandbox" ? "Open run" : "Watch"}
+                <li key={run.run_id} data-running={run.run_id}>
+                  <a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 hover:bg-accent">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="min-w-0 flex-1 basis-56">
+                      <span className="block truncate text-body font-semibold">{runTitle(run)}</span>
+                      <span className="mt-0.5 block truncate font-mono text-small text-muted-foreground">{run.agent_id} · {wordsOf(kind).label} · {providerOf(kinds, kind, provider)?.name ?? provider} · started {when(run.created_at)}</span>
+                      {held && held.state !== "released" && <span className="mt-0.5 block text-small text-muted-foreground">Held for you{held.until ? ` until ${clock(held.until)}` : ""}.</span>}
+                    </span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <StatusBadge run={run} />
+                      {state === "taken_over" && <Chip tone="active">{DRIVES.person}</Chip>}
+                    </span>
+                    <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                   </a>
                 </li>
               );

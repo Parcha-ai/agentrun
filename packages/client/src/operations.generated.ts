@@ -615,51 +615,6 @@ export type File = {
   expires_at: Timestamp | null;
 };
 
-export type CancelResult = {
-  run_id: Id;
-  cancel_requested: boolean;
-  already_terminal: boolean;
-  status: RunStatus;
-};
-
-export type RunCreateInline = {
-  external: ExternalRef;
-  definition: DefinitionInput;
-  skills?: SkillFiles;
-  note?: string;
-  input: Record<string, unknown>;
-  file_ids?: Array<Id>;
-  effort?: Effort;
-  max_cost_usd?: number;
-  quote_id?: string;
-  model_key?: string;
-  keys?: Record<string, string>;
-  mcp_auth?: Record<string, {
-    headers: Record<string, string>;
-  } | ComposioRunBinding>;
-  labels?: Record<string, string>;
-  workflow_first?: boolean;
-  learning?: "use";
-  repo?: string;
-  archil_disk?: {
-    disk_id: string;
-  };
-  hold?: boolean;
-  hold_minutes?: number;
-};
-
-export type ExternalRef = {
-  source: string;
-  kind: string;
-  id: string;
-  version: string | number;
-};
-
-export type ComposioRunBinding = {
-  composio_user_id: string;
-  connected_account_id?: string;
-};
-
 export type Run = {
   run_id: Id;
   agent_id: Id;
@@ -870,6 +825,51 @@ export type RunResult = {
   output: unknown;
   final_answer: string | null;
   output_error?: string;
+};
+
+export type CancelResult = {
+  run_id: Id;
+  cancel_requested: boolean;
+  already_terminal: boolean;
+  status: RunStatus;
+};
+
+export type RunCreateInline = {
+  external: ExternalRef;
+  definition: DefinitionInput;
+  skills?: SkillFiles;
+  note?: string;
+  input: Record<string, unknown>;
+  file_ids?: Array<Id>;
+  effort?: Effort;
+  max_cost_usd?: number;
+  quote_id?: string;
+  model_key?: string;
+  keys?: Record<string, string>;
+  mcp_auth?: Record<string, {
+    headers: Record<string, string>;
+  } | ComposioRunBinding>;
+  labels?: Record<string, string>;
+  workflow_first?: boolean;
+  learning?: "use";
+  repo?: string;
+  archil_disk?: {
+    disk_id: string;
+  };
+  hold?: boolean;
+  hold_minutes?: number;
+};
+
+export type ExternalRef = {
+  source: string;
+  kind: string;
+  id: string;
+  version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type RunFileList = {
@@ -3513,28 +3513,9 @@ export type ListMcpServerNamesResponse = {
   names: Array<string>;
 };
 
-/** The computers up now: every run still going that has a computer (GET /computers/running). */
+/** Every run still going that has a computer (GET /computers/running). */
 export type ListRunningComputersResponse = {
-  computers: Array<{
-    run_id: Id;
-    agent_id: Id;
-    title: string;
-    status: RunStatus;
-    state: RunState;
-    created_at: Timestamp;
-    computer: {
-      kind: "sandbox" | "desktop" | "phone" | "browser";
-      provider: string;
-      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
-      why?: string;
-      held?: {
-        state: "starting" | "waiting" | "started" | "ended" | "released";
-        minutes: number;
-        until?: string;
-        why?: "timeout" | "lost";
-      };
-    };
-  }>;
+  runs: Array<Run>;
 };
 
 /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
@@ -7399,7 +7380,7 @@ export function resources(call: Call) {
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
-      /** The computers up now: every run still going that has a computer (GET /computers/running). */
+      /** Every run still going that has a computer (GET /computers/running). */
       listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
       /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
       listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),

@@ -4927,26 +4927,7 @@ export interface operations {
   listRunningComputers: {
     body: never;
     answer: {
-      computers: {
-        run_id: components["Id"];
-        agent_id: components["Id"];
-        title: string;
-        status: components["RunStatus"];
-        state: components["RunState"];
-        created_at: components["Timestamp"];
-        computer: {
-          kind: "sandbox" | "desktop" | "phone" | "browser";
-          provider: string;
-          state: "starting" | "ready" | "taken_over" | "ended" | "failed";
-          why?: string;
-          held?: {
-            state: "starting" | "waiting" | "started" | "ended" | "released";
-            minutes: number;
-            until?: string;
-            why?: "timeout" | "lost";
-          };
-        };
-      }[];
+      runs: components["Run"][];
     };
   };
   listRuns: {
