@@ -984,21 +984,102 @@ test("two host starts of one firing at once start one run: the second waits on t
   assert.deepEqual(await second, { run_id: "run-a", replayed: true });
 });
 
-test("a firing whose host's start is writing its run is not handed again: its retry comes due meanwhile, and it waits for that start instead of a second POST to the hook", async (t) => {
+/** Firing a of a trigger (`body`), waiting on its retry, its host's start writing its run when that retry comes due
+ *  (`before` runs first, on the engine). Returns once the tick that came due has run, a drive of a it began has decided,
+ *  and the timer is armed again; `end(writes)` then lets the start write a's run, or fail with none. `trap` counts the
+ *  engine's settles of a waiting on its own key. */
+async function midStartRetry(t, body, before) {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
-  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook });
-  const made = await triggers.create(hookBody);
+  const trap = { a: null, watching: false, aReads: 0, waiting: 0, pending: 0, selfWaits: 0 };
+  const counted = (name, result) => {
+    if (name === "waiting") trap.waiting += 1;
+    if (name === "pending") trap.pending += 1;
+    return result;
+  };
+  const triggersOf = new Proxy(on.store.triggers, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        if (name === "settle" && trap.a && args[1] === trap.a && args[2]?.waitsOn === trap.a) trap.selfWaits += 1;
+        const out = value.apply(target, args);
+        if (!trap.watching) return out;
+        // Counted once answered: the engine's code after the read has run by the test's next look.
+        if (name === "firing" && args[1] === trap.a) return out.then((row) => ((trap.aReads += 1), row));
+        return name === "waiting" || name === "pending" ? out.then((rows) => counted(name, rows)) : out;
+      };
+    },
+  });
+  const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook, store: { ...on.store, triggers: triggersOf, runs: on.store.runs }, statusOf: async () => "working" }, { on });
+  const made = await triggers.create(body);
+  await before?.({ triggers, store, host, made });
   const a = await timedOut(triggers, store, host, made.id, "evt-a");
+  trap.a = a;
+  const posts = host.open.length;
   const { retryAt } = await store.triggers.firing(made.id, a);
-  const first = heldStart(triggers, store, made.id, a, "run-a");
-  await until(() => first.entered, "a's host start is writing its run");
   await armed(clock, new Date(retryAt).toISOString());
+  const go = held();
+  const at = { entered: false };
+  const start = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async (handed) => {
+    at.entered = true;
+    if (!(await go.promise)) throw new Error("the host's start failed");
+    return hostRun(store, a, "run-a")(handed);
+  });
+  await until(() => at.entered, "a's host start is writing its run");
+  trap.watching = true;
   clock.to(new Date(retryAt).toISOString());
-  await until(async () => host.open.length > 1 || (await store.triggers.firing(made.id, a)).waitsOn !== null, "a's retry driven");
-  assert.equal(host.open.length, 1, "no second POST of a while its start is being written");
-  first.writing.resolve();
-  assert.deepEqual(await first.done, { run_id: "run-a", replayed: false });
-  assert.deepEqual([(await store.triggers.firing(made.id, a)).status, (await store.triggers.firing(made.id, a)).runId, host.open.length], ["started", "run-a", 1]);
+  // The tick's read of waiting firings comes after it began any drive of a; its timer is armed after its second read of
+  // the pending ones. A drive of a has decided once it read a in its check (its second read of a).
+  await until(() => trap.waiting >= 1 && trap.pending >= 2 && (trap.aReads === 0 || trap.aReads >= 2), "the tick, and any drive of a, done");
+  trap.watching = false;
+  return { clock, store, triggers, host, made, a, posts, retryAt, trap, end: (writes) => (go.resolve(writes), start) };
+}
+
+test("a firing whose host's start is writing its run is not handed again: its retry comes due meanwhile, and it keeps its retry, writes no wait on itself, and arms no timer already due; the start writes the run, and the firing is started with no second POST", async (t) => {
+  const { clock, store, host, made, a, posts, retryAt, trap, end } = await midStartRetry(t, hookBody);
+  const row = await store.triggers.firing(made.id, a);
+  assert.deepEqual([row.status, row.waitsOn, row.retryAt, host.open.length, trap.selfWaits], ["due", null, retryAt, posts, 0], "as it was before the tick");
+  assert.ok(clock.timer === null || clock.timer.at > clock.now(), "no timer due again at once while the start is writing");
+  assert.deepEqual(await end(true), { run_id: "run-a", replayed: false });
+  assert.deepEqual([(await store.triggers.firing(made.id, a)).status, (await store.triggers.firing(made.id, a)).runId, host.open.length], ["started", "run-a", posts]);
+});
+
+test("a webhook with accept and no max_active_runs: a firing whose retry came due while its host's start was writing, and whose start then failed with no run, is handed again at once, while another of the trigger's runs still works", async (t) => {
+  const long = async ({ triggers, store, host, made }) => {
+    await triggers.receive(made.id, "evt-c", "{}");
+    const c = firingKey("webhook", made.id, "evt-c");
+    await until(() => host.open.length === 1, "the host has c's POST");
+    host.open[0].writeHead(200).end();
+    await until(async () => (await store.triggers.firing(made.id, c)).status === "sent", "c's host took it with no run");
+    assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: c }, "a", hostRun(store, c, "run-c")), { run_id: "run-c", replayed: false });
+  };
+  const { clock, store, host, made, a, posts, trap, end } = await midStartRetry(t, { ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] } }, long);
+  await assert.rejects(end(false), /the host's start failed/);
+  await armed(clock, new Date(clock.now()).toISOString());
+  clock.to(new Date(clock.now()).toISOString());
+  await until(() => host.open.length === posts + 1, "a handed again");
+  assert.equal(trap.selfWaits, 0, "never a wait on itself");
+  assert.equal((await store.runs.get("run-c")).id, "run-c", "run-c still works");
+  assert.notEqual((await store.triggers.firing(made.id, a)).waitsOn, a);
+});
+
+test("max_active_runs cleared leaves no firing held behind the old cap: a webhook with accept, a firing waiting on its cap of 1, is driven by the wait's poll once the cap is null, and starts while the trigger's other run still works", async (t) => {
+  const { clock, triggers, runs } = await hookEngine(t, { statusOf: async () => "working" }, new Set(["run-1"]));
+  const made = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 1 });
+  const of = async (status) => (await triggers.firings(made.id)).firings.filter((f) => f.status === status);
+  await triggers.receive(made.id, "evt-1", "{}");
+  await until(async () => (await of("started")).length === 1, "run-1 started");
+  await triggers.receive(made.id, "evt-2", "{}");
+  await until(async () => /max_active_runs/.test((await of("due"))[0]?.reason ?? ""), "the second waits on the cap");
+  assert.equal((await triggers.update(made.id, { max_active_runs: null })).max_active_runs, null);
+  for (let step = 1; step <= 4 && (await of("started")).length < 2; step++) {
+    const at = new Date(Date.parse("2026-06-01T00:00:00Z") + step * 500).toISOString();
+    await armed(clock, at);
+    clock.to(at);
+    for (const end = Date.now() + 2_000; Date.now() < end && (await of("started")).length < 2; ) await sleep(5);
+  }
+  assert.deepEqual([(await of("started")).length, runs.started], [2, ["run-1", "run-2"]], "a run per firing, the cap gone");
 });
 
 test("a host start whose run is written but whose firing's start does not write (the store did not answer) has the firing started with its run by the engine's next turn, not left due and uncounted", async (t) => {
