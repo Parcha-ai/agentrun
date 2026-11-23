@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { FRAME } from "./fixtures/faux-browser.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, runDir as runFolder, scratch, serve, withEnv } from "./support.mjs";
+import { builtConsole, call, cookieAt, cookieOf, follow, runDir as runFolder, scratch, serve, withEnv } from "./support.mjs";
 
 const { readLiveViewers } = await import("../dist/browser-live.js");
 
@@ -306,7 +306,7 @@ test("the viewer's WebSocket gets the Host check every route gets (host-check.ts
   const w = await watched(t, { allowHosts: ["agents.internal"] });
   const { handed } = w;
   const wsPath = `/v2/runs/${w.runId}/computer/live/v/${handed.id}/ws`;
-  const at = (name) => ({ origin: `http://${name}`, headers: { host: name } });
+  const at = (name) => ({ origin: `http://${name}`, cookie: cookieAt(w.cookie, name), headers: { host: name } });
   // A rebinding page: its Origin is its own name, which this server's Origin check would take; its Host is what gives it away.
   assert.equal((await liveWs(w, wsPath, at(`rebound.example:${w.server.port}`))).status, 403, "a rebound name");
   assert.equal((await liveWs(w, "/v2/runs/whatever", at(`rebound.example:${w.server.port}`))).status, 403, "refused before anything else about it");

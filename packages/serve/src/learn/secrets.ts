@@ -6,12 +6,16 @@ import { posix } from "node:path";
 const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/;
 const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/;
 const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/;
-/** A JWT: three base64url parts, the first two `eyJ`, starting at a token's start (no base64url character before it,
- *  unless that character is a JSON escape's letter: `\neyJ...` in a JSON string's raw text). The start is what keeps
- *  the reading linear: without it a run that repeats `eyJ` and never reaches a dot ("eyJeyJ…", a base64 blob) is read
- *  again from every repeat. Each part is bounded far past a real token's (a header with an x5c chain, a payload of group
- *  claims run to a few KB). */
-const JWT = /(?<![A-Za-z0-9_-](?<!\\[bfnrt]))eyJ[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/;
+/** A JWT: three base64url parts, the first two JSON objects ("eyJ"). It starts at the first "eyJ" of a run of a part's
+ *  characters, wherever that run starts ("token-eyJ…", a JSON string's `\neyJ…` too), and not at a later "eyJ" in the
+ *  same run: read from every "eyJ", a long dotless run was read to its end from each, quadratic in its length (180 s
+ *  over 256 KiB of "eyJ"). A later start reaches the same "." the first does with fewer characters, so it finds nothing
+ *  the first doesn't; the lookbehind is lazy, so it reads back only to the "eyJ" before it. Each part, and the look
+ *  back, is bounded far past a real token's (a header with an x5c chain, a payload of group claims run to a few KB). */
+const JWT = /eyJ(?<!eyJ[A-Za-z0-9_-]{0,16384}?eyJ)[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/;
+/** A private key block's header, its key type (RSA, EC, OPENSSH, ENCRYPTED) at most 64 characters each side: two
+ *  unbounded runs read a long header of repeated words in quadratic time (24 s over 256 KiB of "PRIVATE KEY "). */
+const PRIVATE_KEY = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/;
 /** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
@@ -49,7 +53,7 @@ const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}
 export const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
   ["Google API key", /AIza[0-9A-Za-z_-]{35}/],
-  ["private key block", /-----BEGIN[ A-Z0-9]{0,40}PRIVATE KEY[ A-Z0-9]{0,40}-----/],
+  ["private key block", PRIVATE_KEY],
   ["GitHub token", GITHUB_TOKEN],
   ["sk- key", SK_KEY],
   ["Slack token", SLACK_TOKEN],

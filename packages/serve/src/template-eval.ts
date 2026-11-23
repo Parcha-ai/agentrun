@@ -541,6 +541,8 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
  *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
 export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
+/** A file a run left in its work folder: its path, its size in bytes and, for a text file read whole, its text. */
+export type FinalFile = { path: string; bytes: number; text?: string };
 /** What a run left, for its graders. */
 export type RunRecord = {
   /** The run's final answer, or "" when it has none. */
@@ -551,6 +553,9 @@ export type RunRecord = {
   mcpCalls: ToolCall[];
   /** The paths of its files, from its work folder. */
   files: string[];
+  /** Its work folder's files as it left them, for its llm graders (finalFilesOf): each text file with its whole `text`,
+   *  any other (media, a binary, one past what was read) with its size alone. */
+  finalFiles?: FinalFile[];
   /** The clock it ran on, its case's `now`; absent, the real one. */
   now?: string;
   /** Its fake mailbox after it, for a case with `email` (eval-mailbox.ts). */
@@ -696,8 +701,8 @@ export function outputVerdict(pkg: Package, result: unknown): GraderResult | und
 }
 
 /** The input a grader run gets for an llm grader: the rubric, the clock the run ran on when its case set one (the grader's
- *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), its
- *  calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
+ *  own run is on the real clock), the run's input, its answer (its target field marked when the grader names one), the
+ *  files it left (fitFiles: whole ahead of its calls, which are cut first), its calls and, for a run that searched or fetched, the link check of its cited links (link-check.ts). Never another grader, the case's description or anything the case expects. */
 export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: string, run: RunRecord, max = GRADER_PROMPT_MAX): string {
   const target = grader.target ? targetOf(run.answer, grader.target) : undefined;
   const at = run.now === undefined ? undefined : instantOf(run.now);
@@ -711,12 +716,19 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     // What the run did to its fake mailbox: the messages it added (a draft, a copy in Sent), moved or labelled, and sent.
     ...(run.mailbox ? [`<mailbox-after untrusted>\nThe run's email account was a fake mailbox (layout ${run.mailbox.after.layout}). What the run left in it:\n${mailboxText(run.mailbox.after)}\n</mailbox-after>`] : []),
   ];
-  // Each call with its arguments (else its input's preview), its status and its output's head.
-  const lines = run.calls.map((call, i) => ({
-    head: `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`,
-    result: call.result ?? "",
-    tool: call.name ?? call.tool,
-  }));
+  // The files the run left, ahead of its calls. A call shows a file's bytes only in its arguments or its output, each cut
+  // where the timeline cuts it (a string of its arguments at 2,000 characters, its output at CALL_RESULT_CHARS, each
+  // ending "..."), and a cut call reads to a grader as a run that did less than its file holds.
+  const files = run.finalFiles ?? [];
+  const texts = files.filter((file) => file.text !== undefined);
+  // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
+  // shown whole says where it is.
+  const lines = run.calls.map((call, i) => {
+    const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
+    const result = call.result ?? "";
+    const named = texts.filter((file) => head.includes(file.path) || result.includes(file.path)).sort((a, b) => b.path.length - a.path.length)[0];
+    return { head: named ? `${head} [the file ${named.path} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+  });
   // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
   const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
@@ -724,13 +736,18 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
   const links = linkCheck(run.answer, run.calls);
   const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
-  // Both lists share the room the rubric, the task, the answer and the link check leave, each in proportion to its whole size.
-  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
+  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
   const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
-  const mcpRoom = callsWhole + mcpWhole <= room ? mcpWhole : Math.floor((room * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
+  // The files come first: they take what they need of the room, but no more than leaves the calls a quarter of it (or
+  // all they need, when that is less), so a call's result is cut before a file is.
+  const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(callsWhole + mcpWhole, Math.floor(room / 4)))) : undefined;
+  // Both call lists share the room the rest leave, each in proportion to its whole size.
+  const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
+  const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
   const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, wrap(lines.length ? fitCalls(lines, room - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
+  return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(lines.length ? fitCalls(lines, left - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
@@ -744,13 +761,7 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   const line = (head: string, result: string) => (result ? `${head}: ${result}` : head);
   const whole = lines.map((one) => line(one.head, one.result)).join("\n");
   if (whole.length <= room) return whole;
-  const said = (cut: string) => `(Cut to keep this prompt under its cap: ${cut}.)`;
-  const middle = (text: string, keep: number) => {
-    if (text.length <= keep) return text;
-    const marker = ` [... ${text.length - keep} characters cut ...] `;
-    const tail = Math.floor(keep / 3);
-    return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
-  };
+  const said = saidCut;
   const webs = lines.map((one) => (one.tool ? webShownOf(one.tool, one.result) : undefined));
   const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked${webs.some(Boolean) ? "; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut" : ""}`);
   // What a result cut to `keep` adds to its line, ": " included: the marker a cut adds is at most 40 characters, counted
@@ -795,6 +806,43 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   }
   const dropped = heads.length - kept[0].length - kept[1].length;
   return [said(`every ${what} is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n");
+}
+
+/** A cut's note, on the first line of what it cut. */
+const saidCut = (cut: string) => `(Cut to keep this prompt under its cap: ${cut}.)`;
+/** `text` in at most `keep` characters and its marker: whole when it fits, else its first two thirds and last third of
+ *  `keep`, its middle cut and marked in place with how much was cut (a marker of at most 40 characters). */
+function middle(text: string, keep: number): string {
+  if (text.length <= keep) return text;
+  const marker = ` [... ${text.length - keep} characters cut ...] `;
+  const tail = Math.floor(keep / 3);
+  return `${text.slice(0, keep - tail)}${marker}${text.slice(text.length - tail)}`;
+}
+
+/** A run's final files in at most `room` characters: each text file in a <file> block, whole when they all fit; else each
+ *  text past a length L keeps its head and tail with its middle cut and marked, L the longest that fits (so the largest
+ *  is cut first); else every text left out. A file with no text (media, a binary, one past what was read) is named with
+ *  its size on a last line, cut to the room when even that passes it. */
+export function fitFiles(files: readonly FinalFile[], room: number): string {
+  const block = (file: FinalFile, text: string) => `<file path="${file.path}" bytes="${file.bytes}">\n${text}\n</file>`;
+  const texts = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
+  const others = files.filter((file) => file.text === undefined);
+  const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${others.map((file) => `${file.path} (${file.bytes})`).join(", ")}`] : [];
+  const whole = [...texts.map((file) => block(file, file.text)), ...named].join("\n");
+  if (whole.length <= room) return whole;
+  const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
+  const size = (keep: number) => LONG.length + 1 + texts.reduce((sum, file) => sum + block(file, "").length + (file.text.length <= keep ? file.text.length : keep + 40) + 1, 0) + named.reduce((sum, line) => sum + line.length, 0);
+  if (texts.length && size(0) <= room) {
+    let [low, top] = [0, Math.max(...texts.map((file) => file.text.length))];
+    while (low < top) {
+      const mid = Math.ceil((low + top) / 2);
+      if (size(mid) <= room) low = mid;
+      else top = mid - 1;
+    }
+    return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
+  }
+  const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${files.map((file) => `${file.path} (${file.bytes})`).join(", ")}`].join("\n");
+  return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;
 }
 
 /** A grader run's answer read as its verdict: the last json block's (else the last JSON object's) {pass, reason}. */
@@ -864,13 +912,14 @@ async function bytesOf(req: IncomingMessage): Promise<Buffer> {
 
 // ---- the API ---------------------------------------------------------------------------------------------------------
 
-type Answered = { status: number; body: unknown };
-/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `signal`: the
- *  request and the read of its body stop when it aborts, and the call rejects. */
-export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; signal?: AbortSignal }) => Promise<Answered>;
+type Answered = { status: number; body: unknown; headers?: Headers };
+/** `statusOnly`: the answer's status alone, its body cancelled unread (a file's existence, never its bytes). `text`: its
+ *  body as the text it is, never parsed (a file's bytes: a JSON file's text, as it was written), with the answer's headers.
+ *  `signal`: the request and the read of its body stop when it aborts, and the call rejects. */
+export type Api = (method: string, path: string, body?: unknown, headers?: Record<string, string>, options?: { statusOnly?: true; text?: true; signal?: AbortSignal }) => Promise<Answered>;
 
 /** A client of the v2 API at `baseUrl` (ending in /v2) with `token`. */
-function apiOf(baseUrl: string, token: string): Api {
+export function apiOf(baseUrl: string, token: string): Api {
   return async (method, path, body, headers = {}, options = {}) => {
     const raw = typeof body === "string";
     // The console's page takes a write from its session only with a JSON body type, a body or not (page.ts answerPage):
@@ -891,6 +940,7 @@ function apiOf(baseUrl: string, token: string): Api {
       return { status: res.status, body: null };
     }
     const text = await res.text();
+    if (options.text) return { status: res.status, body: text, headers: res.headers };
     let json: unknown = text;
     try {
       json = JSON.parse(text);
@@ -987,16 +1037,62 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
   });
 }
 
-/** Every file path of a run's work folder (the files route, page by page). */
-async function filesOf(api: Api, runId: string): Promise<string[]> {
-  const paths: string[] = [];
+/** A file of a run's work folder as its listing names it: its size, its type (null for an extension the server does not
+ *  type) and whether the server could read it. */
+export type Listed = { path: string; bytes: number; type: string | null; unreadable: boolean };
+/** Every file of a run's work folder (the files route, page by page). */
+async function filesOf(api: Api, runId: string): Promise<Listed[]> {
+  const files: Listed[] = [];
   for (let cursor: string | null = null; ; ) {
     const page = await api("GET", `/runs/${runId}/files${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
-    if (page.status !== 200 || !isObject(page.body)) return paths;
-    for (const file of (page.body.files as Json[] | undefined) ?? []) if (typeof file.path === "string") paths.push(file.path);
+    if (page.status !== 200 || !isObject(page.body)) return files;
+    for (const file of (page.body.files as Json[] | undefined) ?? []) {
+      if (typeof file.path === "string") files.push({ path: file.path, bytes: typeof file.size_bytes === "number" ? file.size_bytes : 0, type: typeof file.content_type === "string" ? file.content_type : null, unreadable: file.unreadable === true });
+    }
     cursor = typeof page.body.next_cursor === "string" ? page.body.next_cursor : null;
-    if (!cursor) return paths;
+    if (!cursor) return files;
   }
+}
+
+const filePath = (runId: string, path: string) => `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+/** A type a file's bytes are text in: text/*, JSON and NDJSON. A file the server gives no type (an extension it does not
+ *  know: .srt, .vtt, .yaml) is read too: the server answers its text when its bytes are UTF-8 with no NUL, else 415. */
+const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson)\b)/;
+/** How long one read of a run's final file may take, its body included: a server that stalls mid-file leaves that file's
+ *  text out, and the eval goes on. */
+export const FILE_READ_TIMEOUT_MS = 10_000;
+/** How long all of a run's final file reads may take together: past it, the files not yet read are listed by size alone. */
+export const FILE_READS_TIMEOUT_MS = 30_000;
+
+/** A run's final files for its llm graders: each text file's whole text, read smallest first while the texts read stay
+ *  within GRADER_PROMPT_MAX UTF-8 bytes in all (one grader input holds that many characters, and a character is at least
+ *  a byte), every other file by its size alone. Each is read under the run's own cut, on the server that holds its
+ *  secrets (`?cut=run`, run-reads-over-store.ts cutRunFile): every value its timeline's calls are cut of, and every secret
+ *  shape, is "[redacted]" in the text a grader sees. An answer without the cut's mark (`x-agentrun-cut: run`: a server
+ *  that doesn't know the cut and would serve the raw bytes) leaves the text out. A read that fails, is refused (403, 413,
+ *  415), takes longer than `readTimeoutMs`, or would pass the budget leaves that file's text out, never the grade, and
+ *  the files after it are still read; past FILE_READS_TIMEOUT_MS in all, the rest are left out. In the listing's order. */
+export async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], signal?: AbortSignal, readTimeoutMs = FILE_READ_TIMEOUT_MS): Promise<FinalFile[]> {
+  const texts = new Map<string, string>();
+  let left = GRADER_PROMPT_MAX;
+  const until = Date.now() + Math.max(FILE_READS_TIMEOUT_MS, readTimeoutMs);
+  for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => a.bytes - b.bytes)) {
+    if (file.bytes > left) continue;
+    signal?.throwIfAborted();
+    const remaining = until - Date.now();
+    if (remaining <= 0) break;
+    const bound = AbortSignal.timeout(Math.min(readTimeoutMs, remaining));
+    const read = await api("GET", `${filePath(runId, file.path)}?cut=run`, undefined, {}, { text: true, signal: signal ? AbortSignal.any([signal, bound]) : bound }).catch((error: unknown) => {
+      if (signal?.aborted) throw error;
+      return undefined;
+    });
+    if (read?.status !== 200 || read.headers?.get("x-agentrun-cut") !== "run" || typeof read.body !== "string") continue;
+    const bytes = Buffer.byteLength(read.body);
+    if (bytes > left) continue;
+    texts.set(file.path, read.body);
+    left -= bytes;
+  }
+  return listed.map((file) => ({ path: file.path, bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
@@ -1005,7 +1101,7 @@ async function filesOf(api: Api, runId: string): Promise<string[]> {
 async function presentOf(api: Api, runId: string, paths: readonly string[]): Promise<string[]> {
   const present: string[] = [];
   for (const path of new Set(paths)) {
-    const read = await api("GET", `/runs/${runId}/files/${path.split("/").map(encodeURIComponent).join("/")}`, undefined, {}, { statusOnly: true });
+    const read = await api("GET", filePath(runId, path), undefined, {}, { statusOnly: true });
     if (read.status === 200) present.push(path);
   }
   return present;
@@ -1058,6 +1154,8 @@ export type EvalOptions = {
   runTimeoutMs?: number;
   /** How long one run may stay queued with no runner taking it (default QUEUE_TIMEOUT_MS). */
   queueTimeoutMs?: number;
+  /** How long one read of a run's final file may take, its body included (default FILE_READ_TIMEOUT_MS). */
+  fileReadTimeoutMs?: number;
   /** Told each step as one line (the CLI's stderr). */
   log?: (line: string) => void;
   /** Stops the eval: the run in progress is cancelled, what the eval made is cleaned up as at its end, and the eval
@@ -1170,7 +1268,7 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     const { withoutFaux } = await import("./model.js");
     const serveOptions = options.serve ?? {};
     // Its run lines go to stderr: stdout is the eval's report.
-    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
+    const beside = await runnerBeside(data!, { mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, evalFakes: (agentId) => fakes.get(agentId), harnessInstall, onLine: (line) => console.error(line), ...(serveOptions.faux ? { env: { ...withoutFaux(process.env), ...fauxEnvOf({ data: data!, ...serveOptions } as Parameters<typeof fauxEnvOf>[0]) } } : {}) }).catch(async (error: unknown) => {
       await closeServe();
       removeTree(scratch!);
       throw error;
@@ -1570,14 +1668,15 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
+  const listed = await filesOf(api, runId);
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
     calls: callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
     mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
     files: await (async () => {
-      const listed = await filesOf(api, runId);
+      const paths = listed.map((file) => file.path);
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
-      return [...listed, ...(await presentOf(api, runId, named.filter((path) => !listed.includes(path))))];
+      return [...paths, ...(await presentOf(api, runId, named.filter((path) => !paths.includes(path))))];
     })(),
     ...(one.now !== undefined ? { now: one.now } : {}),
     ...(mailbox ? { mailbox } : {}),
@@ -1598,6 +1697,8 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
     : !graded ? `the run ended ${ended.status}${pending ? ` (${pending})` : ""}${isObject(view.error) && typeof view.error.message === "string" ? `: ${view.error.message}` : ""}`
     : undefined;
   const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
+  // The files it left, read whole for its llm graders: only a run they grade, so a case of other graders reads none.
+  if (graded && one.graders.some((grader) => grader.type === "llm")) record.finalFiles = await finalFilesOf(api, runId, listed, options.signal, options.fileReadTimeoutMs);
   const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();

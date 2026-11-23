@@ -1119,6 +1119,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The cut holds this server's values, not every secret: a value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it, and a secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed doesn't open) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`
@@ -1306,7 +1307,7 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
-- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server or where Ollama listens, a start-time switch or the usage counts' switch: AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY (none), OLLAMA_HOST, AGENTRUN_MCP_ALLOW_LOOPBACK (1), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (1), AGENTRUN_TELEMETRY, DO_NOT_TRACK; kept until KEY= removes it; repeatable
 - `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
 
 ### `agentrun service logs`
