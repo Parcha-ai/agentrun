@@ -9,13 +9,15 @@
 import { handedValuesOf, launchRowOf, launchValuesOf } from "./handed-values.js";
 import { keyRefusal, runKeyOf } from "./key-refusal.js";
 import { MIN_SECRET } from "./learn/secrets.js";
+import { censusDigest } from "./run-census.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
 import { type SignInReader, shownOf } from "./run-view.js";
 import { CENSUS_PENDING, type RunRow, type Store } from "./store/store.js";
 
 /** Run `runId`'s cut set: the values everything served of it is cut of (its view's words, its title, its Timeline's
- *  rows, its error, its files), and `census`, its launch's census when an end erased what its caller handed it (the
- *  one cut of its files that says where those sat, run-census.ts censusCut); or `unreadable` when what it was handed
+ *  rows, its error, its files), and `censusDigest`, its launch's census's digest when an end erased what its caller
+ *  handed it (the census is the one cut of its files that says where those sat, run-census.ts censusCut, read by the one
+ *  read that cuts a file by it); or `unreadable` when what it was handed
  *  can't be read back here (a sign-in's pointer, handed-values.ts handedValuesOf; its launch's sealed part, which
  *  doesn't open under `sealKey`, launchValuesOf; a launch row that can't be read), so it is withheld. `known`: its row
  *  and launch, when the caller has read them. */
@@ -32,11 +34,11 @@ export async function runCutValues(deps: { serverSecrets: () => string[]; signIn
   // values cut them. Every other census does, live or ended: an earlier turn's, which says where what that turn's caller
   // handed sat; or a marker, which says nothing, so the files are withheld (censusCut).
   const census = row.census === null || (row.census === CENSUS_PENDING && row.sealed !== null) ? undefined : row.census;
-  return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET), ...launch], ...(census !== undefined ? { census } : {}) };
+  return { values: [...deps.serverSecrets(), ...handed.refs.filter((ref) => ref.length >= MIN_SECRET), ...launch], ...(census !== undefined ? { censusDigest: censusDigest(census) } : {}) };
 }
 
-/** A run's cut (runCutValues). */
-export type RunCut = { values: string[]; census?: string } | "unreadable";
+/** A run's cut (runCutValues): `censusDigest` names the census its files are cut by (run-census.ts censusDigest). */
+export type RunCut = { values: string[]; censusDigest?: string } | "unreadable";
 
 /** How many times `underCut` builds again against a cut that grew while it built, before it gives up and withholds. */
 const CUT_TRIES = 5;
@@ -47,7 +49,7 @@ const CUT_TRIES = 5;
  *  of them. A cut that keeps growing past CUT_TRIES builds fails closed: `build` is made under `unreadable`, the run withheld. */
 export async function underCut<T>(read: () => Promise<RunCut>, build: (cut: RunCut) => Promise<T>): Promise<T> {
   const same = (a: RunCut, b: RunCut) =>
-    a === "unreadable" || b === "unreadable" ? a === b : a.census === b.census && new Set(a.values).size === new Set([...a.values, ...b.values]).size && new Set(b.values).size === new Set(a.values).size;
+    a === "unreadable" || b === "unreadable" ? a === b : a.censusDigest === b.censusDigest && new Set(a.values).size === new Set([...a.values, ...b.values]).size && new Set(b.values).size === new Set(a.values).size;
   let cut = await read();
   for (let tries = 1; ; tries++) {
     const built = await build(cut);

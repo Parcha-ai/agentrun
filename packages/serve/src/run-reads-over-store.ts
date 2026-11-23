@@ -12,7 +12,7 @@ import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
 import { redactSecrets } from "./learn/secrets.js";
-import { censusCut } from "./run-census.js";
+import { censusCut, censusDigest } from "./run-census.js";
 import { type RunCut, underCut } from "./run-cut.js";
 import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
@@ -59,6 +59,8 @@ export interface RunReadsDeps {
   cutValues(store: RunReadsStore, runId: string): Promise<RunCut>;
   /** A context for the journal reads (graph, timeline). */
   readonly context: Context;
+  /** The server's seal key: a run's census names each file by a MAC under it (run-census.ts fileMac). */
+  readonly sealKey: Buffer | undefined;
 }
 
 /** A run's files, through its Workspace (listRunFiles): every file, path-sorted, cut at the cap. A run with no folder lists
@@ -128,9 +130,13 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
   if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
   const shown = await underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
     if (cut === "unreadable") return { withheld: WITHHELD_SIGN_IN };
-    if (cut.census === undefined) return { text: redactSecrets(text, cut.values, Buffer.byteLength(text)) };
-    // The run's end erased what its caller handed it: where those sat in this file is its census's to say.
-    const held = censusCut(cut.census, rel, bytes, text);
+    if (cut.censusDigest === undefined) return { text: redactSecrets(text, cut.values, Buffer.byteLength(text)) };
+    // The run's end erased what its caller handed it: where those sat in this file is its census's to say. Read here, the
+    // one read that cuts by it; the cut names it by digest, so a census written since withholds this answer and the cut
+    // read again after it (underCut) builds it anew.
+    const census = await store.runs.launch(runId).then((row) => row.census, () => null);
+    if (census === null || censusDigest(census) !== cut.censusDigest) return { withheld: WITHHELD_UNCOUNTED };
+    const held = censusCut(census, rel, bytes, text, deps.sealKey);
     if (held === "unreadable") return { withheld: WITHHELD_UNCOUNTED };
     return { text: held === "whole" ? "[redacted]" : redactSecrets(text, cut.values, Buffer.byteLength(text), held) };
   });
