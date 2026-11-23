@@ -4,9 +4,10 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { endsInScheme, redactSecrets, secretShapes, valueMatcher } from "./learn/secrets.js";
+import { cutSecrets, endsInScheme, heldOutside, redactSecrets, secretShapes, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
+import type { Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -122,13 +123,19 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
 
 /** Whether the joined pieces still hold a held value or a secret shape: one a cut split, each piece's own redacted. Each
  *  unread run's head is read raw for a value (a shorter held value redacted there would hide the rest of a longer one
- *  split before it) and redacted for a shape (a shape whole in it is no shape a cut split). A peek too long to read
- *  (`unread`) withholds the text too. */
+ *  split before it) and redacted for a shape (a shape whole in it is no shape a cut split). The pieces as they came,
+ *  joined, are read for a value too, each piece's cuts covering it (heldOutside): a piece's cut can take part of a value
+ *  split across pieces (a private key's header, cut as a shape, at the end of a piece, its lines in the next), and its
+ *  redacted pieces then no longer hold that value. A peek too long to read (`unread`) withholds the text too. */
 function heldIn(seen: Seen, secrets: readonly string[]): boolean {
-  return seen.unread || valueMatcher(secrets)(seen.values) || secretShapes(seen.shapes).length > 0;
+  return seen.unread || valueMatcher(secrets)(seen.values) || heldOutside(seen.raw, secrets, seen.cuts) || secretShapes(seen.shapes).length > 0;
 }
 
-type Seen = { values: string; shapes: string; unread: boolean };
+/** What the pass after the pieces reads: their redacted text for values (`values`) and shapes (`shapes`), and their text
+ *  as it came, joined by line breaks (`raw`), with the spans of it the pieces cut (`cuts`). */
+type Seen = { values: string; shapes: string; raw: string; cuts: Span[]; unread: boolean };
+/** A stretch of the text as it came, as the pass reads it, and the spans of it its piece cut. */
+type Read = { text: string; cuts: readonly Span[] };
 
 /** `text` read in pieces as redactedAnswer says (pieceEnd), each redacted by itself: what the pieces show, joined, and
  *  what the pass after them reads (heldIn), the same with the head of each unread run put back before its "[redacted]"
@@ -142,6 +149,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   const out: string[] = [];
   const values: string[] = [];
   const shapes: string[] = [];
+  const reads: Read[] = [];
   let shown = 0;
   let unread = false;
   // The run runCut is cutting: where it starts in `text`, and its first piece's index in `out`.
@@ -158,18 +166,23 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
         for (const part of out.splice(run.at)) shown -= part.length;
         values.splice(run.at);
         shapes.splice(run.at);
+        reads.splice(run.at);
       }
       const head = peek(text, start, hold);
       if (head === undefined) unread = true;
       else {
         values.push(`${head}[redacted]`);
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
+        // The run is shown as "[redacted]": all of its head is covered.
+        reads.push({ text: head, cuts: head ? [[0, head.length]] : [] });
       }
       out.push("[redacted]");
       shown += "[redacted]".length;
       run = undefined;
     } else {
-      const part = redactSecrets(raw, secrets, Buffer.byteLength(raw));
+      const cut = cutSecrets(raw, secrets, Buffer.byteLength(raw));
+      const part = cut === "whole" ? "[redacted]" : cut.out;
+      reads.push({ text: raw, cuts: cut === "whole" ? [[0, raw.length]] : cut.spans });
       // A piece that ends inside a run (runCut's): its run goes on in the next piece.
       if (to < text.length && /\S/.test(text[to - 1] ?? "") && /\S/.test(text[to] ?? "")) run ??= { from, at: out.length };
       else run = undefined;
@@ -191,9 +204,18 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       const rest = runTo > from + ahead.length ? text.slice(from, runTo) : ahead;
       values.push(rest);
       shapes.push(redactSecrets(rest, secrets, Buffer.byteLength(rest)));
+      reads.push({ text: rest, cuts: [] });
     }
   }
-  return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join(""), unread }, short: from < text.length && shown <= enough };
+  // The reads joined by line breaks, each one's cuts moved to where it stands in the join.
+  let raw = "";
+  const cuts: Span[] = [];
+  for (const read of reads) {
+    if (raw) raw += "\n";
+    for (const [start, end] of read.cuts) cuts.push([raw.length + start, raw.length + end]);
+    raw += read.text;
+  }
+  return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join(""), raw, cuts, unread }, short: from < text.length && shown <= enough };
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
