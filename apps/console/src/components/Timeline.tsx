@@ -10,6 +10,7 @@ import { chargeWords, clock, markdown, openLinkedFile } from "@/lib/format";
 import { mcpToolLabel } from "@/lib/mcp";
 import { rowDetail, rowFailed, rowPaused, rowRefused, type Step, steps } from "@/lib/timeline";
 import { kindWithModel, ranOnWords } from "@/lib/nodeModel";
+import { REDACTION_SOURCE, Redactions } from "@/lib/redaction";
 import { cn } from "@/lib/utils";
 import type { LearnedNode, RunFile, TimelineRow } from "@/lib/v2";
 import { NO_ANSWER } from "@/lib/viewing";
@@ -47,12 +48,15 @@ const triggerParts = (row: TimelineRow): { who: string | null; said: string } =>
  *  (`[note]` with no address too). Code inside bold is code; bold inside code is as typed, and so is a link. A link is
  *  never an anchor here: the line sits in the row's button, which opens the text with its links. `__…__` is not bold
  *  here: a step names files like `__init__.py`. */
+const INLINE = new RegExp(String.raw`(${REDACTION_SOURCE}|\*\*[^*\n]+?\*\*|` + "`[^`\\n]+`" + String.raw`|\[[^\]\n]+\]\((?:[^()\s]|\([^()\s]*\))+\)|<https?:\/\/[^>\s]+>)`);
 function inline(text: string): ReactNode {
-  const parts = text.split(/(\*\*[^*\n]+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\((?:[^()\s]|\([^()\s]*\))+\)|<https?:\/\/[^>\s]+>)/);
+  const parts = text.split(INLINE);
   if (parts.length === 1) return text;
   return parts.map((p, i) =>
     i % 2 === 0 ? p
-      : p.startsWith("`") ? <code key={i} className="font-mono">{p.slice(1, -1)}</code>
+      // A cut value's marker (the scrubber's): a chip, its words kept.
+      : p.startsWith("[redacted:") ? <Redactions key={i} text={p} />
+      : p.startsWith("`") ? <code key={i} className="font-mono"><Redactions text={p.slice(1, -1)} /></code>
       // A link's words keep their own bold and code; its address is left out (one level of parentheses in it, as a
       // Wikipedia address has, is the address's).
       : p.startsWith("[") ? <Fragment key={i}>{inline(p.slice(1, p.indexOf("](")))}</Fragment>
@@ -175,7 +179,7 @@ function Row({ step, last, ended, waitingChip, files, onOpen }: { step: Step; la
         {open && detail && row.tool_name && <p className="mt-3 font-mono text-small text-muted-foreground">{row.tool_name}</p>}
         {/* An answer opens as the Report reads it (the same markdown(): links as links, fences as code blocks, no raw HTML); a link naming one of the run's files opens that file, as in the Report. */}
         {open && detail && row.kind === "final_answer" && <article className="report mt-3 max-h-80 max-w-none overflow-auto border bg-card p-3" onClick={openLinkedFile((path) => { const f = files?.find((x) => x.path === path); if (f) onOpen?.(f); })} dangerouslySetInnerHTML={{ __html: markdown(detail, onOpen && files ? { paths: files.map((f) => f.path) } : undefined) }} />}
-        {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]">{detail}</pre>}
+        {open && detail && row.kind !== "final_answer" && <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words border bg-card p-3 font-mono text-small leading-[1.7]"><Redactions text={detail} /></pre>}
         {row.learned_nodes?.length ? <LearnedNodes nodes={row.learned_nodes} /> : null}
         {row.computer_calls?.length ? <ComputerCalls calls={row.computer_calls} dropped={row.computer_calls_dropped ?? 0} /> : null}
       </div>
