@@ -18,7 +18,7 @@
 // never served to a run), nothing else but the host's folder.
 import { createHash } from "node:crypto";
 import { CORRECTIONS_FILE } from "./corrections.js";
-import { COMMIT, HOST_DIR, type LearningStore, MARKER_KEY, runMarker, type StoreCommit, type StoreFile } from "./store.js";
+import { COMMIT, HOST_DIR, type LearningStore, MARKER_KEY, runMarker, runOfKey, type StoreCommit, type StoreFile, wroteOf } from "./store.js";
 import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
 export const SNAPSHOT_FILE = `${HOST_DIR}/snapshot.json`;
@@ -149,7 +149,10 @@ const textOf = (bytes: Uint8Array | undefined): string | undefined => {
 type TreeEntry = { mode: string; type: string; oid: string; bytes: number; path: string };
 /** A commit read whole: its tree (no host path), its first-parent history with the paths each commit changed (no host
  *  path), and its blobs by id. */
-type WholeRead = { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[] }[]; blobs: Map<string, Buffer> };
+/** A commit read whole: its tree, blobs and history. Each record's `wrote`: the paths its run's merge wrote, as the marker
+ *  it added names them (learn/store.ts runMarkerText), whether or not their bytes changed; absent for a commit that is
+ *  no run's merge, or whose marker names none (an earlier release's): then what it changed. */
+type WholeRead = { main: string | undefined; tree: TreeEntry[]; records: { commit: CommitInfo; sha: string; files: string[]; wrote?: string[] }[]; blobs: Map<string, Buffer> };
 
 /** A commit's time as a store gives it (git's %cI, its own offset, "+00:00", "+02:00" or "Z"), in the one form a
  *  snapshot keeps: UTC in whole seconds, ending "Z", as nextSnapshot writes it, so a snapshot rebuilt from history and
@@ -170,6 +173,7 @@ function infoOf(commit: StoreCommit): CommitInfo {
   return { at: commitTime(commit.at), subject, body, runId: trailer("Run-Id"), changedBy: trailer("Changed-By"), approvedVia: trailer("Approved-Via") };
 }
 export const isHostPath = (path: string) => path === HOST_DIR || path.startsWith(`${HOST_DIR}/`);
+const RUN_MARKERS = runMarker("");
 
 /** The snapshot of a commit read whole: every item from its tree and its blobs, each file's history and order from its
  *  first-parent log, and the newest LOG_KEEP changes. */
@@ -181,15 +185,16 @@ export function snapshotOfRead(read: WholeRead): Snapshot | undefined {
   const runs = new Map<string, string>();
   const log: SnapChange[] = [];
   let more = false;
-  records.forEach(({ commit, sha, files }, i) => {
+  records.forEach(({ commit, sha, files, wrote }, i) => {
     const runId = commit.runId.split(",")[0]!.trim();
     for (const file of files) {
       if (!order.has(file)) order.set(file, i);
       const known = history.get(file);
       if (!known) history.set(file, foldNewer(undefined, commit));
       else foldOlder(known, commit);
-      if (runId && !runs.has(file)) runs.set(file, runId);
     }
+    // A file's writer: the run whose merge wrote it last, as its marker names (`wrote`), else as its bytes changed.
+    if (runId) for (const file of wrote ?? files) if (!runs.has(file)) runs.set(file, runId);
     if (!isChange(commit)) return;
     const entry = changeEntry(commit, sha, files);
     if (!entry) return;
@@ -513,10 +518,18 @@ async function wholeRead(store: LearningStore, commit: string): Promise<WholeRea
     blobs.set(oid, file.body);
     tree.push({ mode: file.mode, type: "blob", oid, bytes: file.body.length, path: file.path });
   }
+  // The run markers on main, by path: each names the paths its merge wrote, kept through every rewrite.
+  const markers = new Map(files.filter(({ path }) => path.startsWith(RUN_MARKERS)).map(({ path, body }) => [path, body] as const));
   const records = [];
   for (const one of history) {
     const changed = one.files ?? (await store.diff(one.sha))?.map((file) => file.path) ?? [];
-    records.push({ commit: infoOf(one), sha: one.sha, files: changed.filter((path) => !isHostPath(path)) });
+    const commit = infoOf(one);
+    // A run's merge writes its marker in the same commit: the paths it names are what the merge wrote, though a rewrite
+    // made some write the bytes already there (learn/purge.ts reads the owner the same way).
+    const runId = commit.runId.split(",")[0]!.trim();
+    const lists = changed.filter((path) => path.startsWith(RUN_MARKERS) && runOfKey(path.slice(RUN_MARKERS.length)) === runId).map((path) => markers.get(path)).map((body) => (body ? wroteOf(body) : undefined));
+    const wrote = runId && lists.length && lists.every((list) => list !== undefined) ? [...new Set(lists.flat() as string[])].filter((path) => !isHostPath(path)) : undefined;
+    records.push({ commit, sha: one.sha, files: changed.filter((path) => !isHostPath(path)), ...(wrote ? { wrote } : {}) });
   }
   return { main: commit, tree, records, blobs };
 }
