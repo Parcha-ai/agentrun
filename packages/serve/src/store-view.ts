@@ -742,7 +742,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
-  // an output schema and the answer's last fenced json block meets it (storeRunOf's `structured`), else none. Served as
+  // an output schema and the answer's json block (answer-json.ts jsonBlockOf) meets it (storeRunOf's `structured`), else none. Served as
   // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
   // run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;

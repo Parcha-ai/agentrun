@@ -17,10 +17,12 @@ const PAID = { id: "paid-model", api: "openai-completions", price: { input: 1, o
 const PLAN = { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 1000, plan: true };
 /** An OpenRouter router: its catalog writes $0, but it bills the model it routes to, so it is no free model. */
 const ROUTER = { id: "openrouter/auto", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
-const MODELS = new Map([FREE, PAID, PLAN, ROUTER].map((model) => [model.id, model]));
+/** A local model (serve's Ollama): $0, with no quota behind it. */
+const LOCAL = { ...FREE, id: "ollama/synth-tools:2b", local: true };
+const MODELS = new Map([FREE, PAID, PLAN, ROUTER, LOCAL].map((model) => [model.id, model]));
 const LIMIT_WORDS = (n) => `spend_cap_reached: Not sent: this run reached its ${n}-request limit for free models.`;
 
-const runOf = (store, { capUsd, freeRequests } = {}) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => MODELS.get(id), ...(freeRequests === undefined ? {} : { freeRequests }) });
+const runOf = (store, { capUsd, freeRequests, maxRequests } = {}) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => MODELS.get(id), ...(freeRequests === undefined ? {} : { freeRequests }), ...(maxRequests === undefined ? {} : { maxRequests }) });
 /** A booking of session `key` under the run's one rule, as the adapter loop opens one. */
 const bookingOf = async (store, run, key) => modelPortFor(await store.open(key), { key, label: key, beforeRequest: run.before, stop: (reason, message, code) => Object.assign(new Error(message ?? reason), { reason, code }) });
 /** One request on `model`, answered at `usd`; a refusal is its error. */
@@ -116,8 +118,64 @@ test("a free request a crash cut is booked at $0, a known cost, and still counts
   assert.equal((await ask(next, FREE.id))?.message, LIMIT_WORDS(3), "the fourth is refused: the cut request counted toward the limit");
 });
 
+test("a local model's request a crash cut is booked at $0, a known cost, and still counts toward the agent's own limit", async () => {
+  const store = memorySessionStore();
+  // The first claim: request 1 answered, request 2 sent and never answered (its runner lost).
+  const first = await bookingOf(store, runOf(store, { maxRequests: 3 }), MAIN);
+  assert.equal(await ask(first, LOCAL.id), "sent");
+  await first.models.beforeRequest({ model: LOCAL.id, inputTokensMax: 100 });
+  // The next claim books the cut request before it sends anything.
+  const next = await bookingOf(store, runOf(store, { maxRequests: 3 }), MAIN);
+  await next.bookCut();
+  const cut = (await store.read(MAIN)).filter((r) => r.kind === RUNNER_RECORDS.turn && r.data?.turn === 2).map((r) => r.data);
+  assert.equal(cut.length, 1, "booked once");
+  assert.deepEqual({ usd: cut[0].usd, bookedUsd: cut[0].bookedUsd, cut: cut[0].cut, free: cut[0].free }, { usd: 0, bookedUsd: 0, cut: true, free: true }, `booked at $0, not unknown: ${JSON.stringify(cut[0])}`);
+  assert.deepEqual(sessionSpendOf(await store.read(MAIN)).cost, { usd: 0, soFarUsd: 0, unpriced: 0 }, "the session's cost is known: $0");
+  assert.equal(await ask(next, LOCAL.id), "sent", "the third request, the cut one counted");
+  assert.equal((await ask(next, LOCAL.id))?.message, LIMIT_WORDS(3), "the fourth is refused: the cut request counted toward the agent's limit");
+});
+
 test("a run with no limit given has none", async () => {
   const store = memorySessionStore();
   const main = await bookingOf(store, runOf(store), MAIN);
   for (let i = 0; i < 5; i++) assert.equal(await ask(main, FREE.id), "sent");
+});
+
+test("a local model's requests never meet the server's limit, but the agent's own counts them with the run's other free requests", async () => {
+  const store = memorySessionStore();
+  // The server's limit at 1; the agent's own at 4.
+  const run = runOf(store, { freeRequests: 1, maxRequests: 4 });
+  const main = await bookingOf(store, run, MAIN);
+  assert.equal(await ask(main, LOCAL.id), "sent");
+  assert.equal(await ask(main, LOCAL.id), "sent", "past the server's limit of 1, a local request is sent");
+  assert.equal(await ask(main, FREE.id), "sent", "the first counted free request, at the server's limit");
+  assert.equal((await ask(main, FREE.id))?.message, LIMIT_WORDS(1), "the server's limit counts the free model's alone");
+  assert.equal(await ask(main, LOCAL.id), "sent", "the fourth free request of either kind, at the agent's limit");
+  assert.equal((await ask(main, LOCAL.id))?.message, LIMIT_WORDS(4), "the agent's limit counts local and free requests together");
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => [r.freeRequest, r.localRequest]), [[undefined, true], [undefined, true], [true, undefined], [undefined, true]]);
+});
+
+test("with no limit of the agent's own, a local model's requests are never refused by a count", async () => {
+  const store = memorySessionStore();
+  const run = runOf(store, { freeRequests: 1 });
+  const main = await bookingOf(store, run, MAIN);
+  for (let i = 0; i < 5; i++) assert.equal(await ask(main, LOCAL.id), "sent", `local request ${i + 1}`);
+});
+
+test("the wrap-up counts down to the nearest limit: the agent's max_requests over free and local requests together, the server's over free ones alone", () => {
+  const nearest = (model, limits, made) => {
+    const at = cap.freeLimitNearest(model, limits, made);
+    return at && { ...at, due: cap.freeWrapUpDue(at.limit, at.made) };
+  };
+  // A run on a free model with one request of its own and eight on a local model: max_requests 10 has 1 left, the server's 60 has 59.
+  assert.deepEqual(nearest(FREE, { own: 10, server: 10 }, { free: 1, local: 8 }), { limit: 10, made: 9, due: { left: 1 } });
+  assert.deepEqual(nearest(FREE, { own: 10, server: 60 }, { free: 1, local: 8 }), { limit: 10, made: 9, due: { left: 1 } });
+  // The server's limit nearer: its free requests alone count toward it.
+  assert.deepEqual(nearest(FREE, { own: 50, server: 20 }, { free: 18, local: 20 }), { limit: 20, made: 18, due: { left: 2 } });
+  assert.deepEqual(nearest(FREE, { server: 60 }, { free: 1, local: 8 }), { limit: 60, made: 1, due: undefined });
+  // A local model: the agent's own limit alone, over both counts; none set, no limit.
+  assert.deepEqual(nearest(LOCAL, { own: 10, server: 60 }, { free: 1, local: 7 }), { limit: 10, made: 8, due: { left: 2 } });
+  assert.equal(cap.freeLimitNearest(LOCAL, { server: 60 }, { free: 1, local: 7 }), undefined);
+  // A paid model, a router or a plan's: no free limit to count down to.
+  for (const model of [PAID, ROUTER, PLAN]) assert.equal(cap.freeLimitNearest(model, { own: 10, server: 60 }, { free: 1, local: 8 }), undefined, model.id);
 });

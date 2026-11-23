@@ -45,7 +45,7 @@ async function stopChild(child, exited) {
   await within(exited, 5_000);
 }
 
-/** This environment with a fresh home, no model key, no box, and no browser. */
+/** This environment with a fresh home, no model key, no box, and no browser (and no Ollama: support.mjs). */
 function bare(t) {
   const home = mkdtempSync(join(tmpdir(), "agentrun-npx-"));
   removeAtEnd(home);
@@ -1239,6 +1239,20 @@ test("the server's refusals and ignored webhook deliveries reach the person in p
   const said = Array.from({ length: start.TOLD_MAX + 5 }, (_, i) => flood(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`)).filter(Boolean);
   assert.equal(said.length, start.TOLD_MAX + 1);
   assert.equal(said.at(-1), "AgentRun refuses more requests than this terminal shows; it says no more of them here.");
+});
+
+test("a ChatGPT sign-in that did not finish reaches the person, each time, with its reason; the sign-in's other lines do not", () => {
+  const told = start.tellerOf();
+  const failed = "at=2026-11-23T18:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  const words = "AgentRun's ChatGPT sign-in did not finish (token_400_invalid_grant): Settings → API Keys says why; start it again there.";
+  assert.equal(told(failed), words);
+  assert.equal(told(failed), words, "a second try that fails the same way is said too");
+  assert.equal(told("at=2026-11-23T18:00:01.000Z event=chatgpt chatgpt=signed_in"), undefined);
+  // Under a flood of refusals, a sign-in that fails is still said.
+  for (let i = 0; i <= start.TOLD_MAX; i++) told(`at=x event=auth_failed route=/v2/runs/r${i} reason=wrong_token`);
+  assert.equal(told(failed), words);
+  // A sign-in saved whose change the server failed to take is said too: what it offers lags until it takes.
+  assert.equal(told("at=2026-11-23T18:00:02.000Z event=chatgpt chatgpt=changed_failed reason=SQLITE_BUSY"), "AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (SQLITE_BUSY): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.");
 });
 
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
