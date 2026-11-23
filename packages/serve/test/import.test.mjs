@@ -2413,3 +2413,19 @@ test("an OpenCode request run through Claude Code counts nothing when the store 
   assert.deepEqual([metrics.requests, metrics.input, metrics.output, answers.length], [1, 6, 1, 2]);
   assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
 });
+
+test("an OpenCode project's own skills, in .opencode/skills and .opencode/skill as OpenCode reads them, are imported with its revision", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  for (const dir of [join(project, ".opencode", "skills", "tidy"), join(project, ".opencode", "skill", "sort")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(project, ".opencode", "skills", "tidy", "SKILL.md"), "---\nname: tidy\n---\nTidy the notes.\n");
+  writeFileSync(join(project, ".opencode", "skill", "sort", "SKILL.md"), "---\nname: sort\n---\nSort the notes.\n");
+  openCodeDb(h.at, [{ id: "ses_a", cwd: project }]);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const { revisions } = await agentOf(store, agentIdOf(project));
+  const opencode = revisions.find((r) => r.note === "imported from opencode");
+  assert.deepEqual(Object.keys(opencode.body.skills).sort(), ["sort/SKILL.md", "tidy/SKILL.md"]);
+});

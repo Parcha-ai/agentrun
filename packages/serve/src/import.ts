@@ -179,8 +179,10 @@ export const MAX_CANDIDATES = 500;
 /** The most of one instructions or skill file read, and of one agent's skill files together. */
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_SKILL_BYTES = 1024 * 1024;
-/** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. */
-export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills"];
+/** The project's skill folders, each `<dir>/<name>/` with its SKILL.md, by where each harness keeps them. OpenCode reads
+ *  `skill/` and `skills/` in each of its config folders, the project's `.opencode` among them. A home's own folders (its
+ *  ~/.config/opencode, ~/.claude) are no project's, and none is read. */
+export const SKILL_DIRS = [".agents/skills", ".claude/skills", ".codex/skills", ".pi/skills", ".opencode/skills", ".opencode/skill"];
 const INSTRUCTIONS: Record<string, string[]> = {
   "claude-agent": ["CLAUDE.md", "AGENTS.md"],
   codex: ["AGENTS.md", "CLAUDE.md"],
