@@ -306,22 +306,19 @@ On **Model gateway**, they open `<console address>/#/settings/keys` (Settings â†
 gateway**, enter its address and key there (never in this chat), press **Test**, pick the default model from the list
 it shows, and save; it works without a restart. Every model then goes to the gateway, not to a provider's key.
 
-On **Local model**, only on this computer, Ollama must be running (`ollama serve`, or its app). AgentRun lists its
-models itself, with no key, no gateway and no restart: with no model key saved, the first pulled model with tool calling
-is the default, and each pulled model is in the console's model list as local (Ollama). A model without tool calling
-takes its tools as text. Ollama models run on the pi harness alone, at $0, with no free-model request limit. The model
-to suggest pulling is `inkling-2-mini` (it needs Ollama 0.40.17 or later); they pull it themselves. Where Ollama
-listens off 127.0.0.1:11434, the service takes its address as the ollama CLI does, and restarts with it:
+On **Local model**, only on this computer, give the service the model; it restarts with it and keeps it:
 
 ```sh
-~/.agentrun/bin/agentrun service install --env OLLAMA_HOST=<host:port>
+~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none
 ```
 
-Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with it in front of
-`sh`: `curl -fsSL https://agentrun.ai/install | OLLAMA_HOST=<host:port> sh`. A background start keeps only what that
+`AGENT_MODEL_API_KEY=none` is the key Ollama ignores: without one the server refuses each run (`model_key_required`).
+Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same five in
+front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1
+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. A background start keeps only what that
 line sets, so on **Yes, only me** (step 3) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in
-front of `sh` too. Then confirm `models.ready` in the capabilities (an Ollama started after AgentRun shows within half
-a minute), and on **Yes, only me** both switches `on: true` under `switches`.
+front of `sh` too. Then confirm `models.ready` in the capabilities, and on **Yes, only me** both switches `on: true`
+under `switches`.
 
 Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
 ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.

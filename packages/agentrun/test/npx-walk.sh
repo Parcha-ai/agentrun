@@ -4,10 +4,10 @@
 # the launcher and the server it installs, with npm resolving their dependencies afresh. The command keeps the server in
 # the foreground, in a person's terminal; the walk leaves it running so (in the background, its output in a file) while
 # the setup prompt's release-notes agent (docs/SKILL.md) is made and run with the README's CLI, the same command in a
-# second terminal, on its Local model (walk-model.mjs, a fake Ollama: no key, no network, no download); the receipt
+# second terminal, on its Local model (walk-model.mjs, the stand-in for Ollama: no key, no network); the receipt
 # is checked, and the server stopped as a person stops it there, with Ctrl-C (`agentrun stop` stops only a server started
 # in the background). REPORT=<file> puts the report in that file too; WALK_MODEL_PORT moves the
-# fake off 11434, Ollama's own port, where a machine has Ollama on it. Needs node, npm, curl and setsid.
+# stand-in off 11434, the prompt's port, where a machine has Ollama on it. Needs node, npm, curl and setsid.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -42,7 +42,7 @@ trap finish EXIT
 trap 'exit 130' INT TERM
 
 # The README's start, its first line that is the command alone; and the prompt's lines (first-run.sh, which
-# install-walk.sh takes too), with this command for its CLI and the fake Ollama's port.
+# install-walk.sh takes too), with this command for its CLI and the stand-in's port.
 cmd=$(sed -n 's/^ *\(npx @parcha\/agentrun\(@[^ ]*\)\{0,1\}\) *$/\1/p' "$repo/README.md" | head -n 1)
 [ -n "$cmd" ] || fail "the README's command" "README.md has no line that is npx @parcha/agentrun alone"
 # shellcheck source=packages/agentrun/test/first-run.sh
@@ -71,7 +71,7 @@ version=$($cmd --version 2>/dev/null | head -n 1)
 pass "started" "in $(($(date +%s) - t0)) s from an empty npm cache: launcher $version, the server at $base"
 
 first_run_ready node "$cmd" || fail "models ready" "$fr_why"
-pass "models ready" "server capabilities: models.ready, on the Local model, Ollama at 127.0.0.1:$port"
+pass "models ready" "server capabilities: models.ready, on the Local model at localhost:$port"
 
 first_run_agent || fail "agent made" "$fr_why"
 pass "agent made" "release-notes, the setup prompt's agent, with $cmd agents create"

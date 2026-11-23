@@ -1,10 +1,9 @@
 ---
 packages: @parcha/agentrun-serve, @parcha/agentrun, @parcha/agentrun-kernel
-kind: breaking
+kind: feature
 ---
 The server lists the models of this machine's Ollama itself, as `ollama/<tag>` on pi, with no key and no gateway. Start Ollama and its models are in capabilities, the Model picker and pi's free models within half a minute, with no restart. `OLLAMA_HOST` says where it listens, read as the ollama CLI reads it (unset: 127.0.0.1:11434; plain http to loopback alone). Requests go to Ollama's own `/api/chat` with `num_ctx` the model's trained context up to 65,536. A model without the `tools` capability takes its tools as text. They cost $0 and never count toward `AGENTRUN_FREE_MODEL_REQUESTS`, and the console shows no request limit for them. With no model key held, pi's default is the first Ollama model that calls tools; any key wins. A down or stuck Ollama lists nothing and stalls nothing.
-- Breaking: `agentrun service install --env AGENT_MODEL_API_KEY=none` is refused, and a re-install drops it from a service that has it. A service that reached Ollama through `AGENT_MODEL_BASE_URL` then gets `model_key_required`. Remove the gateway with `agentrun service install --env AGENT_MODEL_BASE_URL= --env AGENT_MODEL_GATEWAY_IDS= --env AGENT_MODEL= --env AGENT_MODEL_PRICE=`, and pick the model as `ollama/<tag>`. `--env OLLAMA_HOST=<host:port>` is new, for an Ollama off its default address.
+- `agentrun service install --env OLLAMA_HOST=<host:port>` gives the service an Ollama off its default address. A service that reaches Ollama through `AGENT_MODEL_BASE_URL` keeps working as before; under a gateway, Ollama is never asked.
 - A run's page names the model it ran on, a run on the host default included, read from its `tokens` usage line: "qwen3:8b · local (Ollama)" for an Ollama model.
 - A model without the `thinking` capability whose answer opens with `<think>` has that part as thinking up to `</think>`, so the tags stay out of the answer.
-- The setup skill's Local model step says to start Ollama, and no longer gives the service a gateway for it. The first-run walks run on a fake Ollama.
 - `CapModel.local` marks a model on the host's own machine: free, and never counted toward the free-model limit (`limitedFree`).

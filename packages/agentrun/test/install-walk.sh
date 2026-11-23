@@ -11,7 +11,7 @@
 #   install-walk.sh first-run [installer options]  the setup prompt's own lines (docs/SKILL.md), timed from the installer
 #       to a finished first run, the time said against the bar, 5 minutes (a warning over it, never a failure: it
 #       counts the runner's downloads): the installer (a service where there is a service manager,
-#       else the background), the Local model step on a fake Ollama (walk-model.mjs), `server capabilities`
+#       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
 #       until models.ready, then the release-notes agent and its first run.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
@@ -208,7 +208,7 @@ first_run_walk() {
   healthy 30
   t_install=$((SECONDS - t0))
 
-  step "2. a local model: Ollama on 127.0.0.1:11434 (walk-model.mjs, a fake one)"
+  step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
   nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
   work=$(mktemp -d)
   first_run_model "$nodebin" "$work" 11434 || die "$fr_why"
@@ -219,7 +219,7 @@ first_run_walk() {
     # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (first_run_lines checked them)
     (for pair in $fr_vars; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
   else
-    step "   Local model, the service told where Ollama listens: $fr_service"
+    step "   Local model, on the service: $fr_service"
     bash -c "$fr_service"
   fi
   healthy 30
