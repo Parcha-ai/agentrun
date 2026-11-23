@@ -1,9 +1,12 @@
 // A read with `turns: false` keeps what a listing and a total use: no answer text in its requests, nor in the cursor a
 // later read goes on from (parseHome holds every file's requests and cursors at once).
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
 import { parseHome, READERS, readSession } from "../dist/index.js";
+import { geminiAnswer, geminiFile, geminiMeta, geminiTokens, geminiUser, writeGemini } from "./gemini-fixtures.mjs";
 import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture answer words, never kept.";
@@ -79,11 +82,16 @@ test("parseHome's state (turns false) holds no prompt, title or working director
     codexTokens(openaiUsage(100, 60, 7, 3), openaiUsage(100, 60, 7, 3), 4),
   ]);
   await writeJsonl(piFile(home), [{ ...piMeta(), cwd: CWD }, piUser(PROMPT), { type: "message", timestamp: at(2), message: { role: "assistant", provider: "fixture", model: "fixture-model", content: [{ type: "text", text: WORDS }], stopReason: "stop", usage: { input: 10, output: 2 } } }]);
+  // Gemini CLI: the project's path is in the marker beside its chats; the session file holds a prompt and an answer.
+  const gemini = await writeGemini(geminiFile(home), [geminiMeta({ summary: TITLE }), geminiUser("u1", PROMPT), geminiAnswer("a1", WORDS, geminiTokens(10, 2))]);
+  await writeFile(join(home, ".gemini", "tmp", "fixture-project", ".project_root"), `${CWD}\n`);
   const state = {};
   const sessions = await parseHome(home, { state, catalog: false });
-  assert.equal(sessions.length, 3);
+  assert.equal(sessions.length, 4);
   const bytes = serialize(state);
   for (const text of [TITLE, PROMPT, CWD, WORDS]) assert.equal(bytes.includes(Buffer.from(text)), false, `the state holds no ${text}`);
   const listed = await readSession(claude, "claude-code", { turns: false });
   assert.deepEqual([listed.firstPrompt, listed.sourceTitle, listed.cwd], [PROMPT, TITLE, CWD], "a listing read from the start has them");
+  assert.equal((await readSession(gemini, "gemini", { turns: false })).cwd, CWD, "Gemini's listing has its working directory too");
+  assert.equal(JSON.stringify(sessions).includes(CWD), false, "the totals hold no working directory");
 });

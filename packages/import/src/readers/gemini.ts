@@ -157,6 +157,11 @@ function sessionOf(file: string, text: string, claimed: Set<string>, seen: Set<s
   return { session, requests };
 }
 
+const withoutCwd = (session: Session): Session => {
+  const { cwd: _cwd, ...rest } = session;
+  return rest;
+};
+
 async function read(locator: Locator, cursor?: Cursor, { turns: keep = true, seen }: ReadOptions = {}): Promise<ReadResult<"gemini", Cursor>> {
   const handle: FileHandle = await open(locator.file, "r");
   try {
@@ -168,10 +173,10 @@ async function read(locator: Locator, cursor?: Cursor, { turns: keep = true, see
     // The keys this file counted before stay its own; a key another file holds is a copy there.
     const claimed = new Set(same ? cursor.claimed : []);
     const { session, requests } = sessionOf(locator.file, text, claimed, seen ?? new Set(), keep);
-    // Where it ran is the person's own path: kept with the text, never in a listing's session or cursor.
-    const cwd = keep ? await cwdOf(locator.file) : undefined;
+    // Where it ran, as every source's listing has it (an import needs the project); the cursor holds none of it.
+    const cwd = await cwdOf(locator.file);
     if (cwd) session.cwd = cwd;
-    return { sessions: out(session, requests), cursor: { source: "gemini", dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, keep, claimed: [...claimed], session, requests }, read: Buffer.byteLength(text), resumed: same };
+    return { sessions: out(session, requests), cursor: { source: "gemini", dev: stats.dev, ino: stats.ino, size: stats.size, mtimeMs: stats.mtimeMs, keep, claimed: [...claimed], session: keep ? session : withoutCwd(session), requests }, read: Buffer.byteLength(text), resumed: same };
   } finally {
     await handle.close();
   }
@@ -194,9 +199,9 @@ async function cwdOf(file: string): Promise<string | undefined> {
     const projects = isObject(registry) && isObject(registry.projects) ? registry.projects : {};
     for (const [path, shortId] of Object.entries(projects)) if (shortId === id) return path;
   } catch {
-    // No registry, or not one: the id.
+    // No registry, or not one: none.
   }
-  return id;
+  return undefined;
 }
 
 /** Gemini CLI's own directory: GEMINI_CLI_HOME where the environment names it (the CLI's home), else the given home's. */

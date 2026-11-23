@@ -149,7 +149,7 @@ test("a broken line, and a last line still being written, are passed over", asyn
   assert.equal(line.calls, 1, "the half-written last line is not a request yet");
 });
 
-test("cwd: the project's path from the CLI's projects.json (or the .project_root marker), else the project id; none for turns false", async (t) => {
+test("cwd: the project's path from the CLI's projects.json (or the .project_root marker), else none; a listing's cursor holds none", async (t) => {
   const home = await tempHome(t);
   const messages = [geminiMeta(), geminiUser("u1", "Fixture question."), geminiAnswer("a1", "Done.", geminiTokens(1, 1))];
   const file = await writeGemini(geminiFile(home), messages);
@@ -163,8 +163,8 @@ test("cwd: the project's path from the CLI's projects.json (or the .project_root
   assert.equal(await cwd(file), "/work/fixture");
   assert.equal(await cwd(sub), "/work/fixture", "a subagent's is its project's");
   assert.equal(await cwd(second), "/work/marked", "the marker names the path itself");
-  assert.equal(await cwd(third), "unlisted", "a project in neither: its id");
-  assert.equal(await cwd(file, { turns: false }), undefined);
+  assert.equal(await cwd(third), undefined, "a project in neither: none, never the id");
+  assert.equal(await cwd(file, { turns: false }), "/work/fixture", "a listing has it, as the other sources' do: an import needs the project");
   assert.equal(serialize((await READERS.gemini.read({ file }, undefined, { turns: false })).cursor).includes(Buffer.from("/work/fixture")), false);
 });
 
