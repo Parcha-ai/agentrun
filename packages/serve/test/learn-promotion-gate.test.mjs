@@ -15,6 +15,9 @@ const flowOf = () => JSON.stringify({ v: 2, name: "answer", schemas: { In: { typ
 
 const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
 const { StoreConstraint } = await import("../dist/store/store.js");
+/** The purge gate's reads (runner/promotion.ts PurgeChecks) over a world with no learning store: every commit is on
+ *  main and holds its revision, and no writer is purged. */
+const STANDS = { record: { holds: async () => true, onMain: async () => true, writerPurged: async () => false }, holds: async () => true };
 /** A launch's learning start as a run that learns is launched with (its seed commit "s"). */
 const LEARNING = { given: [], seed: "s", section: "" };
 
@@ -65,7 +68,7 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
     command: async (runId, command) => (commands.push([runId, command.kind]), { id: `c-${commands.length}`, runId, ...command }),
   };
   const logs = [];
-  const gateOf = (now = Date.now) => promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, ...(newest ? { newest: typeof newest === "function" ? newest : async () => newest } : {}), ...(champion ? { champion } : {}) });
+  const gateOf = (now = Date.now) => promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line), now, checks: STANDS, ...(newest ? { newest: typeof newest === "function" ? newest : async () => newest } : {}), ...(champion ? { champion } : {}) });
   return { settings, created, commands, logs, gateOf, rows, launches };
 }
 
@@ -353,7 +356,7 @@ async function twoChampionsOf({ held = false, kept } = {}) {
   const texts = new Map([["commit-a", a], ["commit-b", b]]);
   const logs = [];
   const gate = promotionGate({ store: { settings, runs: { get: async () => undefined } }, agentId: "a", runId: "queued", revisionId: "rev", launch: { input: { question: "Q" }, title: "", place: { mode: "runner" }, learning: LEARNING }, context: ctx, log: (line) => logs.push(line),
-    champion: async (name, commit) => (texts.get(commit)?.name === name ? texts.get(commit) : undefined), ...(kept ? { kept: async () => kept } : {}) });
+    checks: STANDS, champion: async (name, commit) => (texts.get(commit)?.name === name ? texts.get(commit) : undefined), ...(kept ? { kept: async () => kept } : {}) });
   return { gate, a, b, da, db, logs };
 }
 
@@ -393,7 +396,7 @@ test("a saved secret straddling the cut of a disagreement text leaves no part of
   const handed = { of: "r-2", input: "short", agent: "x", outcome: "handed_back", answer: null, escalated: straddling("escalated") };
   const read = { rows: [row, handed], cost: 0, outcomes: { answered: 1, handed_back: 1, skipped_write: 0, failed: 0 }, unstarted: 0 };
   const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
-  const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => shown };
+  const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => shown, checks: STANDS };
   const decided = await decideCheck(deps, "answer", "dig", bar, read, () => true, {});
   assert.equal(decided.record.decided, "hold", JSON.stringify(decided.record));
   const everyText = (value) => (typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(everyText) : value && typeof value === "object" ? Object.values(value).flatMap(everyText) : []);
