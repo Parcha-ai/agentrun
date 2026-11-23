@@ -120,6 +120,15 @@ test("a voice's WAV length is its PCM bytes, from its data chunk's header to the
   assert.equal(voiceSeconds(edited(fmt + 16, u32le(4000 * 60))), undefined, "a byte rate that disagrees");
   assert.equal(voiceSeconds(edited(fmt + 20, [2, 0])), undefined, "a block align that disagrees");
   assert.equal(voiceSeconds(edited(fmt + 8, [0x55, 0])), undefined, "a compressed format (MP3 in a WAV)");
+  // The extensible header names its codec in a GUID: refused, as any format but integer PCM and IEEE float.
+  assert.equal(voiceSeconds(edited(fmt + 8, [0xfe, 0xff])), undefined, "WAVE_FORMAT_EXTENSIBLE");
+  // IEEE float is 32 or 64 bits a sample; integer PCM 8, 16, 24 or 32.
+  assert.equal(voiceSeconds(edited(fmt + 8, [3, 0])), undefined, "8-bit float");
+  // A second fmt chunk is not read over the first (a decoder plays by the first): the file is refused.
+  const bytes = SAMPLES.wav.bytes;
+  const second = [...ascii("fmt "), ...u32le(16), 1, 0, 8, 0, ...u32le(384_000), ...u32le(384_000 * 8), 8, 0, 8, 0];
+  const twice = new Uint8Array([...bytes.slice(0, data), ...second, ...bytes.slice(data)]);
+  assert.equal(voiceSeconds(twice), undefined, "a second fmt chunk");
   // Bytes appended after the data chunk count as voice: a decoder may play them.
   near(voiceSeconds(new Uint8Array([...SAMPLES.wav.bytes, ...new Array(4000).fill(0x80)])), 3, 1e-9, "4000 more bytes, 1 s more");
 });
