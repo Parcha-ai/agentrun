@@ -15,7 +15,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { isDeepStrictEqual } from "node:util";
 import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
@@ -328,26 +327,40 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     // the refusal, so pi's faux model echoes the page or the refusal, never a message about the call.
     const took = run.harness === "pi" ? final.startsWith(`Saw: ${run.decision === "allow" ? '{"ok":true,"url":"http://public.example/"' : "The user denied this web_fetch call."}`) : final === "Fetched once.";
     assert.ok(took, `${at}: the model took it as the call's answer: ${final}`);
+    if (run.decision === "allow") assert.equal(webFetchResults(rows), 1, `${at}: one result recorded`);
   }
   // Each pi run asked its model twice: the person's message (whose call parked and ended the turn, asking nothing more),
   // then the call's answer. A run on the in-process runner notes its requests as the runner's process, so they are
   // counted over this test's runs, all of them pi's.
   if (harnesses.every((harness) => harness === "pi")) assert.equal(notedRequests(requests).length, 2 * runs.length, `two requests a run: ${rolesOf(notedRequests(requests))}`);
-  // A read the runner lost mid-call runs again on its next claim (a lapse on a starved machine): a second dial says so
-  // in each run's attempts (run_attempts' cut and cause), shown when the count is off.
-  const dials = await dialled();
-  const once = harnesses.map(() => PAGE);
-  assert.deepEqual(dials, once, `each allowed call ran once, no denied one ran${isDeepStrictEqual(dials, once) ? "" : `; the runs' attempts: ${await attemptsOf(server, runs)}`}`);
+  await dialledAtLeastOnce(server, await dialled(), runs.filter((run) => run.decision === "allow"), "each allowed call ran, no denied one ran");
 }
 
-/** Each run's claims as run_attempts keeps them (epoch, from, cause, cut), for a failure's message. */
+/** How many results a run's Timeline `rows` record for its web_fetch calls (by each call's tool_use_id). */
+const webFetchResults = (rows) => {
+  const calls = new Set(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "web_fetch").map((row) => row.tool_use_id));
+  return rows.filter((row) => row.kind === "tool_result" && calls.has(row.tool_use_id)).length;
+};
+
+/** `dials` (each URL the fake network dialled) against the allowed web_fetch calls of `allowed` (runs, by runId), each to
+ *  PAGE: every allowed call dialled at least once, and no other call (a denied one) ever. An allowed read is at least
+ *  once (tool-gate.ts): a read the runner lost mid-call (its claim lapsed on a starved machine) runs again on its next
+ *  claim, so a dial past one per allowed call must be a lapse in that run's attempts (run_attempts cut lease_lapse). The
+ *  attempts (epoch, from, cause, cut) are shown whenever the count is off. */
+async function dialledAtLeastOnce(server, dials, allowed, what) {
+  const attempts = await attemptsOf(server, allowed);
+  const lapses = Object.values(attempts).flat().filter((attempt) => attempt.cut === "lease_lapse").length;
+  const shown = `dialled ${JSON.stringify(dials)}; the allowed runs' attempts: ${JSON.stringify(attempts)}`;
+  assert.ok(dials.every((dial) => dial === PAGE), `${what}: every dial is an allowed call's page: ${shown}`);
+  assert.ok(dials.length >= allowed.length, `${what}: each allowed call dialled at least once: ${shown}`);
+  assert.ok(dials.length - allowed.length <= lapses, `${what}: a dial past one per allowed call is a lost claim's read run again: ${shown}`);
+}
+
+/** Each run's claims as run_attempts keeps them (epoch, from, cause, cut), by run id. */
 async function attemptsOf(server, runs) {
   const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
   try {
-    const each = await Promise.all(runs.map(async (run) => [`${run.decision} on ${run.harness}`, (await store.runAttempts.forRun(run.runId)).map(({ epoch, from, cause, cut }) => ({ epoch, from, cause, cut }))]));
-    return JSON.stringify(Object.fromEntries(each));
-  } catch (error) {
-    return `unread (${error.message})`;
+    return Object.fromEntries(await Promise.all(runs.map(async (run) => [run.runId, (await store.runAttempts.forRun(run.runId)).map(({ epoch, from, cause, cut }) => ({ epoch, from, cause, cut }))])));
   } finally {
     await store.close();
   }
@@ -409,10 +422,11 @@ test("an ask answered after the server restarted while the run was parked still 
   }
   for (const run of runs) assert.equal((await answerAgain(run.runId, run.approval, { decision: "allow" })).status, 204);
   for (const run of runs) {
-    const { message } = await resumed(again.api, run.runId);
+    const { message, rows } = await resumed(again.api, run.runId);
     assert.match(message, /^web_fetch ran once you allowed it\. Its result:\n\{"ok":true/, run.harness);
+    assert.equal(webFetchResults(rows), 1, `${run.harness}: one result recorded`);
   }
-  assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
+  await dialledAtLeastOnce(again, await dialled(), runs, "each ran, the cancelled one never");
 });
 
 // SKIP (follow-up #2371): written for the per-run process #2244 removed. Its codex run parks now, but nothing kills the
@@ -929,7 +943,8 @@ test("an allow written before a person's message stands: the call runs once, the
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const row = rows.find((r) => r.kind === "tool_approval_requested");
   assert.doesNotMatch(row.summary, /^Declined by your message/, "the allow stands: first answer wins");
-  assert.deepEqual((await dialled()).filter((dial) => dial === PAGE), [PAGE], "and its call ran once");
+  assert.equal(webFetchResults(rows), 1, "its call's result recorded once");
+  await dialledAtLeastOnce(server, (await dialled()).filter((dial) => dial === PAGE), [{ runId }], "and its call ran");
   assert.ok(rows.some((r) => r.kind === "user_message" && r.text === "Never mind."), "the message is the run's, as a message");
   const late = await answer(runId, id, { decision: "deny" });
   assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "allow" }]);

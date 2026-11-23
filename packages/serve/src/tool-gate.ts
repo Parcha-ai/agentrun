@@ -20,7 +20,7 @@
 // call and the run goes needs_input with the pending approval. On an answer the loop runs the approved call once, through
 // the journal, and the session goes on with its result. A read the runner lost mid-call (its claim lapsed before the
 // call's end was recorded) may run again on its next claim; a call with a side effect never does: that claim answers it
-// interrupted (test/adapter-pi-approved-call-lapse.test.mjs). One call waits at a time: another asked meanwhile is refused.
+// interrupted (test/adapter-approved-call-lapse.test.mjs). One call waits at a time: another asked meanwhile is refused.
 //
 // The answer: POST /v2/runs/{id}/approvals/{approval_id} { decision: "allow" | "deny", note? } -> 204. The first answer
 // wins; the same answer again is 204, a conflicting one 409. Only the owner's password session answers (server.ts), never
