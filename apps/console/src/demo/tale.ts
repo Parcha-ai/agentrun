@@ -16,7 +16,7 @@ export type DemoAgent = {
   /** Days ago it was made, and its saved revisions' notes, oldest first. */
   madeDaysAgo: number; notes: (string | null)[];
   /** A connected agent: a Claude Code or Codex setup on a developer's machine, run from here as it is set up there. */
-  native?: { runtime: "claude-code" | "codex"; project: string; selector: { kind: "project" } | { kind: "agent"; name: string }; version: string; skills: string[]; mcp: string[] };
+  native?: { runtime: "claude-code" | "codex"; project: string; selector: { kind: "project" } | { kind: "agent"; name: string }; version: string; skills: string[]; mcp: string[]; disconnected?: true; verifiedAt?: number };
   /** What a learning agent holds beyond the Refund desk's full story: its corrections, and a workflow it is checking. */
   learned?: { corrections: string; checking?: { name: string; description: string; readme: string; workflow: object } };
   /** An agent made or edited in the demo: its definitions as saved, oldest first, in place of the story's. */

@@ -8,7 +8,7 @@
 // (`/capabilities`, shown as a server with every model and tool ready, without its secrets' names or its switches) and the
 // templates it ships with (`/templates`, the bundled ones only).
 import { DAY } from "./tale";
-import { DEMO_REFUSAL } from "./mode";
+import { DEMO_REFUSAL, demoPicked } from "./mode";
 import type { GradeBody, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
 import { createSuggestions } from "./suggestions";
 import { createWorld, hex, type World } from "./world";
@@ -58,7 +58,7 @@ export function demoCapabilities(real: Record<string, unknown>): Record<string, 
 /** The demo's `fetch`. `real`: the server's, for the three reads the demo leaves to it; `world`: the story's state. */
 export function createDemoFetch({ real, world = createWorld() }: { real: typeof fetch; world?: World }): typeof fetch {
   let templates: TemplateView[] | null = null;
-  const suggestions = createSuggestions({ opened: world.opened, clock: world.clock, makeAgent: (definition) => world.createAgent(definition) });
+  const suggestions = createSuggestions({ opened: world.opened, clock: world.clock, makeAgent: (definition) => world.createAgent(definition), holdScan: world.holdScan });
   const handle = async (method: string, path: string, q: URLSearchParams, body: Record<string, unknown>, init: RequestInit | undefined, input: RequestInfo | URL): Promise<Response> => {
     if (path.startsWith("/auth/")) return real(input, init);
     if (method === "GET" && path === "/capabilities") {
@@ -109,7 +109,10 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
         return json(saved, 200, { etag: saved.home_etag });
       }
       if (sub === "native" && get) return json({ native: agent.definition.native ?? null });
-      if (sub === "native" && method === "POST" && (rest[0] === "verify" || rest[0] === "disconnect")) return json({ native: world.agent(id)?.native_status ?? null });
+      if (sub === "native" && method === "POST" && (rest[0] === "verify" || rest[0] === "disconnect")) {
+        const native = rest[0] === "disconnect" ? world.disconnectNative(id) : world.verifyNative(id);
+        return native ? json({ native }) : notFound(`native connection for agent ${id}`);
+      }
       if ((sub === "archive" || sub === "unarchive") && method === "POST") return json(world.archiveAgent(id, sub === "archive"));
       if (sub === "current" && method === "POST") { const a = world.setCurrent(id, String(body.revision ?? "")); return a ? json(a, 200, { etag: a.home_etag }) : notFound(`revision ${String(body.revision ?? "")}`); }
       if (sub === "revisions" && get) return json({ revisions: world.revisions(id), next_cursor: null });
@@ -118,7 +121,13 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
         return json({ runs: p.items, next_cursor: p.next_cursor });
       }
       if (sub === "runs" && method === "POST") {
-        const run = world.start(id, (body.input && typeof body.input === "object" ? body.input : {}) as Record<string, unknown>);
+        if (agent.native_status && !agent.native_status.connected) return refusal(409, "conflict", "This agent is disconnected: connect it again to run it.");
+        // The files picked for the run, kept in the page by demo mode's upload, go into its inputs/.
+        const ids = Array.isArray(body.file_ids) ? body.file_ids.filter((x): x is string => typeof x === "string") : [];
+        const files = ids.map((fid) => { const f = demoPicked.get(fid); return f ? { id: fid, ...f } : null; });
+        const missing = ids.find((_, i) => !files[i]);
+        if (missing) return refusal(422, "input_invalid", `No file ${missing}: pick it again.`, { field: "file_ids" });
+        const run = world.start(id, (body.input && typeof body.input === "object" ? body.input : {}) as Record<string, unknown>, "person", undefined, files.filter((f) => f !== null));
         return run ? json(run, 202, { location: `/v2/runs/${run.run_id}` }) : notFound(`agent ${id}`);
       }
       if (sub === "source" && get) return json({ enabled: false, moved: false, state: "needs_connection", blockers: [] });
@@ -254,7 +263,7 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
     if (get && path === "/computers") return json({ kinds: [], paired: [] });
     if (method === "POST" && path === "/workflows/validate") return json({ ok: true, issues: [], warnings: [] });
     // A file picked for a run is kept in the page (demo/mode's upload), so letting go of one is done at once.
-    if (method === "DELETE" && root === "files" && id) return new Response(null, { status: 204 });
+    if (method === "DELETE" && root === "files" && id) { demoPicked.drop(id); return new Response(null, { status: 204 }); }
     return get ? notFound(`route ${path}`) : refused();
   };
 

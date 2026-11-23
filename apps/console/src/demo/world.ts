@@ -8,6 +8,7 @@ import type { Stats } from "@/lib/mission";
 import type { RunGraph } from "@/lib/runGraph";
 import type { LearnedItem } from "@/lib/learning";
 import type { Firing, GradeAnswer, GradeBody, LearningAudits, LearningCost, LearningLoop, Promotions, RaiseAnswer, Run, RunLearningRead, TemplateApply, TemplateApplied, TemplateView, RunTrace, RunUsage, TimelineRow, Trigger, TriggerCreate, TriggerInput, TriggerSecret, WorkflowRevisions } from "@/lib/v2";
+import { nextFiring } from "./schedule";
 import { type Beat, type GateAnswer, lengthOf, play, requestsOf, tokensFor, traceOf, usageOf, usageRow } from "./script";
 import { AGENTS, CORRECTIONS_MD, DAY, type DemoAgent, HOUR, heroes, history, LEARNED_README, MIN, MODELS, REFUND_WORKFLOW, type RunStory, TAKEOVER_DAYS_AGO } from "./tale";
 
@@ -41,8 +42,16 @@ type Held = {
   /** A workflow run paused now (since when), and how long its earlier pauses held it. */
   pausedAt?: number;
   pausedMs?: number;
+  /** Where a workflow run's own clock stood when it was stopped (`stopAt` is when, by the wall clock). */
+  stoppedAt?: number;
   grade?: GradeAnswer;
+  /** The files a person picked for the run, at `inputs/<path>`. */
+  files?: RunInputFile[];
+  /** The words a wrong grade gave, which its correction round keeps. */
+  gradeLabel?: string;
 };
+/** A file a person picked for a run, kept in the page: its upload id, its name and what it holds. */
+export type RunInputFile = { id: string; path: string; text: string };
 type Later = { kind: "steer" | "follow_up" | "resume"; start: number; beats: Beat[]; usd: number; stopAt?: number; cancelled?: boolean };
 
 /** What each sample graph's decisions cost in all: a workflow run's cost is its graph's. */
@@ -54,6 +63,8 @@ const FULL_STORY = "refund-desk";
 const LEARNING_WORKFLOW = "refund-decision";
 const LEARNING_DIGEST = hex("refund-decision:champion", 64);
 const PENDING_WORKFLOW = "partial-refund-shipping";
+/** How long a wrong grade's correction round takes: the run's learning reads `reflecting`, then `merged`. */
+export const CORRECTION_MS = 3_000;
 
 /** Replaces the sample merchant's name in a sample graph, so each run's graph names the merchant its title does. */
 function renamed<T>(value: T, from: string, to: string): T {
@@ -118,8 +129,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const agent = agents.get(h.story.agent)!;
     const merchant = typeof h.story.input.merchant === "string" ? h.story.input.merchant : null;
     // A run stopped before its end stays as it stood then, whenever it is read.
-    const stopped = h.stopAt !== undefined && h.stopAt < h.start + GRAPH_MS[kind];
-    const at = stopped ? h.stopAt! : graphClock(h, now);
+    const stopped = h.stoppedAt !== undefined && h.stoppedAt < h.start + GRAPH_MS[kind];
+    const at = stopped ? h.stoppedAt! : graphClock(h, now);
     const sample = kind === "batch" ? batchRunAt(Math.max(0, at - h.start)) : kind === "kyb" ? (h.story.review ? kybRun() : kybClean(kybRun())) : juryRun();
     const named = kind === "kyb" && merchant ? renamed(sample, "Corvane Analytics Inc.", merchant) : kind === "jury" && merchant ? renamed(sample, "Saltmarsh Outdoor Gear Co.", merchant) : sample;
     const g = retimed(named, h.start);
@@ -152,7 +163,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     } else {
       const length = GRAPH_MS[story.graph!];
       requests = story.graph === "batch" ? 20 : 4;
-      if (h.stopAt !== undefined && h.stopAt < h.start + length) { status = h.cancelled ? "cancelled" : "completed"; state = "idle"; endedAt = h.stopAt; usd = whole * ((h.stopAt - h.start) / length); }
+      if (h.stoppedAt !== undefined && h.stoppedAt < h.start + length) { status = h.cancelled ? "cancelled" : "completed"; state = "idle"; endedAt = h.stopAt!; usd = whole * ((h.stoppedAt - h.start) / length); }
       else if (graphClock(h, now) >= h.start + length) { status = "completed"; state = "idle"; endedAt = h.start + length + (h.pausedMs ?? 0); }
       else usd = whole * Math.max(0, (graphClock(h, now) - h.start) / length);
     }
@@ -174,9 +185,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const ended = endedAt !== null;
     const learns = !!agent.learning && ended && status === "completed";
     const merged = story.id === "demo-run-refund-by-agent";
+    // A wrong grade opens a correction round on the run's learning: it reflects a moment, then keeps the correction.
+    const round = learns && h.grade?.feedback === "correction" ? Date.parse(h.grade.graded_at) : null;
+    const reflecting = round !== null && now < round + CORRECTION_MS;
+    const kept = h.gradeLabel ? `Kept a correction from your grade: ${h.gradeLabel}` : "Kept a correction from your grade.";
     const run: Run = {
       run_id: story.id, agent_id: agent.id, agent_version: versionOf(agent), revision: revisionOf(agent), kind: agent.kind, sha: null,
-      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: [], place: { mode: "runner" }, claim: null,
+      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: h.files?.map((f) => f.id) ?? [], place: { mode: "runner" }, claim: null,
       created_at: iso(h.start), updated_at: iso(endedAt ?? Math.min(now, h.start + 60 * MIN)), ended_at: ended ? iso(endedAt!) : null,
       result: status === "completed" ? { output: story.output ?? null, final_answer: finalAnswer } : null,
       error: status === "failed" && story.fails && !after.length ? { code: story.fails.code, message: story.fails.message, retryable: false } : null,
@@ -188,11 +203,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       workflow: story.path && story.path !== "agent" ? { name: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, repick: null } : null,
       approvals: "ask", archived_at: h.archivedAt ? iso(h.archivedAt) : null, imported_from: null,
       trigger: story.trigger ? { id: story.trigger, firing_key: `${story.trigger}:${story.id}` } : null, labels: {},
-      learning: learns ? { state: merged ? "merged" : "dropped", reason: merged ? null : "empty", detail: merged ? "Kept one correction from this run: quote the policy line in the note." : "Nothing new to keep from this run.", at: iso(endedAt! + 4_000) } : null,
+      learning: round !== null ? (reflecting ? { state: "reflecting", reason: null, detail: "Reading your grade into its corrections.", at: iso(round) } : { state: "merged", reason: null, detail: kept, at: iso(round + CORRECTION_MS) })
+        : learns ? { state: merged ? "merged" : "dropped", reason: merged ? null : "empty", detail: merged ? "Kept one correction from this run: quote the policy line in the note." : "Nothing new to keep from this run.", at: iso(endedAt! + 4_000) } : null,
       recordings: [], poll_after_ms: ended ? 0 : 1000, last_progress_at: ended ? null : iso(Math.min(now, h.start + 60 * MIN)),
     };
-    // Nothing moves a run that has ended, but for an archive, which is kept beside it.
-    if (ended) h.settled = { ...run, archived_at: null };
+    // Nothing moves a run that has ended, but for an archive, which is kept beside it, and a correction round under way.
+    if (ended && !reflecting) h.settled = { ...run, archived_at: null };
     return run;
   };
 
@@ -223,7 +239,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   const nativeOf = (a: DemoAgent) => (a.native ? {
     runtime: a.native.runtime, project: a.native.project, selector: a.native.selector, machine_id: "mch_demo_laptop", version: a.native.version, model: a.model, fingerprint: hex(`${a.id}:setup`, 64),
     configuration: [{ path: a.native.runtime === "codex" ? "AGENTS.md" : "CLAUDE.md", sha256: hex(`${a.id}:config`, 64) }], skills: a.native.skills, mcp_servers: a.native.mcp,
-    state: "ready" as const, issues: [], capabilities: { launch: true, learning: false, workflows: false as const, approval: "native" as const, usage: true }, connected: true, verified_at: iso(opened - 2 * HOUR),
+    state: "ready" as const, issues: [], capabilities: { launch: true, learning: false, workflows: false as const, approval: "native" as const, usage: true }, connected: !a.native.disconnected, verified_at: iso(a.native.verifiedAt ?? opened - 2 * HOUR),
   } : undefined);
   const definitionOf = (a: DemoAgent, version = versionOf(a)): Agent["definition"] => {
     if (a.saved) return { ...a.saved[version - 1], id: a.id, version, name: a.name } as Agent["definition"];
@@ -302,7 +318,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     return {
       agents: list.length,
       runs: { total: store.length, active: store.filter((v) => !v.run.ended_at && v.run.status !== "input_required").length, needs_input: store.filter((v) => v.run.status === "input_required").length, failed: store.filter((v) => v.run.status === "failed").length, needs_review: store.filter((v) => v.run.review).length, status_unknown: 0 },
-      per_agent: list.map((a) => ({ agent_id: a.id, name: a.name, runs: store.filter((v) => v.run.agent_id === a.id).length })),
+      // Every agent with a run counts, the server's own suggestion scanner too, which is not listed.
+      per_agent: [...agents.values()].filter((a) => list.includes(a) || store.some((v) => v.run.agent_id === a.id)).map((a) => ({ agent_id: a.id, name: a.name, runs: store.filter((v) => v.run.agent_id === a.id).length })),
       cost: { usd: Number(store.reduce((n, v) => n + (v.run.cost.usd ?? 0), 0).toFixed(4)), basis: "estimate", unknown_runs: 0 },
       archived: { agents: 0, runs: all().filter((h) => h.archivedAt).length },
       analytics: {
@@ -331,7 +348,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   const briefAt = opened - 47 * MIN;
   let certificatesNext = opened + 9 * HOUR;
   while (![1, 2, 3, 4, 5].includes(new Date(certificatesNext).getUTCDay())) certificatesNext += DAY;
-  const TRIGGERS: { id: string; name: string; agent: string; source: Trigger["source"]; input: Record<string, unknown>; madeDaysAgo: number; nextIn?: number; secretAt?: number; target?: Trigger["target"]; catchup?: number; maxActive?: number | null }[] = [
+  const TRIGGERS: { id: string; name: string; agent: string; source: Trigger["source"]; input: Record<string, unknown>; madeDaysAgo: number; nextIn?: number; nextAt?: number | null; secretAt?: number; target?: Trigger["target"]; catchup?: number; maxActive?: number | null }[] = [
     { id: "trg-demo-helpdesk-tickets", name: "New support ticket", agent: "support-triage", source: { kind: "webhook", signature: "standard" }, input: { content: "${body.subject}\n\n${body.text}" }, madeDaysAgo: 57 },
     { id: "trg-demo-helpdesk-refunds", name: "Refund request filed", agent: "refund-desk", source: { kind: "webhook", signature: "standard", accept: [{ event: "refund.requested" }] }, input: { content: "Refund request ${body.id}: ${body.buyer} asks for $${body.amount} back on order ${body.order}." }, madeDaysAgo: 40 },
     { id: "trg-demo-weekly-brief", name: "Weekly risk brief", agent: "weekly-risk-brief", source: { kind: "schedule", cron: cronAt(briefAt, String(new Date(briefAt).getUTCDay())), timezone: "UTC" }, input: { content: "Write this week's risk brief." }, madeDaysAgo: 36, nextIn: 7 * DAY - 47 * MIN },
@@ -345,14 +362,23 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const fired = newestFirst(now).filter((h) => h.story.trigger === id);
     return fired.slice(0, 25).map((h) => ({ key: `${id}:${h.story.id}`, by: h.story.id.startsWith("demo-run-now-") ? "manual" : by, nominal_at: iso(h.start), status: "started", at: iso(h.start), run_id: h.story.id, reason: null, error: null }));
   };
+  /** When a schedule fires next: the story's own time for one it tells, else worked out from what was saved, again once
+   *  that time has passed. */
+  const nextOf = (t: (typeof TRIGGERS)[number], now: number): number | null => {
+    if (t.source.kind !== "schedule") return null;
+    if (t.nextAt === undefined && t.nextIn !== undefined) t.nextAt = opened + t.nextIn;
+    if (t.nextAt === undefined || (t.nextAt !== null && t.nextAt <= now)) t.nextAt = nextFiring(t.source, now, opened - t.madeDaysAgo * DAY);
+    return t.nextAt;
+  };
   const triggerOf = (t: (typeof TRIGGERS)[number], now = clock()): Trigger => {
     const firings = firingsOf(t.id, now);
     const made = opened - t.madeDaysAgo * DAY;
+    const next = nextOf(t, now);
     return {
       id: t.id, name: t.name, enabled: enabled.get(t.id) ?? true, source: t.source,
       target: t.target ?? { kind: "start_run", agent_id: t.agent, input: t.input },
       catchup_window_s: t.catchup ?? 3600, max_active_runs: t.maxActive ?? null, failures_in_a_row: 0, disabled: null,
-      next_at: t.nextIn && (enabled.get(t.id) ?? true) ? iso(opened + t.nextIn) : null, last_run_id: firings[0]?.run_id ?? null,
+      next_at: next !== null && (enabled.get(t.id) ?? true) ? iso(next) : null, last_run_id: firings[0]?.run_id ?? null,
       created_at: iso(made), updated_at: iso(made), last_firing: firings[0] ?? null,
       ...(t.source.kind === "webhook" ? { hook_url: `https://agentrun.larkspur.example/v2/hooks/${t.id}`, secret: { name: `trigger:${t.id}`, set: true, source: "saved", changed_at: iso(t.secretAt ?? made) } } : {}),
     } as Trigger;
@@ -540,7 +566,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const run = viewOf(h, now);
     if (!run.learning) return null;
     const merged = run.learning.state === "merged";
-    const graded = h.grade ? { ...h.grade, feedback_status: h.grade.feedback ? "ended" as const : null } : undefined;
+    const graded = h.grade ? { ...h.grade, feedback_status: h.grade.feedback ? (run.learning.state === "reflecting" ? "running" as const : "ended" as const) : null } : undefined;
     return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
   };
 
@@ -551,7 +577,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const content = typeof h.story.input.content === "string" ? h.story.input.content : null;
     const saved = new Set(rowsOf(h, now).map((r) => r.path).filter((p): p is string => !!p));
     const own = Object.fromEntries(Object.entries(h.story.files ?? {}).filter(([path]) => saved.has(path)));
-    return { ...(content ? { [INPUT_FILE]: content } : {}), ...own };
+    const picked = Object.fromEntries((h.files ?? []).map((f) => [`inputs/${f.path}`, f.text]));
+    return { ...(content ? { [INPUT_FILE]: content } : {}), ...picked, ...own };
   };
 
   // ---- What a person does ----
@@ -559,7 +586,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   let made = 0;
   /** Starts a run of `agentId` now, as a start from the playground or a trigger's Run now would: the agent's sample
    *  story, played live from this moment, opening with what was asked. */
-  const start = (agentId: string, input: Record<string, unknown>, by: "person" | "trigger" = "person", trigger?: string): Run | null => {
+  const start = (agentId: string, input: Record<string, unknown>, by: "person" | "trigger" = "person", trigger?: string, files: RunInputFile[] = []): Run | null => {
     const a = agents.get(agentId);
     if (!a) return null;
     const said = typeof input.content === "string" && input.content.trim() ? input.content.trim() : null;
@@ -568,7 +595,9 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     // What was asked shows at once, as the run's first row.
     const beats = sample.beats?.map((b, i) => (i === 0 && b.k === "user" ? { ...b, wait: 0, text: said ?? b.text } : b));
     const story: RunStory = { ...sample, id: `demo-run-now-${++made}`, title: said ? said.split("\n")[0].slice(0, 80) : sample.title, startAgo: 0, input: Object.keys(input).length ? input : sample.input, ...(beats ? { beats } : {}), answered: [], hero: undefined, trigger: by === "trigger" ? trigger : undefined };
-    return viewOf(hold(story, clock()));
+    const h = hold(story, clock());
+    if (files.length) h.files = files;
+    return viewOf(h);
   };
   /** Makes an agent from a definition, as the builder or the playground's create would: kept in this page's memory. */
   const createAgent = (definition: Record<string, unknown>): Agent => {
@@ -585,10 +614,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const a = agents.get(id);
     if (!a) return null;
     a.saved ??= a.notes.map((_, i) => definitionOf(a, i + 1) as Record<string, unknown>);
-    a.saved.push({ ...a.saved.at(-1), ...definition });
+    // An edit is made on the definition that is current, and becomes the current one, whichever revision was before.
+    a.saved.push({ ...a.saved[versionOf(a) - 1], ...definition });
     a.notes = [...a.notes, note];
+    a.current = undefined;
     if (typeof definition.description === "string") a.description = definition.description;
     if (typeof definition.model === "string") a.model = definition.model;
+    if (typeof definition.harness === "string") a.harness = definition.harness;
     a.learning = !!a.saved.at(-1)!.learning;
     return agentOf(a);
   };
@@ -598,6 +630,28 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     { k: "think", text: "Demo mode calls no model, so this run is a stand-in for what the agent would do." },
     { k: "final", text: "This is a sample answer. Demo mode calls no model and starts nothing on your server. Turn demo mode off in Settings → Demo to run this agent for real." },
   ];
+  // ---- The suggestion scanner: the server's own agent, whose runs read a connected repository for work an agent could take ----
+
+  const SCANNER: DemoAgent = { id: "suggestion-scanner", name: "Suggestion scanner", description: "Reads a connected repository for work an agent could take, and suggests an agent for each.", kind: "agentic", harness: "pi", model: MODELS.default, tools: ["read", "bash"], instructions: "Read the repository for work people do by hand that an agent could take, and suggest an agent for each, with the lines that show it.", madeDaysAgo: 30, notes: [null] };
+  // Not one of the agents listed: the server keeps it for its scans.
+  agents.set(SCANNER.id, SCANNER);
+  let scanRuns = 0;
+  /** A scan's run, from `start` for about `ms`: what the suggestions page links to as the scan's run. */
+  const holdScan = ({ repo, commit, start: at, ms, found }: { repo: string; commit: string; start: number; ms: number; found: { path: string; line: number; quote: string; title: string }[] }): { run_id: string; endsAt: number } => {
+    const step = Math.round(ms / 5);
+    const said = `Scan ${repo} at ${commit.slice(0, 7)} for work an agent could take.`;
+    const beats: Beat[] = [
+      { k: "user", text: said, wait: 0 },
+      { k: "think", text: "Looking for work people do by hand: TODOs that say so, review queues, tickets answered by looking something up.", wait: step },
+      { k: "tool", tool: "bash", label: "Ran rg -n \"by hand|seller sees nothing|TODO\" --type ts", input: "rg -n \"by hand|seller sees nothing|TODO\" --type ts", result: found.map((f) => `${f.path}:${f.line}: ${f.quote}`).join("\n"), wait: step, ms: Math.round(step / 2) },
+      ...found.map((f): Beat => ({ k: "tool", tool: "read", label: `Read ${f.path}`, input: f.path, result: `${f.line}: ${f.quote}`, wait: Math.round(step / (2 * found.length)), ms: Math.round(step / (2 * found.length)) })),
+      { k: "final", text: `Found ${found.length} suggestions in ${repo}:\n${found.map((f) => `- ${f.title} (${f.path}:${f.line})`).join("\n")}`, wait: step },
+    ];
+    const id = `demo-run-scan-${++scanRuns}`;
+    hold({ id, agent: SCANNER.id, title: `Scan ${repo}`, startAgo: 0, input: { content: said }, beats, usd: 0.0412 }, at);
+    return { run_id: id, endsAt: play(beats, { start: at, now: Number.MAX_SAFE_INTEGER }).lastAt };
+  };
+
   // ---- A person's other writes: each changes only this page's memory, as the server would have changed its store ----
 
   const later = (h: Held, x: Omit<Later, "start">) => { (h.later ??= []).push({ ...x, start: clock() }); delete h.settled; };
@@ -623,8 +677,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const h = held.get(id);
     if (!h) return null;
     const run = viewOf(h);
-    const learns = !!agents.get(h.story.agent)?.learning;
+    // A run that learns takes a wrong grade's words into its corrections, in a round of its own.
+    const learns = !!run.learning;
+    const label = body.correct ? "" : (body.label ?? "").trim();
     h.grade = { run_id: id, correct: body.correct, source: body.source ?? "feedback", graded_at: iso(clock()), path: (run.path === "handed_back" || run.path === "workflow" ? run.path : "agent"), workflow: run.workflow?.name ?? null, workflow_digest: run.workflow?.digest ?? null, feedback: !body.correct && learns ? "correction" : null, ...(body.expected ? { expected: body.expected } : {}) };
+    h.gradeLabel = label || undefined;
+    if (!body.correct && learns && label) corrections.set(h.story.agent, `${correctionsOf(h.story.agent).trimEnd()}\n- ${label}\n`);
     delete h.settled;
     return h.grade;
   };
@@ -670,7 +728,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!agent || !agents.has(agent)) return null;
     const name = body.name?.trim() || `${agents.get(agent)!.name} trigger`;
     const id = triggerId(name);
-    TRIGGERS.push({ id, name, agent, source: body.source as Trigger["source"], input: target.kind === "start_run" ? target.input : {}, madeDaysAgo: (opened - clock()) / DAY, target, catchup: body.catchup_window_s, maxActive: body.max_active_runs ?? null, secretAt: clock() });
+    TRIGGERS.push({ id, name, agent, source: body.source as Trigger["source"], input: target.kind === "start_run" ? target.input ?? {} : {}, madeDaysAgo: (opened - clock()) / DAY, target, catchup: body.catchup_window_s, maxActive: body.max_active_runs ?? null, secretAt: clock() });
     enabled.set(id, body.enabled ?? true);
     const made = triggerOf(TRIGGERS.at(-1)!);
     return made.source.kind === "webhook" ? { ...made, signing_secret: signingSecret(id) } : made;
@@ -680,12 +738,15 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!t) return null;
     if (body.name !== undefined) t.name = body.name;
     if (body.enabled !== undefined) enabled.set(id, body.enabled);
-    if (body.source) t.source = body.source as Trigger["source"];
+    if (body.source) { t.source = body.source as Trigger["source"]; t.nextIn = undefined; t.nextAt = undefined; }
     if (body.target) { t.target = body.target as Trigger["target"]; if (t.target.kind === "start_run") { t.agent = t.target.agent_id; t.input = t.target.input; } }
     if (body.catchup_window_s !== undefined) t.catchup = body.catchup_window_s;
     if (body.max_active_runs !== undefined) t.maxActive = body.max_active_runs;
     return triggerOf(t);
   };
+  /** What Run now starts a run with: the trigger's saved input, less a value that fills from a request (`${body.…}`),
+   *  which a run by hand has none of. With nothing left, the agent's sample story says what was asked. */
+  const firedInput = (input: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(input).filter(([, v]) => !(typeof v === "string" && v.includes("${"))));
   const deleteTrigger = (id: string): boolean => { const i = TRIGGERS.findIndex((x) => x.id === id); if (i < 0) return false; TRIGGERS.splice(i, 1); enabled.delete(id); return true; };
   const rotateTriggerSecret = (id: string): TriggerSecret | null => {
     const t = TRIGGERS.find((x) => x.id === id);
@@ -697,7 +758,11 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   /** Applies a bundled template, as the server does: makes its agent (or a new revision of the one named), with no
    *  trigger made. A dry run says what would happen and makes nothing. */
   const applyTemplate = (t: TemplateView, body: TemplateApply): TemplateApplied => {
-    const definition = { version: 1, name: t.display_name ?? t.name, description: t.description, instructions: t.description, harness: t.harness?.[0] ?? "pi", tools: t.tools ?? [], skills: t.skills, ...(t.learning ? { learning: true } : {}) };
+    // The install form's choices: a model of the package's (and the harness it runs on) or one of the owner's, and approvals.
+    const choice = t.model?.choices?.find((c) => c.id === body.overrides?.choice);
+    const model = body.overrides?.model ?? choice?.model;
+    const approvals = body.overrides?.approvals;
+    const definition = { version: 1, name: t.display_name ?? t.name, description: t.description, instructions: t.description, harness: choice?.harness ?? t.harness?.[0] ?? "pi", tools: t.tools ?? [], skills: t.skills, ...(t.learning ? { learning: true } : {}), ...(model ? { model } : {}), ...(approvals ? { approvals } : {}) };
     const onto = body.agent_id && agents.has(body.agent_id) ? body.agent_id : null;
     const base = { template: t.id, version: t.version, servers: {}, triggers: [], warnings: [] };
     if (body.dry_run) return { ...base, agent_id: onto ?? "", revision_id: null, revision_version: onto ? agents.get(onto)!.notes.length + 1 : 1, agent_change: onto ? "updated" : "made" };
@@ -718,6 +783,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   /** Connects a setup as an agent, run from here as it is set up there. */
   const connectNative = (body: { project: string; runtime: "claude-code" | "codex"; selector?: { kind: "project" | "agent" | "profile"; name?: string } }) => {
     const selector = body.selector?.kind === "agent" && body.selector.name ? { kind: "agent" as const, name: body.selector.name } : { kind: "project" as const };
+    // The same setup connected before, and disconnected since, is connected again: its agent and its runs are kept.
+    const again = list.find((x) => x.native && x.native.runtime === body.runtime && x.native.project === body.project && JSON.stringify(x.native.selector) === JSON.stringify(selector));
+    if (again?.native) {
+      again.native.disconnected = undefined;
+      again.native.verifiedAt = clock();
+      return { agent: agentOf(again), native: nativeOf(again)! };
+    }
     const folder = body.project.split(/[\\/]/).filter(Boolean).at(-1) ?? "project";
     const name = `${folder} (${body.runtime === "codex" ? "Codex" : "Claude Code"})`;
     const t = targetOf(body.runtime, body.project, selector);
@@ -727,8 +799,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     a.saved = undefined;
     a.instructions = undefined;
     const agent = agentOf(a);
-    return { agent, native: { ...nativeOf(a)!, verified_at: iso(clock()) } };
+    a.native.verifiedAt = clock();
+    return { agent, native: nativeOf(a)! };
   };
+  /** Disconnects a connected agent: no run of it starts until it is connected again; its setup and runs are kept. */
+  const disconnectNative = (id: string) => { const a = agents.get(id); if (!a?.native) return null; a.native.disconnected = true; return nativeOf(a)!; };
+  /** Checks a connected agent's setup again: still as it was, so it is ready. */
+  const verifyNative = (id: string) => { const a = agents.get(id); if (!a?.native) return null; a.native.verifiedAt = clock(); return nativeOf(a)!; };
 
   const answer = (id: string, a: Omit<GateAnswer, "at">): boolean => {
     const h = held.get(id);
@@ -740,7 +817,13 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const h = held.get(id);
     if (!h || viewOf(h).ended_at) return false;
     const last = (h.later ?? []).filter((x) => x.kind !== "steer").at(-1);
-    if (last) { last.stopAt = clock(); last.cancelled = cancelled; } else { h.stopAt = clock(); h.cancelled = cancelled; }
+    const now = clock();
+    if (last) { last.stopAt = now; last.cancelled = cancelled; } else { h.stopAt = now; h.cancelled = cancelled; }
+    // A workflow run stops where its graph stands, which a pause held back: its pause ends with it.
+    if (!last && h.story.graph) {
+      h.stoppedAt = graphClock(h, now);
+      if (h.pausedAt !== undefined) { h.pausedMs = (h.pausedMs ?? 0) + now - h.pausedAt; delete h.pausedAt; }
+    }
     delete h.settled;
     return true;
   };
@@ -765,11 +848,11 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     stats: statsOver,
     triggers: () => TRIGGERS.map((t) => triggerOf(t)), trigger: (id: string) => { const t = TRIGGERS.find((x) => x.id === id); return t ? triggerOf(t) : null; }, firings: (id: string) => firingsOf(id),
     setTriggerEnabled: (id: string, on: boolean) => { if (!enabled.has(id)) return null; enabled.set(id, on); return triggerOf(TRIGGERS.find((x) => x.id === id)!); },
-    fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, {}, "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
+    fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, firedInput(t.input), "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
     learning: (id: string) => (agents.has(id) ? learningOf(id) : null),
     createAgent, saveDefinition, learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
     learningFile: learningFileOf, workflowAction,
-    applyTemplate, discoverNative, connectNative, start, answer, stop, archive, message, grade, raiseCap, setPaused, archiveAgent, setCurrent, writeCorrections, createTrigger, updateTrigger, deleteTrigger, rotateTriggerSecret,
+    holdScan, applyTemplate, discoverNative, connectNative, disconnectNative, verifyNative, start, answer, stop, archive, message, grade, raiseCap, setPaused, archiveAgent, setCurrent, writeCorrections, createTrigger, updateTrigger, deleteTrigger, rotateTriggerSecret,
     /** A sample page image by its run-relative path, as a data URL. */
     page: (path: string) => fixturePages[path] ?? null,
   };

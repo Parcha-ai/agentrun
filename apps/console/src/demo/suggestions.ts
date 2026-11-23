@@ -68,12 +68,18 @@ const SEEDS: Seed[] = [
   },
 ];
 
-/** The demo's suggestions. `makeAgent` makes the agent a created suggestion becomes, as the world makes any agent. */
-export function createSuggestions({ opened, clock, makeAgent }: { opened: number; clock: () => number; makeAgent: (definition: Record<string, unknown>) => { agent_id: string } }) {
+/** A scan's run, held by the world as any run is: `holdScan` makes it, from `start` for about `ms`, and says when it ends. */
+export type HoldScan = (scan: { repo: string; commit: string; start: number; ms: number; found: { path: string; line: number; quote: string; title: string }[] }) => { run_id: string; endsAt: number };
+
+/** The demo's suggestions. `makeAgent` makes the agent a created suggestion becomes, as the world makes any agent; each
+ *  scan is a run the world holds (`holdScan`), so the page's link to the scan's run opens it. */
+export function createSuggestions({ opened, clock, makeAgent, holdScan }: { opened: number; clock: () => number; makeAgent: (definition: Record<string, unknown>) => { agent_id: string }; holdScan: HoldScan }) {
   const status = new Map<string, { status: Suggestion["status"]; decidedAt: number | null; created: Suggestion["created"] }>();
-  let scan: Scan = { run_id: "demo-run-scan-1", agent_id: "suggestion-scanner", started_at: at(opened - 2 * 86_400_000), status: "completed", ended_at: at(opened - 2 * 86_400_000 + 4 * 60_000), app: "larkspur-agentrun", commit: COMMIT, found: SEEDS.length, dropped: [], already_decided: 0, error: null };
+  const found = SEEDS.map((s) => ({ path: s.evidence[0].path, line: s.evidence[0].line, quote: s.evidence[0].quote, title: s.title }));
+  const scanRun = (start: number, ms: number) => holdScan({ repo: REPO, commit: COMMIT, start, ms, found });
+  const first = scanRun(opened - 2 * 86_400_000, 4 * 60_000);
+  let scan: Scan = { run_id: first.run_id, agent_id: "suggestion-scanner", started_at: at(opened - 2 * 86_400_000), status: "completed", ended_at: at(first.endsAt), app: "larkspur-agentrun", commit: COMMIT, found: SEEDS.length, dropped: [], already_decided: 0, error: null };
   let scanEndsAt: number | null = null;
-  let scans = 1;
   let pulls = 2240;
 
   const scanNow = (): Scan => (scanEndsAt !== null && clock() >= scanEndsAt ? { ...scan, status: "completed", ended_at: at(scanEndsAt), found: SEEDS.length, already_decided: [...status.values()].filter((s) => s.status !== "open").length } : scan);
@@ -118,9 +124,9 @@ export function createSuggestions({ opened, clock, makeAgent }: { opened: number
     if (repo !== REPO) return null;
     const running = scanNow().status === "running";
     if (!running) {
-      scans += 1;
-      scan = { ...scan, run_id: `demo-run-scan-${scans}`, started_at: at(clock()), status: "running", ended_at: null, found: null };
-      scanEndsAt = clock() + 6_000;
+      const run = scanRun(clock(), 6_000);
+      scan = { ...scan, run_id: run.run_id, started_at: at(clock()), status: "running", ended_at: null, found: null };
+      scanEndsAt = run.endsAt;
     }
     return { repo, run_id: scan.run_id, agent_id: scan.agent_id, status: "running" as const, already_running: running };
   };
