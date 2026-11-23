@@ -530,6 +530,79 @@ test("capped with room, a new session's reserve is held, and nothing is said or 
   assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `its reserve, one stretch: ${paid.heldUsd()}`);
 });
 
+/** A browser call through `spend`'s cap that opens a new session: its first charge (3 s at Browserbase) is committed under
+ *  the call, and `inside()` runs once that charge is seen, while the call still holds. The call's result. */
+async function callOpening(spend, inside = () => {}) {
+  let listener;
+  spend.watch({ observeCommits: (observer) => ((listener = (publication) => observer.advance(publication)), { detach: () => {} }) });
+  const tool = spend.capped({ name: "snapshot", execute: async () => {
+    const entries = [];
+    await spend.onCharge({ conversationId: 1, tag: "ar-new", provider: "browserbase", at: new Date(Date.now()).toISOString(), seconds: 3, usd: 3 * 0.12 / 3600, final: false, state: "priced" }, { appendEntry: async (_, entry) => void entries.push(entry) }, { callId: "c1" });
+    listener({ seq: 1, changes: entries.map((value) => ({ type: "entry", value })) });
+    await inside();
+    return { content: [{ type: "text", text: "seen" }] };
+  } });
+  return tool.execute({}, { conversationId: 1, callId: "c1", commit: async () => undefined }, undefined);
+}
+
+test("capped, a call that fits with its two stretches opens a new session: its reserve is held in the room the call kept for it, never refused, and nothing pauses", async (t) => {
+  // A $0.025 cap: the call holds two stretches ($0.018), one for its own time and one for the reserve of a session it
+  // opens. Asked beside the call's whole hold, the reserve ($0.009) would make $0.027 and be refused for room the run has.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const paid = await toolLedger(0.025);
+  const logs = [];
+  const paused = [];
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, (line) => logs.push(line), { paid, pause: async (refusal) => void paused.push(refusal) });
+  // The call runs on a while after its session opened (20 ms in real time), as a call does.
+  const out = await callOpening(spend, () => new Promise((resolve) => setTimeout(resolve, 20)));
+  await spend.ledgerIdle();
+  assert.ok(!JSON.stringify(out).includes("spend_cap_reached"), JSON.stringify(out));
+  assert.deepEqual([logs, paused], [[], []], "the reserve is not refused, and the run is not paused");
+  assert.ok(Math.abs(paid.heldUsd() - 0.009) < 1e-9, `the session's reserve is held, one stretch: ${paid.heldUsd()}`);
+  assert.ok(Math.abs(paid.spentUsd() - 0.0001) < 1e-9, `the call's charge is booked: ${paid.spentUsd()}`);
+});
+
+test("a new session is never held nowhere: its call's two stretches hold it until the call's hold is given back, and the call returns only once its reserve is held", async (t) => {
+  // A ledger whose asks and settles each land 20 ms after they are made (writes, in real time), so nothing here leans on
+  // the order of microtasks.
+  t.mock.timers.enable({ apis: ["Date"], now: T0 });
+  const inner = await toolLedger(1);
+  const stretch = 270 * 0.12 / 3600;
+  const later = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const events = [];
+  const paid = {
+    admit: async (request) => {
+      events.push(["asked", request.id]);
+      await later();
+      const out = await inner.admit(request);
+      events.push(["held", request.id, inner.heldUsd()]);
+      return out;
+    },
+    settle: async (id, usd, options) => {
+      await later();
+      const out = await inner.settle(id, usd, options);
+      events.push(["landed", id, options?.givenBack === true, inner.heldUsd()]);
+      return out;
+    },
+  };
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => {}, undefined, { paid });
+  const during = [];
+  await callOpening(spend, async () => {
+    await later();
+    during.push(inner.heldUsd());
+  });
+  // The moment the call returns is the run's next chance to spend (its next request, its next call).
+  const returned = inner.heldUsd();
+  assert.ok(during[0] >= stretch - 1e-12, `while the call runs its own hold covers the session: ${during[0]}`);
+  assert.ok(returned >= stretch - 1e-12 && Math.abs(returned - 0.009) < 1e-9, `once the call returns its session's reserve is held: ${returned} (${JSON.stringify(events)})`);
+  const reserve = events.find(([what, id]) => what === "asked" && id.startsWith("browser:this browser session's reserve#"))?.[1];
+  const givenBack = events.findIndex(([what, id, back]) => what === "landed" && id.startsWith("c1#") && back);
+  const asked = events.findIndex(([what, id]) => what === "asked" && id === reserve);
+  assert.ok(givenBack >= 0 && givenBack < asked, `the reserve is asked once the call's hold is given back, never beside it: ${JSON.stringify(events)}`);
+  assert.deepEqual(events.slice(givenBack + 1, asked).filter(([what]) => what === "asked"), [], `no other step is asked between the two: ${JSON.stringify(events)}`);
+  await spend.ledgerIdle();
+});
+
 // ---- pi 1.5's commit observers detach on a throw (observeCommits) ----
 
 /** pi 1.5's observeCommits as the Session runs it: an `advance` that throws is reported, the observer is detached and
