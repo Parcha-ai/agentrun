@@ -631,21 +631,28 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
  *  (a held last revision is never trimmed into handing the champion back), and a replaying revision's newest record (what
  *  its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer revision would start a second
  *  check while its runs run, and its verdict would never land). The rest is the newest records. The champion is kept as
- *  read with the refused records skipped (`refused`, refusedOf) and as read without; when a refused read failed
- *  (`unread`), nothing is dropped. */
+ *  read with the refused records skipped (`refused`, refusedOf), as read without, and the one promoted before the one
+ *  `refused` leaves (a purge landing after the gate answered refuses that one: the one before still serves); when a
+ *  refused read failed (`unread`), nothing is dropped. */
 export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NOTHING_REFUSED): PromotionRecord[] {
   // A refused read that failed leaves the champion unknown: nothing is dropped until a read tells.
   if (items.length <= PROMOTIONS_KEPT || refused.unread) return [...items];
   const keep = new Set<number>();
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
-    // The champion as read with the refused records skipped, and as read without: both stay.
-    for (const skip of refused.keys.size ? [NOTHING_REFUSED, refused] : [NOTHING_REFUSED]) {
-      const live = (one: PromotionRecord) => one.workflow === workflow && !isRefused(skip, one);
+    // The champion as read without the refused records skipped, as read with them, and the one promoted before that:
+    // all stay.
+    const passes: ((one: PromotionRecord) => boolean)[] = [() => false, (one) => isRefused(refused, one)];
+    for (let pass = 0; pass < passes.length; pass++) {
+      const skip = passes[pass]!;
+      const live = (one: PromotionRecord) => one.workflow === workflow && !skip(one);
       const last = items.findLast((one) => live(one) && one.decided === "promote")?.digest;
       if (last === undefined) continue;
       keep.add(items.findLastIndex((one) => live(one) && one.digest === last && one.decided === "promote"));
       keep.add(items.findLastIndex((one) => live(one) && one.digest === last));
+      // The champion before the one `refused` leaves: a purge that lands between this write's ask of the gate and its
+      // write refuses that one, and the guard (the records read) never sees it, so its readers serve this one (#3458).
+      if (pass === 1) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
     }
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
