@@ -1335,6 +1335,45 @@ const GITHUB_CONNECTION = closed({ connected: { const: true }, app_id: { type: "
 /** GET /integrations/github: whether a GitHub App is connected, always a 200 (not connected is an answer, never a 404 a
  *  browser logs as an error), and the App when it is. */
 const GITHUB_STATUS = { oneOf: [closed({ connected: { const: false } }, "No GitHub App is connected to this server: Connect GitHub in Settings."), GITHUB_CONNECTION] };
+
+/** Suggested agents (suggestions.ts): their routes and answers. */
+const SUGGESTIONS_MARK = { "x-agentrun-serve": "suggestions/1" };
+const SUGGESTION_ID = { name: "suggestion_id", in: "path", required: true, schema: { type: "string", pattern: "^sg_[0-9a-f]{20}$" }, description: "A suggestion's id: the same repository and key always give the same one." };
+const SUGGESTED_LINE = closed({ path: { type: "string", description: "From the repository's root." }, line: { type: "integer", minimum: 1 }, quote: { type: "string", description: "That line, as the scan read it." }, url: { type: "string", format: "uri", description: "The line on GitHub, at the commit the scan read." } });
+const SUGGESTED_INPUT = closed({ name: { type: "string" }, type: { enum: ["string", "number", "integer", "boolean"] }, description: { type: "string" }, required: { type: "boolean" } });
+const SUGGESTED_OUTPUT = closedWith({ name: { type: "string" }, type: { enum: ["string", "number", "integer", "boolean", "string_list"] }, description: { type: "string" } }, { enum: { type: "array", items: { type: "string" }, description: "The values a choice the app branches on takes." } });
+const SUGGESTION = closed({
+  id: { type: "string" },
+  repo: { type: "string", description: "owner/name" },
+  key: { type: "string", description: "The job's kebab-case name: the created agent's package name, its folder `.agentrun/agents/<key>` and its branch `agentrun/<key>`." },
+  status: { enum: ["open", "created", "discarded"] },
+  title: { type: "string" }, summary: { type: "string" }, why: { type: "string" }, impact: { enum: ["high", "medium", "low"] },
+  evidence: { type: "array", items: SUGGESTED_LINE },
+  agent: closedWith({ name: { type: "string" }, description: { type: "string" }, inputs: { type: "array", items: SUGGESTED_INPUT }, output: { type: "array", items: SUGGESTED_OUTPUT }, tools: { type: "array", items: { enum: ["web_search", "web_fetch"] } }, tier: { enum: ["fast", "balanced", "strong"] } }, { instructions: { type: "string", description: "The agent's instructions: on GET /suggestions/{suggestion_id} alone." } }),
+  integration: closed({ language: { enum: ["typescript", "javascript", "python", "other"] }, path: { type: "string", description: "The client file the pull request adds." }, call_site: closed({ path: { type: "string" }, line: { type: "integer", minimum: 1 }, note: { type: "string" }, url: { type: "string", format: "uri" } }) }),
+  scan: closed({ run_id: { type: "string" }, commit: { type: ["string", "null"] }, at: { type: "string", format: "date-time" } }),
+  decided_at: { type: ["string", "null"], format: "date-time" },
+  created: { oneOf: [{ type: "null" }, closed({ agent_id: { type: "string" }, template_id: { type: "string", description: "The imported template the agent was applied from: github:<owner>/<repo>/.agentrun/agents/<key>." }, branch: { type: ["string", "null"] }, pull_request: { oneOf: [{ type: "null" }, closed({ number: { type: "integer" }, url: { type: "string", format: "uri" } })] }, pull_error: { type: ["string", "null"], description: "Why the pull request was not opened though the agent was made: a create sent again opens it." } })] },
+});
+const SUGGESTION_READINESS = closed({
+  ready: { type: "boolean", description: "Whether this server's GitHub App can open the pull request now, as GitHub says." },
+  reason: { enum: [null, "not_connected", "not_installed", "github_failed", "permission_missing"] },
+  message: { type: ["string", "null"] },
+  missing: { type: "array", items: { type: "string" }, description: "The permissions the installation lacks, as `contents: write`." },
+  install_url: { type: ["string", "null"], format: "uri", description: "Where the App is installed on more repositories." },
+  permissions_url: { type: ["string", "null"], format: "uri", description: "The App's permissions page on GitHub, where its owner adds what is missing." },
+  installation_url: { type: ["string", "null"], format: "uri", description: "The installation's page, where its account accepts new permissions." },
+});
+const SUGGESTION_WHOLE = { ...SUGGESTION, required: [...SUGGESTION.required, "files", "problems", "github"], properties: { ...SUGGESTION.properties, files: { type: "array", items: closed({ path: { type: "string" }, content: { type: "string" } }), description: "The files a create adds to the repository, rendered now." }, problems: { type: "array", items: { type: "string" }, description: "Why the package would not check (a create is refused); empty when it checks." }, github: SUGGESTION_READINESS } };
+const SUGGESTIONS_LIST = closed({
+  github: closed({ connected: { type: "boolean" }, app: { type: ["string", "null"] }, installations: { type: "array", items: closed({ account: { type: "string" } }) }, install_url: { type: ["string", "null"], format: "uri" } }),
+  repositories: { type: "array", items: closed({
+    repo: { type: "string" },
+    scan: closed({ run_id: { type: "string" }, agent_id: { type: "string" }, started_at: { type: "string", format: "date-time" }, status: { enum: ["running", "waiting", "completed", "failed", "cancelled"], description: "`waiting`: the scan's run stopped without ending (at its cost cap or asking for input, `input_required`, or paused): it is resumed or cancelled on its run's page, and a new scan starts a new run." }, ended_at: { type: ["string", "null"], format: "date-time" }, app: { type: ["string", "null"], description: "What the scan says the app does." }, commit: { type: ["string", "null"] }, found: { type: ["integer", "null"] }, dropped: { type: "array", items: { type: "string" }, description: "Each suggestion of the answer that did not check, and why." }, already_decided: { type: "integer", description: "Suggestions of the answer left out because a person had decided them." }, error: { type: ["string", "null"] } }),
+    counts: closed({ open: { type: "integer" }, created: { type: "integer" }, discarded: { type: "integer" } }),
+  }) },
+  suggestions: { type: "array", items: SUGGESTION },
+});
 /** templates/1: template packages, listed and applied (templates.ts; the format is templates/README.md). */
 const TEMPLATE_MARK = { "x-agentrun-serve": "templates/1" };
 /** template-computer/1: a package's computer preference list, and what this server would pick of it. */
@@ -1379,7 +1418,7 @@ const TEMPLATE = closed({
   },
   effort: { type: ["string", "null"], description: "Its thinking level, the definition's `thinking`." },
   tools: { type: ["array", "null"], items: { type: "string" }, description: "The tools its agent is granted; null: those a new agent gets." },
-  checkout: { enum: ["pull_request", null], description: "What the server checks out in each run's folder before its first turn, set as the agent definition's `checkout` at apply: `pull_request`, the pull request the run's GitHub event names, at its head, in `repo/`, fetched with a read-only token the agent never holds. Null: none." },
+  checkout: { enum: ["pull_request", "repository", null], description: "What the server checks out in each run's folder before its first turn, set as the agent definition's `checkout` at apply: `pull_request`, the pull request the run's GitHub event names, at its head, in `repo/`; `repository`, the head of the default branch of the repository the run names; each fetched with a read-only token the agent never holds. Null: none." },
   tool_policy: { type: ["object", "null"], additionalProperties: false, required: ["bash"], properties: { bash: BASH_POLICY }, description: "A policy by tool, bash's alone: apply writes it as the tool's policy in the agent's tool_settings, so the tool gate refuses any command it does not allow, whatever bash's permission. Null: none.", "x-agentrun-serve": "bash-policy/1" },
   computer: { type: ["array", "null"], items: { enum: [...COMPUTER_ENTRIES] }, description: "The computers it prefers, in order: `shell`, a computer that gives the agent a shell here (Docker's sandbox, or Archil's serverless exec on the runner in Mode 2); `none`, no shell. Apply takes the first this server meets now and writes it as the agent's `computer`; with `none`, the shell tools in `tools` are not granted, said in a `computer` warning. Null: where this server puts a new agent.", ...TEMPLATE_COMPUTER_MARK },
   needs: { ...NEEDS, type: ["array", "null"], description: "The programs its agent's sandbox must have on its PATH, or the libraries its code loads by their pip or npm names (`python-pptx`, `pptxgenjs`) (the manifest's `needs`, read only beside `computer: [shell]`). Apply writes them onto the sandbox it picks as the agent's `computer.needs`, which each run checks in its box before its first model request; where the shell here is no sandbox (Archil's serverless exec, or none), apply is refused (409) in words naming them and `AGENTRUN_DOCKER_IMAGE`. They name no image: a Docker box's is the server's `AGENTRUN_DOCKER_IMAGE`. Null: none.", "x-agentrun-serve": "template-needs/1" },
@@ -2940,7 +2979,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     post: {
       operationId: "connectGitHub", tags: ["local"], summary: "Start Connect GitHub: the app-manifest form the console posts to GitHub",
       description: "GitHub's app-manifest flow, which makes the server's one GitHub App. Answers the form the console auto-submits: `action` (GitHub's new-App page, under `org` when given, with `state` on it) and `manifest` (a field of that form, as JSON): a name GitHub lets the person edit, the server's public URL, its hook `/v2/hooks/github`, its callback and its setup URL, the App's permissions (pull requests write, contents, metadata and issues read) and events (pull_request, issue_comment, release). `state` is random, used once, good for an hour, and bound to the browser that started it by a cookie on the callback's path; GitHub reads it from `action`'s URL, and the form posts only `manifest`. 409 github_no_public_url (\"GitHub can't reach this server: set its public URL first\") with no public URL (AGENTRUN_PUBLIC_URL); 409 github_already_connected (\"This server already has a GitHub App. Disconnect it first.\"); 409 github_wrong_origin (\"Open this server at <public URL> to connect GitHub.\", `details.public_url` that URL, for the console's link) when the request came to another address than the public URL, where GitHub sends the browser back: nothing is started.",
-      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." } } } } } },
+      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { org: { type: "string", pattern: "^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$", description: "The GitHub organization to make the App under; absent, the signed-in GitHub user." }, contents: { enum: ["read", "write"], description: "The App's Contents permission: read (the default), or write, which suggested agents' pull requests need (they add files on a new branch). Nothing else is widened.", "x-agentrun-serve": "suggestions/1" } } } } } },
       responses: { "200": json(closed({ action: { type: "string", format: "uri" }, manifest: { type: "object", description: "GitHub's app manifest, posted as the form's `manifest` field." }, state: { type: "string" } }), "The form to post to GitHub."), ...errors(400, 401, 403, 409, 415, 422, 429, 500) },
       ...GITHUB_MARK,
       "x-agentrun-browser-only": "Its state is bound by a cookie to the browser that posts the form to GitHub, which sends that browser back to the callback: Connect GitHub runs in the console.",
@@ -2964,6 +3003,69 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "302": { description: "To the console's GitHub settings: `github=connected`, or `github=error&reason=installation_unverified`." }, ...errors(429, 500) },
       ...GITHUB_MARK,
       "x-agentrun-browser-only": "GitHub sends the browser here once the App is installed; it takes no token, and it checks the cookie the callback set in that browser.",
+    },
+  },
+  "/integrations/github/repositories": {
+    get: {
+      operationId: "listGitHubRepositories", tags: ["local"], summary: "The repositories this server's GitHub App is installed on",
+      description: "Each installation's repositories, as GitHub lists them now (GET /installation/repositories with a token of that installation holding metadata read alone, revoked after), sorted by name, at most 500 (`truncated` past that). An installation GitHub did not list is in `unread` with why. 409 github_not_connected with no App.",
+      responses: { "200": json(closed({ repositories: { type: "array", items: closedWith({ full_name: { type: "string" }, private: { type: "boolean" }, account: { type: "string" }, installation: { type: "integer" } }, { default_branch: { type: "string" }, description: { type: "string" } }) }, truncated: { type: "boolean" }, unread: { type: "array", items: closed({ account: { type: "string" }, why: { type: "string" } }) } }), "The repositories."), ...errors(401, 409, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions": {
+    get: {
+      operationId: "listSuggestions", tags: ["local"], summary: "Suggested agents: each repository's scan and the agents it suggests",
+      description: "Whether GitHub is connected, each repository scanned (its newest scan: running, or what was read of its answer), and its suggestions: open and created by default (`status` picks open, created, discarded or all), open first, then by impact. A scan that ended is read here once: each suggestion of the agent-scout's answer is checked field by field (a path inside the repository, a client path its language's and outside `.github/`, typed inputs and answer), and one that does not check is dropped and listed with why. A newer scan replaces the open suggestions of the one before; a decided one (created or discarded) stays as decided, and the next scan is told not to suggest it again.",
+      parameters: [{ name: "repo", in: "query", required: false, schema: { type: "string" }, description: "owner/name: one repository's alone." }, { name: "status", in: "query", required: false, schema: { enum: ["open", "created", "discarded", "all"] } }],
+      responses: { "200": json(SUGGESTIONS_LIST, "Suggested agents."), ...errors(401, 422, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions/scans": {
+    post: {
+      operationId: "scanForSuggestions", tags: ["local"], summary: "Scan a repository for places its app needs an agent",
+      description: "Starts a run of the bundled agent-scout template's agent (applied here the first time, then reused) on `repo`: the server checks the head of its default branch out read-only in the run's folder (`checkout: repository`, with the GitHub App's contents-read token, or anonymously), and the run answers at most five suggestions. Its first message lists the suggestions already decided on the repository, so none comes back. 202 with the run; 200 with the scan still running, when one is. The repository's scan is reserved in the store before the run starts, on every server sharing it: a second scan sent while one is starting is 409 home_busy (retryable), and starts nothing. What the apply or the start refuses is the answer (409 agent_not_runnable with no model key, say), and takes the reservation back.",
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "owner/name, or its https://github.com URL." } } } } } },
+      responses: { "200": json(closed({ repo: { type: "string" }, run_id: { type: "string" }, agent_id: { type: "string" }, status: { const: "running" }, already_running: { type: "boolean" } }), "The scan already running."), "202": json(closed({ repo: { type: "string" }, run_id: { type: "string" }, agent_id: { type: "string" }, status: { const: "running" }, already_running: { type: "boolean" } }), "The scan started."), ...errors(400, 401, 409, 415, 422, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions/{suggestion_id}": {
+    get: {
+      operationId: "getSuggestion", tags: ["local"], summary: "One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it",
+      description: "The suggestion with its agent's instructions; `files`, the files a create pushes (its package's `agent.md` and `output.schema.json` under `.agentrun/agents/<key>/`, and the client at `integration.path`), rendered now from its checked fields; `problems`, why its package would not check; and `github`, whether this server's GitHub App can open its pull request now, read from GitHub (the installation that covers the repository and its permissions), with what is missing and the pages that fix it.",
+      parameters: [SUGGESTION_ID, { name: "name", in: "query", required: false, schema: { type: "string", minLength: 3, maxLength: 60 }, description: "The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters." }],
+      responses: { "200": json(SUGGESTION_WHOLE, "The suggestion."), ...errors(401, 404, 422, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions/{suggestion_id}/discard": {
+    post: {
+      operationId: "discardSuggestion", tags: ["local"], summary: "Discard a suggested agent: it goes away, and later scans leave it out",
+      description: "Open to discarded (a discarded one answers as it is). 409 suggestion_decided for a created one, whose pull request is closed on GitHub instead; 409 home_busy while a create of it runs.",
+      parameters: [SUGGESTION_ID],
+      responses: { "200": json(SUGGESTION, "Discarded."), ...errors(401, 404, 409, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions/{suggestion_id}/restore": {
+    post: {
+      operationId: "restoreSuggestion", tags: ["local"], summary: "Bring a discarded suggestion back (an undo)",
+      description: "Discarded to open (an open one answers as it is). 409 suggestion_decided for a created one.",
+      parameters: [SUGGESTION_ID],
+      responses: { "200": json(SUGGESTION, "Open again."), ...errors(401, 404, 409, 429, 500) },
+      ...SUGGESTIONS_MARK,
+    },
+  },
+  "/suggestions/{suggestion_id}/create": {
+    post: {
+      operationId: "createSuggestedAgent", tags: ["local"], summary: "Create a suggested agent: a branch with its package and client, the agent made here, and a pull request",
+      description: "Checks the package rendered from the suggestion as an imported one is checked (422 with each problem), then reads the GitHub App's installation on the repository: 409 github_not_connected, 409 github_not_installed (`details.install_url`), or 409 github_permission_missing (`details.missing`, `permissions_url`, `installation_url`) when it lacks Contents or Pull requests write; nothing is written. Then, with one installation token narrowed to the repository (contents and pull requests write, metadata read; revoked after): the files are committed over the default branch's head on a new branch `agentrun/<key>` (409 github_file_exists when one is already there: the pull request only adds files); the package is applied here as the imported template `github:<owner>/<repo>/.agentrun/agents/<key>` at that commit (a refusal, such as 409 agent_not_runnable, deletes the branch and makes nothing); and the pull request is opened, naming the agent's id and the variables the client reads. 201 with the suggestion, `created` holding the agent, the branch and the pull request, and the apply's `warnings`. A created suggestion answers 200 as it is; one whose agent was made and whose pull request failed (502 github_failed, `details.agent_id`) opens only the pull request when sent again. A create claims the suggestion in the store before it writes to GitHub, on every server sharing it: 409 home_busy (retryable) while another create of it runs; a claim older than 15 minutes, left by a server that stopped, is taken over. 409 suggestion_decided for a discarded one.",
+      parameters: [SUGGESTION_ID],
+      requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { name: { type: "string", minLength: 3, maxLength: 60, description: "The agent's name, in place of the suggestion's." } } } } } },
+      responses: { "200": json({ ...SUGGESTION, required: [...SUGGESTION.required, "warnings"], properties: { ...SUGGESTION.properties, warnings: { type: "array", items: { type: "object" } } } }, "Created already."), "201": json({ ...SUGGESTION, required: [...SUGGESTION.required, "warnings"], properties: { ...SUGGESTION.properties, warnings: { type: "array", items: { type: "object" } } } }, "Created: the agent, its branch and its pull request."), ...errors(401, 404, 409, 415, 422, 429, 500), "502": { description: "`github_failed`: GitHub refused or did not answer a step; with `details.agent_id` when the agent was made and only its pull request failed (send the create again to open it).", headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } } },
+      ...SUGGESTIONS_MARK,
     },
   },
   "/settings/mcp-servers/oauth/client.json": {
@@ -3846,7 +3948,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       repick: { type: "boolean", default: false, description: "`true`: a learned workflow compiled from now on re-picks its answer's quotes from the pages its run fetched. When a quote in its first answer is in none of those pages, its one re-pick writes the answer again from the pages themselves (each sent as data, told it is untrusted text from the web and never instructions, with no tools), not from its compact notes alone. It is read when a draft is committed, so a workflow already kept is unchanged until its next compile. It reaches a re-pick of one model step, in the workflow or in the composed workflow that writes its answer; any other re-pick is kept as compiled, and the server's log says so. An agent whose workflows run through an SDK bridge ignores it. `false` or absent: the re-pick reads its compact notes and its draft." },
       repick_max_chars: { type: "integer", minimum: 1, maximum: REPICK_MAX_CHARS_MAX, default: REPICK_MAX_CHARS_DEFAULT, description: "The most characters of state a re-pick over the pages sends its model: past it, the longest strings (the pages) are cut first, each to one length and marked where it was cut. Its cost is the served run's, under the run's cost cap like every model request of the run. Read with `repick`, at each compile." },
     } }], default: false, description: "Whether an agentic revision's runs learn: `true`, its owner's corrections and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `agree_on`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, `repick`, `repick_max_chars`, each optional: one left out is its default; `true` is every default); `false`, nothing. A run that learns starts from what its agent has learned, its corrections.md whole in its instructions under `# Learned` and its learned workflows behind its learned_workflow tool; once its job is due, it is asked one compile turn that writes the job as a learned workflow, checked and committed. Kept when a definition says so, true, false or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
-    checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
+    checkout: { enum: ["pull_request", "repository", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `repository` (suggestions/1): the repository the run names (its start's `repo`, else the first https://github.com/<owner>/<repo> its first message names), at the head of its default branch, one commit deep, detached, in `repo/` (ref `repo/head`), its files listed one a line in `repo/.git/agentrun-files` for an agent with no shell; fetched as below. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
     max_requests: { type: "integer", minimum: 0, description: "The most requests on free models (a catalog price of all zeros, which a dollar cap cannot stop) each of the agent's runs makes, below the server's own limit (`limits.free_model_requests`, AGENTRUN_FREE_MODEL_REQUESTS): a run stops at the lower of the two. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 20-request limit for free models.\" (the number is the limit it stopped at). It counts what the server's limit counts; a paid request never counts. Above 0 sets it, 0 clears it, and an edit that leaves it out keeps the agent's. A template sets it from its manifest's `budget.max_requests`.", "x-agentrun-serve": "maxrequests/1" },
   },
   AgentCreate: {

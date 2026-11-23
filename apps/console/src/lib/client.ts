@@ -8,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -442,7 +442,20 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     githubConnection: () => call<GitHubStatus>("GET", "/integrations/github"),
     /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
      *  github_no_seal_key, in the server's words. */
-    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    connectGitHub: (org?: string, contents?: "write") => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: { ...(org ? { org } : {}), ...(contents ? { contents } : {}) } }),
+    /** The repositories the App is installed on, as GitHub lists them now. 409 github_not_connected with no App. */
+    githubRepositories: () => call<GitHubRepositories>("GET", "/integrations/github/repositories"),
+    /** Suggested agents: each scanned repository and its suggestions (open and created). */
+    listSuggestions: (repo?: string) => call<SuggestionsList>("GET", `/suggestions${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),
+    /** Starts a scan of a repository (or answers the one still running). */
+    scanRepository: (repo: string) => call<ScanStarted>("POST", "/suggestions/scans", { body: { repo } }),
+    /** `name`: the agent's name a create would be sent; the files come rendered with it. */
+    getSuggestion: (id: string, name?: string) => call<SuggestionDetail>("GET", `/suggestions/${encodeURIComponent(id)}${name ? `?name=${encodeURIComponent(name)}` : ""}`),
+    discardSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/discard`, { body: {} }),
+    restoreSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/restore`, { body: {} }),
+    /** Pushes the agent's package and client on a new branch, makes the agent here and opens the pull request. 409
+     *  github_permission_missing (details: missing, permissions_url, installation_url) before anything is written. */
+    createSuggestedAgent: (id: string, name?: string) => call<SuggestionCreated>("POST", `/suggestions/${encodeURIComponent(id)}/create`, { body: name ? { name } : {} }),
     /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
     disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),

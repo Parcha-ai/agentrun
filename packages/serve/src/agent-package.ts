@@ -319,7 +319,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
     ...(plain ? { tools: plain } : {}), ...(mcp.length ? { mcp } : {}),
     ...(typeof bash === "string" && plain?.includes("bash") ? { tool_policy: { bash } } : {}),
     ...(computers ? { computer: computers } : {}), ...(needs ? { needs } : {}),
-    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" } : {}),
+    ...(definition.checkout === "pull_request" || definition.checkout === "repository" ? { checkout: definition.checkout } : {}),
     ...(inputs ? { inputs } : {}), ...(secrets.length ? { secrets } : {}),
     ...(cost !== undefined ? { budget: { per_run_usd: cost, ...(requests !== undefined ? { max_requests: requests } : {}) } } : {}),
     ...(learning !== undefined ? { learning } : {}),

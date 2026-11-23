@@ -3,9 +3,10 @@ import { Github } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
-import { Input } from "@/components/ui/field";
+import { Checkbox, Input } from "@/components/ui/field";
 import { type Client, ClientError } from "@/lib/client";
 import { githubFormAction, type GitHubReturn, githubReturnWords } from "@/lib/github";
+import { takeReturn } from "@/lib/suggestions";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
 import type { GitHubConnection, GitHubDisconnected } from "@/lib/v2";
@@ -30,6 +31,8 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
   const [connection, setConnection] = useState<GitHubConnection | null | undefined>(undefined);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [org, setOrg] = useState("");
+  // Contents write, for suggested agents' pull requests: asked for only when ticked.
+  const [write, setWrite] = useState(false);
   const [busy, setBusy] = useState(false);
   // The form to GitHub, once the start is in: the browser leaves with it.
   const [opening, setOpening] = useState<{ action: string; manifest: string } | null>(null);
@@ -48,8 +51,14 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
     catch (e) { setLoadError(e instanceof Error ? e.message : String(e)); }
   }, [v2]);
   useEffect(() => { void read(); }, [read]);
-  // The way back from GitHub is said here once; the address keeps no query.
-  useEffect(() => { if (returned) history.replaceState(null, "", `${location.pathname}${location.search}#/settings/github`); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // The way back from GitHub is said here once; the address keeps no query. Connected from another page (Suggested
+  // agents), the browser goes on there.
+  useEffect(() => {
+    if (!returned) return;
+    const next = returned.ok ? takeReturn() : undefined;
+    if (next) location.hash = next;
+    else history.replaceState(null, "", `${location.pathname}${location.search}#/settings/github`);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (opening) form.current?.submit(); }, [opening]);
 
   const connect = async () => {
@@ -57,7 +66,7 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
     starting.current = true;
     setBusy(true); setSaid(null); setOpenAt(null); setDisconnected(null);
     try {
-      const start = await v2.connectGitHub(org.trim() || undefined);
+      const start = await v2.connectGitHub(org.trim() || undefined, write ? "write" : undefined);
       const action = githubFormAction(start.action, httpHref);
       if (!action) { setSaid("GitHub's address didn't look right, so nothing was sent."); starting.current = false; setBusy(false); return; }
       // The manifest alone: `action` carries the state.
@@ -126,6 +135,9 @@ export function GitHubPage({ v2, returned }: { v2: Client; returned?: GitHubRetu
                 </label>
                 <Button type="button" variant="solid" onClick={() => void connect()} disabled={busy}><Github aria-hidden />{opening ? "Opening GitHub…" : "Connect GitHub"}</Button>
               </div>
+              <Checkbox className="mt-3" checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy}
+                label="Let AgentRun open pull requests for suggested agents"
+                note="Asks GitHub for Contents: Read and write as well. Leave it off if you only use triggers and templates." />
               <p className="mt-3 text-body text-muted-foreground">GitHub asks you to create the App, then to install it on the accounts it may use. You come back here after.</p>
             </section>
           )}
