@@ -23,6 +23,7 @@ import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { useSecrets } from "@/lib/secrets";
+import { LocalModelCard } from "@/components/LocalModelCard";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { EmailPage } from "@/components/EmailPage";
@@ -707,6 +708,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
   // server has its model by then.
   const [planShown, setPlanShown] = useState(false);
+  // The free local model card stays once its pull ends, though the server has its model by then, until the person is done.
+  const [localShown, setLocalShown] = useState(false);
   const onPlan = (v: ChatGPTView) => {
     setPlan(v);
     if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
@@ -763,8 +766,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
-                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
+                  modelSetup={caps && (caps.models.ready === false || planShown || localShown) ? <>
+                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onReady={() => { setLocalShown(true); void readCaps(); }} onDone={() => setLocalShown(false)} />}
+                    {(caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
+                  </> : undefined} /> : undefined} />
             </div>
           </div>
         : where.section === "suggestions"

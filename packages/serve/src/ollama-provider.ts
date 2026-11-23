@@ -221,6 +221,71 @@ export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
   return base === undefined ? [] : (kept.get(base)?.models ?? []);
 }
 
+/** Forgets the listing kept for the Ollama `env` names, and the one under way for it, so the next ollamaModels asks it
+ *  again at once: after a pull here (local-model.ts), the model is in the picker with no wait for OLLAMA_TTL_MS. */
+export function ollamaForget(env: NodeJS.ProcessEnv): void {
+  const base = baseOf(env);
+  if (base === undefined) return;
+  kept.delete(base);
+  asking.delete(base);
+}
+
+/** How long the version of the Ollama here is waited for (ollamaVersion): a listing's deadline. */
+export const OLLAMA_VERSION_TIMEOUT_MS = OLLAMA_LIST_TIMEOUT_MS;
+
+/** The version the Ollama `env` names says it is (GET /api/version), or undefined where it names none, is refused, down,
+ *  hung past `timeoutMs` or answers another shape. Nothing thrown. */
+export async function ollamaVersion(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_VERSION_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<string | undefined> {
+  const base = baseOf(env);
+  if (base === undefined) return undefined;
+  try {
+    const answer = (await askerOf(base, send, AbortSignal.timeout(timeoutMs))("/api/version")) as { version?: unknown } | null;
+    return typeof answer?.version === "string" && answer.version.length > 0 && answer.version.length <= 64 ? answer.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One line of a pull's progress as Ollama streams it (POST /api/pull): its status, and a layer's digest with its bytes. */
+export type OllamaPullLine = { readonly status: string; readonly digest?: string; readonly total?: number; readonly completed?: number };
+
+/**
+ * Pulls `tag` through the Ollama `env` names (POST /api/pull, streamed as NDJSON), each line of progress to `onLine` as it
+ * comes. Resolves once Ollama says `success`; throws, in Ollama's words, on an `error` line, a refusal, a stream that ends
+ * before `success`, or `signal`. No deadline of its own: a model is gigabytes, and the caller stops it (`signal`).
+ */
+export async function ollamaPull(env: NodeJS.ProcessEnv, tag: string, onLine: (line: OllamaPullLine) => void, { fetch: send = globalThis.fetch, signal }: { fetch?: typeof fetch; signal?: AbortSignal } = {}): Promise<void> {
+  const base = baseOf(env);
+  if (base === undefined) throw new Error("no Ollama is asked here");
+  const response = await send(`${base}/api/pull`, { method: "POST", redirect: "error", ...(signal ? { signal } : {}), headers: { "content-type": "application/json" }, body: JSON.stringify({ model: tag, stream: true }) });
+  if (!response.ok || !response.body) {
+    const said = safeJson(await response.text().catch(() => "")) as { error?: unknown } | undefined;
+    throw new Error(typeof said?.error === "string" ? said.error : `/api/pull: ${response.status}`);
+  }
+  const decoder = new TextDecoder();
+  let rest = "";
+  let succeeded = false;
+  const take = (text: string) => {
+    const line = safeJson(text) as { status?: unknown; error?: unknown; digest?: unknown; total?: unknown; completed?: unknown } | undefined;
+    if (!line || typeof line !== "object") return;
+    if (typeof line.error === "string") throw new Error(line.error);
+    if (typeof line.status !== "string") return;
+    if (line.status === "success") succeeded = true;
+    onLine({ status: line.status, ...(typeof line.digest === "string" ? { digest: line.digest } : {}), ...(line.total !== undefined ? { total: count(line.total) } : {}), ...(line.completed !== undefined ? { completed: count(line.completed) } : {}) });
+  };
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    rest += decoder.decode(chunk, { stream: true });
+    let cut: number;
+    while ((cut = rest.indexOf("\n")) >= 0) {
+      const text = rest.slice(0, cut).trim();
+      rest = rest.slice(cut + 1);
+      if (text) take(text);
+    }
+  }
+  if (rest.trim()) take(rest.trim());
+  if (!succeeded) throw new Error("the pull ended before Ollama said success");
+}
+
 /** `env`'s Ollama listing as last kept (ollamaKept), in one string: each model's tag, capabilities and trained context.
  *  A server compares it to see a model pulled, removed or an Ollama started since it made its offers (server.ts). */
 export const ollamaListing = (env: NodeJS.ProcessEnv): string => ollamaKept(env).map((model) => `${model.name}=${model.capabilities.join(",")}@${model.trained ?? ""}`).join(" ");

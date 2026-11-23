@@ -187,6 +187,9 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
  *  says of its login, never a token. */
 export type ClaudeLoginView = Answer<"getClaudeLogin">;
+/** A free local model (GET /v2/settings/local-model, a serve extension): this machine, its Ollama, the model recommended
+ *  for them and the pull here with its progress. */
+export type LocalModel = Answer<"getLocalModel">;
 /** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
  *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
 export type ModelGateway = Answer<"getModelGateway">;
