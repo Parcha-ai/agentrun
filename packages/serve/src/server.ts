@@ -4549,7 +4549,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
+      // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
+      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none.
+      const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
+      const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'

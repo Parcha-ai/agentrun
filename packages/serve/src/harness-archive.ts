@@ -19,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, realpath, rename } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readlink, rename } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -94,6 +94,29 @@ function binaryUnder(root: string, cmd: string): string | undefined {
   return inside && inside !== ".." && !inside.startsWith(`..${sep}`) ? path : undefined;
 }
 
+/** The first link under `root` (its path from `root`) whose target, read as the link says it (readlink, resolved beside
+ *  the link), leaves `root`; undefined when none does. The tree digest holds a link by those words, never the bytes it
+ *  leads to, so a file reached through one (the binary behind a linked folder, code a launcher loads from `lib` linked
+ *  elsewhere) would be checked by nothing. Every link is read, so no chain of in-tree links leads out either. */
+export async function linkOutOf(root: string): Promise<string | undefined> {
+  const base = resolve(root);
+  const walk = async (dir: string): Promise<string | undefined> => {
+    for (const name of await readdir(dir)) {
+      const path = join(dir, name);
+      const entry = await lstat(path);
+      if (entry.isSymbolicLink()) {
+        const target = resolve(dirname(path), await readlink(path));
+        if (target !== base && !target.startsWith(`${base}${sep}`)) return relative(base, path);
+      } else if (entry.isDirectory()) {
+        const found = await walk(path);
+        if (found !== undefined) return found;
+      }
+    }
+    return undefined;
+  };
+  return walk(base);
+}
+
 export interface ArchiveInstallOptions {
   /** The platform, as the registry names it. Default this host's (archivePlatform). */
   platform?: string;
@@ -145,6 +168,9 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const inPlace = async (): Promise<boolean> =>
     (!treeRecord || pinnedTree !== undefined) &&
     (await lstat(binary).catch(() => undefined)) !== undefined &&
+    // One placed before links out were refused is installed again, where the unpack's own check says why, never
+    // "already" (which every start would then refuse).
+    (await linkOutOf(dir).catch(() => "unreadable")) === undefined &&
     (pinned === undefined || (await digestOf(binary).catch(() => undefined)) === pinned) &&
     (pinnedTree === undefined || (await harness.tree!(dir).catch(() => undefined)) === pinnedTree);
   if (await inPlace()) return { installed: "already", binary };
@@ -216,9 +242,9 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     const unpacked = binaryUnder(tree, release.cmd)!;
     const found = await lstat(unpacked).catch(() => undefined);
     if (!found?.isFile()) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds no file at ${release.cmd}`);
-    // On its path, a link out of the tree: the tree's digest holds the link, never the file it leads to.
-    const [real, realTree] = await Promise.all([realpath(unpacked), realpath(tree)]);
-    if (!real.startsWith(`${realTree}${sep}`)) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive reaches ${release.cmd} through a link out of its files; it was not put in place`);
+    // A link out of the tree anywhere in it (on the binary's path, or to code the binary loads): refused (linkOutOf).
+    const outward = await linkOutOf(tree);
+    if (outward !== undefined) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds a link out of its files (${outward}), so what it leads to would be checked by nothing; it was not put in place`);
     if (pinned !== undefined) {
       const binarySha = await digestOf(unpacked);
       if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the pin is ${pinned}; it was not put in place`);

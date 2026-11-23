@@ -317,48 +317,59 @@ test("every file the archive unpacks to is pinned, not the binary alone: a sidec
   assert.equal(existsSync(join(elsewhere, "harnesses", "model-agent")), false);
 });
 
-test("an executable reached through a link out of its install folder is refused: the tree digest holds the link, not the file it leads to", async (t) => {
+test("a link out of the install folder is refused: the tree digest holds a link, not the files it leads to (the executable behind a linked folder, or code beside it)", async (t) => {
   const { symlinkSync } = await import("node:fs");
   const { treeDigest } = await import("@parcha/agentrun-harness-acp");
   const { firstSeenTreeOf, installHolds, recipeInstall } = await import("../dist/harness-recipe.js");
   const root = await scratch(t);
-  const data = join(root, "agents");
-  const file = await recipeFile(t, formatRecipe(Buffer.from("unused"), "tar.gz", { cmd: "./bin/agent" }));
-  const { recipe } = loadRecipe(file);
-  const dir = join(data, "harnesses", recipe.id);
-  const record = firstSeenTreeOf(data, recipe, PLATFORM);
-  const recordTree = async () => {
-    mkdirSync(join(record, ".."), { recursive: true });
-    writeFileSync(record, `${await treeDigest(dir)}\n`);
-  };
   const outside = join(root, "outside");
   mkdirSync(outside, { recursive: true });
   writeFileSync(join(outside, "agent"), "#!/bin/sh\necho outside\n", { mode: 0o755 });
-  mkdirSync(dir, { recursive: true });
-  symlinkSync(outside, join(dir, "bin"));
-  await recordTree();
-  const linked = recipeInstall(data, recipe, file, process.env, PLATFORM);
-  assert.equal(linked.code, undefined, linked.message);
-  const refused = await installHolds(linked);
-  assert.equal(refused?.code, "HARNESS_BINARY_MISMATCH");
-  assert.match(refused.message, /outside/);
-  // The installer refuses such an archive before anything is put in place.
-  const packed = join(root, "packed");
-  mkdirSync(packed);
-  symlinkSync(outside, join(packed, "bin"));
-  const archive = join(root, "linked.tar.gz");
-  assert.equal(spawnSync("tar", ["-czf", archive, "-C", packed, "bin"]).status, 0);
-  const bytes = readFileSync(archive);
-  const linkedFile = await recipeFile(t, formatRecipe(bytes, "tar.gz", { cmd: "./bin/agent" }));
-  const elsewhere = join(root, "elsewhere");
-  await assert.rejects(installRecipe(loadRecipe(linkedFile).recipe, linkedFile, elsewhere, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && /through a link/.test(error.message));
-  assert.equal(existsSync(join(elsewhere, "harnesses", recipe.id)), false);
-  // The same executable inside the folder holds: the link alone was refused.
-  rmSync(join(dir, "bin"));
-  mkdirSync(join(dir, "bin"));
-  writeFileSync(join(dir, "bin", "agent"), "#!/bin/sh\necho inside\n", { mode: 0o755 });
-  await recordTree();
-  assert.equal(await installHolds(recipeInstall(data, recipe, file, process.env, PLATFORM)), undefined);
+  writeFileSync(join(outside, "index.js"), "console.log('outside')\n");
+  // Two archives: `bin` linked out with the executable behind it, and a good executable with `lib` linked out beside it.
+  const archiveOf = (name, lay) => {
+    const packed = join(root, `packed-${name}`);
+    mkdirSync(packed);
+    lay(packed);
+    const archive = join(root, `${name}.tar.gz`);
+    assert.equal(spawnSync("tar", ["-czf", archive, "-C", packed, "."]).status, 0);
+    return readFileSync(archive);
+  };
+  const cases = [
+    { name: "bin", cmd: "./bin/agent", lay: (at) => symlinkSync(outside, join(at, "bin")) },
+    { name: "lib", cmd: "./agent", lay: (at) => { writeFileSync(join(at, "agent"), "#!/bin/sh\nexec node \"$(dirname \"$0\")/lib/index.js\"\n", { mode: 0o755 }); symlinkSync(outside, join(at, "lib")); } },
+  ];
+  for (const { name, cmd, lay } of cases) {
+    const bytes = archiveOf(name, lay);
+    const file = await recipeFile(t, formatRecipe(bytes, "tar.gz", { cmd }));
+    const { recipe } = loadRecipe(file);
+    // The installer refuses the archive before anything is put in place.
+    const fresh = join(root, `fresh-${name}`);
+    await assert.rejects(installRecipe(recipe, file, fresh, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && error.message.includes(`link out of its files (${name})`), name);
+    assert.equal(existsSync(join(fresh, "harnesses", recipe.id)), false, name);
+    // One placed before links out were refused, its tree recorded: every check refuses it, and the reinstall it asks for
+    // is never "already" (each start would refuse that install again): the unpack says why.
+    const data = join(root, `placed-${name}`);
+    const dir = join(data, "harnesses", recipe.id);
+    mkdirSync(dir, { recursive: true });
+    lay(dir);
+    const record = firstSeenTreeOf(data, recipe, PLATFORM);
+    mkdirSync(join(record, ".."), { recursive: true });
+    writeFileSync(record, `${await treeDigest(dir)}\n`);
+    const placed = recipeInstall(data, recipe, file, process.env, PLATFORM);
+    assert.equal(placed.code, undefined, placed.message);
+    const refused = await installHolds(placed);
+    assert.equal(refused?.code, "HARNESS_BINARY_MISMATCH", name);
+    assert.ok(refused.message.includes(`leads outside it (${name})`), refused.message);
+    await assert.rejects(installRecipe(recipe, file, data, { fetch: servedFetch(bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack, `${name}: reinstalled, not "already"`);
+  }
+  // The same files inside the folder hold: the link alone was refused.
+  const bytes = archiveOf("inside", (at) => { mkdirSync(join(at, "bin")); writeFileSync(join(at, "bin", "agent"), "#!/bin/sh\necho inside\n", { mode: 0o755 }); symlinkSync("bin/agent", join(at, "agent")); });
+  const file = await recipeFile(t, formatRecipe(bytes, "tar.gz", { cmd: "./bin/agent" }));
+  const { recipe } = loadRecipe(file);
+  const data = join(root, "inside");
+  assert.equal((await installRecipe(recipe, file, data, { fetch: servedFetch(bytes) })).installed, "now");
+  assert.equal(await installHolds(recipeInstall(data, recipe, file, process.env, PLATFORM)), undefined, "a link that stays inside holds");
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
@@ -1303,6 +1314,11 @@ test("Settings → Harness keys stays offered while keys are kept: restarted wit
   const later = await serve(t, { data: first.data, accounts: true, runner: false });
   assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: [], kept: ["model-agent"] });
   const { owner: laterOwner } = await asOwnerAndToken(later);
+  // Which harnesses hold keys is the owner's to know: a caller with no session and no token reads none.
+  assert.deepEqual((await laterOwner("GET", "/capabilities")).json.features.harness_keys.kept, ["model-agent"], "the owner's session reads the kept ids");
+  const anonymous = await call(later.port, { path: "/v2/capabilities", headers: { accept: "application/json" } });
+  assert.equal(anonymous.status, 200, anonymous.text);
+  assert.deepEqual(anonymous.json.features.harness_keys.kept, [], "a caller with no session and no token reads no kept ids");
   assert.equal((await laterOwner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
   assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys.kept, [], "with nothing kept, nothing offers the page");
 });
