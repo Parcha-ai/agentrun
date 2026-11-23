@@ -80,7 +80,8 @@ describe("AgentEditor runtime and thinking pickers", () => {
     const selected = (await optionsOf(picker(host, "Runtime")!)).find(option => option.value === harness);
     expect(selected?.disabled).toBe(false);
     expect(selected?.text).toContain(harness === "codex" ? "codex needs OPENAI_API_KEY." : "This server does not report this runtime.");
-    expect(picker(host, "Runtime")?.textContent).not.toContain(harness === "codex" ? "OPENAI_API_KEY" : "This server does not report");
+    if (harness === "codex") expect(picker(host, "Runtime")?.textContent).not.toContain("OPENAI_API_KEY");
+    else expect(picker(host, "Runtime")?.textContent).not.toContain("This server does not report");
     await pick(picker(host, "Runtime")!, harness);
     expect(host.querySelector('[role="status"][aria-label="Tools this harness doesn\'t run"]')).toBeNull();
     expect(valueOf(picker(host, "Thinking")!)).toBe("extra-thinking");

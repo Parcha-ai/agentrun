@@ -5490,12 +5490,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "getRevisionSkills": {
-        await needAgent(id);
-        const selected = await agents.revision(id, decodeURIComponent(second!));
-        if (!selected) throw new ApiError("not_found", "no such revision for this agent");
+        // Only the named revision is needed: the full agent view and numbered history load every skill bundle.
+        if (!ID.test(id) || !await store.agents.get(id)) throw new ApiError("not_found", `no agent ${id}`);
+        const selected = await store.agents.revision(decodeURIComponent(second!));
+        if (!selected || selected.agentId !== id) throw new ApiError("not_found", "no such revision for this agent");
         // The complete immutable file map is needed before replacing skills in a definition edit. Native discovery
         // metadata is separate: this read never follows a connection to its source machine or filesystem.
-        return send(res, 200, { revision: selected.revision.id, skills: selected.revision.skills ?? {} });
+        return send(res, 200, { revision: selected.id, skills: selected.skills ?? {} });
       }
       case "getAgentPackage": {
         const entry = await needAgent(id);
