@@ -14,8 +14,8 @@ const { ollamaClock, ollamaModels, ollamaReading, ollamaShown, OLLAMA_SHOW_TIMEO
 // The suites turn every Ollama off (support.mjs); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
 
-/** Every model key and setting a model could come from: none set. */
-const KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "AGENTRUN_FREE_MODEL_REQUESTS", "OLLAMA_HOST"];
+/** Every model key and setting a model could come from, and the tool key a test removes: none set. */
+const KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "ANTHROPIC_BASE_URL", "AGENTRUN_FREE_MODEL_REQUESTS", "OLLAMA_HOST", "OLLAMA_CONTEXT_LENGTH", "PARALLEL_API_KEY"];
 /** N synthetic models that chat and call tools. */
 const MODELS = Array.from({ length: 4 }, (_, i) => ({ name: `synth-n${i}:1b`, capabilities: ["completion", "tools"], family: `synthn${i}`, context_length: 32_768 }));
 const IDS = MODELS.map((model) => `ollama/${model.name}`);
@@ -57,7 +57,9 @@ test("ollamaShown inside ollamaReading: a stale kept listing answers and nothing
   assert.equal(await run, undefined, "and a hung Ollama gives it nothing");
 });
 
-test("a key's save while the Ollama hangs past its listing's TTL: the 204 asks it nothing, and the offers keep the kept models", { timeout: 60_000 }, async (t) => {
+/** A server on a hanging fake Ollama, its listing kept while it answers; `write(api)` then runs past the TTL with the
+ *  Ollama hung, raced against its first /api/show. Returns the server's client, the fake and the write's answer. */
+async function writeWhileHung(t, write) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, KEYS);
   let clock = Date.now();
   ollamaClock(() => clock);
@@ -65,18 +67,33 @@ test("a key's save while the Ollama hangs past its listing's TTL: the 204 asks i
   const ollama = await hangingOllama(t);
   withEnv(t, { OLLAMA_HOST: ollama.host });
   const { api } = await serve(t, { faux: undefined });
-  const piFree = async () => (await api("GET", "/capabilities")).body.harnesses.find((h) => h.id === "pi").free_models.map((m) => m.id);
+  const caps = async () => (await api("GET", "/capabilities")).body;
+  const piFree = async () => (await caps()).harnesses.find((h) => h.id === "pi").free_models.map((m) => m.id);
   assert.deepEqual(await piFree(), IDS, "listed while Ollama answers");
   ollama.hang();
   const shown = ollama.got.show.length;
   clock += OLLAMA_TTL_MS + 1;
   const started = performance.now();
-  // OpenAI keys are not checked (key-check.ts NOT_CHECKED), so the save calls no provider.
-  const save = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `sk-test-${randomBytes(12).toString("hex")}` } });
-  const first = await Promise.race([save.then((saved) => ({ saved })), ollama.showAsked.then((model) => ({ model }))]);
-  assert.ok("saved" in first, `the save asked the hung Ollama for /api/show of ${first.model} before its 204`);
-  assert.equal(first.saved.status, 204, JSON.stringify(first.saved.body));
+  const first = await Promise.race([write(api).then((answer) => ({ answer })), ollama.showAsked.then((model) => ({ model }))]);
+  assert.ok("answer" in first, `the write asked the hung Ollama for /api/show of ${first.model} before its 204`);
+  assert.equal(first.answer.status, 204, JSON.stringify(first.answer.body));
   assert.ok(performance.now() - started < OLLAMA_SHOW_TIMEOUT_MS, "well inside one /api/show deadline");
   assert.deepEqual(ollama.got.show.slice(shown), [], "no /api/show once it hung");
   assert.deepEqual(await piFree(), IDS, "the offers still name the kept listing's models");
+  return { caps };
+}
+
+// The offers (harnessOffers): a model key changes them, so its save probes them again; with OpenAI's key the host's
+// default is OpenAI's, so the model needs ask Ollama nothing and only the offers' Ollama models are read.
+test("a model key's save while the Ollama hangs past its listing's TTL: the offers ask it nothing, and keep the kept models", { timeout: 60_000 }, async (t) => {
+  // OpenAI keys are not checked (key-check.ts NOT_CHECKED), so the save calls no provider.
+  await writeWhileHung(t, (api) => api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: `sk-test-${randomBytes(12).toString("hex")}` } }));
+});
+
+// The model needs (server.ts needsOf): with no model key the host's default is the Ollama's first tools model. A tool
+// key's removal leaves the offers' inputs as they were (nothing probed again), so only the needs read the Ollama.
+test("a tool key's removal with Ollama the default, while it hangs past its listing's TTL: the model needs ask it nothing", { timeout: 60_000 }, async (t) => {
+  const { caps } = await writeWhileHung(t, (api) => api("DELETE", "/settings/tool-keys/parallel"));
+  const { ready, needs } = (await caps()).models;
+  assert.deepEqual([ready, needs], [true, null], "a run that names no model still runs, on the kept default");
 });
