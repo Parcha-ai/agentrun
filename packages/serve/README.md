@@ -1416,7 +1416,9 @@ The apply skips the template's triggers with a warning at `triggers.<N>` (`not_s
 unless the [launch hook](#launch-hook) is set, which hands each firing to your backend to start the run with its keys.
 `POST /v2/triggers`, or a `PATCH` that moves a trigger, is 409 `agent_not_runnable` naming the keys for a trigger that
 would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
-before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing.
+before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
+update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
+fires, and the skip's warning names it and says how to turn it off.
 
 `MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
@@ -3309,7 +3311,7 @@ serves these routes alone:
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
   them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
   or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived. A webhook, GitHub, Composio or email trigger is never made here, hook
+  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.

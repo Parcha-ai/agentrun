@@ -240,6 +240,19 @@ test("an API-only redeploy leaves each trigger of the package the agent has alre
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => [row.id, row.enabled, row.source.urls ?? null]).sort(), [["trg_morning", false, null], ["trg_status", false, ["https://status.example.com/feed.xml"]]], "both left as they were");
 });
 
+test("an API-only redeploy that skips a trigger the agent has on says it is kept and still fires, and that the agent's archive turns it off", { timeout: 60_000 }, async (t) => {
+  const server = await deployServer(t, { apiOnly: true });
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  await server.store.triggers.create({ id: "trg_morning", agentId: agent, name: "morning", enabled: true, source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: agent, input: { content: "Answer." } }, nextAt: null, catchupWindowS: 0, templateId: applied.body.template });
+  const redeployed = await send(server, "POST", "/v2/templates/deployed/apply", { body: { agent_id: agent, parameters: { topic: "tides" } } });
+  assert.equal(redeployed.status, 200, JSON.stringify(redeployed.body));
+  const [[field, , words]] = skippedOf(redeployed.body);
+  assert.deepEqual([field, words], ["triggers.0", `${needsHook("morning", "schedule")} The agent's trigger trg_morning of that name is kept as it was, and still fires: archiving the agent turns it off.`]);
+  assert.deepEqual((await server.store.triggers.list(agent)).map((row) => [row.id, row.enabled]), [["trg_morning", true]], "left as it was");
+});
+
 test("an API-only server unarchives an agent it archived, so an archive sent by mistake is undone", { timeout: 60_000 }, async (t) => {
   const server = await deployServer(t, { apiOnly: true });
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });

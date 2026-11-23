@@ -3453,11 +3453,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
     // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
     // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
-    // agent has by its name is left as it is, never removed.
+    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
-      return skip ? [[i, skip] as const] : [];
+      if (!skip) return [];
+      const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
+      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
+      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
