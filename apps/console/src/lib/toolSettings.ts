@@ -75,13 +75,22 @@ export function toolGates(raw: unknown): ToolGate[] {
   return ((raw ?? []) as ToolGate[]).map(({ name, permission, default_permission, permissions, ask_needs }) => ({ name, permission, default_permission, permissions, ...(ask_needs === "password" ? { ask_needs } : {}) }));
 }
 
-const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "exa-keyless": "Exa keyless", parallel: "Parallel" };
-/** The browser's own names and help: its providers are another set from search's and fetch's, and two of its ids
+const PROVIDER: Record<string, string> = { auto: "auto", native: "native", kernel: "kernel fetch", "firecrawl-keyless": "Firecrawl keyless", "exa-keyless": "Exa keyless", parallel: "Parallel" };
+/** web_fetch's own help, where its ids mean another thing than search's (tool-plane.ts explainCapability): its auto
+ *  sends no URL to a third party where the server holds a Parallel key, and keyless Firecrawl sends each URL it reads.
+ *  The browser's own names and help: its providers are another set from search's and fetch's, and two of its ids
  *  ("auto", "kernel") mean other things there. The ids and the auto rule are the server's: packages/serve/src/tool-plane.ts
  *  PROVIDERS.browser (auto, browserbase, kernel, chrome) and browserBy (auto is Browserbase where its keys are set or
  *  saved, else Kernel where its key is, else unavailable; chrome is not set up on any server yet); the keys are
  *  tool-keys.ts' browserbase and kernel rows. */
 const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<string, string> }> = {
+  web_fetch: {
+    label: {},
+    help: {
+      auto: "This server's own fetch where it holds a Parallel key; else keyless Firecrawl, which is sent each URL read.",
+      "firecrawl-keyless": "Firecrawl's keyless fetch: no key, a third party, sent each URL read (never a private or local one). This server's own fetch is behind it.",
+    },
+  },
   browser: {
     label: { auto: "Auto (Browserbase where its key is saved, else Kernel)", browserbase: "Browserbase", kernel: "Kernel", chrome: "Local Chrome" },
     help: {
@@ -97,8 +106,9 @@ const BY_TOOL: Record<string, { label: Record<string, string>; help: Record<stri
 export const providerLabel = (provider: string, tool?: string) => (tool && BY_TOOL[tool]?.label[provider]) ?? PROVIDER[provider] ?? provider;
 
 const HELP: Record<string, string> = {
-  auto: "The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Exa.",
+  auto: "The harness's own search, or the model provider's hosted one; else Parallel where this server holds its key; else keyless Firecrawl, with keyless Exa behind it.",
   native: "The harness's own search, or the model provider's hosted one, never a third party: unavailable where there is none.",
+  "firecrawl-keyless": "Firecrawl's keyless search: no key, a third party, with keyless Exa behind it.",
   "exa-keyless": "Exa's keyless search: no key, a third party.",
   parallel: "Parallel: needs the Parallel key.",
   kernel: "This server's own fetch, guarded against private addresses.",

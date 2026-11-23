@@ -160,20 +160,20 @@ const ownFile = (name: string) => `[ ! -L ${name} ] && [ "$(stat -c %u ${name})"
 const markOf = (dir: string): Buffer => Buffer.from(`agentrun-ready:${dir.slice(dir.lastIndexOf("-") + 1)}\n`);
 /**
  * One write ($1 the command's directory), sent once START_SCRIPT's mark came: its stdin into the fifo there. With no
- * fifo the command has ended (its sh removed it): exit 3. After `cat`, by what is at `in` and cat's own status:
- * - the fifo, and cat succeeded: the bytes went in;
- * - nothing, and cat succeeded: the bytes went into the fifo and the command has ended since, its sh removing the
- *   directory: the write went through;
- * - a file: the fifo went between the check and the write, and cat made a file of its own, removed: exit 3;
- * - cat failed (the command went mid-write, or the directory was gone before cat's open): exit 3.
+ * fifo the command has ended (its sh removed it): exit 3. The write opens `in`, which never waits for a reader since
+ * START_SCRIPT's sh holds the fifo open to the end, then checks it is still the fifo before cat writes a byte: a fifo
+ * that went between the checks and the open leaves a file of the write's own, removed with nothing in it, and a command
+ * that ends while cat writes leaves it no reader; exit 3 for both. Once cat has put every byte in the fifo the write is
+ * made, though the command may read them, end, and its sh remove the directory before the write answers.
  */
 const WRITE_SCRIPT = [
 	'd=$1; [ -p "$d/in" ] || exit 3',
 	OWN_DIR,
 	ownFile("in"),
-	"cat >in; c=$?",
-	'if [ -p in ] || { [ ! -e in ] && [ ! -L in ]; }; then [ "$c" = 0 ] && exit 0; exit 3; fi',
-	'rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3',
+	"{",
+	'[ -p in ] || { rm -f in; cd / && rmdir "$d" 2>/dev/null; exit 3; }',
+	"cat >&3 || exit 3",
+	"} 3>in || exit 3",
 ].join("\n");
 /**
  * The kill ($1 the command's directory, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command

@@ -444,6 +444,24 @@ const marked = (dir, text = "", seq = Buffer.byteLength(markOf(dir) + text)) => 
 /** One turn of the event loop: what a promise or a stream moves on to next has run. No clock. */
 const turn = () => new Promise(setImmediate);
 
+/** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
+const within = async (promise, what, ms = 10_000) => {
+	let timer;
+	try {
+		return await Promise.race([promise, new Promise((_, fail) => (timer = setTimeout(() => fail(new Error(`no ${what} within ${ms} ms`)), ms)))]);
+	} finally {
+		clearTimeout(timer);
+	}
+};
+/** SIGKILL to the process group `child` leads (spawned detached), so nothing it started outlives a test. */
+const stopGroup = (child) => {
+	try {
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		// Gone already.
+	}
+};
+
 test("a socket gone silent with no close is let go at once: another attaches from the position read to, once, and the old one's later messages and close are ignored", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const streams = scriptedSockets();
@@ -735,8 +753,8 @@ test("a kill never takes its target from a pid record the tool user planted at a
 	}
 });
 
-/** The start, write and kill scripts as the host sends them (its writes and its kill answered here, never run), and PID_KILL. */
-async function hostScripts() {
+/** The start, write and kill scripts as the host sends them (its write and its kill answered here, never run), and PID_KILL. */
+async function sentScripts() {
 	const steps = [];
 	const streams = scriptedSockets();
 	const { host } = hostOf((method, path, body) => (method === "POST" && path.endsWith("/exec") ? (steps.push(body.args), [200, { exit_code: 0, timed_out: false }]) : undefined), streams);
@@ -773,7 +791,7 @@ const real = (name) => execFileSync("sh", ["-c", `command -v ${name}`], { encodi
 
 test("the scripts, run by sh against paths of the test's: the start refuses a path already there; the write and the kill take only a directory the command's user owns with mode 0700, not through a link, and a fifo or record there of that user's", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
-	const { startScript, writeScript, killScript, pidKill } = await hostScripts();
+	const { startScript, writeScript, killScript, pidKill } = await sentScripts();
 	// `id` answering another uid stands in for a directory and files of another user's, which this test can't make.
 	const { root, bin } = scratch(t);
 	const others = bin("other-user", { id: "echo 4242" });
@@ -838,9 +856,9 @@ test("the scripts, run by sh against paths of the test's: the start refuses a pa
 	assert.equal(sh(killScript, [fresh(), pidKill]).status, 0);
 });
 
-test("a write whose bytes went in went through, however soon the command ends after: an end between `cat` and its check answers 0; a fifo gone before `cat` answers 3 and leaves nothing; a `cat` that failed answers 3", async (t) => {
+test("a write whose bytes went in went through, however soon the command ends after: an end after `cat` answers 0; a fifo gone before the write's open answers 3 and leaves nothing; a directory gone before it, or a `cat` that failed, answers 3", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
-	const { writeScript } = await hostScripts();
+	const { writeScript } = await sentScripts();
 	const { root, bin } = scratch(t);
 	const [cat, stat, rm] = ["cat", "stat", "rm"].map(real);
 	let n = 0;
@@ -855,21 +873,21 @@ test("a write whose bytes went in went through, however soon the command ends af
 	/** The write script against dir, with the stand-ins first on PATH: what ends the command lands inside the script. */
 	const write = (dir, commands) => spawnSync("sh", ["-c", writeScript, "sh", dir], { input: "abc", encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${bin(`b${++n}`, commands)}:${process.env.PATH}` } });
 
-	// The command takes the bytes and exits, and its sh removes the directory, after `cat` and before the check: 0.
+	// The command takes the bytes and exits, and its sh removes the directory, after `cat` and before the write answers: 0.
 	const took = command();
 	const ended = write(took.dir, { cat: `${cat} "$@"; s=$?; ${rm} -rf "$(pwd -P)"; exit $s` });
 	assert.equal(ended.status, 0, ended.stderr);
 	assert.equal(took.fifo.read(), "abc");
 	assert.equal(existsSync(took.dir), false);
 
-	// The fifo went after the checks and before `cat`, which then made a file of its own: 3, and nothing is left.
+	// The fifo went after the checks and before the write's open, which then made a file of its own: 3, and nothing is left.
 	const gone = command();
 	const late = write(gone.dir, { stat: `${stat} "$@"; s=$?; [ "$3" = in ] && ${rm} -f in; exit $s` });
 	assert.equal(late.status, 3, late.stderr);
 	assert.equal(existsSync(gone.dir), false, "the write's own file and the directory are removed");
 	assert.equal(gone.fifo.read(), "");
 
-	// The whole directory went before `cat`, whose open then failed: 3.
+	// The whole directory went before the write's open, which then failed: 3.
 	const left = command();
 	const failed = write(left.dir, { stat: `${stat} "$@"; s=$?; [ "$3" = in ] && ${rm} -rf "$(pwd -P)"; exit $s` });
 	assert.equal(failed.status, 3, failed.stderr);
@@ -883,7 +901,7 @@ test("a write whose bytes went in went through, however soon the command ends af
 
 test("a write after the command ended and before its sh removed the fifo never waits on the fifo's open: the sh holds it to the end", async (t) => {
 	if (!HAS_PROC) return t.skip("needs /proc");
-	const { startScript, writeScript } = await hostScripts();
+	const { startScript, writeScript } = await sentScripts();
 	const { root, bin } = scratch(t);
 	const [reached, gate] = [join(root, "reached"), join(root, "gate")];
 	execFileSync("mkfifo", [reached, gate]);
@@ -901,6 +919,50 @@ test("a write after the command ended and before its sh removed the fifo never w
 	assert.equal(wrote.status, 0, `the write ${wrote.status === null ? "waited on the fifo's open" : `exited ${wrote.status}: ${wrote.stderr}`}`);
 	assert.deepEqual(await exited, [0, null]);
 	assert.equal(existsSync(dir), false, "the sh removed its directory");
+});
+
+test("a write is made once its bytes are in the command's fifo, though the command reads them and ends, and its directory goes, before the write answers; a fifo gone before the write opens it takes nothing, and the write leaves no file of its own", async (t) => {
+	if (!HAS_PROC) return t.skip("needs /proc");
+	const { startScript, writeScript } = await sentScripts();
+	const root = realpathSync(mkdtempSync("/tmp/agentrun-groundbox-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+
+	// A command that ends on the line it reads, as a shell ends on `exit`; its sh then removes the directory. The command
+	// and the write each lead a process group, and every wait on them is bounded: a write that never reaches the command
+	// leaves it waiting in `read`, and the test then fails and stops both groups instead of waiting with them.
+	const dir = join(root, "c1");
+	const command = spawn("sh", ["-c", startScript, "sh", dir, "sh", "-c", 'read -r line; echo "read $line"'], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+	t.after(() => stopGroup(command));
+	let said = "";
+	command.stdout.on("data", (bytes) => (said += bytes));
+	const ended = new Promise((done) => command.on("close", done));
+	// START_SCRIPT's mark, its first byte on stderr: the directory and the fifo are made.
+	await within(once(command.stderr, "data"), "mark from the start script");
+	// The write's stdin stays open past the line, so the write answers only after the command has read it and gone.
+	const write = spawn("sh", ["-c", writeScript, "sh", dir], { stdio: ["pipe", "ignore", "pipe"], detached: true });
+	t.after(() => stopGroup(write));
+	let complaint = "";
+	write.stderr.on("data", (bytes) => (complaint += bytes));
+	const wrote = new Promise((done) => write.on("close", done));
+	write.stdin.write("end\n");
+	assert.equal(await within(ended, "end of the command after the write's line"), 0);
+	assert.equal(said, "read end\n");
+	assert.equal(existsSync(dir), false, "the command's sh removed its directory");
+	write.stdin.end();
+	assert.equal(await within(wrote, "answer from the write"), 0, `the command read the line, so the write was made: ${complaint}`);
+
+	// A fifo that goes between the write's checks and its open, as when the command ends then: `stat`, asked for the fifo's
+	// owner (the last check), answers and then removes it.
+	const bin = join(root, "bin");
+	mkdirSync(bin);
+	const realStat = execFileSync("sh", ["-c", "command -v stat"], { encoding: "utf8" }).trim();
+	writeFileSync(join(bin, "stat"), `#!/bin/sh\n"${realStat}" "$@"; s=$?\n[ "$3" = in ] && rm -f in\nexit $s\n`, { mode: 0o755 });
+	const gone = join(root, "c2");
+	mkdirSync(gone, { mode: 0o700 });
+	execFileSync("mkfifo", ["-m", "600", join(gone, "in")]);
+	const late = spawnSync("sh", ["-c", writeScript, "sh", gone], { input: "a disk token", encoding: "utf8", timeout: 20_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+	assert.equal(late.status, 3, late.stderr);
+	assert.equal(existsSync(join(gone, "in")), false, "the write left no file of its own");
 });
 
 test("a start that does not hear `started` within its bound ends the command: its socket closes with 1000, so a late `started` leaves nothing running", async (t) => {
