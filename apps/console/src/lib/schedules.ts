@@ -41,8 +41,8 @@ export const inputText = (input: Record<string, unknown>): ParameterText =>
 
 /** The input a trigger's run is given, or what is wrong with it under `target.input`: the message alone; the message
  *  (optional when the agent's schema requires another field) and the typed fields; or, for a schema the fields can't
- *  show, the whole input as JSON, an object. An edited trigger keeps what the form doesn't show of its input as read: a
- *  key no field has, or a field's value it can't show. */
+ *  show, the whole input as JSON, an object. An edited trigger keeps what the form doesn't show of its input as read (a
+ *  key no field has, or a field's value it can't show) and sends a field or message left as read as stored. */
 export function targetInputOf(d: { content: string } & InputDraft, issues: Record<string, string>): Record<string, unknown> {
   const read = d.inputRead ?? {};
   const shape = d.shape;
@@ -58,7 +58,14 @@ export function targetInputOf(d: { content: string } & InputDraft, issues: Recor
     if (shape.form.contentRequired && !d.content.trim()) issues["target.input"] = "Say what each run is asked.";
     const owned = new Set(shape.form.fields.filter(([k]) => !Object.hasOwn(read, k) || fieldShows(read[k])).map(([k]) => k));
     const kept = Object.fromEntries(Object.entries(read).filter(([k]) => k !== "content" && !owned.has(k)));
-    return { ...kept, ...inputOf(shape.form, d.content, d.values ?? fieldStartText(shape.form)) };
+    const typed = d.values ?? fieldStartText(shape.form);
+    // A field still as it was read sends its value as stored: its text is a list one item a line, trimmed, with blank
+    // items and an empty optional value left out, so rebuilding the value from the text could change it (["a\nb", ""]
+    // would go back as ["a", "b"]). So does a message left as read.
+    const asRead = inputText(read);
+    const untouched = Object.fromEntries([...owned].filter((k) => Object.hasOwn(asRead, k) && typed[k] === asRead[k]).map((k) => [k, read[k]]));
+    const message = typeof read.content === "string" && d.content === read.content ? { content: read.content } : {};
+    return { ...kept, ...inputOf(shape.form, d.content, typed), ...untouched, ...message };
   }
   if (!d.content.trim()) issues["target.input"] = "Say what each run is asked.";
   return { ...read, content: d.content };

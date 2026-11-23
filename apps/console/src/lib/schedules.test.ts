@@ -257,6 +257,15 @@ describe("a schedule's typed input", () => {
     const d = draftOf(t);
     expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, note: "" } }).body!).target?.input).toEqual({ company: "Acme GmbH", extra: { deep: 1 } });
   });
+  // A list's text is one item a line, trimmed, blank items dropped, and an empty optional value is left out: an input
+  // rebuilt from fields left alone could differ from the one stored, so a rename alone changed it.
+  it("sends a field left alone as stored, though its text would read back as another value", () => {
+    const t = typed({ company: "Acme GmbH", note: "", topics: ["a\nb", " c ", ""] });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+    // Another field edited: the ones left alone still go as stored.
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", note: "", topics: ["a\nb", " c ", ""] });
+  });
   it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
     expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
     const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
