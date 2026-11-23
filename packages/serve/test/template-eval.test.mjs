@@ -233,7 +233,7 @@ test("tool_used's at_least passes on that many matching calls or more, its args 
   grader("zero.md", "at_least: 0");
   grader("none.md", "expect: not_called\nat_least: 2");
   assert.throws(() => readCases(dir, ["graded"]), (e) => {
-    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a least one: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
+    for (const said of [/graders\/both\.md: count is an exact number of calls and at_least a lower bound: give one, not both/, /graders\/zero\.md: at_least is a whole number of calls, 1 or more/, /graders\/none\.md: expect not_called and at_least 2 say different things/]) assert.match(e.message, said);
     return true;
   });
 });

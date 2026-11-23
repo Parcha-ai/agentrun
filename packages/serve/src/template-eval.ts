@@ -291,7 +291,7 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       // at_least: that many matching calls or more (a run that searched once more than the case needs still passes).
       const atLeast = data.at_least;
       if (atLeast !== undefined && !(Number.isSafeInteger(atLeast) && (atLeast as number) >= 1)) return bad(`${file}: at_least is a whole number of calls, 1 or more`), undefined;
-      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a least one: give one, not both`), undefined;
+      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a lower bound: give one, not both`), undefined;
       if (atLeast !== undefined && expect === "not_called") bad(`${file}: expect not_called and at_least ${atLeast as number} say different things`);
       // at_most: that many matching calls or fewer, and at least one (expect: called, as at_least), or at least at_least
       // when both are given. None is expect: not_called's to say, so at_most is 1 or more.
