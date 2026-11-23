@@ -328,7 +328,7 @@ test("what cannot travel is named: a local or unsaved MCP server and one with it
   assert.deepEqual(kept.mcp.map((need) => [need.toolkit, need.tools, need.pin]), [["slack", ["post", "search"], { search: { channel: "C0STATUS", properties: { keys: ["hs_lead_score"] } } }]]);
 });
 
-test("what the agent may not do here, it may not do from the package: a tool its own settings deny, by the tool's key, its server's wildcard or bash's, is not granted; a trigger that messages one of its runs, and the keys a template version no longer held named, are remade", { timeout: 120_000 }, async (t) => {
+test("what the agent may not do here, it may not do from the package: a tool its own settings deny, by the tool's key, its server's wildcard or bash's, is not granted; a trigger that messages one of its runs is remade", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { mcpStandIns: true });
   const { api } = server;
   const slack = await startFakeMcp({ name: "slack" });
@@ -351,19 +351,6 @@ test("what the agent may not do here, it may not do from the package: a tool its
   assert.deepEqual(pkg.triggers, [], "a package names no run");
   assert.ok(exported.body.report.remade.some((entry) => entry.kind === "trigger" && entry.name === "Poke"), JSON.stringify(exported.body.report));
 
-  // An agent applied from a version of a template this server no longer holds: the keys that version named are unknown.
-  const [kept] = readPackages();
-  for (const [id, template, words] of [["older", { id: kept.id, version: "0.0.1", sha: null }, /holds version/], ["orphan", { id: "retired-template", version: "1.0.0", sha: null }, /no longer holds it/]]) {
-    await server.store.agents.create({ id, name: id }, { id: `${id}-rev`, kind: "agentic", body: { instructions: "Do it.", tools: ["read"], maxCostUsd: 1 }, package: template });
-    const answer = await api("GET", `/agents/${id}/package`);
-    assert.equal(answer.status, 200, JSON.stringify(answer.body));
-    const note = answer.body.report.remade.find((entry) => entry.kind === "secrets");
-    assert.equal(note?.name, template.id, JSON.stringify(answer.body.report));
-    assert.match(note.reason, words);
-    assert.match(note.reason, new RegExp(`version ${template.version.replaceAll(".", "\\.")}`));
-    asPackage(answer.body);
-  }
-
   // Bash's read-only policy holds a background shell tool granted without bash; a package writes the policy only beside
   // bash, so the export is blocked rather than let the target run what is refused here.
   await server.store.agents.create({ id: "backgrounded", name: "Backgrounded" }, { id: "backgrounded-rev", kind: "agentic", body: { instructions: "Watch the build.", tools: ["read", "bash_background"], toolSettings: { bash: { policy: "read-only" } }, computer: { kind: "sandbox" }, maxCostUsd: 1 } });
@@ -372,9 +359,9 @@ test("what the agent may not do here, it may not do from the package: a tool its
   assert.match(background.body.report.blocked.find((entry) => entry.kind === "tool_policy" && entry.name === "bash")?.reason ?? "", /read-only.*bash_background/, JSON.stringify(background.body.report));
 
   // Every kind a note has is one the document lists, so a kind left out of it fails here: these answers carry the
-  // secrets and tool_policy kinds, and a kind it does not list is refused.
+  // trigger and tool_policy kinds, and a kind it does not list is refused.
   const check = await documented(server.baseUrl);
-  for (const id of ["guarded", "older", "backgrounded"]) check("/agents/{agent_id}/package", "get", "200", (await api("GET", `/agents/${id}/package`)).body);
+  for (const id of ["guarded", "backgrounded"]) check("/agents/{agent_id}/package", "get", "200", (await api("GET", `/agents/${id}/package`)).body);
   const unlisted = structuredClone(background.body);
   unlisted.report.blocked[0].kind = "not_a_kind";
   assert.throws(() => check("/agents/{agent_id}/package", "get", "200", unlisted), /not_a_kind|enum|one of/, "a kind the document does not list");

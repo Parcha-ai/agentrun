@@ -18,6 +18,7 @@ import { parseDocument } from "yaml";
 import { answerJson, lastJsonBlock } from "./answer-json.js";
 import { correctionsProblems } from "./learn/index.js";
 import { linkCheck } from "./link-check.js";
+import { frontMatter } from "./manifest.js";
 import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
@@ -73,7 +74,6 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 /** An owner's data folder is the eval's own server's to open (EvalOptions.data): a named server keeps its own. */
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
 const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
 const GRADER_FIELDS: Record<string, string[]> = {
@@ -166,12 +166,13 @@ export class CaseError extends Error {
   }
 }
 
-/** A file's YAML front matter and body, read as templates.ts reads a package's (core schema, unique keys, no aliases). */
+/** A file's YAML front matter and body, read as a package's are (manifest.ts); an empty one is a mapping with no keys. */
 function frontOf(text: string): { data: Json; body: string } | string {
-  const match = FRONT.exec(text);
-  if (!match) return { data: {}, body: text };
-  const parsed = yamlOf(match[1]!);
-  return typeof parsed === "string" ? `its front matter ${parsed}` : isObject(parsed) ? { data: parsed, body: text.slice(match[0].length) } : "its front matter is not a mapping";
+  const read = frontMatter(text);
+  if (!read) return { data: {}, body: text };
+  if ("problem" in read) return `its front matter ${read.problem}`;
+  const data = read.data ?? {};
+  return isObject(data) ? { data, body: read.body } : "its front matter is not a mapping";
 }
 function yamlOf(text: string): unknown {
   const doc = parseDocument(text, { schema: "core", merge: false, uniqueKeys: true, strict: true });

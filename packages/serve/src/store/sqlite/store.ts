@@ -967,16 +967,16 @@ class SqliteStore implements Store {
           // The uploads it was applied from, each gone unless another agent not purged was applied from it too: nothing
           // else owns one, and a server that serves no template route (API-only) could never remove it. Each is held by its
           // id, in order, before it is read: two purges of agents applied from one upload read it in turn, so the later
-          // reads the earlier's purge (committed) and removes the upload.
+          // reads the earlier's purge (committed) and removes the upload. Only the package it was applied from goes, by its
+          // sha too: a newer upload of the same name, which another deploy has yet to apply, stays.
           const packageId = (alias: string) => d.jsonText(`${alias}.package`, ["id"]);
-          const applied = (await tx.all<{ id: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
-            .map((row) => row.id)
-            .filter((id): id is string => id !== null && id.startsWith(UPLOAD_PREFIX))
-            .sort();
-          for (const id of applied) {
+          const applied = (await tx.all<{ id: string | null; sha: string | null }>(`SELECT DISTINCT ${packageId("r")} AS id, ${d.jsonText("r.package", ["sha"])} AS sha FROM revisions r WHERE r.agent_id = ? AND r.package IS NOT NULL`, agentId))
+            .filter((row): row is { id: string; sha: string } => row.id !== null && row.id.startsWith(UPLOAD_PREFIX) && row.sha !== null)
+            .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          for (const { id, sha } of applied) {
             await d.lockKey(tx, `imported_templates:${id}`);
             const kept = await tx.get<{ id: string }>(`SELECT r.id FROM revisions r JOIN agents a ON a.id = r.agent_id WHERE r.agent_id <> ? AND a.purged_at IS NULL AND ${packageId("r")} = ? LIMIT 1`, agentId, id);
-            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ?", id);
+            if (!kept) await tx.run("DELETE FROM imported_templates WHERE id = ? AND sha = ?", id, sha);
           }
           // Each revision's content; its id, kind, parent and time stay, which its runs' tombstones name.
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);

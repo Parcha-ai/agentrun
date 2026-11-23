@@ -3295,11 +3295,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (error instanceof ApiError && error.code === "not_found") return false;
     throw error;
   };
+  /** A fresh apply's twins: the live agents here made from the package `pkgId` with the parameters `digest` digests. The
+   *  apply still makes another and warns of each (applyWith); its plan names them first (planTemplate). None for an
+   *  apply onto an agent (`onto`). */
+  const twinsOf = async (onto: unknown, pkgId: string, digest: string): Promise<string[]> =>
+    onto ? [] : (await agents.list()).filter((one) => one.template?.id === pkgId && one.template.parameters_digest === digest).map((one) => one.agent.id);
   /** POST /templates/{id}/apply {dry_run: true}: the apply's plan, from the same reads and checks as the apply
    *  (prepareApply), with nothing written: whether it makes an agent or revises the one agent_id names (and its current
-   *  revision), the keys and MCP servers this server lacks (where the apply would refuse with 409, the plan lists them),
-   *  what becomes of each trigger (made, changed in place, removed, or skipped for a connection this server lacks), and
-   *  the computer it picks. Any other refusal is the apply's own. */
+   *  revision), the agents a fresh one would make a twin of, the keys and MCP servers this server lacks (where the apply
+   *  would refuse with 409, the plan lists them), what becomes of each trigger (made, changed in place, removed, or
+   *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
     // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
@@ -3310,18 +3315,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
     const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
     const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
-    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; reason?: string }[] = [];
+    // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
+    // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
+    const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
     for (const [i, trigger] of p.made.triggers.entries()) {
       const name = String(trigger.name).trim();
       const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
       // On an API-only server, skipped in the apply's own words (prepareApply).
       const hostSkip = p.hostless.get(i);
       if (hostSkip) {
-        planned.push({ name, kind, action: "skip", reason: hostSkip.message });
+        planned.push({ name, kind, action: "skip", code: hostSkip.reason, reason: hostSkip.message });
         continue;
       }
       if (p.emptyFeeds.has(i)) {
-        planned.push({ name, kind, action: "skip", reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
+        planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: feedTriggerEmpty(p.pkg.name, trigger, isObject(p.pkg.triggers[i]?.source) ? p.pkg.triggers[i]!.source.urls : undefined) });
         continue;
       }
       const was = p.hadByName.get(name);
@@ -3333,7 +3340,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // apply's create does (notSetUpYet), or refuses the apply. A Composio trigger is skipped for want of a public URL
       // (any trigger, on or off), read here; its account and subscription are Composio's to answer, which a plan never asks.
       const refusal = kind === "composio" && !options.publicUrl ? composioNoPublicUrl() : trigger.enabled !== false && !(was && !was.enabled) ? await triggerUnavailable(kind) : undefined;
-      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", reason: refusal.message });
+      if (refusal && notSetUpYet(kind, refusal.code)) planned.push({ name, kind, action: "skip", code: NOT_SET_UP, reason: refusal.message });
       else if (refusal) throw refusal;
       else planned.push({ name, kind, action: "create", ...(was ? { reason: `The agent's ${name} trigger is removed and made again: its kind or its Composio server, event or config changed.` } : {}) });
     }
@@ -3344,6 +3351,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         action: p.onto ? "revise" : "create",
         agent_id: p.onto?.agent.id ?? null,
         current_revision_id: p.onto?.revision?.id ?? null,
+        twins: await twinsOf(p.onto, p.pkg.id, p.digest),
         missing_secrets: missing,
         unmatched_mcp: p.unsaved.map((need) => ({ source: need.source, toolkit: need.toolkit, required: need.required })),
         triggers: planned,
@@ -3513,9 +3521,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const { pkg, onto, saved, mapped, grants, made, emptyFeeds, hostless, unmade, hadByName, remade, resent, removing, digest, origin, warned } = await prepareApply(template, body, { plan: false });
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
-    const twins: InputIssue[] = onto ? [] : (await agents.list())
-      .filter((one) => one.template?.id === pkg.id && one.template.parameters_digest === digest)
-      .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
+    const twins: InputIssue[] = (await twinsOf(onto, pkg.id, digest))
+      .map((id) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${id}.` }));
     // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
     // agent's own: the package's never replace them), but what the package owns and leaves out is gone (fromPackage); only onto the
     // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.
