@@ -3,7 +3,8 @@
 // is a request of unknown tokens on an unknown model. Every chat here is synthetic (fixtures/cursor/fixture.mjs).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
@@ -197,6 +198,51 @@ test("a read changes nothing in the store", async (t) => {
   await readSession(file, "cursor");
   assert.equal(createHash("sha256").update(await readFile(file)).digest("hex"), before);
   assert.equal((await stat(file)).mtimeMs, mtimeMs);
+});
+
+/** A chat folder's files, each with its size. */
+const listing = async (dir) => Promise.all((await readdir(dir)).sort().map(async (name) => [name, (await stat(join(dir, name))).size]));
+
+test("a chat Cursor has closed is found, stated and read with nothing written beside its store: its folder holds the same files at the same sizes (a read-only open of a WAL store makes its -wal and -shm, and leaves them)", async (t) => {
+  const home = await tempHome(t);
+  const file = await buildChat(join(home, ".cursor"));
+  const before = await listing(dirname(file));
+  assert.deepEqual(before.map(([name]) => name), ["meta.json", "store.db"]);
+  assert.deepEqual((await cursor.discover(home)).map(({ file }) => file), [file]);
+  await stat(file);
+  await readSession(file, "cursor");
+  await cursor.read({ file }, undefined, { turns: false });
+  assert.deepEqual(await listing(dirname(file)), before);
+});
+
+test("a chat Cursor has open (its -wal beside the store) is read with what its log holds", async (t) => {
+  const home = await tempHome(t);
+  const file = await buildChat(join(home, ".cursor"));
+  // cursor-agent's connection, open: it renames the chat, and the rename is in the log alone.
+  const { DatabaseSync } = await import("node:sqlite");
+  const writer = new DatabaseSync(file);
+  t.after(() => writer.close());
+  writer.exec("PRAGMA wal_autocheckpoint = 0");
+  const agent = JSON.parse(Buffer.from(writer.prepare("SELECT value FROM meta WHERE key = '0'").get().value, "hex").toString("utf8"));
+  writer.prepare("UPDATE meta SET value = ? WHERE key = '0'").run(Buffer.from(JSON.stringify({ ...agent, name: "Renamed" })).toString("hex"));
+  assert.ok((await listing(dirname(file))).some(([name, size]) => name === "store.db-wal" && size > 0));
+  assert.equal((await readSession(file, "cursor")).sourceTitle, "Renamed");
+});
+
+test("a chat Cursor opens while it is read (its -wal made mid-read) fails that read, never a clean one", async (t) => {
+  const home = await tempHome(t);
+  const file = await buildChat(join(home, ".cursor"));
+  // meta.json as a pipe: the read opens the store, then waits on meta.json until the test has made the -wal.
+  const meta = join(dirname(file), "meta.json");
+  const text = await readFile(meta, "utf8");
+  await unlink(meta);
+  execFileSync("mkfifo", [meta]);
+  const reading = readSession(file, "cursor");
+  const pipe = await open(meta, "w");
+  await writeFile(`${file}-wal`, "");
+  await pipe.write(text);
+  await pipe.close();
+  await assert.rejects(reading, /Cursor wrote the chat while it was read/);
 });
 
 test("a file that is no Cursor store fails its read alone", async (t) => {

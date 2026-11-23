@@ -495,6 +495,8 @@ export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "
   const idOf = (bytes) => createHash("sha256").update(bytes).digest("hex");
   const root = Buffer.concat([...messages.map((bytes) => field(1, Buffer.from(idOf(bytes), "hex"))), field(26, T0)]);
   const db = new DatabaseSync(file);
+  // In WAL mode, as cursor-agent keeps its stores; closed, the store leaves no -wal or -shm behind.
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
   for (const bytes of [...messages, root]) db.prepare("INSERT OR IGNORE INTO blobs VALUES (?, ?)").run(idOf(bytes), bytes);
   const agent = { agentId: id, latestRootBlobId: idOf(root), name: "New Agent", createdAt: T0, mode: "default", isRunEverything: false, ...(model ? { lastUsedModel: model } : {}) };

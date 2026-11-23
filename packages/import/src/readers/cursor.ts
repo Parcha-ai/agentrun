@@ -6,9 +6,11 @@
 // only in the root, a protobuf (rootOf). Cursor keeps no tokens, cost or error of a request here (its usage is on
 // Cursor's server), no model a person can read (each turn's is encrypted, and is never read), nor a message's time: each
 // answer is a request of unknown tokens on an unknown model, and every turn is at the chat's start. A store is read once,
-// whole, read-only: no cursor to go on from.
-import { readFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+// whole, read-only: no cursor to go on from. A store no cursor-agent has open is opened immutable, so the read writes
+// no -wal or -shm into Cursor's folder; a writer that comes mid-read fails the read (openDb).
+import { readFile, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { entries, type Env, type Reader, type ReadOptions, type ReadResult, rememberUser } from "../reader.js";
 import { argsOf, isObject, str, textOf } from "../text.js";
 import { ACTIVE_GAP_MS, type Answer, type SessionOf, type ToolCall, type Turn } from "../types.js";
@@ -33,28 +35,48 @@ async function storesIn(config: string): Promise<string[]> {
 }
 
 type Row = Record<string, unknown>;
-/** An open store, read-only; `read` the bytes of the blobs the queries have returned so far. */
-type Db = { all(sql: string, ...params: (string | number)[]): Row[]; close(): void; read(): number };
+/** An open store, read-only; `read` the bytes of the blobs the queries have returned so far; `changed`, whether a writer
+ *  came to it while it was open with no lock to tell (an immutable open's): a read it says so of is no clean read. */
+type Db = { all(sql: string, ...params: (string | number)[]): Row[]; close(): void; read(): number; changed(): Promise<boolean> };
 // Read through a variable: a Bun build bundles node:sqlite as missing, and Node has no bun:sqlite.
 const BUN_SQLITE = "bun:sqlite";
 const NODE_SQLITE = "node:sqlite";
 /** How long a read waits on Cursor's own write (a lock it holds) before it fails, ms. */
 const BUSY_MS = 5000;
 const BUSY_PRAGMA = "PRAGMA busy_timeout = 5000";
+// SQLite's open flags: read-only, and the name a URI (file:…?immutable=1).
+const SQLITE_OPEN_READONLY = 0x01;
+const SQLITE_OPEN_URI = 0x40;
+/** A store's size and last write, and whether a writer has it open: its -wal or -shm beside it. */
+async function storeState(file: string): Promise<{ size?: number; mtimeMs?: number; open: boolean }> {
+  const [db, wal, shm] = await Promise.all([file, `${file}-wal`, `${file}-shm`].map((path) => stat(path).catch(() => null)));
+  return { size: db?.size, mtimeMs: db?.mtimeMs, open: wal !== null || shm !== null };
+}
+
 /** `file` opened read-only, waiting BUSY_MS on a lock: with Node's node:sqlite, or Bun's bun:sqlite under Bun (Bun 1.3
- *  has no node:sqlite, and its opener takes no timeout: the connection's busy_timeout, which writes nothing). */
+ *  has no node:sqlite, and its opener takes no timeout: the connection's busy_timeout, which writes nothing). A store
+ *  no writer has open (no -wal or -shm beside it) is opened immutable (a URI's immutable=1): SQLite's read-only open of
+ *  a WAL store makes its -wal and -shm and leaves them after close, a write into Cursor's folder that would also make
+ *  the chat look written to. An immutable open takes no lock, so `changed` looks again after the read: a -wal or -shm
+ *  now, or the store's size or mtime moved. A store a writer has open is opened read-only, through its locks. */
 async function openDb(file: string): Promise<Db> {
+  const before = await storeState(file);
+  const immutable = !before.open;
+  const uri = pathToFileURL(resolve(file));
+  uri.searchParams.set("immutable", "1");
   let query: (sql: string, params: (string | number)[]) => Row[];
   let close: () => void;
   if (process.versions.bun) {
-    const { Database } = (await import(BUN_SQLITE)) as { Database: new (file: string, options: { readonly: boolean }) => { query(sql: string): { all(...params: unknown[]): Row[] }; close(): void } };
-    const db = new Database(file, { readonly: true });
+    type BunDb = { query(sql: string): { all(...params: unknown[]): Row[] }; close(): void };
+    const { Database } = (await import(BUN_SQLITE)) as { Database: new (file: string, options: { readonly: boolean } | number) => BunDb };
+    // bun:sqlite reads a URI only through its flags form, with SQLITE_OPEN_URI.
+    const db = immutable ? new Database(uri.href, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI) : new Database(file, { readonly: true });
     db.query(BUSY_PRAGMA).all();
     query = (sql, params) => db.query(sql).all(...params);
     close = () => db.close();
   } else {
     const { DatabaseSync } = (await import(NODE_SQLITE)) as typeof import("node:sqlite");
-    const db = new DatabaseSync(file, { readOnly: true, timeout: BUSY_MS });
+    const db = new DatabaseSync(immutable ? uri : file, { readOnly: true, timeout: BUSY_MS });
     query = (sql, params) => db.prepare(sql).all(...params) as Row[];
     close = () => db.close();
   }
@@ -67,6 +89,11 @@ async function openDb(file: string): Promise<Db> {
     },
     close,
     read: () => bytes,
+    async changed() {
+      if (!immutable) return false;
+      const after = await storeState(file);
+      return after.open || after.size !== before.size || after.mtimeMs !== before.mtimeMs;
+    },
   };
 }
 
@@ -210,6 +237,7 @@ async function readChat(file: string, { turns: keep = true }: ReadOptions): Prom
         }
       }
     }
+    if (await db.changed()) throw new Error("Cursor wrote the chat while it was read: read it again");
     return { sessions: [{ locator: { file }, session, requests }], cursor: null, read: db.read(), resumed: false };
   } finally {
     db.close();

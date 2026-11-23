@@ -70,6 +70,8 @@ export async function buildChat(config, { agent = AGENT, workspace = WORKSPACE, 
   await mkdir(dir, { recursive: true });
   const file = join(dir, "store.db");
   const db = new DatabaseSync(file);
+  // In WAL mode, as cursor-agent keeps its stores; closed, the store leaves no -wal or -shm behind.
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec("CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);");
   const put = db.prepare("INSERT OR IGNORE INTO blobs VALUES (?, ?)");
   const blobOf = (bytes) => {

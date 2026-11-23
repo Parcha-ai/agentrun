@@ -2397,6 +2397,24 @@ test("a Cursor chat whose store.db looks old but whose write-ahead log was just 
   assert.deepEqual([again.already, again.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)])], [0, [[mine, [sessionId(45)]]]], "read again, not held as unchanged");
 });
 
+test("a Cursor chat is neither live nor changed for having been read: a dry run's plan leaves it to the next plan, an import to the plan after it, and nothing is written beside its store", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const mine = join(at, "code", "mine");
+  mkdirSync(mine, { recursive: true });
+  const file = cursorChat(at, mine, 47);
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const planned = (plan) => [plan.already, plan.skipped.map((s) => [s.kind, s.what]), plan.projects.map((p) => p.sessions.map((s) => s.id))];
+  // A dry run reads the chat and imports nothing: the next plan still finds it to import, not live.
+  assert.deepEqual(planned(await planImport(options(h), store)), [0, [], [[sessionId(47)]]]);
+  assert.deepEqual(planned(await planImport(options(h), store)), [0, [], [[sessionId(47)]]], "not live for the dry run's read");
+  await runImport(store, await planImport(options(h), store), options(h));
+  assert.deepEqual(planned(await planImport(options(h), store)), [1, [], []], "held as imported, unchanged");
+  assert.deepEqual(readdirSync(dirname(file)).sort(), ["meta.json", "store.db"], "no -wal or -shm made by a read");
+});
+
 test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");

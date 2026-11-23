@@ -142,7 +142,10 @@ test("a read-only reader outside the store opens its database read-only and only
     // Both openers it may take (node:sqlite's, bun:sqlite's), each read-only.
     assert.doesNotMatch(source, /readOnly:\s*false|readonly:\s*false/, file);
     assert.equal((source.match(/new DatabaseSync\(/g) ?? []).length, (source.match(/new DatabaseSync\([^)]*\{\s*readOnly:\s*true\b[^)}]*\}\)/g) ?? []).length, `${file}: node:sqlite opened read-only`);
-    assert.equal((source.match(/new Database\(/g) ?? []).length, (source.match(/new Database\([^)]*\{\s*readonly:\s*true\s*\}\)/g) ?? []).length, `${file}: bun:sqlite opened read-only`);
+    // bun:sqlite takes a URI (file:…?immutable=1) only with SQLite's open flags: those named, read-only and URI alone.
+    const flags = source.match(/new Database\([^)]*,\s*SQLITE_OPEN_READONLY \| SQLITE_OPEN_URI\)/g) ?? [];
+    if (flags.length) assert.ok(/const SQLITE_OPEN_READONLY = 0x01;/.test(source) && /const SQLITE_OPEN_URI = 0x40;/.test(source), `${file}: SQLite's read-only and URI flags, as SQLite numbers them`);
+    assert.equal((source.match(/new Database\(/g) ?? []).length, (source.match(/new Database\([^)]*\{\s*readonly:\s*true\s*\}\)/g) ?? []).length + flags.length, `${file}: bun:sqlite opened read-only`);
   }
 });
 
