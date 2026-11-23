@@ -519,7 +519,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, refusedIn(() => deps.learningFolder(input.agentId), deps.store));
+    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, refusedIn(() => deps.learningFolder(input.agentId), deps.store, deps.log));
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);
@@ -578,7 +578,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // A record the purge gate refuses is skipped as the champion's readers skip it (purged-workflow.ts refusedOf); a gate
   // that can't be asked skips none, and the text read below is gated again.
   const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
-  const heldNames = heldNamesOf(records, records.length ? await refusedIn(() => deps.learningFolder(agentId), deps.store)(records).catch(() => undefined) : undefined);
+  const heldNames = heldNamesOf(records, records.length ? await refusedIn(() => deps.learningFolder(agentId), deps.store, deps.log)(records).catch(() => undefined) : undefined);
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);

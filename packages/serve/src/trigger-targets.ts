@@ -18,10 +18,11 @@ import type { RunTrigger, Target } from "./triggers.js";
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
 
-/** Why a trigger may not message a run on a harness recipe billed to its vendor's plan: the turn would run as that run
- *  does, on its owner's own sign-in, which runs only what a person starts (HARNESS.md#run-it), and a scheduled turn runs
- *  on keys saved for the harness, which no server saves yet (the claim's RECIPE_SIGN_IN_PERSON_ONLY, for a new run). */
-export const RECIPE_MESSAGE_PERSON_ONLY = "The run is on a harness recipe billed to its vendor's plan, which runs on its owner's own sign-in only for what a person starts: a trigger's turn runs on keys saved for that harness, and this server saves no harness's keys yet. Message the run yourself, or target a run on a harness billed through this server's model proxy.";
+/** Why a trigger may not message a run on a harness recipe billed to its vendor's plan while not every key it runs on is
+ *  saved for that harness (harness-keys.ts): the turn would run as that run does, on its owner's own sign-in, which runs
+ *  only what a person starts (HARNESS.md#run-it); a trigger's turn runs on the saved keys alone (the claim's
+ *  RECIPE_SIGN_IN_PERSON_ONLY, for a new run). */
+export const RECIPE_MESSAGE_PERSON_ONLY = "The run is on a harness recipe billed to its vendor's plan, which runs on its owner's own sign-in only for what a person starts: a trigger's turn runs on keys saved for that harness, and not every one is saved. Save them in Settings → Harness keys, message the run yourself, or target a run on a harness billed through this server's model proxy.";
 
 /** What the trigger target policy needs that lives elsewhere: the run-start leaves (StartDeps, shared with the create
  *  route), the agent reads, and the run view that gives a run's live moment and its v2 status. */
@@ -38,7 +39,7 @@ export interface TriggerTargetDeps {
    *  for an unknown run. */
   momentOf(runId: string): Promise<RunMoment | undefined>;
   /** Whether `harness` is a harness recipe billed to its vendor's plan in this server's table (harness-table.ts
-   *  recipeHarness): a trigger never messages a run on one. Absent: none is. */
+   *  recipeHarness) whose keys are not all saved (harness-keys.ts): a trigger never messages a run on one. Absent: none is. */
   planRecipe?(harness: string): boolean;
   /** `work`, a write that may open run `runId` of agent `agentId` again, done in the agent's delete turn (server.ts
    *  runWrite): never under a purge of the run, and 410 purged after one. */
@@ -191,15 +192,19 @@ export type TriggerTargets = {
 
 /** The trigger target policy over `store`, with its reads and the run-start leaves injected. */
 export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps): TriggerTargets {
+  /** Under the run-keys setting, the 409 for a trigger whose firings could never bring the keys its runs owe (firingsOwe):
+   *  at its create or move, and again at each message_run firing, since one made before the setting was on, or while this
+   *  server held the key, would open a turn with none. */
+  async function targetRefusal(target: Target): Promise<ApiError | undefined> {
+    if (!deps.keysOwed) return undefined;
+    // The revision a firing would open a turn of: the run's own for a message_run, the agent's current for a start_run.
+    const row = target.kind === "message_run" ? await store.runs.get(target.run_id) : undefined;
+    const revision = target.kind === "message_run" ? (row ? await store.agents.revision(row.revisionId) : undefined) : (await deps.getAgent(target.agent_id))?.revision;
+    const owed = revision ? deps.keysOwed(revision) : [];
+    return firingsOwe(owed, target.kind, deps.hooked === true) ? keysOwedRefusal(owed) : undefined;
+  }
   return {
-    async targetRefusal(target) {
-      if (!deps.keysOwed) return undefined;
-      // The revision a firing would open a turn of: the run's own for a message_run, the agent's current for a start_run.
-      const row = target.kind === "message_run" ? await store.runs.get(target.run_id) : undefined;
-      const revision = target.kind === "message_run" ? (row ? await store.agents.revision(row.revisionId) : undefined) : (await deps.getAgent(target.agent_id))?.revision;
-      const owed = revision ? deps.keysOwed(revision) : [];
-      return firingsOwe(owed, target.kind, deps.hooked === true) ? keysOwedRefusal(owed) : undefined;
-    },
+    targetRefusal,
     async targetIssues(target) {
       if (target.kind === "message_run") {
         const run = await deps.momentOf(target.run_id);
@@ -267,6 +272,8 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       // person is told nothing by a trigger (skipped, never queued behind the person).
       if (run.maxCostUsd === undefined) throw new ApiError("not_continuable", NO_CAP);
       if (run.waitsOnPerson) return { skipped: WAITS_ON_A_PERSON };
+      const owes = await targetRefusal(target);
+      if (owes) throw owes;
       try {
         // The firing's key is the message's id; the message answers no person (answers false), its origin the trigger's.
         // Its command row is written with its firing marked sent, in one transaction, within the trigger's bound per run

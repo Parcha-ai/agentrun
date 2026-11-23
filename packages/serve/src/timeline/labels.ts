@@ -76,7 +76,7 @@ export function registerTurnEnding(tool: string): void {
 /** Whether `tool` ends its turn (registerTurnEnding). */
 export const endsTurn = (tool: string): boolean => turnEnding.has(tool);
 
-/** The label of a call; `result` is given once the call has finished. Unknown tools get Grep's own fallback. */
+/** The label of a call; `result` is given once the call has finished. Unknown tools get the default fallback. */
 export function labelOf(tool: string, args: Obj, result?: ToolResultView, extra?: Record<string, LabelFn>): string {
   const own = extra && Object.hasOwn(extra, tool) ? extra[tool] : undefined;
   return (own ?? labels.get(tool))?.(args, result) ?? mcpLabel(tool) ?? `Using tool: ${tool}`;
@@ -92,7 +92,7 @@ export function foldLabel(tool: string, calls: readonly { input: string | null; 
   return subjects.length ? `${head}: ${list(subjects)}` : head;
 }
 
-/** The input worth showing: Grep's keys first, then the browser and file ones, and last the app a computer's look or act
+/** The input worth showing: the base keys first, then the browser and file ones, and last the app a computer's look or act
  *  names (never what an act types: its steps; nor a codemode script, which can hold it). */
 export function inputPreview(args: Obj, max: number): string | null {
   for (const key of ["description", "command", "query", "file_path", "url", "path", "code", "app"]) {

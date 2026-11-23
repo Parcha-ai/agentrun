@@ -28,9 +28,9 @@ export const LAUNCH_HOOK_LATE_START_MS = 10 * 60_000;
  *  IPv6 in brackets and shortest form). */
 const loopback = (hostname: string): boolean => hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname);
 
-/** The hook a server hands its firings to: where, and the secret it signs with. `timeoutMs`: a test's bound, else
- *  LAUNCH_HOOK_TIMEOUT_MS. `bound`: a test's seam, the signal for a POST's bound in place of AbortSignal.timeout. */
-export type LaunchHook = { readonly url: string; readonly secret: string; readonly timeoutMs?: number; readonly bound?: (ms: number) => AbortSignal };
+/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's seam, the signal for a
+ *  POST's bound (LAUNCH_HOOK_TIMEOUT_MS) in place of AbortSignal.timeout. */
+export type LaunchHook = { readonly url: string; readonly secret: string; readonly bound?: (ms: number) => AbortSignal };
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
  *  run would start on now, the run's input as the trigger gives it, and the firing's time. */
@@ -85,17 +85,16 @@ export const hookOrigin = (hook: LaunchHook): string => new URL(hook.url).origin
 /** `firing` handed to `hook`: one signed POST of it, stamped at `now` (the triggers' clock), within the hook's bound and
  *  cut by `stop`. A redirect is not followed. Throws HookFailed when the host does not take it. */
 export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: AbortSignal, now: () => number = Date.now): Promise<Handed> {
-  const timeoutMs = hook.timeoutMs ?? LAUNCH_HOOK_TIMEOUT_MS;
   const body = JSON.stringify(firing);
   const timestamp = String(Math.floor(now() / 1000));
   const headers = signedRequest(hook.secret, firing.firing_id, timestamp, body, "agentrun-serve-launch-hook/1");
-  const signal = AbortSignal.any([hook.bound ? hook.bound(timeoutMs) : AbortSignal.timeout(timeoutMs), stop]);
+  const signal = AbortSignal.any([hook.bound ? hook.bound(LAUNCH_HOOK_TIMEOUT_MS) : AbortSignal.timeout(LAUNCH_HOOK_TIMEOUT_MS), stop]);
   let res: Awaited<ReturnType<typeof undiciFetch>>;
   try {
     res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });
   } catch (error) {
     if (stop.aborted) return { stopped: true };
-    if ((error as Error).name === "TimeoutError" || signal.aborted) throw new HookFailed("timeout", `did not answer in ${timeoutMs / 1000} s`);
+    if ((error as Error).name === "TimeoutError" || signal.aborted) throw new HookFailed("timeout", `did not answer in ${LAUNCH_HOOK_TIMEOUT_MS / 1000} s`);
     const code = (error as { cause?: { code?: unknown } }).cause?.code;
     throw new HookFailed("unreachable", `was not reached${typeof code === "string" ? ` (${code})` : ""}`);
   }

@@ -29,7 +29,7 @@ export function defaultStep(body) {
   return { text: 'PLAIN_REPLY' };
 }
 
-/** Starts the origin. `step(body, n)`: the answer to the nth Messages request (default `defaultStep`); `usage`: the
+/** Starts the origin. `step(body, n)`: the answer to the nth Messages request, or a promise of it (default `defaultStep`); `usage`: the
  *  tokens each answer reports, or `usage(body, n)` for them. Close destroys every open socket, so a listener held open by
  *  another process ends too. */
 export async function fakeAnthropic({ step = defaultStep, usage: usageOf = { input_tokens: 1000, output_tokens: 100 } } = {}) {
@@ -40,7 +40,7 @@ export async function fakeAnthropic({ step = defaultStep, usage: usageOf = { inp
     let raw = '';
     req.setEncoding('utf8');
     req.on('data', (c) => (raw += c));
-    req.on('end', () => {
+    req.on('end', async () => {
       let body = {};
       try { body = raw ? JSON.parse(raw) : {}; } catch { /* kept as raw below */ }
       // Only requests for the API's paths are the origin's; a port watcher's GET / is no request of the agent's.
@@ -53,7 +53,8 @@ export async function fakeAnthropic({ step = defaultStep, usage: usageOf = { inp
       }
       if (req.url !== '/v1/messages') { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{}'); return; }
       const id = ++n;
-      const plan = step(body, id);
+      // A step may hold its answer (a promise): the request stays open until it settles, as a turn that works long.
+      const plan = await step(body, id);
       const usage = typeof usageOf === 'function' ? usageOf(body, id) : usageOf;
       const block = plan.tool ? { type: 'tool_use', id: `toolu_fake_${id}`, name: plan.tool, input: plan.input } : { type: 'text', text: plan.text };
       const stop = plan.tool ? 'tool_use' : 'end_turn';

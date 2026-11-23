@@ -16,7 +16,7 @@ import time
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple, cast
 from urllib.parse import SplitResult, urlencode, urljoin, urlsplit
 
-from ._errors import AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, ServerError
+from ._errors import AgentRunAuthError, AgentRunError, AgentRunRefused, AgentRunUnreachable, AgentRunUnsupported, AgentRunUsage, ServerError, said
 from ._generated import OPERATIONS, Resources, Run, RunsResource, TimelinePage
 from ._http import (
     BAD_HEADER,
@@ -403,8 +403,9 @@ class AgentRun(Resources):
     def _refusal(self, x: Exchange, response: Response, last: bool, deadline: float) -> AgentRunError:
         """A refused answer as its outcome. The server's error object is kept with every copy of the key cut from it;
         after a secret body, with the body's values cut too, only its code, and a code that held one is no code. Its
-        text is never read into a message. A read that ends at the exchange's deadline (a wait's timeout) is Late: late
-        work is never reported as a refusal or a bad key."""
+        message, as kept, is the error's reason (said); a body that is not a JSON error object is never read into one. A
+        read that ends at the exchange's deadline (a wait's timeout) is Late: late work is never reported as a refusal or
+        a bad key."""
         error, unread = self._error_object(x, response)
         if unread and ((response.timed_out and last) or time.monotonic() >= deadline):
             raise Late()
@@ -413,7 +414,7 @@ class AgentRun(Resources):
         if x.secret:
             error = {"code": code} if code else None
         if response.status in (401, 403):
-            return AgentRunAuthError("refused", f"The server refused the API key for {x.route}: {response.status}{f' {code}' if code else ''}.", response.status, code, error)
+            return AgentRunAuthError("refused", f"The server refused the API key for {x.route}: {response.status}{f' {code}' if code else ''}{said(error) or '.'}", response.status, code, error)
         if response.status == 501:
             return AgentRunUnsupported(x.route, response.status, code, error)
         wait = retry_after_of(response.headers)

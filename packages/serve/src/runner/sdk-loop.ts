@@ -118,7 +118,7 @@ export function createSdkLoop(
                 store: host.store, agentId: agent, launch, inbox,
                 shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
                 log: (line) => host.log?.(line),
-                refused: refusedIn(() => learningFolderOf(host.data, agent), host.store),
+                refused: refusedIn(() => learningFolderOf(host.data, agent), host.store, (line) => host.log?.(line)),
               });
             } catch (error) {
               host.log?.(`workflow-first: the connected agent's check on run ${claim.runId} could not be settled (${error instanceof Error ? error.message : String(error)}); it is decided at its deadline`);

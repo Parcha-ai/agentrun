@@ -3,7 +3,8 @@
 // run's pin is its revision's, written with the revision when the agent is saved (one insert, never later): every run of
 // it, at every claim, reads that pin, and no claim writes one. A token refresh is one write that re-reads the row:
 // when another claim refreshed it first (the row changed since it was read), it is skipped and the newer row returned. A
-// conditional save (putIfCredential) writes only while the row's credential is the one its writer read.
+// conditional save (putIfCredential) writes only while the row's credential is the one its writer read, and the API
+// token's (with its mark's record) only while that record still says the token saved the row, in the same statement.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { randomBytes } from "node:crypto";
@@ -74,6 +75,36 @@ test("a conditional removal deletes the row only while its credential is the one
   assert.deepEqual(await store.mcp.removeIfCredential("github", mark(await store.mcp.server("github"))), { url: SERVER.url, sealed: SEALED }, "it answers what it deleted");
   assert.equal(await store.mcp.server("github"), undefined);
   assert.equal(await store.mcp.removeIfCredential("github", read), undefined, "gone: nothing to delete");
+});
+
+test("the API token's write and removal over a saved row land only while the row's source record still says the token saved that very row, compared in the same statement", async (t) => {
+  const { store, clock } = await storeOn(t);
+  const mark = (row) => ({ auth: row.auth, sealed: row.sealed !== null, changedAt: row.credentialChangedAt ?? null });
+  const tokens = { record: "mcp.source/github" };
+  // A new row has no mark to carry: the insert lands.
+  const row = await store.mcp.putIfCredential({ ...SERVER, auth: "none", sealed: null }, null, tokens);
+  assert.equal(row?.auth, "none");
+  const record = { source: "url", toolkit: null, of: row.createdAt };
+  const refused = async (why) => {
+    clock.now += 1_000;
+    assert.equal(await store.mcp.putIfCredential({ ...SERVER, url: "https://elsewhere.example.com/mcp", auth: "none", sealed: null }, mark(row), tokens), undefined, `${why}: nothing written`);
+    assert.equal(await store.mcp.removeIfCredential("github", mark(row), tokens), undefined, `${why}: nothing removed`);
+    assert.equal((await store.mcp.server("github"))?.url, SERVER.url, `${why}: the row stays as it was`);
+  };
+  await refused("no record");
+  await store.settings.put(tokens.record, record);
+  await refused("the owner's record");
+  await store.settings.put(tokens.record, { ...record, of: row.createdAt + 1, by: "token" });
+  await refused("the token's mark for another row of the name");
+  await store.settings.put(tokens.record, { ...record, by: "owner" });
+  await refused("a record saved by anyone else");
+  // The token's mark for this row: the write lands (its created_at kept, so the mark still names it), then the removal.
+  await store.settings.put(tokens.record, { ...record, by: "token" });
+  clock.now += 1_000;
+  const moved = await store.mcp.putIfCredential({ ...SERVER, url: "https://elsewhere.example.com/mcp", auth: "none", sealed: null }, mark(row), tokens);
+  assert.deepEqual([moved?.url, moved?.createdAt], ["https://elsewhere.example.com/mcp", row.createdAt]);
+  assert.deepEqual(await store.mcp.removeIfCredential("github", mark(moved), tokens), { url: "https://elsewhere.example.com/mcp", sealed: null });
+  assert.equal(await store.mcp.server("github"), undefined);
 });
 
 test("a run's pin is its revision's, written with the revision at its save: every run of it reads that pin, a revision saved with none has no pin row", async (t) => {

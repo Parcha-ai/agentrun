@@ -3,7 +3,6 @@
 // case per behaviour, its agent and its grader played by fixtures/faux-template-eval.mjs: no key, no network. Every
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -14,6 +13,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -412,7 +412,7 @@ test("a web: fixture answers a matching query and a fetched URL from the case, a
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
   const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
   assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
-  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.ok(["native", "firecrawl-keyless", "parallel"].includes(robot.provider), robot.provider);
   assert.deepEqual(outage, { error: "Parallel's search answered 503" });
   assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
   const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);
@@ -684,10 +684,11 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
 });
 
 /** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
- *  and passes the rest on. Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
+ *  and passes the rest on, each answer as `edit(req, body)` makes it when given one (the body a Buffer, or a promise of
+ *  one: one that never settles is a server that stalls). Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
  *  this proxy's, so it runs first at the test's end) is answered 502, never left as an unhandled rejection that fails
  *  the test after its assertions passed. */
-async function refusing(t, baseUrl, refuses) {
+async function refusing(t, baseUrl, refuses, edit = (_req, body) => body) {
   const proxy = createServer(async (req, res) => {
     if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
     try {
@@ -696,7 +697,7 @@ async function refusing(t, baseUrl, refuses) {
       const body = Buffer.concat(chunks);
       const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
       const passed = Buffer.from(await answer.arrayBuffer());
-      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(passed);
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(await edit(req, passed));
     } catch (error) {
       if (res.headersSent) return void res.destroy();
       res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_gateway", message: `the test proxy's pass-on failed: ${error.message}` } }));
@@ -750,10 +751,51 @@ test("a run no runner takes fails by name once it has stayed queued past its bou
   const [one] = report.cases[0].runs;
   assert.ok(one, JSON.stringify(report.cases[0]));
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
-  assert.match(one.error, /^the run stayed queued for 3 s: no runner took it \(state \w+\), and it was cancelled$/);
+  assert.match(one.error, /^the run stayed queued for 3 s with no runner holding it, and it was cancelled$/);
   // The eval asked to cancel it and cleaned up what it made (the agent archived); no runner ever claimed the run.
   const left = (await api("GET", `/runs/${one.run_id}`)).body;
   assert.equal(left.claim, null, "never claimed");
+});
+
+test("a run a runner holds is waited for while its view still reads queued (its first rows not shown): the queued bound is for a run no runner holds", { timeout: 180_000 }, async (t) => {
+  // The held case's run is claimed and holds in its turn until it is cancelled. Once it is there (the file its faux writes
+  // says so), the proxy serves each of its timeline pages as a held run's view reads before its first rows show: queued.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const queued = (req, body) => {
+    if (!/\/runs\/[^/]+\/timeline/.test(req.url) || !existsSync(holding)) return body;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, () => false, queued);
+  const report = await evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 10_000, runTimeoutMs: 30_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.ok(existsSync(holding), "the run reached its turn: a runner held it");
+  // Waited to the run's own bound, never given up on as queued after 10 s. The queued bound is well over the runner's
+  // 1 s fallback poll for a claim (runner.ts), which a disk-bound machine can run past.
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 30 s \(state working when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at its own bound, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
+  // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
+  // asks, as a server that took the request and stalled would.
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
+  let cancelled = false;
+  const stalled = (req, body) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelled = true;
+    return req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && !cancelled ? new Promise(() => {}) : body;
+  };
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, () => false, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 5_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 5 s \(state \w+ when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
 test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {
@@ -895,14 +937,12 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
 
 test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
-  const run = (args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "eval-template", ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" } });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err }));
-  });
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
+  const run = async (args) => {
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
+  };
   const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
   assert.equal(passed.code, 0, passed.err);
   assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
@@ -923,17 +963,13 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
   const holding = join(dir, "holding");
-  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding } });
-  let heldErr = "";
-  held.stderr.on("data", (chunk) => (heldErr += chunk));
-  held.stdout.resume();
-  const closed = new Promise((resolve) => held.on("close", resolve));
-  await untilFile(holding, closed);
-  assert.ok(existsSync(holding), `the held run reached its turn: ${heldErr}`);
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   held.kill("SIGINT");
-  const code = await closed;
-  assert.equal(code, 130, heldErr);
-  assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   // A report path that exists and can't be written: refused before anything runs.
@@ -941,7 +977,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
   for (const [args, said] of [
-    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
     [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],

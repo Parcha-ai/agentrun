@@ -68,6 +68,26 @@ test("a subagent whose parent is not under the home is counted once, as its own 
   assert.equal(sessions[0].turns, 0, "a subagent's prompts are its parent agent's, not the person's");
 });
 
+test("a subagent's session that names no parent (Codex's source.subagent alone) is a line of its own, with no turns of the person's", async (t) => {
+  const home = await tempHome(t);
+  const meta = { type: "session_meta", timestamp: "2026-01-01T00:00:00.000Z", payload: { id: "thread-review", cwd: "/work/fixture", model_provider: "openai", source: { subagent: { review: {} } } } };
+  await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-02-review.jsonl"), [
+    meta, codexContext(1), codexUser("Its parent agent's prompt.", 2), codexAnswer("Review answer.", 3),
+    codexTokens(openaiUsage(9, 0, 1), openaiUsage(9, 0, 1), 4),
+  ]);
+  const sessions = await parseHome(home, { sources: ["codex"] });
+  assert.equal(sessions.length, 1);
+  assert.deepEqual([sessions[0].tokens.input, sessions[0].calls, sessions[0].turns], [9, 1, 0]);
+});
+
+test("Claude Code: a subagent's file whose session file is gone is a line of its own, with no turns of the person's, sidechain-marked or not", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(subagentFile(home), [claudeUser({ uuid: "s1", text: "Its parent agent's prompt.", i: 0 }), claudeAnswer({ uuid: "s2", msg: "msg_s", req: "req_s", usage: anthropicUsage(4, 2), i: 1 })]);
+  const sessions = await parseHome(home, { sources: ["claude-code"], catalog: false });
+  assert.equal(sessions.length, 1);
+  assert.deepEqual([sessions[0].tokens.input, sessions[0].calls, sessions[0].turns], [4, 1, 0]);
+});
+
 test("Claude Code: a resumed session's file that opens with a copy of another session's record is its own session; the copy counts once, in the first", async (t) => {
   const home = await tempHome(t);
   const copied = claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 7), i: 2, session: "s-a" });
