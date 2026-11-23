@@ -682,6 +682,53 @@ test("local: a git past the script's deadline is killed with the script, its who
   assert.equal(alive(), false, "the stuck git is gone: its group was killed with the script");
 });
 
+test("local: a script that exited while a process outside its group still holds its output fails, never hands back what it read so far as the answer", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  const head = (await save(store, null, [{ path: "corrections.md", text: "- one\n" }])).saved;
+  // A git in front of the script's: armed, its ls-tree leaves a holder in a session of its own (no group kill reaches
+  // it) holding the script's stdout, then runs as git; the script exits 0 with its output still open.
+  const bin = mkdtempSync(join(tmpdir(), "learn-git-"));
+  const arm = join(bin, "arm");
+  const pidFile = join(bin, "pid");
+  t.after(() => {
+    try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL"); } catch { /* gone */ }
+    rmSync(bin, { recursive: true, force: true });
+  });
+  writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do\n  if [ "$a" = ls-tree ] && [ -f "${arm}" ]; then rm -f "${arm}"; setsid sh -c 'echo $$ > "${pidFile}"; exec sleep 30' & break; fi\ndone\nexec /usr/bin/git "$@"\n`, { mode: 0o755 });
+  localStoreHooks.env = { PATH: `${bin}:/usr/bin:/bin` };
+  t.after(() => {
+    localStoreHooks.env = undefined;
+  });
+  writeFileSync(arm, "");
+  const started = Date.now();
+  await assert.rejects(store.read(head), /output stayed open past 0\.5 s/);
+  assert.equal(existsSync(arm), false, "the read's ls-tree left the holder");
+  assert.ok(Date.now() - started < 10_000, `the call ended at the grace, not when the holder let go (${Date.now() - started} ms)`);
+});
+
+test("local: a read whose reader falls behind past the grace (an event loop busy after the script exited) comes back whole", async (t) => {
+  const store = await STORES.local(t);
+  const { localStoreHooks } = await import("../dist/learn/store-local.js");
+  // More than this server's pipe buffer (64 KiB) and less than it plus the kernel's (64 KiB): the script writes it all
+  // and exits while the end of it still waits in the pipe.
+  const whole = Array.from({ length: 1500 }, (_, i) => `- line ${String(i).padStart(4, "0")} ${"x".repeat(48)}\n`).join("");
+  assert.ok(whole.length > 70_000 && whole.length < 110_000, `${whole.length}`);
+  const head = (await save(store, null, [{ path: "corrections.md", text: whole }])).saved;
+  // The reader paused from the spawn on; once the script exited, the event loop is held past the grace before reading on.
+  localStoreHooks.spawned = (child) => {
+    child.stdout.pause();
+    child.once("exit", () => setImmediate(() => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800);
+      child.stdout.resume();
+    }));
+  };
+  t.after(() => {
+    localStoreHooks.spawned = undefined;
+  });
+  assert.equal(text(await store.read(head), "corrections.md"), whole, "the whole file, never the part read before the grace");
+});
+
 test("local: every git the script runs flushes what it commits (core.fsync=committed): a save reported done survives a crash", async (t) => {
   const store = await STORES.local(t);
   const { localStoreHooks } = await import("../dist/learn/store-local.js");

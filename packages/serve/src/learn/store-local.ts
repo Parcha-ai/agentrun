@@ -7,7 +7,7 @@
 // level is missing, the store has no head. A level that is a symbolic link (or the folder's .git) is refused as
 // FolderUnreadable naming it, so nothing is read, made or run where a link points; the script refuses one inside the
 // folder the same way. remove() deletes the folder whole.
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstat, mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -26,8 +26,9 @@ const PIPE_GRACE_MS = 500;
 const STDOUT_MAX = 64 << 20;
 
 /** Test seams, tests only: variables added to the script's environment (AGENTRUN_LEARNING_FAIL), each run's argv,
- *  told once the run ended and awaited before its answer is handed back, and a shorter deadline than SCRIPT_TIMEOUT_MS. */
-export const localStoreHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void | Promise<void>; timeoutMs?: number } = {};
+ *  told once the run ended and awaited before its answer is handed back, a shorter deadline than SCRIPT_TIMEOUT_MS, and
+ *  each script's process as it starts, before anything reads it (a reader that falls behind). */
+export const localStoreHooks: { env?: Record<string, string>; exec?: (argv: readonly string[]) => void | Promise<void>; timeoutMs?: number; spawned?: (child: ChildProcessWithoutNullStreams) => void } = {};
 
 /** The script's environment, whole: it inherits nothing. */
 const scriptEnv = (): Record<string, string> => ({
@@ -54,6 +55,7 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
   return new Promise((resolve, reject) => {
     const timeoutMs = localStoreHooks.timeoutMs ?? SCRIPT_TIMEOUT_MS;
     const child = spawn("sh", [SCRIPT, ...args], { cwd, env: scriptEnv(), stdio: ["pipe", "pipe", "pipe"], detached: true });
+    localStoreHooks.spawned?.(child);
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let size = 0;
