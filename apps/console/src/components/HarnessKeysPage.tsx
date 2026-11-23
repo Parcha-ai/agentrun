@@ -14,6 +14,13 @@ import type { ApiError, HarnessKeys, HarnessKeysEntry, SecretMeta } from "@/lib/
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
+/** Why a key saved for a harness is not one its runs get (the view's `reenter`), in words beside it. */
+const REENTER_WORDS: Record<HarnessKeysEntry["reenter"][number]["why"], string> = {
+  recipe_changed: "Saved for another version of this recipe file: paste it again",
+  seal_key_changed: "Sealed under another seal key: paste it again",
+  file_unreadable: "Its saved row does not read: paste it again",
+};
+
 /** Which key's form or confirm is open: the harness, the key, and whether it pastes or removes. */
 type Open = { harness: string; key: string; mode: "edit" | "remove" };
 
@@ -101,21 +108,40 @@ function HarnessSection({ harness: h, writable, open, problem, onOpen, onSave, o
   const box = useRef<HTMLDivElement>(null);
   const saved = h.keys.filter((k) => k.set).length;
   const name = (k: SecretMeta) => secretLabel(k.name);
+  const again = (k: SecretMeta) => h.reenter.find((r) => r.name === k.name)?.why;
   return (
     <SettingsSection label={h.label} title={h.label}
-      note={<p>{h.ready ? "Every key is saved: its runs run on them, a scheduled or triggered one too." : "Its runs run on these keys once every one is saved. Until then, a person's run takes its owner's own sign-in where the server allows one."}</p>}>
+      note={<p>{!h.named ? "This server is no longer started with this recipe (--harness-recipe). Its keys stay sealed and no run gets them until you remove them." : h.ready ? "Every key is saved: its runs run on them, a scheduled or triggered one too." : "Its runs run on these keys once every one is saved. Until then, a person's run takes its owner's own sign-in where the server allows one."}</p>}>
       <div ref={box} className="border p-4" data-harness={h.id}>
         <p className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-prose font-semibold">{h.id}</span>
-          <Chip tone={h.ready ? "success" : "plain"}>{h.ready ? "ready" : saved ? `${saved} of ${h.keys.length} saved` : "not saved"}</Chip>
+          {h.named
+            ? <Chip tone={h.ready ? "success" : "plain"}>{h.ready ? "ready" : saved ? `${saved} of ${h.keys.length} saved` : "not saved"}</Chip>
+            : <Chip tone="muted">recipe not named</Chip>}
         </p>
-        <ul className="mt-3 space-y-1.5">
-          {h.keys.map((k) => (
-            <SecretRow key={k.name} field={k} writable={writable && open === null}
-              onPaste={() => void pasteFromClipboard(() => onOpen(name(k), "edit"), () => box.current?.querySelector("form")?.elements.namedItem("value") as HTMLInputElement | null)}
-              onRemove={k.source === "console" ? () => onOpen(name(k), "remove") : undefined} />
-          ))}
-        </ul>
+        {h.keys.length > 0 && (
+          <ul className="mt-3 space-y-1.5">
+            {h.keys.map((k) => {
+              const why = again(k);
+              return (
+                <SecretRow key={k.name} field={k} writable={writable && open === null} note={why ? REENTER_WORDS[why] : undefined}
+                  onPaste={() => void pasteFromClipboard(() => onOpen(name(k), "edit"), () => box.current?.querySelector("form")?.elements.namedItem("value") as HTMLInputElement | null)}
+                  onRemove={k.source === "console" ? () => onOpen(name(k), "remove") : undefined} />
+              );
+            })}
+          </ul>
+        )}
+        {h.kept.length > 0 && (
+          <>
+            <p className="caps mt-4 text-label text-muted-foreground">{h.named ? "Kept: its recipe runs on these no more" : "Kept"}</p>
+            <ul className="mt-2 space-y-1.5" aria-label={`${h.label} kept keys`}>
+              {h.kept.map((k) => (
+                <SecretRow key={k.name} field={k} writable={writable && open === null} note={k.set ? undefined : "Does not open under this server's seal key"}
+                  onRemove={() => onOpen(name(k), "remove")} />
+              ))}
+            </ul>
+          </>
+        )}
         {open?.mode === "edit" && <KeyForm label={h.label} keyName={open.key} replaces={h.keys.some((k) => name(k) === open.key && k.set)} onSave={(value) => onSave(open.key, value)} onCancel={() => onOpen(null)} />}
         {open?.mode === "remove" && (
           <div className="mt-4 flex flex-wrap items-center gap-3 border bg-card p-3">

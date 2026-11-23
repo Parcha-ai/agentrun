@@ -689,6 +689,7 @@ __all__ = [
     "ListGitHubRepositoriesResponseUnreadItem",
     "ListHarnessKeysResponse",
     "ListHarnessKeysResponseHarnessesItem",
+    "ListHarnessKeysResponseHarnessesItemReenterItem",
     "ListHomeFilesResponse",
     "ListHomeFilesResponseFilesItem1",
     "ListHomeFilesResponseFilesItem2",
@@ -4274,8 +4275,16 @@ class ListHarnessKeysResponse(TypedDict):
 class ListHarnessKeysResponseHarnessesItem(TypedDict):
     id: str
     label: str
+    named: bool
     keys: list[SecretMeta]
+    kept: list[SecretMeta]
     ready: bool
+    reenter: list[ListHarnessKeysResponseHarnessesItemReenterItem]
+
+
+class ListHarnessKeysResponseHarnessesItemReenterItem(TypedDict):
+    name: str
+    why: Literal["recipe_changed", "seal_key_changed", "file_unreadable"]
 
 
 class ListHomeFilesResponse(TypedDict):

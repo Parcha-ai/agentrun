@@ -187,7 +187,7 @@ describe("App, Settings", () => {
       if (path === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], tools, features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false }, ...features } });
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
-      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+      if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
       if (path === "/v2/settings/mcp-servers") return json(200, { servers: [] });

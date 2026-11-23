@@ -958,7 +958,8 @@ test("a server takes a recipe it names only once its install is checked: hidden 
   const { store } = await storeOn(t);
   const saved = new HarnessKeysOverStore(store, randomBytes(32), planRecipesOf(keyedEnv), keyed.data);
   await saved.load();
-  assert.deepEqual(saved.recipes, [{ id: "model-agent", label: "Model Agent", keys: ["MODEL_AGENT_API_KEY"] }]);
+  assert.deepEqual(saved.recipes.map(({ digest, ...recipe }) => recipe), [{ id: "model-agent", label: "Model Agent", keys: ["MODEL_AGENT_API_KEY"] }]);
+  assert.match(saved.recipes[0].digest, /^[0-9a-f]{64}$/, "bound to its recipe file's sha256");
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY", { value: "saved-test-key" });
   assert.equal(keyedEntry.hidden(keyedEnv), undefined, "listed once every key is saved here");
   await saved.remove(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY");
@@ -1028,7 +1029,8 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   const data = join(await scratch(t), "agents");
   const own = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:9" }))], data, { signIn: true });
   const { store: real } = await storeOn(t);
-  const store = { settings: { get: async () => null }, sealedKeys: real.sealedKeys };
+  // The store's own settings: each saved key's binding to its recipe file is a settings row (harness-keys.ts).
+  const store = { settings: real.settings, sealedKeys: real.sealedKeys };
   const deps = { data, env: own, sealKey: Buffer.alloc(32), store };
   const person = { input: {}, place: { mode: "runner" } };
   const scheduled = { ...person, trigger: { triggerId: "trg_nightly", firingId: "fir_1" } };
@@ -1051,7 +1053,7 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   await loops.refuseRecipeTriggerRun(deps, "pi", scheduled);
   // A key saved for another harness, under the same name, is not this one's: still refused.
   const seal = randomBytes(32);
-  const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"] }], data);
+  const other = new HarnessKeysOverStore(real, seal, [{ id: "other-agent", label: "Other", keys: ["MODEL_AGENT_GEMINI_API_KEY"], digest: "0".repeat(64) }], data);
   await other.save(other.recipe("other-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await assert.rejects(loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled), refusedFor);
   // With every key saved for its harness, it runs, on every path.
@@ -1059,6 +1061,12 @@ test("a run no person started (a schedule's, a trigger's) on a plan-billed recip
   await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_GEMINI_API_KEY", { value: "saved-test-key" });
   await loops.refuseRecipeTriggerRun(deps, "model-agent", scheduled);
   assert.equal(await host.staysInRunner(deps, "model-agent", scheduled, "run-nightly", sameUser), false);
+  // A later recipe file that takes the same id and names the same key (another agent, another vendor) never takes the
+  // keys saved for the one before it: refused again, on every path, until they are saved for it.
+  const later = harnessRecipesEnv([await recipeFile(t, signingIn({ url: "http://127.0.0.1:10" }))], data, { signIn: true });
+  assert.notEqual(planRecipesOf(later)[0].digest, planRecipesOf(own)[0].digest);
+  await assert.rejects(loops.refuseRecipeTriggerRun({ ...deps, env: later }, "model-agent", scheduled), refusedFor);
+  await assert.rejects(host.staysInRunner({ ...deps, env: later }, "model-agent", scheduled, "run-nightly", sameUser), refusedFor);
 });
 
 test("--harness-sign-in starts only one owner's own server on their own machine: loopback with no public address, the SQLite store in its data directory, its runs beside it as its own user, an owner and one token; anything else refuses the start in words", async (t) => {
@@ -1178,7 +1186,7 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
   assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"] });
   const listed = await token("GET", "/settings/harness-keys");
   assert.equal(listed.status, 200, listed.text);
-  assert.deepEqual(JSON.parse(listed.text), { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+  assert.deepEqual(JSON.parse(listed.text), { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
 
   const first = plantedValue("harness-key");
   const second = plantedValue("harness-key");
@@ -1189,6 +1197,7 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
   assert.equal((await token("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 403);
   // A harness the server has no plan-billed recipe for, and a key its recipe does not run on, are refused.
   assert.equal((await owner("PUT", "/settings/harness-keys/pi/MODEL_AGENT_API_KEY", { value: first })).status, 404);
+  assert.equal((await owner("DELETE", "/settings/harness-keys/pi/MODEL_AGENT_API_KEY")).status, 404, "no recipe named and no key kept");
   const notItsKey = await owner("PUT", "/settings/harness-keys/model-agent/OPENROUTER_API_KEY", { value: first });
   assert.equal(notItsKey.status, 422, notItsKey.text);
   assert.match(notItsKey.text, /not_an_option/);

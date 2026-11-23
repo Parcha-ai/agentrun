@@ -513,6 +513,12 @@ seal key in the store, named `harness:<id>:<KEY>`, so a key saved for one harnes
 even under the same name. Saving or removing one is a secret write: the owner's signed-in session alone, never the API
 token. The routes are `GET /v2/settings/harness-keys` and `PUT`/`DELETE /v2/settings/harness-keys/{harness_id}/{key}`.
 
+Each saved key is bound to the recipe file it was saved for (the file's sha256) and to the seal key it was sealed under.
+A later recipe file that takes the same id, even one naming the same keys, never opens them: the page lists each to
+paste again, with why (`recipe_changed`, `seal_key_changed`, `file_unreadable`). A recipe the server is no longer
+started with keeps its keys sealed, and still cut, but no run gets them. The page lists them under its id, and `DELETE`
+removes each, as it removes a key that its recipe no longer runs on.
+
 Each claim of a run on the harness opens that harness's keys, and lays no other harness's. A runner apart opens them
 for its run's own process. They are laid all or none, and only on the agent's start: the vendor's agent process gets
 each one by design, since it signs in with it, and never the run's tools or the environment the tools see. The agent

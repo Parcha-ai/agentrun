@@ -24,7 +24,7 @@ import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
-import { harnessOf, recipeHarness, recipeKeysOf } from "../harness-table.js";
+import { harnessOf, planRecipeOf, recipeHarness } from "../harness-table.js";
 import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
@@ -792,8 +792,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // harness is a plan-billed recipe on this runner's table, and never another harness's.
     harnessKeys: async () => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
-      const names = harness === undefined ? undefined : recipeKeysOf(deps.env, harness);
-      return harness !== undefined && names?.length ? openHarnessKeys(store, sealKey, harness, names) : {};
+      const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
+      return recipe?.keys.length ? openHarnessKeys(store, sealKey, recipe) : {};
     },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),

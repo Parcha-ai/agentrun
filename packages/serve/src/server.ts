@@ -5570,8 +5570,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await harnessKeysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
+      // A recipe this server names, or an id whose recipe it no longer names that still has keys kept: removed all the same.
       case "deleteHarnessKey":
-        await harnessKeys.remove(harnessKeys.recipe(id), decodeURIComponent(second!));
+        await harnessKeys.remove(harnessKeys.held(id), decodeURIComponent(second!));
         await harnessKeysChanged();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       // Never through `idempotent`: its record keeps the body, and the body holds the password.
