@@ -211,8 +211,11 @@ const kept = ({ job, look, digest, error, capped = false, workflow }) => ({
  *  - run-08, an agent run at $3.00 by hand after them;
  *  - `records`: the promotion feed (C's promote by default);
  *  - `capped`: run-03's compile spent its $0.20 on a draft the checks refused, then the cap refused its next attempt, so
- *    its round kept the spend and no draft. */
-async function splitStore(t, { replay = 0.3, records, capped = false } = {}) {
+ *    its round kept the spend and no draft;
+ *  - `recompiled`: run-09 after them, an agent run at $1.07 whose session recompiled the workflow into revision R (the job
+ *    $1.00, the compile turn $0.07), which no record names: its check has not started. */
+const R = "f".repeat(16);
+async function splitStore(t, { replay = 0.3, records, capped = false, recompiled = false } = {}) {
   const clock = { now: Date.parse(at(0)) };
   const { store } = await storeOn(t, { clock });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
@@ -231,7 +234,8 @@ async function splitStore(t, { replay = 0.3, records, capped = false } = {}) {
   const promotedAt = at((minute += 1));
   for (const id of ["run-04", "run-05", "run-06", "run-07"]) await end(id, 0.1, served);
   await end("run-08", 3, { path: "agent" });
-  const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  if (recompiled) await end("run-09", 1.07, { path: "agent" }, { round: kept({ job: 1, look: 0.07, digest: R }) });
+  const bar ={ compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = { workflow: "answer", digest: C, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"] } };
   await store.settings.put("learning.promotions.agent-1", { v: 1, items: records ?? [promote] });
   return store;
@@ -284,6 +288,40 @@ test("A8 (3b): a compile the cap stopped after a refused draft keeps its turn's 
   assert.equal(cost.bill.unattributed_usd, 0.2, "run-03's compile turn, no draft kept");
   const all = await v2Of(store, cost.bill);
   assert.deepEqual([all["run-03"].usd, all["run-03"].learning_usd, all["run-03"].all_in_usd], [1, 0, 1], "its compile turn is the ledger's, never the run's");
+});
+
+test("a recompile's revision whose check has not started is a `drafted` row carrying its compile; once its check starts the row is its record's, the same compile, never counted twice", async (t) => {
+  const store = await splitStore(t, { recompiled: true });
+  const pick = (one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state];
+  const micro = (usd) => Math.round(usd * 1e6);
+  const sumOf = (rows, field) => rows.reduce((total, one) => total + micro(one[field]), 0);
+  // The rest no revision names: the bill's unattributed less each row's.
+  const unnamed = (bill) => micro(bill.unattributed_usd) - sumOf(bill.revisions, "unattributed_usd");
+
+  // Its check never started: no record names R.
+  const drafted = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.deepEqual(drafted.revisions.map(pick), [
+    ["answer", C, 0.3, 0.6, 0.9, 3, 4, 0.9, 0, "serving"],
+    ["answer", R, 0.07, 0, 0.07, 3, 0, 0, 0.07, "drafted"],
+  ], "R's compile on R's own row, at K its workflow's checked compile_after");
+  assert.equal(drafted.booked_usd, 8.57);
+  assert.equal(unnamed(drafted), micro(0.2), "the rest no row names is run-03's failed compile alone, never R's");
+  const all = await v2Of(store, drafted);
+  assert.deepEqual([all["run-09"].usd, all["run-09"].learning_usd, all["run-09"].all_in_usd], [1, 0, 1], "run-09's compile turn is R's, never the run's");
+
+  // Its check starts: a replaying record names R.
+  const { items } = await store.settings.get("learning.promotions.agent-1");
+  const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [...items, { workflow: "answer", digest: R, at: at(40), decided: "replaying", reason: "its check is replaying", check: bar, runs: ["replay-r"], inputs: ["run-08"], replay_id: "rp-r" }] });
+  const checking = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.deepEqual(checking.revisions.map(pick), [
+    ["answer", C, 0.3, 0.6, 0.9, 3, 4, 0.9, 0, "serving"],
+    ["answer", R, 0.07, 0, 0.07, 3, 0, 0, 0.07, "checking"],
+  ], "one R row, its record's now");
+  await v2Of(store, checking);
+  // Across both reads: the same compile, the same booked total and the same rest, each once.
+  assert.deepEqual([sumOf(checking.revisions, "compile_usd"), micro(checking.booked_usd), micro(checking.unattributed_usd), unnamed(checking)], [sumOf(drafted.revisions, "compile_usd"), micro(drafted.booked_usd), micro(drafted.unattributed_usd), unnamed(drafted)]);
+  assert.equal(sumOf(checking.revisions, "compile_usd"), micro(0.37), "C's $0.30 and R's $0.07");
 });
 
 test("A8: a served run whose revision's check cost is unknown reports learning_usd and all_in_usd null, never $0; the ledger's remainder is unknown too", async (t) => {
