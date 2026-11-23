@@ -18,6 +18,7 @@ import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
 
 const KEY = `not-a-secret-${"handed-cut-model-key"}-5e09b7`;
+const KEY_TWO = `not-a-secret-${"handed-cut-message-key"}-0d2f91`;
 const SERVER_KEY = `not-a-secret-${"handed-cut-server-key"}-a41c33`;
 /** Every variable these tests set or clear. */
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_GRADE_MODEL", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"];
@@ -185,5 +186,58 @@ test("a run whose launch's sealed part doesn't open here is withheld, as a run w
   }
   const row = (await run.api("GET", "/runs")).body.runs.find((one) => one.run_id === run.runId);
   assert.equal(row?.title, WITHHELD_TITLE, `its list row withheld: ${JSON.stringify(row)}`);
+  run.release();
+});
+
+test("a key its caller typed into the input (the run's title) or a message is cut where the server writes them, so the run's view, list row and timeline never show it, live or after its end", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY, input: { content: `Use the key ${KEY} for this.` } } });
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: `Again: ${KEY_TWO}.`, model_key: KEY_TWO });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const served = async () => {
+    const view = (await run.api("GET", `/runs/${run.runId}`)).body;
+    const row = (await run.api("GET", "/runs")).body.runs.find((one) => one.run_id === run.runId);
+    const timeline = (await run.api("GET", `/runs/${run.runId}/timeline`)).body;
+    return { title: view.title, text: JSON.stringify([view, row, timeline]) };
+  };
+  const held = (text) => text.includes(KEY) || text.includes(KEY_TWO);
+  const live = await served();
+  assert.equal(held(live.text), false, "live: not in its view, list row or timeline");
+  await run.ended();
+  const ended = await served();
+  assert.equal(held(ended.title), false, `after the end, when the values are erased: not in its title (${ended.title})`);
+  assert.equal(held(ended.text), false, "nor anywhere in its view, list row or timeline");
+  assert.match(ended.title, /Use the key \[redacted\] for this/, "cut in place");
+  // Where the server wrote them: the launch body and the message's command row hold the cut text, so no read of them
+  // after the values are gone could show the key.
+  const stored = JSON.stringify([(await run.store.runs.launch(run.runId)).body, (await run.store.commands(run.runId, 0)).map((command) => command.body)]);
+  assert.equal(held(stored), false, "not in the stored launch body or message");
+});
+
+test("a message that hands a new model_key mid-turn keeps the one it replaced cut from the run's files, live and after its end by its census", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  await writeFile(join(run.work, "notes.txt"), `first=${KEY}\n`);
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: "Go on.", model_key: KEY_TWO });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  await writeFile(join(run.work, "both.txt"), `first=${KEY}\nsecond=${KEY_TWO}\n`);
+  assert.deepEqual(await cutRead(run, "notes.txt"), [200, "first=[redacted]\n"], "live: the replaced key is still cut");
+  assert.deepEqual(await cutRead(run, "both.txt"), [200, "first=[redacted]\nsecond=[redacted]\n"], "and the new one");
+  await run.ended();
+  assert.equal((await run.store.runs.launch(run.runId)).census.includes(KEY), false, "the census holds no key");
+  assert.deepEqual(await cutRead(run, "notes.txt"), [200, "first=[redacted]\n"], "ended: its census counted the replaced key");
+  assert.deepEqual(await cutRead(run, "both.txt"), [200, "first=[redacted]\nsecond=[redacted]\n"]);
+});
+
+test("a message sealed over a launch whose sealed part doesn't open here keeps the run withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  await writeFile(join(run.work, "notes.txt"), `first=${KEY}\n`);
+  const db = await raw(join(run.data, "store.sqlite"));
+  try {
+    await db.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", new Uint8Array(64).fill(9), run.runId);
+  } finally {
+    await db.close();
+  }
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: "Go on.", model_key: KEY_TWO });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "a fresh seal is no reason to read the run cut of the new key alone");
   run.release();
 });

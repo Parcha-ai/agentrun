@@ -6,7 +6,7 @@
 // launch or with a message (its MCP credentials, its own model key and tool keys: store/seal.ts RunLaunchSecrets), opened
 // from the launch's sealed part while the run holds it (launchValuesOf), and once its end erased that, where in its files
 // they sat (the launch's census, run-census.ts).
-import { MIN_SECRET } from "./learn/secrets.js";
+import { heldSpans, MIN_SECRET } from "./learn/secrets.js";
 import { launchSecrets } from "./runner/store-secrets.js";
 import { ServerSecrets } from "./server-secrets.js";
 import { sealedAt, unsealColumn } from "./store/seal.js";
@@ -76,9 +76,69 @@ export function launchValuesOf(sealKey: Buffer | undefined, runId: string, seale
   } catch {
     return "unreadable";
   }
+  // A message sealed over bytes that did not open here (store/seal.ts RunLaunchSecrets.lost): what they held is unknown.
+  if (lostIn(plain)) return "unreadable";
+  return launchValuesIn(plain);
+}
+
+/** Whether a launch's sealed JSON `plain` says a message sealed over bytes that did not open (RunLaunchSecrets.lost). */
+function lostIn(plain: string): boolean {
+  try {
+    return (JSON.parse(plain) as { lost?: unknown } | null)?.lost === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Every value a launch's sealed JSON `plain` holds, as a cut lists them: each as the runner's own cut lists it
+ *  (runner/store-secrets.ts launchSecrets), in every spelling the server's list has (ServerSecrets), each at least
+ *  MIN_SECRET long. */
+export function launchValuesIn(plain: string): string[] {
   const list = new ServerSecrets();
   list.add("handed", () => (plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain]));
   return list.values().filter((value) => value.length >= MIN_SECRET);
+}
+
+/** Each value the launch secrets `before` hold (their `retired` too) that `after` no longer hold, as the runner's cut
+ *  lists them (launchSecrets): what a message's seal keeps as `retired` (store/seal.ts RunLaunchSecrets), so a value it
+ *  replaced mid-turn is still cut, live and in the end's census. */
+export function retiredValues(before: object, after: object): string[] {
+  const kept = new Set(launchSecrets(JSON.stringify(after)));
+  return [...new Set(launchSecrets(JSON.stringify(before)).filter((value) => !kept.has(value)))];
+}
+
+/** The values a start or a message hands (`mcp_auth`, `model_key`, `keys`: server.ts Handed), as launchValuesIn lists
+ *  them from the launch they are sealed in. None when it hands none. */
+export function handedSecretValues(handed: { readonly mcp?: unknown; readonly model?: string; readonly keys?: Readonly<Record<string, string>> }): string[] {
+  if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined) return [];
+  return launchValuesIn(JSON.stringify({ ...(handed.mcp !== undefined ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined ? { model: { key: handed.model } } : {}), ...(handed.keys !== undefined ? { keys: handed.keys } : {}) }));
+}
+
+/** `value` with every string in it cut of `values` alone (each in every form redactSecrets finds it, learn/secrets.ts
+ *  heldSpans; a string where one still shows in another form is "[redacted]" whole), and nothing else changed: no secret
+ *  shape is cut, no length blanks it. What the server writes of a start or a message (its input, which a run's title is
+ *  read from, its text) is cut so of what that start or message hands, so no read after the run's end erased those
+ *  values (when no cut holds them) shows them. Its names are left as they are. */
+export function cutHanded<T>(value: T, values: readonly string[]): T {
+  if (!values.length) return value;
+  const cutText = (text: string): string => {
+    const spans = heldSpans(text, values);
+    if (spans === "whole") return "[redacted]";
+    let out = "";
+    let from = 0;
+    for (const [start, end] of spans) {
+      out += `${text.slice(from, start)}[redacted]`;
+      from = end;
+    }
+    return out + text.slice(from);
+  };
+  const walk = (one: unknown): unknown => {
+    if (typeof one === "string") return cutText(one);
+    if (Array.isArray(one)) return one.map(walk);
+    if (one !== null && typeof one === "object") return Object.fromEntries(Object.entries(one).map(([name, inner]) => [name, walk(inner)]));
+    return one;
+  };
+  return walk(value) as T;
 }
 
 /** The browser vendors that keep a sign-in (sign-ins-store.ts vendorOf). */

@@ -63,7 +63,8 @@ function jsonSecrets(text: string): string[] {
 /** A launch's sealed JSON: its own listed values (jsonSecrets), each handed MCP credential's headers (store/seal.ts
  *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, each per-run Composio
  *  binding's user and account (`{"mcp": {"<server>": {"composio": {"user_id", "connected_account_id"}}}}`), the run's
- *  own model key (`{"model": {"key": "..."}}`) and each of its own tool keys (`{"keys": {"<NAME>": "..."}}`). */
+ *  own model key (`{"model": {"key": "..."}}`), each of its own tool keys (`{"keys": {"<NAME>": "..."}}`) and each value a
+ *  message replaced since its turn began (`{"retired": ["..."]}`). */
 export function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
   let opened: { mcp?: unknown; model?: { key?: unknown }; keys?: unknown } | null;
@@ -82,6 +83,8 @@ export function launchSecrets(text: string): string[] {
   }
   if (typeof opened?.model?.key === "string") out.push(opened.model.key);
   if (opened?.keys && typeof opened.keys === "object") for (const value of Object.values(opened.keys)) if (typeof value === "string") out.push(value);
+  // Each value a message replaced since the turn began (store/seal.ts RunLaunchSecrets.retired): cut, never used.
+  if (Array.isArray((opened as { retired?: unknown } | null)?.retired)) for (const value of (opened as { retired: unknown[] }).retired) if (typeof value === "string") out.push(value);
   return out;
 }
 
