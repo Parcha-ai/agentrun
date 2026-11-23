@@ -317,7 +317,9 @@ test("codex and opencode on an Ollama model: each adapter is handed the route's 
 
 // What codex 0.164.0 sends for a model id that is not OpenAI's, through serve's proxy (recorded at a stand-in endpoint:
 // its keys, its tools' and input items' shapes, never their text): every key is one the edge takes, its include
-// (reasoning.encrypted_content) is read for nothing, and its developer messages are the system prompt.
+// (reasoning.encrypted_content) is read for nothing, and its developer messages are the system prompt. Its `tools` is
+// empty because the recorded agent named no host tool: on a model Codex's catalog does not list, Codex offers each host
+// tool as a function in `tools` (the classic shape, run-adapters-codex test/offer.mjs), never code mode's custom `exec`.
 test("codex 0.164.0's own request, as recorded through serve's proxy on a model not OpenAI's, is taken whole: its keys, its include, its developer messages as the system prompt", async (t) => {
   const recorded = JSON.parse(await readFile(new URL("./fixtures/codex-0.164.0-responses-request-routed.json", import.meta.url), "utf8"));
   const values = { include: recorded.include, input: undefined, max_output_tokens: 256, model: TOOLS, parallel_tool_calls: false, prompt_cache_key: "thread-1", reasoning: { effort: "medium", summary: "auto" }, store: recorded.store, stream: recorded.stream, tool_choice: recorded.tool_choice, tools: recorded.tools.map((tool) => ({ ...tool, description: "a tool" })) };
