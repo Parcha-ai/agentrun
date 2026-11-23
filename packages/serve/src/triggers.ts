@@ -1162,7 +1162,7 @@ export class Triggers {
       firing_id: firing.key, trigger_id: trigger.id, agent_id: agentId, revision_id: (await this.store.agents.get(agentId))?.currentRevision ?? null,
       input: this.inputOf(trigger, firing), fired_at: second(firing.nominalAt),
     };
-    const handed = await handToHost(hook, sent, this.stopping.signal);
+    const handed = await handToHost(hook, sent, this.stopping.signal, () => this.clock.now());
     if (this.closed || "stopped" in handed) return;
     const linked = await this.deps.runOf(firing.key);
     if (this.closed) return;
