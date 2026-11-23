@@ -250,7 +250,7 @@ describe("App, Settings", () => {
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null], ["Demo", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
@@ -274,7 +274,7 @@ describe("App, Settings", () => {
     for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   // Secrets (Miguel, 11-09): an accounts-off loopback server's console session counts as the owner's, so the server says
@@ -311,26 +311,26 @@ describe("App, Settings", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     expect(page.asked).toContain("GET /v2/settings/webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has a tab for each settings page on a server with tool keys, a choice of provider and the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has no Webhook tab on a server without the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim());
-    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   it("lists MCP servers in Settings on every server, its capabilities naming no MCP routes, and opens the page there", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, mcp_client: { transports: ["streamable-http"], auth: ["none", "bearer"], at_rest: "sealed", harnesses: ["pi"] } }, "#/settings/mcp");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Demo", "#/settings/demo", null]]);
     expect(page.asked).toContain("GET /v2/settings/mcp-servers");
   });
 
