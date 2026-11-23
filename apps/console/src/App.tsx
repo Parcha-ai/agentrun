@@ -181,6 +181,9 @@ export const sessionRetryMs = (n: number): number => Math.min(1000 * 2 ** n, 30_
 
 /** How often the console reads an import under way, and how many failed reads in a row end its watch. */
 export const IMPORT_POLL_MS = 1000;
+/** How long a setup waits for a read of the import offer already under way: past it, the read is cancelled, so a read
+ *  waiting on a lost connection never holds the password page. */
+export const SETUP_READ_WAIT_MS = 2000;
 const IMPORT_READ_TRIES = 30;
 
 /** The import asked for at setup, as a line. */
@@ -304,9 +307,11 @@ export function App() {
   // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads.
   // No read while the password is being set (`settingUp`): the server holds the password before this browser holds the
   // session its answer sets, so a read in between is a stranger's, answered 404, which the browser logs as an error. A
-  // refused setup leaves setup open, and the reads go on.
+  // read already under way (`importRead`; a cut one is sent again) is waited for before the setup is sent, and cancelled,
+  // its next tries with it, past SETUP_READ_WAIT_MS. A refused setup leaves setup open, and the reads go on.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
   const settingUp = useRef(false);
+  const importRead = useRef<{ done: Promise<unknown>; stop: AbortController } | null>(null);
   useEffect(() => {
     if (auth !== "setup") return;
     settingUp.current = false;
@@ -314,8 +319,13 @@ export function App() {
     (async () => {
       for (let shown = false; live; ) {
         if (settingUp.current) { await new Promise((done) => setTimeout(done, IMPORT_POLL_MS)); continue; }
-        const r = await v2.setupImport().then((x) => x, () => undefined);
+        const stop = new AbortController();
+        const read = v2.setupImport(stop.signal).then((x) => x, () => undefined);
+        importRead.current = { done: read, stop };
+        const r = await read;
+        if (importRead.current?.stop === stop) importRead.current = null;
         if (!live) return;
+        if (stop.signal.aborted) continue;
         if (r === undefined && shown) return void setOffer({ projects: null, sessions: null });
         if (r !== undefined) {
           if (!r || !("counting" in r || "sessions" in r)) return;
@@ -334,6 +344,13 @@ export function App() {
     return (
       <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importProjects) => {
         settingUp.current = auth === "setup";
+        const read = settingUp.current ? importRead.current : null;
+        if (read) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([read.done, new Promise((done) => { timer = setTimeout(done, SETUP_READ_WAIT_MS); })]);
+          clearTimeout(timer);
+          read.stop.abort();
+        }
         try { await (auth === "setup" ? v2.setup(password, code, importProjects) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           settingUp.current = false;
