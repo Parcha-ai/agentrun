@@ -48,20 +48,20 @@ test('on a login the CLI environment names where the login is, and no model URL,
 test("a run on a login on macOS runs its CLI in the person's real home, where the login keychain holding the CLI's tokens is, its config, XDG and temporary dirs still the session's; elsewhere, and on a model key, in the session's home", () => {
   const own = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic' };
   const atHome = { dir: '/u/p/.claude', profiles: '/u/p/.config/anthropic', home: '/u/p' };
-  const dirs = { home: '/s/home', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', model: 'claude-haiku-5-5' };
+  const dirs = { home: '/s/session', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', model: 'claude-haiku-5-5' };
   for (const [login, home] of [[own, homedir()], [atHome, '/u/p']]) {
     const env = durableEnv({ ...dirs, login, platform: 'darwin' });
     assert.equal(env.HOME, home, `darwin: a run on ${login.dir} runs in the person's home`);
     assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.home === undefined ? login.dir : '', `darwin: ${login.dir}'s credentials dir`);
-    assert.deepEqual([env.CLAUDE_CONFIG_DIR, env.TMPDIR, env.XDG_CACHE_HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME], ['/s/config', '/s/tmp', '/s/cache', '/s/home/.config', '/s/home/.local/share', '/s/home/.local/state'], `darwin: ${login.dir}: the rest is the session's`);
+    assert.deepEqual([env.CLAUDE_CONFIG_DIR, env.TMPDIR, env.XDG_CACHE_HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME], ['/s/config', '/s/tmp', '/s/cache', '/s/session/.config', '/s/session/.local/share', '/s/session/.local/state'], `darwin: ${login.dir}: the rest is the session's`);
     const linux = durableEnv({ ...dirs, login, platform: 'linux' });
-    assert.equal(linux.HOME, '/s/home', `linux: a run on ${login.dir} runs in the session's home (its tokens are a file in the credentials dir)`);
+    assert.equal(linux.HOME, '/s/session', `linux: a run on ${login.dir} runs in the session's home (its tokens are a file in the credentials dir)`);
     // Only HOME moves to the person's: every other variable is what the same run gets on Linux, but the credentials dir,
     // which is the platform's own rule (pinned above).
     const rest = ({ HOME: _home, CLAUDE_SECURESTORAGE_CONFIG_DIR: _secure, ...others }) => others;
     assert.deepEqual(rest(env), rest(linux), `darwin: a run on ${login.dir} changes HOME and nothing else`);
   }
-  assert.equal(durableEnv({ ...dirs, baseUrl: 'http://127.0.0.1:1', token: 'k', platform: 'darwin' }).HOME, '/s/home', 'darwin: a run on a model key runs in the session\'s home');
+  assert.equal(durableEnv({ ...dirs, baseUrl: 'http://127.0.0.1:1', token: 'k', platform: 'darwin' }).HOME, '/s/session', 'darwin: a run on a model key runs in the session\'s home');
 });
 
 test('the login status reads loggedIn and the account words, and nothing that is not an answer', () => {
