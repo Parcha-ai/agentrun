@@ -107,6 +107,7 @@ export const LOOP: LearningLoop = {
     { run_id: run(SECOND_FROM - 1).run_id, round: 2, at: run(SECOND_FROM - 1).started_at, workflow: WORKFLOW, attempts: [{ ok: true, errors: [] }], digest: SECOND, promoted: true, draft_errors: [], withheld: false },
     { run_id: run(20).run_id, round: 1, at: run(20).started_at, workflow: WORKFLOW, attempts: [{ ok: true, errors: [] }], digest: FIRST, promoted: true, draft_errors: [], withheld: false },
   ],
+  paused: null,
 };
 
 export const AGENT: Agent = {

@@ -435,7 +435,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     };
   };
   const loopOf = (id: string, now = clock()): LearningLoop => {
-    if (id !== FULL_STORY) return { agent: id, completed_runs: 0, compiles: [] };
+    if (id !== FULL_STORY) return { agent: id, completed_runs: 0, compiles: [], paused: null };
     const runs = refundRuns(now);
     return {
       agent: id, completed_runs: runs.filter((h) => viewOf(h, now).status === "completed").length,
@@ -444,6 +444,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
         { run_id: runs.find((h) => h.start >= takeoverAt - DAY)?.story.id ?? "", round: 2, at: iso(takeoverAt - 2 * HOUR), workflow: LEARNING_WORKFLOW, attempts: [{ ok: false, errors: ["/root/steps/3: the code node reads `line.refund`, which no earlier node writes"] }, { ok: true, errors: [] }], digest: LEARNING_DIGEST, promoted: true, draft_errors: [], withheld: false },
         { run_id: runs[3]?.story.id ?? "", round: 1, at: iso(opened - 22 * DAY), workflow: LEARNING_WORKFLOW, attempts: [{ ok: true, errors: [] }], digest: hex("refund-decision:draft-1", 64), promoted: false, draft_errors: [], withheld: false },
       ],
+      paused: null,
     };
   };
   const auditsOf = (id: string, now = clock()): LearningAudits => {
