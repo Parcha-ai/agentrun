@@ -538,6 +538,18 @@ describe("AgentPage model, capabilities and supported tabs", () => {
     expect(page.host.querySelector('[aria-label="Runs refused"]')).toBeNull();
   });
 
+  it("a model blocker in other words than the harness's banner is still said: only the banner's own words are not said twice", async () => {
+    const base = agentFixture("invoice-checker");
+    const reason = "No model yet: add a model key in Settings → Model keys.";
+    const own = "anthropic/claude-sonnet-5-5 needs ANTHROPIC_API_KEY: add it in Settings → Model keys.";
+    const page = await open(
+      { ...base, definition: { ...base.definition, harness: "pi", model: "anthropic/claude-sonnet-5-5" }, run_blockers: { message: own, fields: [{ field: "definition.model", reason: "not_set_up_here", message: own }] } },
+      { harnesses: [{ id: "pi", available: false, default_model: null, reason, needs: ["key"] }] },
+    );
+    expect(page.host.querySelector('[aria-label="Harness not available"]')?.textContent).toBe(`pi doesn't run on this server: ${reason}`);
+    expect(page.host.querySelector('[aria-label="Runs refused"]')?.textContent).toContain(own);
+  });
+
   it("shows a workflow's read-only graph and no fictional per-agent model", async () => {
     const page = await open(agentFixture("lead-scorer"), { tab: "workflow" });
     expect(page.tabs()).toEqual(["Runs", "Versions", "Workflow", "Analytics"]);
