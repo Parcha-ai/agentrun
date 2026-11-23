@@ -255,6 +255,9 @@ test("POST /workflows/validate answers every issue by path, writes nothing; a sa
   assert.ok(field, JSON.stringify(saved.body.error.fields));
   assert.equal(field.code, "NODE_FIELD_INVALID");
   assert.match(field.message, /itemsPath/);
+  // A call node's tool its tools leave out is validate's TOOL_NOT_LISTED above, but the run binds it anyway (tools.ts
+  // grantedTools): the save takes it.
+  assert.equal((await api("POST", "/agents", flowAgent("unlisted", docsFlow(), { tools: ["pdf_pages"] }))).status, 201);
 });
 
 test("a map's items name the branch each route in its body took for them", async (t) => {
