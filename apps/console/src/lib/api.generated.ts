@@ -609,9 +609,15 @@ export interface components {
     computers?: {
       kinds: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
     };
+    claude_login?: boolean;
     tool_keys?: {
       routes: boolean;
       at_rest: "sealed";
+    };
+    harness_keys?: {
+      routes: boolean;
+      at_rest: "sealed";
+      harnesses: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -1493,6 +1499,7 @@ export interface operations {
         action: "create" | "revise";
         agent_id: string | null;
         current_revision_id: string | null;
+        twins: string[];
         missing_secrets: string[];
         unmatched_mcp: {
           source: string;
@@ -1503,6 +1510,7 @@ export interface operations {
           name: string;
           kind: string;
           action: "create" | "update" | "remove" | "skip";
+          code?: "not_set_up_here" | "not_an_option";
           reason?: string;
         }[];
         computer: {
@@ -2247,6 +2255,10 @@ export interface operations {
     body: never;
     answer: never;
   };
+  deleteHarnessKey: {
+    body: never;
+    answer: never;
+  };
   deleteHomeFile: {
     body: never;
     answer: never;
@@ -2661,12 +2673,12 @@ export interface operations {
       sha256: string;
       report: {
         blocked: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
         remade: {
-          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "secrets" | "input_schema" | "budget" | "package";
+          kind: "mcp_server" | "trigger" | "pin" | "tool_setting" | "tool_policy" | "computer" | "paired_computer" | "sign_in" | "learning" | "input_schema" | "budget" | "package";
           name: string;
           reason: string;
         }[];
@@ -4554,6 +4566,17 @@ export interface operations {
       }[];
     };
   };
+  listHarnessKeys: {
+    body: never;
+    answer: {
+      harnesses: {
+        id: string;
+        label: string;
+        keys: components["SecretMeta"][];
+        ready: boolean;
+      }[];
+    };
+  };
   listHomeFiles: {
     body: never;
     answer: {
@@ -6373,6 +6396,12 @@ export interface operations {
       } | null;
       password_unreadable: boolean;
     };
+  };
+  saveHarnessKey: {
+    body: {
+      value: string;
+    };
+    answer: never;
   };
   saveMcpServer: {
     body: {

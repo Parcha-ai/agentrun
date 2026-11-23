@@ -2,7 +2,7 @@
 // the one a server runs on the packages it ships at its start. The server installed with this command checks it
 // (agentrun-serve validate-template), as it runs import and reset-password: this command reaches the server through its
 // launcher and its API alone. Nothing in the package runs.
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -102,7 +102,7 @@ export const TEMPLATE_EVAL = {
     // A case the package does not have is refused here, at once, in the server's words, before its launcher starts.
     const missing = missingCases(resolve(args[0]), values.case ?? []);
     if (missing) throw cli.fail(2, missing);
-    const { installedServer } = await import("./start.mjs");
+    const { installedServer, runServerCommand } = await import("./start.mjs");
     const launcher = installedServer();
     if (launcher === undefined) throw cli.fail(2, "AgentRun's server is not installed beside this command, and it is the server that runs an eval.");
     const argv = ["eval-template", resolve(args[0])];
@@ -118,19 +118,8 @@ export const TEMPLATE_EVAL = {
       childEnv = { ...env, AGENTRUN_API_KEY: token };
     }
     // A stop sent to this command alone (a job runner's SIGTERM, a SIGHUP) is passed on to the eval, which cancels its
-    // run and cleans up before it exits, as it does on the Ctrl-C a terminal sends both: this command waits for that.
-    const child = spawn(launcher, argv, { stdio: "inherit", env: childEnv });
-    const signals = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
-    // The eval stops on SIGINT and SIGTERM; a hangup is passed on as a SIGTERM, which it cleans up after.
-    const pass = Object.fromEntries(Object.keys(signals).map((signal) => [signal, () => child.kill(signal === "SIGHUP" ? "SIGTERM" : signal)]));
-    for (const [signal, on] of Object.entries(pass)) process.on(signal, on);
-    try {
-      return await new Promise((done) => {
-        child.on("error", () => done(1));
-        child.on("exit", (code, signal) => done(code ?? signals[signal] ?? 1));
-      });
-    } finally {
-      for (const [signal, on] of Object.entries(pass)) process.off(signal, on);
-    }
+    // run and cleans up before it exits, as it does on the Ctrl-C a terminal sends both: this command waits for that, as
+    // for every server command.
+    return runServerCommand(launcher, argv, childEnv);
   },
 };

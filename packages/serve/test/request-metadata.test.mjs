@@ -34,7 +34,7 @@ test("serve's gateway gets the metadata header on either wire and from a CLI's A
   assert.deepEqual([messages.provider.api, messages.provider.headers], ["anthropic-messages", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
   const responses = await routeOf(undefined, claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, AGENT_MODEL_API_KEY: KEY, AGENT_MODEL: "openai/gpt-6.1-sol" }, {}, undefined, CLAIM), "default", PI_WIRES);
   assert.deepEqual([responses.provider.api, responses.provider.headers], ["openai-responses", { [SPEND_LOGS_METADATA_HEADER]: SAID }]);
-  // claude-agent's endpoint, ANTHROPIC_BASE_URL on the gateway's origin (grep's runs), carries it; Anthropic's own does not.
+  // claude-agent's endpoint, ANTHROPIC_BASE_URL on the gateway's origin (a host's runs), carries it; Anthropic's own does not.
   const onGateway = claimModelEnv({ AGENT_MODEL_BASE_URL: `${GW}/v1`, ANTHROPIC_BASE_URL: GW, ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);
   assert.deepEqual(providerFor("anthropic-messages", onGateway, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent").headers, { [SPEND_LOGS_METADATA_HEADER]: SAID });
   const direct = claimModelEnv({ ANTHROPIC_API_KEY: KEY }, {}, undefined, CLAIM);

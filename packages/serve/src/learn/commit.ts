@@ -6,11 +6,12 @@
 //     it was on the run's seed (or its `bases` commit) is a conflict, never written over;
 //   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
 //   - corrections.md replaced whole by a person (putCorrections), under the ETag they read;
-//   - a purged run's learned workflows and feedback lines taken off main by the host (forgetRunText).
+//   - a purged run's learned workflows put back as they were before it (off main when it wrote them new) and its feedback
+//     lines taken off main, by the host (forgetRunText).
 import { isWorkspaceError, type Workspace } from "../workspace/index.js";
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
-import { blobOid, DIFFS_DIR, type FolderChange, folderFailure, FolderMerged, FolderRefused, FolderTooLarge, FolderUnreadable, forgetBody, learningRepair, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
+import { blobOid, DIFFS_DIR, folderAt, type FolderChange, folderFailure, FolderMerged, FolderRefused, FolderTooLarge, FolderUnreadable, forgetBody, learningRepair, readLearning, readRunDiff, readSnapshot, type RunDiff, runDiffKey, runMergeOf, type Snapshot, writeLearning } from "./folder.js";
 import { held, isHeld } from "./workflow-draft.js";
 
 /** A run's merge, one a round: its compiled draft's files, already checked, and its owner's correction. */
@@ -198,16 +199,17 @@ export async function putCorrections(ws: Workspace, input: { text: string; ifMat
 
 /**
  * Run `runId`'s text taken off the folder's current files, at its purge (agent-delete.ts purgeRun): first its learned
- * workflows (forgetRunWorkflows), whether or not it left a diff file; then the lines each of its merges added to
- * corrections.md, as its diff file keeps them, dropped from main in one host commit per merge (a line a person edited
- * since is theirs and stays); each other merge's diff that shows such a line as context written without it; then the
- * run's diff files deleted, last, so a call stopped part way finds what it has left to do. Its merges stay in the
- * folder's git history until a learning reset or its agent's purge deletes the folder. Idempotent: each merge's scrub
- * lands once, nothing left to drop makes no commit, and a run with no diff file and no workflow here is no work.
+ * workflows (forgetRunWorkflows; `purged`: whether another run is purged), whether or not it left a diff file; then the
+ * lines each of its merges added to corrections.md, as its diff file keeps them, dropped from main in one host commit
+ * per merge (a line a person edited since is theirs and stays); each other merge's diff that shows such a line as
+ * context written without it; then the run's diff files deleted, last, so a call stopped part way finds what it has
+ * left to do. Its merges stay in the folder's git history until a learning reset or its agent's purge deletes the
+ * folder. Idempotent: each merge's scrub lands once, nothing left to drop makes no commit, and a run with no diff file
+ * and no workflow here is no work.
  * `commit`: the host's last commit, when one was made.
  */
-export async function forgetRunText(ws: Workspace, runId: string): Promise<{ commit?: string }> {
-  let commit = await forgetRunWorkflows(ws, runId);
+export async function forgetRunText(ws: Workspace, runId: string, purged: (run: string) => Promise<boolean>): Promise<{ commit?: string }> {
+  let commit = await forgetRunWorkflows(ws, runId, async (run) => run === runId || (await purged(run)));
   const names = await diffNames(ws);
   const own = new RegExp(`^${runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.r\\d+)?\\.json(\\..+)?$`);
   const mine = names.filter((name) => own.test(name));
@@ -254,20 +256,51 @@ export async function forgetRunText(ws: Workspace, runId: string): Promise<{ com
   return commit ? { commit } : {};
 }
 
-/** Every path of the learned workflows on `snapshot`'s main whose workflow.json run `runId` wrote last (SnapLearned.run,
- *  the rule purged-workflow.ts reads): each one's whole `workflows/<name>/` folder, its files and links. */
-const runWorkflowPaths = (snapshot: Snapshot | undefined, runId: string): string[] =>
-  (snapshot?.workflows ?? []).filter((item) => item.run === runId).flatMap((item) => [...item.files.map(({ path }) => path), ...(item.links ?? [])]);
-
-/** Run `runId`'s learned workflows taken off main in one host commit, so every read of main finds them gone: the commit,
- *  or undefined when main holds none (a repeat finds none left, and one another run wrote since names that run). The
- *  snapshot is rebuilt from main first (one more exec): a merge that moved main and stopped before its snapshot leaves
- *  one that names none of that merge's workflows, and finding no work commits nothing that would show it stale. */
-async function forgetRunWorkflows(ws: Workspace, runId: string): Promise<string | undefined> {
+/** Each learned workflow on main whose workflow.json run `runId` wrote last (SnapLearned.run, the rule purged-workflow.ts
+ *  reads) put back in one host commit as it stood at the newest commit where its writer was no purged run (`purged`,
+ *  `runId` among them), every file of its `workflows/<name>/` folder, its writer that run again (the commit's
+ *  `Written-By` line: folder.ts writerOf); taken off main whole when the purged runs wrote every version of it. So a
+ *  purge takes off main only what purged runs put there, and a version another run wrote, a champion included, stays
+ *  served. The commit, or undefined when main holds none of the run's (a repeat finds its own put back, and one another
+ *  run wrote since names that run). The snapshot is rebuilt from main first (two execs and a checkout): a merge that
+ *  moved main and stopped before its snapshot leaves one that names none of that merge's workflows, and finding no work
+ *  commits nothing that would show it stale. One more read-only exec of main's history when the run wrote one, and one
+ *  per version put back; either read finding nothing refuses (FolderUnreadable), so no guess takes a folder off. */
+async function forgetRunWorkflows(ws: Workspace, runId: string, purged: (run: string) => Promise<boolean>): Promise<string | undefined> {
   if (await readSnapshot(ws)) await learningRepair(ws);
   const done = await writeLearning<boolean>(ws, async ({ snapshot }) => {
-    const deletes = runWorkflowPaths(snapshot, runId);
-    return deletes.length ? { result: true, change: { by: { host: "a purged run's workflows removed" }, writes: [], deletes } } : { result: false };
+    const mine = (snapshot?.workflows ?? []).filter((item) => item.run === runId);
+    if (!mine.length) return { result: false };
+    // No history read, no guess: a purge that can't tell what came before the run's version refuses (503, sent again
+    // later), and never takes the whole folder off main.
+    const unread = () => new FolderUnreadable(false, "the learning folder's history at main can't be read, so a purge puts nothing back and takes nothing off: send the DELETE again");
+    const history = await folderAt(ws, snapshot!.main);
+    if (!history) throw unread();
+    const writes: { path: string; text: string }[] = [];
+    const deletes: string[] = [];
+    const written: Record<string, string | null> = {};
+    for (const item of mine) {
+      // Newest first: the first writer no purged run is the version to put back, as it stood just before the next
+      // writer took the file over.
+      const writers = history.writers(item.name);
+      let back: { path: string; text: string }[] = [];
+      for (let i = 1; i < writers.length; i++) {
+        const { run } = writers[i]!;
+        if (run !== null && (await purged(run))) continue;
+        const before = writers[i - 1]!.before;
+        const at = before ? await folderAt(ws, before) : undefined;
+        if (!at) throw unread();
+        const files = at.snapshot.workflows.find((one) => one.name === item.name)?.files ?? [];
+        back = files.map(({ path, oid }) => ({ path, text: at.blobs.get(oid)!.toString("utf8") }));
+        // Named even when `back` is main's bytes already, so the writer still moves (folder.ts writtenIn).
+        if (back.length) written[item.name] = run;
+        break;
+      }
+      writes.push(...back);
+      deletes.push(...[...item.files.map(({ path }) => path), ...(item.links ?? [])].filter((path) => !back.some((file) => file.path === path)));
+    }
+    const host = writes.length ? "a purged run's workflows put back as they were before it" : "a purged run's workflows removed";
+    return { result: true, change: { by: { host, written }, writes, deletes } };
   });
   return done.result ? done.main : undefined;
 }
