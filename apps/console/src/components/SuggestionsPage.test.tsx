@@ -220,6 +220,36 @@ describe("Suggested agents' reads", () => {
     await settle();
     expect(host.textContent, "the older answer does not put the finished scan back").toContain("Scanning: reading the code");
   });
+
+  it("a read that answers while a newer one is still out is shown: polls slower than their interval still show the scan's end", async () => {
+    const listing = (status: string) => ({ github: { connected: true, app: "agentrun-acme", installations: [{ account: "acme" }], install_url: READY.install_url },
+      repositories: [{ ...SCANNED, scan: { ...SCANNED.scan, status, ended_at: status === "running" ? null : SCANNED.scan.ended_at } }], suggestions: [SUGGESTION] });
+    const answers: ((body: unknown) => void)[] = [];
+    const fetch = (async (url: string) => {
+      const path = new URL(String(url), "http://serve.test").pathname;
+      if (path === "/v2/suggestions") return new Promise<Response>((resolve) => answers.push((body) => resolve(json(200, body))));
+      if (path === "/v2/integrations/github/repositories") return json(200, { repositories: [{ full_name: REPO, private: true, account: "acme", installation: 7 }], truncated: false, unread: [] });
+      return json(404, { error: { code: "not_found", message: "no such route", retryable: false } });
+    }) as typeof globalThis.fetch;
+    const v2 = createClient({ fetch });
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(ToastProvider, null, createElement(SuggestionsPage, { v2, go: vi.fn() }))); });
+    await act(async () => { answers.shift()!(listing("running")); });
+    await settle();
+    expect(host.textContent).toContain("Scanning: reading the code");
+    const refresh = () => [...document.querySelectorAll("button")].find((b) => /Read the suggestions/.test(b.getAttribute("aria-label") ?? ""))!;
+    // Two reads out at once, as when each poll takes longer than the interval: the first answers while the second is out.
+    await act(async () => { refresh().click(); });
+    await act(async () => { refresh().click(); });
+    await settle();
+    expect(answers.length).toBe(2);
+    await act(async () => { answers.shift()!(listing("completed")); });
+    await settle();
+    expect(host.textContent, "the scan's end is shown though a newer read is still out").not.toContain("Scanning: reading the code");
+    await act(async () => { answers.shift()!(listing("completed")); });
+    await settle();
+  });
 });
 
 describe("Suggested agents' words", () => {
