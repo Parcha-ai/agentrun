@@ -319,6 +319,38 @@ test("the owner's sign-in on a server the token saved makes it the owner's: its 
   assert.equal((await server.store.mcp.server("docs"))?.auth, "oauth", "it stays the owner's");
 });
 
+test("over a server the token saved, its address as reads show it (path hidden) is not taken for the saved one by the owner: a sign-in's start, a save and a preview are 422 on url, and nothing reaches it; the full address given, the owner's sign-in starts", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The token saves it at an address whose path the token chose, and every read shows only its origin.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+  assert.equal(shown, `${new URL(plain.url).origin}/…`, "reads show its origin alone");
+  const sent = plain.log.length;
+  for (const [method, path, body] of [
+    ["POST", "/settings/mcp-servers/docs/oauth/start", { url: shown }],
+    ["PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "bearer", token: TOKEN } }],
+    ["POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } }],
+  ]) {
+    const refused = await page(method, path, body);
+    assert.equal(refused.status, 422, `${method} ${path}: ${refused.text}`);
+    assert.deepEqual(refused.json?.error?.fields?.map((issue) => [issue.field, issue.reason]), [["url", "not_an_option"]], refused.text);
+    assert.match(refused.json.error.fields[0].message, /API token.*full URL/, refused.text);
+  }
+  assert.equal(plain.log.length, sent, "the token's address got nothing");
+  assert.deepEqual([(await server.store.mcp.server("docs"))?.auth, (await server.store.settings.get(mcpSourceKey("docs")))?.by], ["none", "token"], "the server is as the token saved it");
+  // The token's own save keeps taking its shown address for its saved one: the token chose it.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "none" } })).status, 200);
+  // The owner names the full address: the sign-in starts there.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+});
+
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
   const { fake, token } = await withSavedServer(t);
   const started = await token("POST", "/settings/mcp-servers/fake/oauth/start", { url: fake.url });

@@ -243,9 +243,10 @@ export class McpServersOverStore {
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
+    // Not over a server the token saved (givenUrl): its whole address is given.
     const { name: editing, ...asked } = body;
     const saved = editing === undefined ? undefined : await this.store.mcp.server(String(editing));
-    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: savedOrGiven(asked.url, saved?.url) } : {}) });
+    const { url, auth } = this.admit({ ...asked, ...(asked.url !== undefined ? { url: await this.givenUrl(asked.url, saved) } : {}) });
     // A github_app server's credential is a token of the App, minted here, as for a saved one: its static headers are optional.
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
@@ -314,8 +315,9 @@ export class McpServersOverStore {
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
-    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
-    const { url, auth, prices, toolkit, standIn } = this.admit({ ...body, ...(body.url !== undefined ? { url: savedOrGiven(body.url, was?.url) } : {}) }, true);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one; over a server the token saved, only
+    // in the token's own save (givenUrl).
+    const { url, auth, prices, toolkit, standIn } = this.admit({ ...body, ...(body.url !== undefined ? { url: await this.givenUrl(body.url, was, byToken) } : {}) }, true);
     // The API-only token's ordinary save: a per_run server, which keeps no credential (the secret-write gate refuses any
     // other auth before this), at an origin listed exactly (tokenOriginListed); else refused before anything is resolved or
     // sent, in words that name no listed origin.
@@ -626,8 +628,9 @@ export class McpServersOverStore {
     nameOf(name);
     const issues = unknownFields(body, ["url", "scopes", "client_id", "client_secret", "toolkit"]);
     const current = await this.store.mcp.server(name);
-    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one.
-    const url = urlOf(savedOrGiven(body.url, current?.url), issues);
+    // Its URL as every read shows it (shownUrl), sent back unchanged: the saved one, but over a server the token saved,
+    // whose address the token chose (givenUrl): the owner's sign-in names it whole.
+    const url = urlOf(await this.givenUrl(body.url, current), issues);
     const { scopes, client_id, client_secret } = body;
     if (scopes !== undefined && !scopesValid(scopes)) issues.push({ field: "scopes", reason: "invalid", message: SCOPE_LIST });
     for (const [field, text] of [["client_id", client_id], ["client_secret", client_secret]] as const)
@@ -817,6 +820,16 @@ export class McpServersOverStore {
   async tokenStandsOn(authConfig: string): Promise<void> {
     const owners = await ownersAuthConfig(this.store, authConfig);
     if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). Nothing was saved.`);
+  }
+
+  /** A body's URL for the saved row `saved` (savedOrGiven: its shown address sent back unchanged is its saved one), but
+   *  over a row the API token saved, whose address the token chose and every read shows only the origin of, for anyone
+   *  but the token (`byToken`): refused on `url`, so the owner's credential, a sign-in's or a header's, goes only to an
+   *  address the owner named whole. An address with nothing hidden (shown as it is) is taken as given. */
+  private async givenUrl(given: unknown, saved: McpServerRow | undefined, byToken = false): Promise<unknown> {
+    if (byToken || !saved || typeof given !== "string" || given !== shownUrl(saved.url) || given === saved.url) return savedOrGiven(given, saved?.url);
+    if (!savedByToken(await this.store.settings.get(mcpSourceKey(saved.name)), saved.createdAt)) return savedOrGiven(given, saved.url);
+    throw invalid([{ field: "url", reason: "not_an_option", message: `The MCP server ${saved.name} was saved by an API token, which chose its address, and reads show only its origin: give its full URL, so your credential goes only to an address you named.` }]);
   }
 
   /** A server an API-only server's token saved at a listed origin (savedAtListedOrigin) is reached again only while its
