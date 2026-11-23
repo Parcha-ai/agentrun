@@ -133,15 +133,27 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     throw new ApiError("unsupported_media_type", "a cut read answers UTF-8 text, and this file's bytes are not");
   }
   if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
-  // The cut is made in the cut worker, off this server's event loop, under one deadline for the read, each try underCut
-  // makes included. Past it, or when the worker fails, the read is refused 503, never answered uncut.
-  const until = Date.now() + (deps.cutMs ?? CUT_MS);
-  const cutText = (values: readonly string[], held: readonly (readonly [number, number])[] = []) =>
-    cutInWorker(text, values, Buffer.byteLength(text), held, Math.max(0, until - Date.now())).catch((error: unknown) => {
-      if (error instanceof CutUnserved) throw new ApiError("unavailable", `this file's cut was not made (${error.message}), and it is never served uncut: read it again`);
+  // The cut is made in the cut worker, off this server's event loop, under one deadline for the whole read: every cut
+  // underCut asks for, and every read of the run's cut and census around them. Past it, or when the worker fails, the read
+  // is refused 503, never answered uncut, and never answered late.
+  const timeMs = deps.cutMs ?? CUT_MS;
+  const until = Date.now() + timeMs;
+  const unmade = (why: string) => new ApiError("unavailable", `this file's cut was not made (${why}), and it is never served uncut: read it again`);
+  const lateRead = `the read did not finish within ${timeMs} ms`;
+  const cutText = (values: readonly string[], held: readonly (readonly [number, number])[] = []): Promise<string> => {
+    // Asked for past the deadline (the read has already been refused): no worker is started for it.
+    const left = until - Date.now();
+    if (left <= 0) return Promise.reject(unmade(lateRead));
+    return cutInWorker(text, values, Buffer.byteLength(text), held, left).catch((error: unknown) => {
+      if (error instanceof CutUnserved) throw unmade(error.message);
       throw error;
     });
-  const shown = await underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
+  };
+  let deadline: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    deadline = setTimeout(() => reject(unmade(lateRead)), timeMs);
+  });
+  const made = underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
     if (cut === "unreadable") return { withheld: WITHHELD_SIGN_IN };
     if (cut.censusDigest === undefined) return { text: await cutText(cut.values) };
     // The run's end erased what its caller handed it: where those sat in this file is its census's to say. Read here, the
@@ -153,6 +165,8 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     if (held === "unreadable") return { withheld: WITHHELD_UNCOUNTED };
     return { text: held === "whole" ? "[redacted]" : await cutText(cut.values, held) };
   });
+  // Whichever settles first. A read refused at its deadline leaves underCut to finish on its own, its answer dropped.
+  const shown = await Promise.race([made, late]).finally(() => clearTimeout(deadline));
   if ("withheld" in shown) throw new ApiError("forbidden", shown.withheld);
   const body = Buffer.from(shown.text);
   res.writeHead(200, {

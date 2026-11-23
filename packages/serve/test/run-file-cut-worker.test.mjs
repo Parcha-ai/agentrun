@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CutPool, CutUnserved, cutInWorker } from "../dist/cut-pool.js";
 import { heldSpans, redactSecrets } from "../dist/learn/secrets.js";
+import { readRunFile } from "../dist/run-reads-over-store.js";
 import { plantedValue } from "./fixtures/planted-secrets.mjs";
 import { follow, runDir, serve, startRun } from "./support.mjs";
 
@@ -49,6 +50,38 @@ test("a cut read whose cut is past its deadline is 503 unavailable, never the te
   const raw = await read(false);
   assert.equal(raw.status, 200);
   assert.equal(await raw.text(), text, "without the cut, the bytes as written");
+});
+
+test("the deadline is the whole read's: a cut read whose re-read of the run's cut runs past it is 503, not a late 200", { timeout: 30_000 }, async () => {
+  const key = plantedValue();
+  const bytes = Buffer.from(`key=${key} and the rest\n`);
+  const workspace = {
+    list: async () => [{ name: "notes.txt", kind: "file", size: bytes.length }],
+    read: async () => new Uint8Array(bytes),
+  };
+  // The first read of the run's cut answers at once; the one underCut makes after the cut, to see nothing was saved
+  // meanwhile, takes 3 s: a store slow to answer.
+  let reads = 0;
+  const deps = {
+    withheld: async () => false,
+    runWorkspace: async () => workspace,
+    cutValues: async () => {
+      reads += 1;
+      if (reads > 1) await new Promise((resolve) => setTimeout(resolve, 3_000));
+      return { values: [key] };
+    },
+    cutMs: 300,
+  };
+  const res = { status: undefined, body: undefined, writeHead(status) { this.status = status; }, end(body) { this.body = body; } };
+  const url = new URL("http://server.test/runs/r1/files/notes.txt?cut=run");
+  const at = performance.now();
+  const refused = await readRunFile({}, "r1", "notes.txt", { method: "GET" }, res, url, deps).then(() => undefined, (error) => error);
+  const ms = performance.now() - at;
+  assert.equal(res.status, undefined, `nothing answered: ${res.status} ${res.body}`);
+  assert.equal(refused?.code, "unavailable", String(refused));
+  assert.match(refused.message, /did not finish within 300 ms/);
+  assert.ok(!refused.message.includes(key));
+  assert.ok(ms < 2_000, `refused at the read's deadline, not after the slow re-read (${Math.round(ms)} ms)`);
 });
 
 test("the cut worker cuts as redactSecrets does: values in place, census spans, a byte order mark, compact JSON past 8 KB, a value split by a line break", async () => {
@@ -123,6 +156,12 @@ test("a worker that stops or throws refuses the cut it held, naming no word of t
   const threw = await settled(pool.cut("throw", [], 64, [], 5_000));
   assert.deepEqual([threw.how, threw.value], ["refused", "the cut failed (TypeError)"]);
   assert.deepEqual([(await settled(pool.cut("then", [], 64, [], 5_000))).value], ["THEN"]);
+  // Thrown uncaught, the worker's "error" event: the cut it held is refused by the error's name alone, and a new worker
+  // answers the next.
+  const crashed = await settled(pool.cut("crash", [], 64, [], 5_000));
+  assert.deepEqual([crashed.how, crashed.value], ["refused", "its worker failed (TypeError)"]);
+  assert.ok(crashed.ms < 5_000, "refused when the worker failed, not at the deadline");
+  assert.deepEqual([(await settled(pool.cut("last", [], 64, [], 5_000))).value], ["LAST"]);
 });
 
 test("the kept cut worker never holds a process open: one that cut a text and returned ends on its own", { timeout: 60_000 }, async () => {
