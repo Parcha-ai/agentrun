@@ -92,6 +92,22 @@ test("a replaced or removed value stays sealed for the cut, up to RETIRED_KEPT p
   assert.equal((await store.sealedKeys.all()).filter((r) => r.name.startsWith("harness-retired:")).length, RETIRED_KEPT, "saving the same value retires nothing");
 });
 
+test("writes to a key that overlap run one after another: every value a claim could have opened is retired, the last one saved", async (t) => {
+  const { store, keys } = await keysOn(t);
+  await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
+  // Three writes at once, none awaited before the next starts: each replaces the one before it, in the order made.
+  await Promise.all([keys.save(ACME, "ACME_API_KEY", { value: `${VALUE}-a` }), keys.save(ACME, "ACME_API_KEY", { value: `${VALUE}-b` }), keys.remove(ACME, "ACME_API_KEY")]);
+  assert.deepEqual(new Set(keys.values()), new Set([VALUE, `${VALUE}-a`, `${VALUE}-b`]), "each value replaced is still cut");
+  const again = new HarnessKeysOverStore(store, SEAL, [ACME], "elsewhere");
+  await again.load();
+  assert.deepEqual(new Set(again.values()), new Set([VALUE, `${VALUE}-a`, `${VALUE}-b`]), "and kept sealed in the store");
+  assert.deepEqual(await openHarnessKeys(store, SEAL, "acme", ["ACME_API_KEY"]), {}, "the remove, made last, is what holds");
+  // A write that fails leaves the next one to run.
+  await assert.rejects(keys.save(ACME, "NOT_A_KEY", { value: VALUE }));
+  await keys.save(ACME, "ACME_API_KEY", { value: `${VALUE}-c` });
+  assert.deepEqual(await openHarnessKeys(store, SEAL, "acme", ["ACME_API_KEY"]), { ACME_API_KEY: `${VALUE}-c` });
+});
+
 test("a save refuses an unknown key, a body that is not { value }, and a value no cut could hold, never echoing it", async (t) => {
   const { keys } = await keysOn(t);
   const refused = async (key, body, field, reason) => {

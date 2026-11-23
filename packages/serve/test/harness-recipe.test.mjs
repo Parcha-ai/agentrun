@@ -6,7 +6,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, write
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { call, clientOwnerSession, follow, scratch, serve, startRun, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, clientOwnerSession, follow, scratch, serve, startRun, storeBytes, withEnv } from "./support.mjs";
+import { firings } from "./trigger-support.mjs";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { zipOf } from "./fixtures/zip-of.mjs";
@@ -19,6 +20,7 @@ const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, Re
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
 ]);
 const { fakeAnthropic } = await import(new URL("../../run-adapters-acp/test/fake-anthropic.mjs", import.meta.url).href);
+const { Webhook } = (await import("node:module")).createRequire(import.meta.url)("standardwebhooks");
 
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const AGENT = new URL("./fixtures/model-acp-agent.mjs", import.meta.url).pathname;
@@ -314,9 +316,9 @@ test("every file the archive unpacks to is pinned, not the binary alone: a sidec
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
- *  for its model. */
-async function installed(t, recipe) {
-  const origin = await fakeAnthropic({ step: checkStep });
+ *  for its model (`step`'s answers, checkStep's by default). */
+async function installed(t, recipe, step = checkStep) {
+  const origin = await fakeAnthropic({ step });
   t.after(() => origin.close());
   if (typeof recipe === "function") recipe = recipe(origin);
   const data = join(await scratch(t), "agents");
@@ -1328,4 +1330,52 @@ test("a start runs only on the keys its claim laid: the server's listing holding
   } else assert.match(String(next.error?.message), /HARNESS_KEYS_NOT_SAVED/);
   const more = origin.messages().slice(heard);
   assert.equal(more.length, 0, `the vendor heard nothing more: ${JSON.stringify(more.map((r) => (r.headers["x-api-key"] === shell ? "the shell's key" : "another")))}`);
+});
+
+test("a trigger's message never runs in a session its claim started on its owner's sign-in: keys saved while the person's turn works let the trigger be made, and its message is refused in that session, never sent to the vendor", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  let go;
+  const held = new Promise((resolve) => (go = resolve));
+  // The person's first turn holds at the vendor until `go`: the run's session stays open on the sign-in meanwhile.
+  const step = async (body) => {
+    if (JSON.stringify(body.messages ?? []).includes("Hold the answer")) await held;
+    return checkStep(body);
+  };
+  const { data, file, origin } = await installed(t, (o) => signingIn(o), step);
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true });
+  const { owner } = await asOwnerAndToken(server);
+  assert.equal((await server.api("POST", "/agents", agent("held", { harness: "model-agent", model: "model-agent/default" }))).status, 201);
+  const run = (await server.api("POST", "/agents/held/runs", { input: { content: "Hold the answer until told." }, max_cost_usd: 1 })).body;
+  for (const end = Date.now() + 60_000; !origin.messages().some((r) => JSON.stringify(r.body).includes("Hold the answer")); ) {
+    assert.ok(Date.now() < end, "the person's turn reached the vendor");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the person's turn on the owner's sign-in");
+
+  // Its harness's key saved now: a trigger's message to the run is no longer refused where it is made.
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_GEMINI_API_KEY", { value: plantedValue("harness-vendor-key") })).status, 204);
+  const made = await server.api("POST", "/triggers", { name: "poke", source: { kind: "webhook" }, target: { kind: "message_run", run_id: run.run_id, input: { content: "A new event came in." } } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const body = '{"ticket":8}';
+  const id = `msg_${randomBytes(8).toString("hex")}`;
+  const at = Math.floor(Date.now() / 1000);
+  const headers = { "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": new Webhook(made.body.signing_secret).sign(id, new Date(at * 1000), body) };
+  assert.equal((await call(server.port, { method: "POST", path: `/v2/hooks/${made.body.id}`, headers, body })).status, 202);
+  await firings(server.api, made.body.id, 1);
+  go();
+
+  // The session the person's claim started on the sign-in never sends the trigger's turn: refused in that session's
+  // words, the vendor hearing no request of it, on the sign-in or any key.
+  await follow(server.api, run.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  let rows = [];
+  for (const end = Date.now() + 30_000; ; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    rows = (await server.store.commands(run.run_id, 0)).filter((c) => c.body?.origin?.trigger_id === made.body.id);
+    if (rows.length && rows.every((c) => c.takenAt !== null)) break;
+    assert.ok(Date.now() < end, `the trigger's message settled: ${JSON.stringify(rows)}`);
+  }
+  const heard = origin.messages().filter((r) => JSON.stringify(r.body).includes("A new event came in"));
+  assert.deepEqual(heard.map((r) => r.headers["x-api-key"] === TOKEN ? "the owner's sign-in" : "a key"), [], "the vendor heard no turn of the trigger's message");
+  assert.deepEqual(rows.map((c) => /started on its owner's own sign-in/.test(c.refused ?? "")), [true], JSON.stringify(rows.map((c) => c.refused)));
 });

@@ -17,7 +17,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const unsaved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] };
 const saved: HarnessKeys = { harnesses: [{ id: "model-agent", label: "Model Agent", ready: true, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: true, source: "console", changed_at: "2026-11-22T09:00:00Z" }] }] };
 
-async function mount(writable: boolean, answers: { list: () => HarnessKeys; put?: (status: number) => Response }) {
+async function mount(writable: boolean, answers: { list: () => HarnessKeys; put?: (status: number) => Response }, onChange?: () => void) {
   const asked: { method: string; path: string; body?: string }[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -28,7 +28,7 @@ async function mount(writable: boolean, answers: { list: () => HarnessKeys; put?
   }) as typeof globalThis.fetch;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(HarnessKeysPage, { v2: createClient({ fetch }), writable })));
+  act(() => root!.render(createElement(HarnessKeysPage, { v2: createClient({ fetch }), writable, ...(onChange ? { onChange } : {}) })));
   await settle();
   return { host, asked };
 }
@@ -69,6 +69,26 @@ describe("HarnessKeysPage", () => {
     await act(async () => { [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
     await settle();
     expect(asked.some((a) => a.method === "DELETE" && a.path === "/v2/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).toBe(true);
+  });
+
+  it("says each save and remove to the console (onChange), so the harnesses it offers are read again with no reload", async () => {
+    let changes = 0;
+    let list = unsaved;
+    const { host } = await mount(true, { list: () => list }, () => { changes += 1; });
+    await act(async () => { button(host, "Paste")!.click(); });
+    const input = host.querySelector<HTMLInputElement>('form input[name="value"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "typed-harness-key-123");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    list = saved;
+    await act(async () => { button(host, "Save")!.click(); });
+    await settle();
+    expect(changes).toBe(1);
+    await act(async () => { button(host, "Remove")!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Remove").at(-1)!.click(); });
+    await settle();
+    expect(changes).toBe(2);
   });
 
   it("off the owner's password session: each key's state, the one sentence on how to change them, and nothing to paste or remove", async () => {

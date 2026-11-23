@@ -525,7 +525,9 @@ timeline written while it was live stays cut.
 With every key saved, its runs run on them ahead of its owner's own sign-in, and its scheduled and triggered runs and a
 `message_run` trigger's turns run too. What runs a start is what its claim opened, not what the console lists: a
 scheduled or triggered run whose claim opened not every key (one removed since, or sealed under another seal key) is
-refused at its claim, never put on the sign-in. A key that does not open under the server's seal key reads as not saved;
+refused at its claim, never put on the sign-in. A person's run whose claim opened not every key stays on the sign-in for
+that claim: a trigger's message to it is refused in its session, even with the keys saved since, and runs only in a
+claim that opens them. A key that does not open under the server's seal key reads as not saved;
 saving it again replaces it, and removing it deletes its row. A second server on the same store lists another's save or
 removal at its next start; meanwhile its runs still go only on what each claim opens. `harness-check` does not read the saved keys: it reads its keys from
 your shell's environment alone, as [Check it](#check-it) shows.

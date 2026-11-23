@@ -728,7 +728,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     </>}>
       {where.section === "settings"
         ? <Settings active={where.settings ?? "keys"} offered={settingsOffered}>
-            {where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
+            {where.settings === "harness-keys" ? <HarnessKeysPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} />
               : where.settings === "tools" ? <ToolsPage v2={v2} choices={choices} gates={gates} harnesses={editorCaps.harnesses} mcp={!!caps?.features?.mcp_client} onSaved={readCaps} onOpen={readCaps} />
               : where.settings === "mcp" ? <McpServersPage v2={v2} signIn={where.signIn} add={where.add} writable={secretsWritable} whyNot={secretsWhyNot} choices={choices} />
               : where.settings === "github" ? <GitHubPage v2={v2} returned={where.github} />

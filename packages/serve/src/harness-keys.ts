@@ -81,6 +81,11 @@ export const harnessKeysSavedHere = (data: string, harness: string): boolean => 
  *  own sign-in, and not every one is saved, or not every one opened. */
 export const RECIPE_SIGN_IN_PERSON_ONLY = `A scheduled or triggered run on a harness recipe billed to its vendor's plan runs on keys saved for that harness, never on its owner's own sign-in, and not every one of its keys is saved: save them in Settings → Harness keys (${HARNESS_KEYS_PAGE}), start this run yourself, or run the agent on a harness billed through this server's model proxy.`;
 
+/** The words a trigger's message is refused in by a session its claim started with not every key of its plan-billed
+ *  recipe laid (runner/adapter-loop.ts, the spec's personOnly): that session runs on its owner's own sign-in, or on
+ *  nothing, whatever was saved since, so a turn no person sent never goes into it. */
+export const RECIPE_TURN_PERSON_ONLY = `This run started on its owner's own sign-in (its harness recipe is billed to its vendor's plan, and its claim opened not every key saved for that harness), so a trigger's message never runs in it, keys saved since or not: message the run yourself, or target a run started once every key was saved in Settings → Harness keys (${HARNESS_KEYS_PAGE}).`;
+
 /** Lays `keys` on `env` where only a direct read finds them: never enumerable, so no spread, copy or child environment
  *  built from `env` carries them (claim-secrets.ts withModelKeys). */
 export function layHarnessKeys(env: NodeJS.ProcessEnv, keys: Readonly<Record<string, string>>): void {
@@ -98,6 +103,16 @@ export type HarnessKeysView = { readonly id: string; readonly label: string; rea
 export class HarnessKeysOverStore {
   private current = new Map<string, Current>();
   private retired = new Map<string, { row: string; value: string; at: number }[]>();
+  /** The last write in flight (save, remove): each waits for the one before it, so two that overlap never read the same
+   *  value as the one they replace, and every value a claim may have opened is retired. */
+  private writing: Promise<void> = Promise.resolve();
+
+  /** `work` once every write before it has settled, its failure its own. */
+  private serial(work: () => Promise<void>): Promise<void> {
+    const next = this.writing.then(work);
+    this.writing = next.catch(() => undefined);
+    return next;
+  }
 
   /** `recipes`: the plan-billed recipes this server is started with (harness-table.ts planRecipesOf), the only harnesses
    *  whose keys it saves or shows. `data`: its data directory, which its registry (harnessKeysSavedHere) is kept under. */
@@ -169,13 +184,15 @@ export class HarnessKeysOverStore {
   async save(recipe: PlanRecipe, key: string, body: unknown): Promise<void> {
     const value = admit(recipe, key, body);
     const row = harnessKeyRow(recipe.id, key);
-    const was = this.current.get(row);
-    if (was?.value === value) return;
-    if (was) await this.retire(recipe.id, key, was.value);
-    await putSealedKey(this.store, this.sealKey, row, value);
-    this.current.set(row, { value, changedAt: Date.now() });
-    this.mark();
-    await this.store.flush();
+    await this.serial(async () => {
+      const was = this.current.get(row);
+      if (was?.value === value) return;
+      if (was) await this.retire(recipe.id, key, was.value);
+      await putSealedKey(this.store, this.sealKey, row, value);
+      this.current.set(row, { value, changedAt: Date.now() });
+      this.mark();
+      await this.store.flush();
+    });
   }
 
   /** DELETE: `key`'s value for `recipe`'s harness gone from its runs, kept as a retired row for the cut. A row the snapshot
@@ -183,12 +200,14 @@ export class HarnessKeysOverStore {
   async remove(recipe: PlanRecipe, key: string): Promise<void> {
     known(recipe, key);
     const row = harnessKeyRow(recipe.id, key);
-    const was = this.current.get(row);
-    if (was) await this.retire(recipe.id, key, was.value);
-    await removeSealedKey(this.store, row);
-    this.current.delete(row);
-    this.mark();
-    await this.store.flush();
+    await this.serial(async () => {
+      const was = this.current.get(row);
+      if (was) await this.retire(recipe.id, key, was.value);
+      await removeSealedKey(this.store, row);
+      this.current.delete(row);
+      this.mark();
+      await this.store.flush();
+    });
   }
 
   /** `value`, which `key` held, sealed as a retired row of its own; the oldest beyond RETIRED_KEPT leaves. */

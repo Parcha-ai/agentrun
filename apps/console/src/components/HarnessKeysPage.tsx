@@ -21,8 +21,9 @@ type Open = { harness: string; key: string; mode: "edit" | "remove" };
  *  key its recipe runs on, saved here for that harness alone. A run on the harness gets them at its claim, never another
  *  harness's run and never any run's tools; with every one saved, its scheduled and triggered runs run too, ahead of its
  *  owner's own sign-in. A value goes to the server and nowhere else: the input is never filled from it, never kept in the
- *  page's state, and cleared after a save or a cancel. `writable`: this is the owner's password session. */
-export function HarnessKeysPage({ v2, writable, whyNot = "sign_in" }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot }) {
+ *  page's state, and cleared after a save or a cancel. `writable`: this is the owner's password session. `onChange`: told
+ *  after each save and remove, so the console reads its capabilities again (a harness offered once its keys are saved). */
+export function HarnessKeysPage({ v2, writable, whyNot = "sign_in", onChange }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void }) {
   const [view, setView] = useState<HarnessKeys | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [open, setOpen] = useState<Open | null>(null);
@@ -36,7 +37,7 @@ export function HarnessKeysPage({ v2, writable, whyNot = "sign_in" }: { v2: Clie
   };
   useEffect(load, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // A write closes only the form that sent it: one opened on another key meanwhile keeps what was typed in it.
-  const done = (started: Open | null) => { setOpen((o) => (o === started ? null : o)); load(); };
+  const done = (started: Open | null) => { setOpen((o) => (o === started ? null : o)); load(); onChange?.(); };
 
   if (!view) return loadError
     ? <Banner tone="error" className="m-8" actions={<Button type="button" size="xs" onClick={load}>Try again</Button>}><p className="font-mono">The harness keys could not be read: {loadError.code}: {loadError.message}</p></Banner>

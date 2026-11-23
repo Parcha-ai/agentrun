@@ -273,6 +273,9 @@ export interface AdapterRunSpec {
    *  raise of its cap, a person's answer) it ends failed at once in these words, saying what it would wait on, every call
    *  still waiting withdrawn in the end's commit (parkClaim). Absent: it parks. */
   readonly neverWaits?: string;
+  /** The session runs on its owner's own sign-in, a plan-billed recipe's claim having laid not every key saved for it
+   *  (cli-run-spec.ts): a trigger's message is refused in these words, never sent into it (steer). Absent: taken. */
+  readonly personOnly?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -1412,6 +1415,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
+    // placed, so no turn of it reaches the vendor on that sign-in.
+    if (specNow?.personOnly && originOf((command.body as { origin?: unknown } | null)?.origin)?.kind === "trigger") return { refused: specNow.personOnly };
     // The session is still new and this is no reopen's message (the claim has yet to send the run's input), or the run's
     // learned workflow runs first, or a message before it still waits for either: it waits for the input, off the runner's
     // delivery, as a computer channel's call does (channelCommand). The runner hands the run's rows on one at a time, each

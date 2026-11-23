@@ -31,7 +31,7 @@ import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
 import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
-import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY } from "../harness-keys.js";
+import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY, RECIPE_TURN_PERSON_ONLY } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
 import { learningWorkspace } from "../learn/folder.js";
@@ -479,13 +479,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // first: the agent reads a saved key or none. All or nothing: a claim that opened not every key lays none, and a run
   // no person started (a schedule's, a trigger's, and a trigger's turn into a run) is refused then, before any route
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
+  // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
+  // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
   const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
+  let personOnly: string | undefined;
   if (name !== undefined && recipeKeys?.length) {
     for (const key of recipeKeys) delete env[key];
     const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
     hold(Object.values(opened));
     if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
     else if (launch.trigger !== undefined) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
+    else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);
@@ -761,6 +765,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     agentId: runRow.agentId,
     // An audit's shadow run waits on no one, as the pi spec's (runner/audit.ts AUDIT_PARKED).
     ...(launch.audit ? { neverWaits: AUDIT_PARKED } : {}),
+    // A plan-billed recipe's session its claim laid no key on: a trigger's message is refused in it (adapter-loop.ts).
+    ...(personOnly ? { personOnly } : {}),
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
     // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.
