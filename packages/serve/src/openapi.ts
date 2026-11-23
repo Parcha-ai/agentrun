@@ -4645,6 +4645,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   ];
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
+  // Its cut is made in a worker under a deadline (cut-pool.ts): past it, or when the worker fails, 503, never uncut.
+  readFileOp.responses["503"] = ref("responses/Unavailable");
   readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), parameters: "filecut/1" };
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.
   const cancel = (doc.paths["/runs/{run_id}/cancel"] as Json).post as Json;

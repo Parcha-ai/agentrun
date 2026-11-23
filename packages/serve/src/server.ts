@@ -446,6 +446,9 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** How long a cut read of a run's file waits for its cut (cut-pool.ts) before it is refused 503 (default CUT_MS). For
+   *  tests. */
+  cutMs?: number;
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
@@ -2132,6 +2135,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     context: ctx,
     sealKey,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
+    ...(options.cutMs !== undefined ? { cutMs: options.cutMs } : {}),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
