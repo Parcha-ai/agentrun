@@ -1,5 +1,6 @@
 import { Plus } from "lucide-react";
 import { useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { ToolCard } from "@/components/ToolCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/field";
@@ -47,7 +48,7 @@ export function MonidGrants({ tools, listed = [], filter, notes = [], refused = 
   };
   return (
     <section aria-label="monid endpoints" className="mt-4 space-y-2">
-      <p className="caps text-label font-semibold text-muted-foreground">monid · paid endpoints</p>
+      <p className="caps flex items-center gap-2 text-label font-semibold text-muted-foreground"><ProviderIcon id="monid" />monid · paid endpoints</p>
       {grants.length > 0 && (
         <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
           {grants.map((g) => {

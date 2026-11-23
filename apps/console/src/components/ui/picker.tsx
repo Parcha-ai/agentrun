@@ -1,6 +1,6 @@
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from "@headlessui/react";
 import { Check, ChevronDown } from "lucide-react";
-import { type ButtonHTMLAttributes, forwardRef } from "react";
+import { type ButtonHTMLAttributes, forwardRef, type ReactNode } from "react";
 import { Chip } from "@/components/ui/chip";
 import { useFieldWiring } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,7 @@ PickerButton.displayName = "PickerButton";
 
 /** One choice: its value, its words, and, where it can't be picked here, `disabled` with why (`title`). `tag`: a fact
  *  about it ("Free · 1M context"), a chip after its words in the list. */
-export type PickerOption = { value: string; label: string; disabled?: boolean; title?: string; tag?: string };
+export type PickerOption = { value: string; label: string; icon?: ReactNode; disabled?: boolean; title?: string; tag?: string };
 
 /** The console's picker, every dropdown's: a field that opens its list right under itself (Headless UI's Listbox,
  *  anchored "bottom start" and kept inside the viewport), in place of a native <select>, which a phone opens detached
@@ -40,12 +40,12 @@ export function Picker({ value, onChange, options, label, id, className, disable
         className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
           small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
         {steady
-          // Every option's words share one grid cell with the picked ones: the cell, and so the field, is as wide as the longest.
+          // Every option shares a grid cell with the selection, including its decorative icon.
           ? <span className="grid min-w-0">
-              {options.map((o) => <span key={o.value} data-picker-sizer="" aria-hidden className="invisible col-start-1 row-start-1 h-0 min-w-0 truncate">{o.label}</span>)}
-              <span className={cn("col-start-1 row-start-1 min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
+              {options.map((o) => <span key={o.value} data-picker-sizer="" aria-hidden className="invisible col-start-1 row-start-1 flex h-0 min-w-0 items-center gap-2">{o.icon && <span className="flex shrink-0">{o.icon}</span>}<span className="truncate">{o.label}</span></span>)}
+              <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">{picked?.icon && <span className="flex shrink-0" aria-hidden>{picked.icon}</span>}<span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span></span>
             </span>
-          : <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>}
+          : <span className="flex min-w-0 items-center gap-2">{picked?.icon && <span className="flex shrink-0" aria-hidden>{picked.icon}</span>}<span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span></span>}
         <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
       </ListboxButton>
       <ListboxOptions anchor="bottom start" data-picker-list=""
@@ -55,6 +55,7 @@ export function Picker({ value, onChange, options, label, id, className, disable
           <ListboxOption key={o.value} value={o.value} disabled={o.disabled} title={o.title} data-value={o.value}
             className="group flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 data-[disabled]:cursor-not-allowed data-[focus]:bg-accent data-[disabled]:opacity-50 data-[selected]:text-foreground">
             <Check className="invisible size-3.5 shrink-0 text-primary-text group-data-[selected]:visible" aria-hidden />
+            {o.icon && <span className="flex shrink-0" aria-hidden>{o.icon}</span>}
             <span className="min-w-0 break-words">{o.label}</span>
             {o.tag && <Chip tone="success" className="ml-auto">{o.tag}</Chip>}
           </ListboxOption>

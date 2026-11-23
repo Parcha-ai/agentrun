@@ -71,6 +71,12 @@ describe("Settings → Tools, the browser row", () => {
     expect(await t.options("web_fetch")).toEqual(["kernel fetch (default)", "Parallel"]);
     expect(t.row("web_fetch").textContent).toContain("pi: kernel fetch");
   });
+
+  it("shows the hosted browser's provider icon without branding the server's built-in fetch as Kernel", () => {
+    const t = table();
+    expect(t.row("browser").querySelector('[data-provider-icon="kernel"]')).not.toBeNull();
+    expect(t.row("web_fetch").querySelector('[data-provider-icon="kernel"]')).toBeNull();
+  });
 });
 
 describe("an agent's browser pick in its editor", () => {

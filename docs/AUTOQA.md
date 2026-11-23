@@ -137,8 +137,8 @@ Each row: entry point, then what makes it pass.
     Playground (`#/playground`: send a run, then "Open this run" to follow it live), Runs plus a state filter
     (`#/runs?status=cancelled`), run detail tabs Report/Timeline/Files and the file viewer, and a workflow run's
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
-    `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
-    finding.
+    `default-src 'self'` (plus provider icons from Google's favicon service, on every view that names a
+    provider), so any violation is a finding.
 21. **Run trace**: after a run that calls a tool, `GET /v2/runs/{id}/trace` → `model_requests` (`priced` on pi,
     `not_recorded` on a CLI harness, `tokens_only` for a workflow run) and `spans[]`: on pi, one `model` span per
     request with `tokens` and `usd`, whose `usd` sum to the run's `cost.usd`, and one `tool` span per call whose

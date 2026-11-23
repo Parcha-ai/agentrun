@@ -13,8 +13,9 @@ import { fileURLToPath } from "node:url";
 import { ApiError } from "./errors.js";
 import { hostRefusedPage, movedPage } from "./host-check.js";
 
-// img-src names Google's favicon service and the four hosts it redirects to: the console's Keys page shows a provider's
-// icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
+// img-src names Google's favicon service and the four hosts it redirects to: the console shows a provider's icon from
+// it wherever a view names a provider (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything
+// else is this origin's.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.google.com https://t0.gstatic.com https://t1.gstatic.com https://t2.gstatic.com https://t3.gstatic.com; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
 const HTML = "text/html; charset=utf-8";

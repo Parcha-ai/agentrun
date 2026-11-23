@@ -18,7 +18,8 @@ const SQUEEZED = 120;
 /** The field as laid out: its width, its picked words, and whether they are cut off. */
 function field() {
   const button = document.querySelector("#api-operation");
-  const words = [...button.querySelectorAll("span")].find((s) => !s.children.length && !s.hasAttribute("data-picker-sizer"));
+  // The steady-width sizers can wrap icons and labels; exclude their descendants too.
+  const words = [...button.querySelectorAll("span")].find((s) => !s.children.length && !s.closest('[aria-hidden="true"]'));
   return { width: button.getBoundingClientRect().width, text: words.textContent, clipped: words.scrollWidth > words.clientWidth,
     ellipsis: getComputedStyle(words).textOverflow, sideways: document.documentElement.scrollWidth - innerWidth };
 }

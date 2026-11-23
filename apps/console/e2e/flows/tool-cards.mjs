@@ -57,7 +57,8 @@ export default {
 
     // A name cut on its line, whatever its length, is whole in its title and offers More; one not cut has no title.
     const names = await cards.evaluateAll((all) => all.map((c) => {
-      const name = c.querySelector("input[type=checkbox] + span");
+      // Decorative provider badges can sit between the checkbox and the name.
+      const name = c.querySelector("input[type=checkbox] ~ span:not([aria-hidden])");
       return { card: c.getAttribute("data-tool-card"), cut: name.scrollWidth > name.clientWidth + 1, widths: [name.clientWidth, name.scrollWidth, c.clientWidth], title: name.getAttribute("title"), text: name.textContent, more: [...c.querySelectorAll("button")].some((b) => b.textContent === "More") };
     }));
     const wrong = names.filter((n) => (n.cut ? n.title !== n.text || !n.more : n.title !== null));

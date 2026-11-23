@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Field, Input } from "@/components/ui/field";
+import { ProviderIcon, providerIdForModel } from "@/components/ProviderIcon";
 import { type PickerOption, Picker } from "@/components/ui/picker";
 import { Switch } from "@/components/ui/switch";
 import { contextSize, harnessDefault, harnessFree, harnessModels, type HarnessInfo, modelLabel, NO_DEFAULT } from "@/lib/models";
@@ -45,7 +46,8 @@ export function ModelField({ id, harness, model, onModel, harnesses, routePrefix
   // narrows the list to them; the default and Custom stay, and so does the model picked.
   const free = harnessFree(harness, harnesses);
   const listed = freeOnly && free.size ? offered.filter((m) => free.has(m) || m === model) : offered;
-  const options: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...listed.map((m) => ({ value: m, label: modelLabel(m, routePrefix).text, ...(free.has(m) ? { tag: `Free · ${contextSize(free.get(m)!.context_window)} context` } : {}) })), { value: CUSTOM_MODEL, label: "Custom..." }];
+  const modelIcon = (id: string) => <ProviderIcon id={providerIdForModel(id, routePrefix) ?? id} kind="model" />;
+  const options: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default", ...(fallback ? { icon: modelIcon(fallback) } : {}) }, ...listed.map((m) => ({ value: m, label: modelLabel(m, routePrefix).text, icon: modelIcon(m), ...(free.has(m) ? { tag: `Free · ${contextSize(free.get(m)!.context_window)} context` } : {}) })), { value: CUSTOM_MODEL, label: "Custom...", ...(customModel && model ? { icon: modelIcon(model) } : {}) }];
   return (
     <Field label="Model" id={id} optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={now(error)} warning={now(warning)}>
       <Picker id={id} label="Model" className="w-full" value={customModel ? CUSTOM_MODEL : model ?? ""} options={options}

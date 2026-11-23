@@ -13,7 +13,7 @@ you add or restyle anything a person sees there.
 
 ## The look, in six rules
 
-1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge.
+1. **Rounded actions, square fields and surfaces.** Every action button uses the same 8px radius. The build composer has its own softer edge. Provider marks use circular badges.
 2. **One line weight.** Borders are 1px. 2px marks the open tab and where the
    keyboard is (the focus ring). Nothing else is thicker.
 3. **Mono for structure, sans for prose.** JetBrains Mono for labels, buttons, chips, ids, numbers and code. Schibsted
@@ -48,6 +48,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | --- | --- | --- |
 | `background`, `foreground` | `bg-background`, `text-foreground` | The page and its text. |
 | `card`, `card-foreground` | `bg-card` | A panel raised off the page: a card, a banner bar, a toast. |
+| `provider-icon-surface`, `provider-icon-foreground` | `bg-provider-icon-surface text-provider-icon-foreground` | A fixed light badge and dark fallback mark, keeping provider icons visible in both themes. |
 | `muted`, `muted-foreground` | `bg-muted`, `text-muted-foreground` | A quiet surface (inline code); secondary text. |
 | `accent`, `accent-foreground` | `hover:bg-accent` | The hover surface of a neutral control. |
 | `overlay` | `bg-overlay/70` | What dims the page under a dialog. |
@@ -131,6 +132,7 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   with no internal divider. Compact row actions keep the neutral secondary treatment.
 - The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
   to the build composer.
+- The shared `.provider-icon` badge uses `--radius-provider-icon` (50%), with an inset logo or fallback mark.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
 
@@ -199,6 +201,12 @@ Import from `@/components/ui`.
 - **A toned panel** is a card that asks for something: an approval, a question, a paused run. It is
   `border border-warning/50 bg-warning/5 p-4` with a `caps text-label text-warning-text` heading, and holds
   `Button`s and fields. A message with no controls of its own is a `Banner`.
+- **A provider label** pairs `ProviderIcon` with the provider, model, harness, tool or computer's existing words.
+  Use the served provider id or an explicit tool/model namespace; a generic tool name never identifies a vendor.
+  Icons are decorative circular badges, 20px by default, with an inset logo or a category icon when unknown or
+  unavailable. A `size-*` override sizes the whole badge. The light backing keeps transparent dark logos visible
+  in both themes. `Picker` options accept
+  `icon` beside their string `label`, in both the selected field and the list, preserving typeahead and accessible names.
 - **A read that failed** is `<Banner tone="error" actions={<Button size="xs">Try again</Button>}>` with the server's
   words in a `font-mono` paragraph.
 - **An inline confirm** replaces a row's button with the question, the action by name and Cancel, in a

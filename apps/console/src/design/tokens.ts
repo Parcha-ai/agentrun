@@ -3,8 +3,8 @@
 
 /** Every colour token, in the groups the guide describes them in. */
 export const COLOR_TOKENS = {
-  surface: ["background", "card", "muted", "accent", "overlay", "run-error-surface"],
-  text: ["foreground", "card-foreground", "muted-foreground", "accent-foreground"],
+  surface: ["background", "card", "muted", "accent", "overlay", "run-error-surface", "provider-icon-surface"],
+  text: ["foreground", "card-foreground", "muted-foreground", "accent-foreground", "provider-icon-foreground"],
   brand: ["primary", "primary-foreground", "primary-text", "primary-action-text"],
   tone: ["success", "success-text", "warning", "warning-text", "destructive", "destructive-text", "info", "info-text"],
   line: ["border", "border-strong", "input", "ring"],
@@ -62,6 +62,7 @@ export const SHAPES = [
 export const TEXT_PAIRS: readonly { text: string; on: string; wash?: string; alpha?: number }[] = [
   ...["background", "card", "muted"].flatMap((on) => ["foreground", "muted-foreground", "primary-text", "success-text", "warning-text", "destructive-text", "info-text"].map((text) => ({ text, on }))),
   { text: "card-foreground", on: "card" },
+  { text: "provider-icon-foreground", on: "provider-icon-surface" },
   { text: "accent-foreground", on: "accent" },
   { text: "primary-foreground", on: "primary" },
   { text: "background", on: "foreground" },

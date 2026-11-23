@@ -44,6 +44,22 @@ describe("AgentPage, the agent's tools", () => {
     // The tool's line for people is its name's title.
     expect([...dd!.querySelectorAll("li")][0]!.querySelector("[title]")!.getAttribute("title")).toBe("Read a public web page");
   });
+  it("shows the configured tool vendor and keeps the built-in fetch distinct from Kernel's browser", async () => {
+    const { dd } = await open({ ...agentFixture("invoice-checker"), tools: [{ ...WEB_FETCH, name: "web_search" }, { ...WEB_FETCH, name: "browser", provider: "kernel", resolved: "kernel" }, { ...WEB_FETCH, name: "web_fetch", provider: "kernel", resolved: "kernel" }] });
+    const items = [...dd!.querySelectorAll("li")];
+    expect(items[0]!.querySelector('[data-provider-icon="parallel"]')).not.toBeNull();
+    expect(items[1]!.querySelector('[data-provider-icon="kernel"]')).not.toBeNull();
+    expect(items[2]!.querySelector("img")).toBeNull();
+    expect(items[2]!.textContent).toBe("web_fetch · kernel fetch · ask");
+  });
+  it("shows the sandbox provider on shell tools, including background jobs, without branding file storage", async () => {
+    const base = agentFixture("invoice-checker");
+    const { dd } = await open({ ...base, definition: { ...base.definition, computer: { kind: "sandbox", provider: "modal" }, place: { mode: "sandbox", box: "modal" } }, tools: [BASH, { ...BASH, name: "bash_output" }, { ...BASH, name: "read" }] });
+    const rows = [...dd!.querySelectorAll("li")];
+    expect(rows[0]!.querySelector('[data-provider-icon="modal"]')).not.toBeNull();
+    expect(rows[1]!.querySelector('[data-provider-icon="modal"]')).not.toBeNull();
+    expect(rows[2]!.querySelector("img")).toBeNull();
+  });
   it("a tool its runs would not get reads unavailable, its server's reason on hover: bash with no computer that gives a shell, a web tool its provider can't serve", async () => {
     const noShell: AgentTool = { ...BASH, resolved: "unavailable: This agent has no computer, so it has no shell: give it a sandbox computer to run commands." };
     const noKey: AgentTool = { ...WEB_FETCH, resolved: "unavailable: PARALLEL_API_KEY is not set" };

@@ -1,5 +1,6 @@
 import { KeyRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, problemOf } from "@/lib/client";
@@ -91,7 +92,7 @@ export function SignIns({ agent, v2, onAgent, poll, refresh }: { agent: Agent; v
               {g.items.map((s) => (
                 <div key={`${s.key}\u0000${s.provider}`} data-sign-in className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="text-body font-semibold">{vendor(s.provider)}</span>
+                    <span className="inline-flex items-center gap-2 text-body font-semibold"><ProviderIcon id={s.provider} />{vendor(s.provider)}</span>
                     <span className="font-mono text-label text-muted-foreground">{s.verified_at ? `last verified ${when(s.verified_at)}` : "not verified yet"}</span>
                     {s.state === "held" && s.held_by && <span className="font-mono text-label text-muted-foreground">in use by run {runLink(s.held_by)}</span>}
                     {g.items.length === 1 && <><span className="flex-1" />{forgetButton(g)}</>}

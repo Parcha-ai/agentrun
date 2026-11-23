@@ -1,5 +1,20 @@
 import type { Place } from "./place";
 import type { Computer, ComputerKindView } from "./v2";
+import { BROWSER_TOOL_NAMES } from "@pi-browser/contract";
+
+const BROWSER_TOOLS = new Set<string>(BROWSER_TOOL_NAMES);
+const SCREEN_TOOLS = new Set(["computer_observe", "computer_act", "computer_screenshot", "computer_op", "computer_request_handoff"]);
+const SANDBOX_TOOLS = new Set(["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"]);
+
+/** Tools that run on the selected computer. File tools may use a separate workspace, and search/fetch may use another
+ *  service, so neither inherits the computer's vendor. No computer means no provider can be claimed. */
+export function computerProviderForTool(tool: string, computer?: { kind: string; provider?: string }): string | undefined {
+  if (!computer) return undefined;
+  const runs = computer.kind === "sandbox" ? SANDBOX_TOOLS.has(tool)
+    : computer.kind === "browser" ? BROWSER_TOOLS.has(tool)
+    : (computer.kind === "desktop" || computer.kind === "phone") && SCREEN_TOOLS.has(tool);
+  return runs ? computer.provider : undefined;
+}
 
 /** Whether a kind can be picked here: offered, and (but none, which needs no provider) a provider of it is ready. */
 export const pickable = (kind: ComputerKindView): boolean => kind.offered && (kind.kind === "none" || kind.providers.some((p) => p.ready));

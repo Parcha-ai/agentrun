@@ -1,14 +1,14 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { ProviderIcon } from "./ProviderIcon";
+import { ProviderIcon, providerIdForModel, providerIdForTool, toolProviderId } from "./ProviderIcon";
 
 // A provider's icon is its site's own, from Google's favicon service; when that can't be had it is the bundled mark,
 // else the key. jsdom loads no image, so a failed load is the error event a browser fires.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-const draw = (id: string) => {
+const draw = (id?: string | null) => {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(ProviderIcon, { id })));
@@ -17,6 +17,14 @@ const draw = (id: string) => {
 const fail = (host: HTMLElement) => act(() => { host.querySelector("img")!.dispatchEvent(new Event("error")); });
 
 describe("a provider's icon", () => {
+  it.each([undefined, null, ""])("keeps a missing provider local (%s)", (id) => {
+    const host = draw(id);
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.querySelector("svg")!.getAttribute("class")).toContain("lucide");
+  });
+  it("backs Agent37's transparent dark logo so it remains visible in either theme", () => {
+    expect(draw("agent37").querySelector("img")?.closest(".bg-provider-icon-surface")).not.toBeNull();
+  });
   it("asks Google's favicon service for the provider's own site, with no referrer, and is decorative", () => {
     const img = draw("openai").querySelector("img")!;
     expect(img.getAttribute("src")).toBe("https://www.google.com/s2/favicons?domain=chatgpt.com&sz=64");
@@ -46,5 +54,40 @@ describe("a provider's icon", () => {
     const host = draw("some-new-provider");
     expect(host.querySelector("img")).toBeNull();
     expect(host.querySelector("svg")!.getAttribute("class")).toContain("lucide");
+  });
+  it("tries the new provider after a previous provider's image failed", () => {
+    const host = draw("openai");
+    fail(host);
+    act(() => root!.render(createElement(ProviderIcon, { id: "monid" })));
+    expect(host.querySelector("img")?.getAttribute("data-provider-icon")).toBe("monid");
+  });
+  it("keeps unknown and prototype-like provider names local", () => {
+    for (const id of ["__proto__", "constructor", "toString", "internal.example"]) {
+      const host = draw(id);
+      expect(host.querySelector("img")).toBeNull();
+      act(() => root?.unmount());
+    }
+  });
+});
+
+describe("provider identity", () => {
+  it("identifies explicit model vendors through supported routing and plan aliases", () => {
+    expect(providerIdForModel("openrouter/anthropic/claude-sonnet-5.5")).toBe("anthropic");
+    expect(providerIdForModel("gateway/google/gemini-pro", "gateway")).toBe("google");
+    expect(providerIdForModel("chatgpt/gpt-6.1-sol")).toBe("openai");
+    expect(providerIdForModel("unknown/claude-custom")).toBe("unknown");
+    expect(providerIdForModel("private-model")).toBeUndefined();
+  });
+  it("identifies tool namespaces without inventing providers for generic tools or custom MCP servers", () => {
+    expect(providerIdForTool("monid:exa/search")).toBe("monid");
+    expect(providerIdForTool("monid.run")).toBe("monid");
+    expect(providerIdForTool("decisions.jev")).toBe("typesafe");
+    expect(providerIdForTool("decisions.parallel")).toBe("parallel");
+    for (const tool of ["web_search", "web_fetch", "browser", "mcp:private/search"]) expect(providerIdForTool(tool)).toBeUndefined();
+  });
+  it("distinguishes Kernel browsers from the internal fetch and normalizes Exa keyless", () => {
+    expect(toolProviderId("kernel", "browser")).toBe("kernel");
+    expect(toolProviderId("kernel", "web_fetch")).toBe("kernel-fetch");
+    expect(toolProviderId("exa-keyless", "web_search")).toBe("exa");
   });
 });

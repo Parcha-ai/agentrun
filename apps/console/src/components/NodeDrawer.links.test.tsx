@@ -43,6 +43,8 @@ describe("NodeDrawer, links from a decision's sources", () => {
   it("shows only an http or https image a provider saw; any other is no image and no button", () => {
     const host = drawer({ images: [...BAD.map((url, k) => ({ token: `bad${k}`, ref: "", url })), { token: "good", ref: "", url: "https://example.com/shot.png" }, { token: "kept", ref: "pages/1.png" }] });
     expect(host.textContent).toContain("Which branch fits?");
-    expect([...host.querySelectorAll("img")].map((i) => i.getAttribute("src"))).toEqual(["https://example.com/shot.png", "/v2/runs/r/files/pages/1.png"]);
+    // Source images are the figures; provider icons in the headers are decorative and have their own fixed URLs.
+    expect([...host.querySelectorAll("figure img")].map((i) => i.getAttribute("src"))).toEqual(["https://example.com/shot.png", "/v2/runs/r/files/pages/1.png"]);
+    for (const img of host.querySelectorAll("img")) expect(BAD).not.toContain(img.getAttribute("src"));
   });
 });

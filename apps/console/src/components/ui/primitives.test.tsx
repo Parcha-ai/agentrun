@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
 
@@ -141,6 +142,32 @@ describe("Field", () => {
   });
   it("a control outside a Field takes its own props", () => {
     expect(html(<Input id="q" aria-describedby="hint" />)).toMatch(/id="q"[^>]*aria-describedby="hint"|aria-describedby="hint"[^>]*id="q"/);
+  });
+});
+
+describe("Picker icons", () => {
+  it("keeps labels and keyboard selection when options have decorative provider icons", async () => {
+    function Demo() {
+      const [value, setValue] = useState("openai");
+      return <Picker label="Model provider" value={value} onChange={setValue} options={[
+        { value: "openai", label: "OpenAI", icon: <ProviderIcon id="openai" /> },
+        { value: "anthropic", label: "Anthropic", icon: <ProviderIcon id="anthropic" /> },
+      ]} />;
+    }
+    const host = mount(<Demo />);
+    const button = host.querySelector("button")!;
+    expect(button.textContent).toBe("OpenAI");
+    expect(button.querySelector("img")?.getAttribute("alt")).toBe("");
+    await click(button);
+    const options = [...document.querySelectorAll('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual(["OpenAI", "Anthropic"]);
+    expect(options.every((option) => option.querySelector("img")?.closest('[aria-hidden="true"]'))).toBe(true);
+    const list = document.querySelector('[role="listbox"]')!;
+    await key(list, "End");
+    await key(list, "Enter");
+    expect(button.textContent).toBe("Anthropic");
+    expect(button.querySelector("img")?.getAttribute("data-provider-icon")).toBe("anthropic");
+    expect(button.getAttribute("aria-label")).toBe("Model provider");
   });
 });
 

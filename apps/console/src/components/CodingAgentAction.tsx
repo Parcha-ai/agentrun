@@ -3,6 +3,7 @@ import { Check, ChevronDown, Code, Copy, MousePointer2, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { ProviderBadge } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import { codingAgentLabels, codingAgentLink, codingAgents, CODING_AGENT_EVENT, readCodingAgent, rememberCodingAgent, type CodingAgent } from "@/lib/codingAgentLinks";
 import codexIcon from "@/assets/coding-agents/codex.png";
@@ -12,8 +13,8 @@ import claudeCliIcon from "@/assets/coding-agents/claude-code-cli.svg";
 
 export function CodingAgentIcon({ agent }: { agent: CodingAgent | "" }) {
   const src = agent === "codex" ? codexIcon : agent === "claude" ? claudeIcon : agent === "codex-cli" ? codexCliIcon : agent === "claude-cli" ? claudeCliIcon : null;
-  if (src) return <img src={src} width={18} height={18} alt="" aria-hidden className="size-[18px] shrink-0 object-contain" />;
-  return agent === "cursor" ? <MousePointer2 className="size-4 shrink-0" aria-hidden /> : <Copy className="size-4 shrink-0" aria-hidden />;
+  if (src) return <ProviderBadge><img src={src} width={18} height={18} alt="" aria-hidden className="size-full object-contain" /></ProviderBadge>;
+  return agent === "cursor" ? <ProviderBadge><MousePointer2 className="!size-full" aria-hidden /></ProviderBadge> : <Copy className="size-4 shrink-0" aria-hidden />;
 }
 
 function usePreferredAgent() {

@@ -2,6 +2,7 @@ import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageCla
 import { pasteFromClipboard } from "@/lib/paste";
 import { Monitor, Smartphone } from "lucide-react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -326,7 +327,7 @@ function ProviderRow({ v2, kind, provider: p, writable, serves, tested, testing,
   return (
     <li ref={row} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
-        <Monitor className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ProviderIcon id={p.id} kind="compute" className="mt-1" />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2">
             <span data-provider className="font-mono text-prose font-semibold">{p.name}</span>

@@ -43,6 +43,16 @@ const type = async (input: HTMLInputElement, value: string) => {
 };
 
 describe("the Dev tools tab", () => {
+  it("shows providers from explicit call identities and the pinned computer without attributing unrelated tools", async () => {
+    const trace: Trace = { ...TRACE, spans: TRACE.spans.map((span) => span.kind === "model" ? { ...span, name: "anthropic/claude-sonnet-5-5" } : span) };
+    const host = await open(trace, { run: { ...RUN, computer: { kind: "sandbox", provider: "modal", state: "ready" } } });
+    expect(rowOf(host, "anthropic/claude-sonnet-5-5")?.querySelector('[data-provider-icon="anthropic"]')).toBeTruthy();
+    expect(rowOf(host, "bash")?.querySelector('[data-provider-icon="modal"]')).toBeTruthy();
+    expect(rowOf(host, "web_search")?.querySelector('[data-provider-icon="modal"]')).toBeNull();
+    await click(rowOf(host, "bash")?.querySelector("button"));
+    expect(panel(host)?.querySelector("h2 [data-provider-icon='modal']")).toBeTruthy();
+  });
+
   it("says what the run added up to: its requests, calls, failures, tokens, cost and time", async () => {
     const host = await open(TRACE);
     expect(tile(host, "Model requests")?.textContent).toContain("8");

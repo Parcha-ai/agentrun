@@ -5,6 +5,7 @@ import { agentInventory } from "@/lib/agentInventory";
 import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
 import { Chip } from "@/components/ui/chip";
@@ -89,7 +90,7 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
   return (
     <AgentCardFrame name={a.definition.name} icon={Icon} harness={a.kind === "workflow" ? "workflow" : cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi"} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
       badges={<><Chip>{a.kind}</Chip>
-        {a.kind === "agentic" && <Chip>{cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
+        {a.kind === "agentic" && <Chip><ProviderIcon id={cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi"} kind="harness" className="size-3" />{cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
         {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
         {archived && <Chip tone="muted">Archived</Chip>}</>}
       description={a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}

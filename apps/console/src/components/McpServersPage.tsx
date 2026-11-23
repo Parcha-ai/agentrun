@@ -4,6 +4,7 @@ import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ListFilter } from "@/components/ListFilter";
 import { matchesFilter } from "@/lib/filter";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { SecretRow } from "@/components/SecretRow";
 import { ToolTable } from "@/components/ToolSettings";
 import { Button } from "@/components/ui/button";
@@ -173,7 +174,7 @@ function ServerRow({ v2, server: s, settings, settingsBusy, settingsProblem, onS
   return (
     <li data-server={s.name} className="border-b p-4 last:border-b-0">
       <div className="flex flex-wrap items-start gap-3">
-        <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <ProviderIcon id={s.source === "github" || s.source === "composio" ? s.source : "mcp"} fallback={Plug} className="mt-1" />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2"><span className="font-mono text-prose font-semibold">{s.name}</span><Chip tone={tone}>{said}</Chip>{!!s.not_metered?.length && <Chip tone="plain">not metered</Chip>}
             {/* What a template's MCP need is matched on: where its tools come from and the toolkit they are. */}
@@ -328,6 +329,7 @@ function ServerTools({ server: s, settings, busy, onSettings }: { server: McpSer
   return (
     <ToolTable label={`${s.name}'s tools`} rows={rows} settings={settings ?? {}} busy={busy} issues={{}}
       fallbackOf={() => ""} resolvesOf={() => null} onEdit={onSettings}
+      iconOf={() => <ProviderIcon id={s.source === "github" || s.source === "composio" ? s.source : "mcp"} fallback={Plug} />}
       labelOf={(name) => byKey.get(name)?.name ?? name}
       detailOf={(name) => detail(byKey.get(name)?.name ?? "")}
       effectOf={(name) => byKey.get(name)?.effect}
@@ -685,7 +687,7 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
           <p className="mt-2 text-small text-muted-foreground">{PREVIEW_SCOPE_NOTE}</p>
           <ul aria-label="Tools it lists" className="mt-2 divide-y border">
             {preview.tools.map((t) => (
-              <li key={t.name} className="px-3 py-2"><span className="font-mono text-body">{t.name}</span>{t.title && <span className="ml-2 text-small">{t.title}</span>}
+              <li key={t.name} className="px-3 py-2"><span className="inline-flex items-center gap-2 font-mono text-body"><ProviderIcon id="mcp" fallback={Plug} />{t.name}</span>{t.title && <span className="ml-2 text-small">{t.title}</span>}
                 {t.description && <span className="mt-0.5 block text-small text-muted-foreground">{t.description}</span>}</li>
             ))}
           </ul>

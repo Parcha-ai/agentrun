@@ -41,6 +41,16 @@ describe("AgentEditor, the Model picker", () => {
     expect((await optionsOf(page.model())).map((o) => o.value)).toEqual(["", "anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5", "openai/gpt-6.1-sol", CUSTOM]);
   });
 
+  it("shows each model's provider icon and changes the selected icon with the model", async () => {
+    const page = await open(agentOn("pi"));
+    expect(page.model().querySelector('[data-provider-icon="anthropic"]')).not.toBeNull();
+    await pick(page.model(), "openai/gpt-6.1-sol");
+    expect(page.model().querySelector('[data-provider-icon="openai"]')).not.toBeNull();
+    expect(page.model().querySelector('[data-provider-icon="anthropic"]')).toBeNull();
+    expect(page.model().getAttribute("aria-label")).toBe("Model");
+    expect(page.model().querySelector("img")?.getAttribute("alt")).toBe("");
+  });
+
   it("picking a listed model sets it, and Save sends it", async () => {
     const saved: AgentFields[] = [];
     const page = await open(agentOn("pi"), (f) => saved.push(f));
