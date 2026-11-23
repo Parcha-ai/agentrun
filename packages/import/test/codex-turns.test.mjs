@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readSession } from "../dist/import-sources.js";
+import { readSession } from "../dist/index.js";
 
 const message = (role, content) => ({ type: "response_item", payload: { type: "message", role, content } });
 const context = { type: "turn_context", payload: { model: "fixture-model", effort: "high" } };

@@ -333,7 +333,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
   const pkg = readPackage(dir, { evalFixtures: false });
   const problems: string[] = [];
   const missing = (names ?? []).filter((name) => !pkg.evals.includes(name));
-  if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${pkg.evals.join(", ") || "none"})`));
+  if (missing.length) throw new CaseError(dir, missing.map((name) => `evals/${name}: no such case (the package's are ${[...pkg.evals].sort().join(", ") || "none"})`));
   const cases: EvalCase[] = [];
   for (const name of pkg.evals.filter((name) => !names?.length || names.includes(name))) {
     const at = `evals/${name}`;

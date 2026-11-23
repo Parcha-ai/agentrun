@@ -25,7 +25,7 @@ export const LAYERS = {
   'plug-in': ['packages/run-adapters-claude-agent', 'packages/run-adapters-codex', 'packages/run-adapters-acp', 'packages/computer', 'packages/decisions', 'packages/jev'],
   // Libraries to be folded into the kernel, a plug-in or the server. packages/dsl is the workflow language and its engine.
   subsystem: [
-    'packages/dsl', 'packages/pi-browser',
+    'packages/dsl', 'packages/pi-browser', 'packages/import',
   ],
   server: ['packages/serve'],
   surface: ['apps/console', 'packages/agentrun', 'packages/computer-bench'],
