@@ -80,6 +80,32 @@ test("a key is bound to the recipe file it was saved for: a later file of the sa
   assert.deepEqual(later.view(NEXT).reenter, [{ name: "harness:acme:ACME_ORG", why: "recipe_changed" }]);
 });
 
+test("a claim that read one recipe file's binding, then the bytes a save for another file of its id wrote meanwhile, opens nothing: the binding holds the digest of the bytes it was written with", async (t) => {
+  const { store, file, keys } = await keysOn(t, { recipes: [ACME] });
+  await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
+  const NEXT = { ...ACME, digest: "c".repeat(64) };
+  const later = new HarnessKeysOverStore(store, SEAL, [NEXT], file);
+  await later.load();
+  // The claim's store: once it has read the bindings (ACME's), the later file's key is saved before it reads the bytes.
+  let raced = false;
+  const racing = {
+    settings: store.settings,
+    sealedKeys: {
+      get: async (row) => {
+        if (!raced) {
+          raced = true;
+          await later.save(NEXT, "ACME_API_KEY", { value: `${VALUE}-next` });
+        }
+        return store.sealedKeys.get(row);
+      },
+    },
+  };
+  assert.deepEqual(await openHarnessKeys(racing, SEAL, ACME), {}, "the later file's key never reaches a claim on the first");
+  assert.ok(raced);
+  assert.deepEqual(await openHarnessKeys(store, SEAL, NEXT), { ACME_API_KEY: `${VALUE}-next` }, "the file it was saved for opens it");
+  assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), {});
+});
+
 test("a recipe the server no longer names keeps its keys, sealed and cut and run by nothing: listed by its id, and a DELETE removes them", async (t) => {
   const { store, file, keys } = await keysOn(t);
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });

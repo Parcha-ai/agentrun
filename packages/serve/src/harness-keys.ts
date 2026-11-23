@@ -6,15 +6,18 @@
 // timeline written while it was live stays cut after it changes.
 //
 // Each current row is bound to the recipe it was saved for and the seal key it was sealed under, in one settings row
-// beside them (HARNESS_KEY_BINDS: the recipe file's sha256, the seal key's fingerprint, neither a secret). A row opens for
-// a run only on the recipe it was saved for: a later recipe file of the same id (another agent, another vendor) never
-// takes it, and a row whose seal key changed says so. The binding is kept outside the sealed value and its AAD, since the
-// cut opens every row as a bare key. A recipe the server no longer names keeps its keys (still sealed, still cut, run by
+// beside them (HARNESS_KEY_BINDS: the recipe file's sha256, the seal key's fingerprint, the sha256 of the sealed bytes it
+// was written with, none a secret). A row opens for a run only on the recipe it was saved for: a later recipe file of the
+// same id (another agent, another vendor) never takes it, and a row whose seal key changed says so. The binding is kept
+// outside the sealed value and its AAD, since the cut opens every row as a bare key; the digest of the sealed bytes ties
+// the two reads together, so a claim that reads one value's binding and then, after a save, another value's bytes never
+// opens them. A recipe the server no longer names keeps its keys (still sealed, still cut, run by
 // nothing): listed by its id, and removed by DELETE.
 //
 // The server reads and writes them through HarnessKeysOverStore (its Settings → Harness keys routes, owner only). A
 // runner opens a claim's own at its claim (openHarnessKeys), for that run's recipe alone, and lays them on its adapter's
 // environment where only the agent's start reads them (runner/cli-run-spec.ts): never on its tools, never another run's.
+import { createHash } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { HARNESS_KEY_REENTER, type Opened, openSealed, putSealedKey, removeSealedKey, sealFingerprint } from "./server-keys.js";
 import type { PlanRecipe } from "./harness-table.js";
@@ -36,9 +39,9 @@ export const HARNESS_KEY_PLANE = "harness";
 const RETIRED_PLANE = "harness-retired";
 /** How many replaced or removed values of one key stay sealed for the cut: the oldest beyond it leaves. */
 export const RETIRED_KEPT = 8;
-/** The settings row each current key row's binding is kept in: { v: 1, rows: { <row>: { seal, recipe } } }, `seal` the
- *  fingerprint of the seal key it was sealed under (server-keys.ts sealFingerprint), `recipe` the sha256 of the recipe
- *  file it was saved for (PlanRecipe.digest). */
+/** The settings row each current key row's binding is kept in: { v: 1, rows: { <row>: { seal, recipe, sealed } } }, `seal`
+ *  the fingerprint of the seal key it was sealed under (server-keys.ts sealFingerprint), `recipe` the sha256 of the recipe
+ *  file it was saved for (PlanRecipe.digest), `sealed` the sha256 of the sealed bytes written with it (sealedDigest). */
 export const HARNESS_KEY_BINDS = "harness-keys";
 /** A value's bounds: under 8 characters or holding whitespace, no cut could hold it whole (server-secrets.ts' floor). */
 const MIN_VALUE = 8;
@@ -59,12 +62,21 @@ const rowParts = (name: string): { harness: string; key: string } | undefined =>
 export { HARNESS_KEY_REENTER };
 export type HarnessKeyWhy = (typeof HARNESS_KEY_REENTER)[number];
 
-type Bind = { readonly seal: string; readonly recipe: string };
-/** The bindings the settings row holds, failing closed: an unreadable row reads as none, so no key opens until saved again. */
+type Bind = { readonly seal: string; readonly recipe: string; readonly sealed: string };
+/** The sha256 of a row's sealed bytes (base64url): a binding holds the one its value was written with, so bytes read
+ *  apart from it open only when they are those bytes. Of ciphertext, never of a value. */
+const sealedDigest = (sealed: Uint8Array): string => createHash("sha256").update(sealed).digest("base64url");
+/** The recipe `bind` binds `sealed` to: none when there is no binding, or it was written with other bytes (a save landed
+ *  between the reads of one and the other, or the row was put by hand). */
+const boundRecipe = (bind: Bind | undefined, sealed: Uint8Array): string | undefined => (bind !== undefined && bind.sealed === sealedDigest(sealed) ? bind.recipe : undefined);
+/** The bindings the settings row holds, failing closed: an unreadable row, or a binding with no digest of its bytes,
+ *  reads as none, so no key opens until saved again. */
 function bindsOf(read: unknown): Map<string, Bind> {
   const binds = new Map<string, Bind>();
   if (isObject(read) && read.v === 1 && isObject(read.rows)) {
-    for (const [row, bind] of Object.entries(read.rows)) if (isObject(bind) && typeof bind.seal === "string" && typeof bind.recipe === "string") binds.set(row, { seal: bind.seal, recipe: bind.recipe });
+    for (const [row, bind] of Object.entries(read.rows)) {
+      if (isObject(bind) && typeof bind.seal === "string" && typeof bind.recipe === "string" && typeof bind.sealed === "string") binds.set(row, { seal: bind.seal, recipe: bind.recipe, sealed: bind.sealed });
+    }
   }
   return binds;
 }
@@ -85,7 +97,8 @@ export async function openHarnessKeys(store: { readonly sealedKeys: Pick<SealedK
     const bind = binds.get(row);
     if (bind?.recipe !== recipe.digest) continue;
     const sealed = await store.sealedKeys.get(row);
-    if (sealed === undefined) continue;
+    // The bytes read after the binding are the ones it was written with, or a save came between: never another value.
+    if (sealed === undefined || boundRecipe(bind, sealed) !== recipe.digest) continue;
     const open = openSealed(sealKey, row, sealed, bind.seal);
     if ("value" in open) opened[name] = open.value;
   }
@@ -195,7 +208,7 @@ export class HarnessKeysOverStore {
     for (const row of await this.store.sealedKeys.all()) {
       if (rowParts(row.name)) {
         const bind = binds.get(row.name);
-        current.set(row.name, { opened: openSealed(this.sealKey, row.name, row.sealed, bind?.seal), recipe: bind?.recipe, changedAt: row.updatedAt });
+        current.set(row.name, { opened: openSealed(this.sealKey, row.name, row.sealed, bind?.seal), recipe: boundRecipe(bind, row.sealed), changedAt: row.updatedAt });
         continue;
       }
       if (!row.name.startsWith(`${RETIRED_PLANE}:`)) continue;
@@ -304,8 +317,9 @@ export class HarnessKeysOverStore {
       // Unbound before the new value is written, bound after: a write cut short leaves a row bound to no recipe (opened by
       // none), never a value bound to a recipe it was not saved for.
       if (this.binds.delete(row)) await this.writeBinds();
-      await putSealedKey(this.store, this.sealKey, row, value);
-      this.binds.set(row, { seal: this.seal, recipe: recipe.digest });
+      const sealed = sealColumn(this.sealKey, sealedAt.sealedKey(row), value);
+      await this.store.sealedKeys.put(row, sealed);
+      this.binds.set(row, { seal: this.seal, recipe: recipe.digest, sealed: sealedDigest(sealed) });
       await this.writeBinds();
       this.current.set(row, { opened: { value }, recipe: recipe.digest, changedAt: Date.now() });
       this.mark();
