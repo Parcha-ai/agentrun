@@ -12,9 +12,14 @@ export type ToolCall = {
  *  part of `output` the model spent reasoning, where the source says (OpenAI's). */
 export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h?: number; reasoning?: number };
 
+/** Another source's session that holds the same request: OpenCode's claude-agent provider runs Claude Code, which writes
+ *  each request into its own session file too. A total of both sources counts the request once, in `source`'s. */
+export type Mirror = { source: string; sessionId: string };
+
 /** An assistant turn is one model request: `model` the one it ran on ("provider/model"), `effort` the effort or
  *  thinking level it ran at, `usage` its tokens, each absent when the source does not say; `key`, the source's own id of
- *  the request (Claude Code's message id with its request id, Codex's response id); `error`, why it failed. A note is a
+ *  the request (Claude Code's message id with its request id, Codex's response id); `error`, why it failed; `mirrors`, the
+ *  other source's session that holds the same request (Mirror). A note is a
  *  line the harness itself wrote in the conversation: no request, nor the person's. */
 export type Turn = (
   | { role: "user"; text: string; at: number }
@@ -30,6 +35,7 @@ export type Turn = (
       effort?: string;
       usage?: Usage;
       error?: string;
+      mirrors?: Mirror;
     }
   | {
       role: "toolResult";
@@ -85,4 +91,6 @@ export type SessionOf<S extends string = string> = {
   copies: number;
   /** The effort or thinking level most of its requests ran at, as the source names it; with its turns only. */
   effort?: string;
+  /** Each other source's session its requests' mirrors name, in the order first named (with or without its turns). */
+  mirrors?: Mirror[];
 };

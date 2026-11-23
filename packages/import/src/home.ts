@@ -1,12 +1,15 @@
 // Every session under a home, as totals: what each used, its subagents' requests with it, and what it cost. A session is
 // one per source and id, however many files write it (a Codex thread resumed in a new file, a Claude Code session copied
-// into a resumed one's); a subagent's is no session of its own but its parent's.
+// into a resumed one's); a subagent's is no session of its own but its parent's. A request another source's session also
+// holds (an OpenCode claude-agent request, which Claude Code writes too: its `mirrors`) is that session's, when the same
+// call reads it, and counts once there.
 import { createHash } from "node:crypto";
 import { relative, sep } from "node:path";
 import { type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
+import type { Answer } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
 export type SessionTotals = {
@@ -59,10 +62,12 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   if (state) state.read = 0;
-  for (const source of sources) {
-    const { tops, children } = await readSource(home, source, readers, env, state);
-    out.push(...(await totalsOf(home, source, tops, children, priceWith)));
-  }
+  const read: { source: string; tops: Part[]; children: (Part & { of: Locator })[] }[] = [];
+  for (const source of sources) read.push({ source, ...(await readSource(home, source, readers, env, state)) });
+  // Every session this call read, by source and id: a request that mirrors one is counted in it, not again.
+  const sessions = new Set(read.flatMap(({ source, tops, children }) => [...tops, ...children].map((part) => `${source}:${part.read.session.id}`)));
+  const mirrored = ({ mirrors }: Answer) => mirrors !== undefined && sessions.has(`${mirrors.source}:${mirrors.sessionId}`);
+  for (const { source, tops, children } of read) out.push(...(await totalsOf(home, source, tops, children, priceWith, mirrored)));
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
@@ -101,7 +106,16 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>): Promise<SessionTotals[]> {
+/** A session file's own requests (none another session of the call holds), and the cost it wrote of them: its own when it
+ *  holds none of another's, else its own requests' when each that used tokens is priced. */
+function ownOf({ read }: Part, mirrored: (request: Answer) => boolean): { requests: Answer[]; cost: number | undefined } {
+  const requests = read.requests.filter((request) => !mirrored(request));
+  if (requests.length === read.requests.length) return { requests, cost: read.session.costUsd };
+  const priced = requests.every((request) => request.costUsd !== undefined || !request.usage);
+  return { requests, cost: priced ? requests.reduce((n, request) => n + (request.costUsd ?? 0), 0) : undefined };
+}
+
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, mirrored: (request: Answer) => boolean): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[] }>();
@@ -143,17 +157,23 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     const tokens = noTokens();
     let reasoning = 0;
     let calls = 0;
-    const requests = [...parts, ...subagents].flatMap(({ read }) => read.requests.map((request) => ({ model: request.model ?? read.session.model, usage: request.usage })));
+    const own = new Map([...parts, ...subagents].map((part) => [part, ownOf(part, mirrored)]));
+    const requests = [...parts, ...subagents].flatMap((part) => own.get(part)!.requests.map((request) => ({ model: request.model ?? part.read.session.model, usage: request.usage })));
     for (const { usage } of requests) {
       calls += 1;
       if (!usage) continue;
       addTokens(tokens, usage);
       reasoning += usage.reasoning ?? 0;
     }
-    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total (a moved
-    // session's copy goes on from the original's), so the highest; another source prices each request, so their sum.
-    const written = parts.flatMap(({ read }) => (read.session.costUsd !== undefined ? [read.session.costUsd] : []));
-    let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
+    // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total, its
+    // subagents' with it (a moved session's copy goes on from the original's), so the highest; another source prices each
+    // request, so the sum of its files' and its subagents' (OpenCode's subagent is a session of its own).
+    const priced = source === "claude-code" ? parts : [...parts, ...subagents];
+    const written = priced.flatMap((part) => {
+      const { cost } = own.get(part)!;
+      return cost !== undefined ? [cost] : [];
+    });
+    let cost: number | undefined = written.length === priced.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
     if (cost === undefined) {
       const catalog = await priceWith();
       cost = catalog ? await priceRequests(requests, catalog) : undefined;

@@ -1,4 +1,4 @@
-// @parcha/agentrun-import: the coding-agent sessions under a person's home (Claude Code, Codex, pi), read as one shape.
+// @parcha/agentrun-import: the coding-agent sessions under a person's home (Claude Code, Codex, pi, OpenCode), read as one shape.
 export type { Answer, Ended, ToolCall, Turn, Usage } from "./types.js";
 export { ACTIVE_GAP_MS } from "./types.js";
 export { mostEffortOf, personsWords } from "./text.js";
