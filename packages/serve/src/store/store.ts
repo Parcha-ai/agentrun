@@ -739,6 +739,9 @@ export interface FiringChange {
    *  in the firing's retry_at column, which only a due firing holds otherwise, and is never read back as a retry. Any
    *  other status keeps none. */
   readonly startBy?: number;
+  /** Written only while the firing's status is this one, read in the settle's own transaction: a firing whose host's run
+   *  started it meanwhile (triggers.ts handedRan) is left as it is, and nothing is written. */
+  readonly from?: FiringStatus;
 }
 /** What a settle does to the firing's trigger besides: `reset` its failure streak (a run started, a message sent), or
  *  count a `failure` toward it, turning it off at `pauseAt` in a row (auto-pause, the firing marked paused). */
@@ -909,7 +912,8 @@ export interface Triggers {
   /** The trigger's history, newest first: its shown firings. */
   firings(triggerId: string): Promise<FiringRow[]>;
   /** The firing changed (with its trigger's last_run_id moved to a newer run it names, and `streak`), in one transaction:
-   *  undefined when the firing is gone (its trigger deleted). `paused`: this failure turned the trigger off. */
+   *  undefined when the firing is gone (its trigger deleted), or is no longer the change's `from`. `paused`: this failure
+   *  turned the trigger off. */
   settle(triggerId: string, key: string, change: FiringChange, streak?: FiringStreak): Promise<{ firing: FiringRow; paused: boolean } | undefined>;
   /** Every due firing, and every failed one whose trigger.failed is not marked queued, oldest first. */
   pending(): Promise<FiringRow[]>;
@@ -919,13 +923,18 @@ export interface Triggers {
    *  `bound.reason` and nothing is queued. Undefined when the firing is gone or no longer due. A run that has ended takes no
    *  message (RunFinal, as command()), and nothing is written. */
   message(firing: { triggerId: string; key: string }, runId: string, command: { kind: string; body: unknown }, bound: { max: number; reason: string }): Promise<{ sent: true; commandId: number } | { skipped: string } | undefined>;
-  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there now
-   *  (fewer of its trigger's started runs not ended than its max_active_runs): one read for all of them. */
-  waiting(): Promise<(FiringRow & { readonly free: boolean })[]>;
+  /** Every due firing waiting for its trigger's room (waits_on), oldest first, each with whether the room is there at
+   *  `now` (the triggers' clock): fewer of its trigger's runs in progress (activeRuns) than its max_active_runs. One read
+   *  for all of them. */
+  waiting(now: number): Promise<(FiringRow & { readonly free: boolean })[]>;
   /** The soonest next time of an enabled trigger, or null. */
   soonest(): Promise<number | null>;
-  /** How many of the trigger's started runs have not ended (a run reopened later does not count). */
-  activeRuns(triggerId: string): Promise<number>;
+  /** How many of the trigger's runs are in progress at `now` (the triggers' clock): started with a run not ended (a run
+   *  reopened later does not count), or held, a firing its launch hook's host took with no run yet up to its startBy. */
+  activeRuns(triggerId: string, now: number): Promise<number>;
+  /** The newest of the trigger's firings that hold its room at `now` (taken by its launch hook's host with no run yet, its
+   *  startBy not passed): its key, or undefined. */
+  held(triggerId: string, now: number): Promise<string | undefined>;
   /** The history kept to `history` shown firings: older ones a sender's key names (manual, pushed) are kept for their day
    *  (shown 0), others removed; shown-0 rows past `dayMs` removed, then the oldest past `kept` of them. Never a due
    *  firing, a failure not yet told, a started firing whose run has not ended, nor a sent one whose startBy is not before

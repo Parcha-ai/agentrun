@@ -22,8 +22,11 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
- *    turned off on again when the server has the launch hook): its token already makes agents through inline runs, so it
- *    gains no new power. A trigger the apply can't make here is skipped, and said (apiOnlyTriggerSkipped). */
+ *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
+ *    agents and revisions that stay, archives and deletes any agent made here, as the whole server's token does, and with
+ *    the launch hook its apply makes schedule and feed triggers. A trigger the apply can't make here is skipped, and said
+ *    (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was: without the hook, an enabled one
+ *    still fires here on this server's keys until the agent is archived. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
