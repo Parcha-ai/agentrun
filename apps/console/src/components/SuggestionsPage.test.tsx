@@ -188,6 +188,40 @@ describe("Suggested agents' repositories", () => {
   });
 });
 
+describe("Suggested agents' reads", () => {
+  it("an older read that answers after a newer one is ignored: a scan just started keeps polling, never the finished one put back", async () => {
+    const listing = (status: string) => ({ github: { connected: true, app: "agentrun-acme", installations: [{ account: "acme" }], install_url: READY.install_url },
+      repositories: [{ ...SCANNED, scan: { ...SCANNED.scan, status, ended_at: status === "running" ? null : SCANNED.scan.ended_at } }], suggestions: [SUGGESTION] });
+    // Each read of the list answers when the test says: the first (the page's own) at once.
+    const answers: ((body: unknown) => void)[] = [];
+    const fetch = (async (url: string) => {
+      const path = new URL(String(url), "http://serve.test").pathname;
+      if (path === "/v2/suggestions") return new Promise<Response>((resolve) => answers.push((body) => resolve(json(200, body))));
+      if (path === "/v2/integrations/github/repositories") return json(200, { repositories: [{ full_name: REPO, private: true, account: "acme", installation: 7 }], truncated: false, unread: [] });
+      return json(404, { error: { code: "not_found", message: "no such route", retryable: false } });
+    }) as typeof globalThis.fetch;
+    const v2 = createClient({ fetch });
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => { root!.render(createElement(ToastProvider, null, createElement(SuggestionsPage, { v2, go: vi.fn() }))); });
+    await act(async () => { answers.shift()!(listing("completed")); });
+    await settle();
+    const refresh = () => [...document.querySelectorAll("button")].find((b) => /Read the suggestions/.test(b.getAttribute("aria-label") ?? ""))!;
+    // Two Refreshes: the first reads the finished scan, the second the one started since; the second answers first.
+    await act(async () => { refresh().click(); });
+    await act(async () => { refresh().click(); });
+    await settle();
+    expect(answers.length).toBe(2);
+    const [older, newer] = [answers.shift()!, answers.shift()!];
+    await act(async () => { newer(listing("running")); });
+    await settle();
+    expect(host.textContent).toContain("Scanning: reading the code");
+    await act(async () => { older(listing("completed")); });
+    await settle();
+    expect(host.textContent, "the older answer does not put the finished scan back").toContain("Scanning: reading the code");
+  });
+});
+
 describe("Suggested agents' words", () => {
   it("names GitHub's permissions as its settings page does, and a scan in one line", () => {
     expect(permissionLabel("contents: write")).toBe("Contents: Read and write");
