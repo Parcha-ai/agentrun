@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after } from "node:test";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
@@ -51,21 +51,23 @@ export const cli = (env, args, { input = "", timeout = 60_000, cwd } = {}) => ne
 });
 
 /** A server in a process of its own, started as the npx command starts it: on `data`, with `env` (accounts off) and the
- *  faux model module `faux` (its source). Resolves once it has written its record (DATA/.server.json, how the CLI finds
- *  it), which is watched for, never polled; rejects if it exits first. `{child, exited, data, base, token, api}`, `api`
- *  a request with its token answering `{status, body}`. Killed at the test's end. */
+ *  faux model module `faux` (its source). The server makes `data` itself (only the folder it sits in is made here), so
+ *  the data folder's mode is the server's own. Resolves once it has written its record (DATA/.server.json, how the CLI
+ *  finds it), which is watched for, never polled: the folder `data` sits in until `data` is there, then `data`. Rejects
+ *  if it exits first. `{child, exited, data, base, token, api}`, `api` a request with its token answering
+ *  `{status, body}`. Killed at the test's end. */
 export async function server(t, { data, env, faux = 'export default (context, faux) => faux.message("Done.");\n' }) {
   // Under umask 022, a common default (CI's), whatever this machine's: a mode left to the umask shows here as it would
   // there. The server takes the umask it is spawned under, and spawn forks before it returns.
   const umask = process.umask(0o022);
   let child;
-  let watcher;
+  const watchers = [];
   const fauxFile = `${data}-faux.mjs`;
   const record = join(data, ".server.json");
   try {
-    mkdirSync(data, { recursive: true });
+    mkdirSync(dirname(data), { recursive: true });
     writeFileSync(fauxFile, faux);
-    watcher = watch(data);
+    watchers.push(watch(dirname(data)));
     child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", fauxFile], { stdio: ["ignore", "ignore", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
   } finally {
     process.umask(umask);
@@ -76,13 +78,21 @@ export async function server(t, { data, env, faux = 'export default (context, fa
   child.stderr.on("data", (chunk) => (err += chunk));
   try {
     await new Promise((resolve, reject) => {
-      const look = () => existsSync(record) && resolve();
-      watcher.on("change", look).on("error", reject);
+      const look = () => {
+        try {
+          // `data` once it is there, its watch set before the record is looked for, so a record written meanwhile is seen.
+          if (watchers.length === 1 && existsSync(data)) watchers.push(watch(data).on("change", look).on("error", reject));
+          if (existsSync(record)) resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+      watchers[0].on("change", look).on("error", reject);
       child.once("close", (code, signal) => reject(new Error(`the server on ${data} exited (${signal ?? code}) before it wrote its record: ${err}`)));
       look();
     });
   } finally {
-    watcher.close();
+    for (const watcher of watchers) watcher.close();
   }
   const base = JSON.parse(readFileSync(record, "utf8")).base_url;
   const token = readFileSync(join(data, ".token"), "utf8").trim();
