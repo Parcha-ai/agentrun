@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const { MACHINE_TOKEN_SOURCE, newMachineToken } = await import("@parcha/agentrun-computer");
-const { closeReason, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
+const { closeReason, createAttachRoutes, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
+const { ROUTE_PREFIX } = await import("../dist/workspace/paired-route.js");
+const { AttachHub } = await import("@parcha/agentrun-computer");
 const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
@@ -162,4 +164,30 @@ test("a paired computer is listed as its hello says, the live one's while attach
   assert.equal(pairedView({ ...row, seenAt: null }, hub(false), ["desktop"]).seen_at, null, "never attached, never seen");
   const lacking = pairedView({ ...row, hello: { ...row.hello, groups: ["screen"] } }, hub(false), []);
   assert.equal(lacking.unserved, "desk's driver serves no kind: it says desktop but declares no input.pointer, input.keys: update the driver on desk", "one that serves no kind says why");
+});
+
+test("the server's route tick with its runner beside it: while no route row is there and no box is relayed, each tick is one read of the routes and nothing else; a row there it judges as a runner apart's server does", async () => {
+  const calls = [];
+  const rows = [];
+  const settings = {
+    get: async (key) => (calls.push(["get", key]), undefined),
+    putIfAbsent: async (key) => (calls.push(["putIfAbsent", key]), undefined),
+    replaceIf: async (key) => (calls.push(["replaceIf", key]), true),
+    removeIf: async (key) => (calls.push(["removeIf", key]), true),
+    remove: async (key) => void calls.push(["remove", key]),
+    all: async (filter) => (calls.push(["all", filter?.prefix]), [...rows]),
+  };
+  let lists = 0;
+  const pairedComputers = { list: async () => (lists++, [{ id: "cmp-desk", name: "desk-1" }]) };
+  const attach = createAttachRoutes({ store: { pairedComputers, mintedTokens: {}, settings }, hub: new AttachHub(), runnerApart: false });
+  await attach.tick();
+  await attach.tick();
+  assert.equal(lists, 1, "the paired computers are read once, at the first tick");
+  assert.deepEqual(calls, [["all", ROUTE_PREFIX], ["all", ROUTE_PREFIX]], "each tick reads the routes' prefix once, and does nothing else");
+
+  calls.length = 0;
+  rows.push({ key: `${ROUTE_PREFIX}cmp-desk`, value: { runner: null, incarnation: null, run: null, until: null, refused: null }, updatedAt: 0 });
+  await attach.tick();
+  assert.deepEqual(calls, [["all", ROUTE_PREFIX], ["removeIf", `${ROUTE_PREFIX}cmp-desk`]], "a row there is judged: an empty one goes");
+  await attach.close();
 });

@@ -33,6 +33,7 @@ const { openRunnerStore } = await import(at("dist/runner/main.js").href);
 const { keepPresence } = await import(at("dist/runner/presence.js").href);
 const { bootSealKey } = await import(at("dist/seal-key.js").href);
 const { startRunnerRelay } = await import(at("dist/dial-relay.js").href);
+const { pairedProvider } = await import(at("dist/workspace/attached-computers.js").href);
 
 const CLI = fileURLToPath(at("dist/cli.js"));
 /** A faux model that takes a screenshot, types, then answers "Typed it." (the attach end-to-end test's). */
@@ -171,11 +172,12 @@ test("two processes: while a runner apart relays, the pairing code, the pair ans
   assert.ok(String(refused.body.runs_refused).includes(FIX), `the words name the one-process fix: ${refused.body.runs_refused}`);
 });
 
-/** A server in this process with no runner beside it, its log lines kept, on its own data. */
-async function relayServer(t) {
+/** A server in this process with no runner beside it (`runnerApart` false: with its runner beside it), its log lines
+ *  kept, on its own data. */
+async function relayServer(t, { runnerApart = true } = {}) {
   const data = join(await scratch(t), "agents");
   const lines = [];
-  const server = await startServe({ data, port: 0, faux: FAUX_ATTACH, runnerApart: true, log: (line) => void lines.push(line) });
+  const server = await startServe({ data, port: 0, faux: FAUX_ATTACH, runnerApart, log: (line) => void lines.push(line) });
   t.after(() => server.close());
   return { data, lines, server, api: client(server.baseUrl, server.token), address: server.baseUrl.replace(/\/v2$/, "") };
 }
@@ -513,4 +515,57 @@ test("a route left by a run that is over is taken by a new run, its runner still
   assert.equal(threw.why, `${NAME} is held by run run-gone on runner runner-a: one run at a time`);
   assert.equal(reads, 1, "one read of the route's run, no retry");
   assert.deepEqual([(await paired.get(computer)).runner, (await paired.get(computer)).run], ["runner-a", "run-gone"]);
+});
+
+test("a server whose runner runs beside it moves a paired box too: a runner apart (on another host) takes its route, the server relays the box's socket there, and once that route is dropped the server's tick brings the box home, idle", { timeout: 60_000 }, async (t) => {
+  const { data, api, address } = await relayServer(t, { runnerApart: false });
+  const side = await runnerSide(t, data);
+  const { relay } = await relayOf(t, side, address, "runner-a");
+  const { computer, token } = await pairedBox(api, address);
+  const paired = await routing(side.store);
+  assert.equal(await paired.route(computer, { runner: "runner-a", incarnation: relay.incarnation, run: "run-a", until: UNTIL() }), true);
+  const driver = attachDriver({ address, token, scale: 0.05 });
+  t.after(() => driver.stop());
+  driver.start();
+  await until(async () => relay.dial.hub.online(computer), Boolean, "the runner apart's hub takes the box, relayed by a server whose runner runs beside it");
+
+  // The runner apart's drop leaves no row (no note): only the server's tick, comparing the box's relayed socket with no
+  // route, sends it home.
+  assert.equal(await paired.unroute(computer, { runner: "runner-a", incarnation: relay.incarnation }), true);
+  await until(async () => relay.dial.hub.online(computer), (online) => online === false, "the server's tick takes the box off the runner's hub once its route went, its own runner beside it", 10_000);
+  await until(async () => pairedRow((await api("GET", "/computers")).body, computer), (row) => row?.online === true && row.held_on === null && row.held_by_run === null, "the box comes back to the server, idle");
+});
+
+test("a run's claim cancelled while its box is on its way ends the bring at once in words, the route it took let go; a claim cancelled before its bring takes nothing; and the provider's create answers aborted, never a hang", { timeout: 60_000 }, async (t) => {
+  const { data, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  const { relay } = await relayOf(t, side, address, "runner-a");
+  const paired = await routing(side.store);
+  const noRoute = { runner: null, incarnation: null, run: null, until: null, refused: null };
+  const cancelledWords = `${NAME} was not brought to runner runner-a: this run's claim was cancelled while it waited for the box, and its route was let go`;
+  /** How a bring or a create ended within three seconds: its value, its error, or "hung". */
+  const within = (pending) => Promise.race([pending.then((value) => value, (error) => error), sleep(3_000).then(() => "hung")]);
+
+  // No computer is paired with this server, so its tick leaves these routes alone: each bring waits for a box that
+  // never comes, as it would for a driver slow to redial (PAIRED_BRING_MS is past a minute).
+  const waiting = { id: "cmp-cancel0000000000a", name: NAME };
+  const cancel = new AbortController();
+  const bringing = relay.paired.bring(waiting, { run: "run-c", until: UNTIL(), signal: cancel.signal });
+  await until(() => paired.get(waiting.id), (route) => route.runner === "runner-a" && route.run === "run-c", "the bring takes the route");
+  cancel.abort();
+  const ended = await within(bringing);
+  assert.equal(ended?.code, "computer_unavailable", `the cancelled bring ends at once, in words: ${ended?.message ?? ended}`);
+  assert.equal(ended.message, cancelledWords);
+  assert.deepEqual(await paired.get(waiting.id), noRoute, "the route it took is let go, no note left");
+
+  const early = { id: "cmp-cancel0000000000b", name: NAME };
+  const before = await within(relay.paired.bring(early, { run: "run-d", until: UNTIL(), signal: AbortSignal.abort() }));
+  assert.equal(before?.message, cancelledWords, `a bring whose claim was cancelled before it ends in the same words: ${before?.message ?? before}`);
+  assert.deepEqual(await paired.get(early.id), noRoute, "and takes no route");
+
+  // The provider passes its create's signal (the claim's cancel) to the bring, and answers aborted in its words.
+  const desk = { id: "cmp-cancel0000000000c", name: NAME, hello: DRIVER_HELLO, labels: {} };
+  const made = await within(pairedProvider(desk, undefined, relay.paired).create({ lifetimeMs: 3_600_000, labels: { [RUN_LABEL]: "run-e" } },{ requestId: "req-e", signal: AbortSignal.abort() }));
+  assert.deepEqual(made, { ok: false, error: { code: "aborted", message: cancelledWords } }, "a create under a cancelled claim answers aborted");
+  assert.deepEqual(await paired.get(desk.id), noRoute);
 });

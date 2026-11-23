@@ -106,6 +106,10 @@ export async function replaceRoute(settings: Pick<RouteSettings, "putIfAbsent" |
   if (seen === undefined) {
     if (isEmpty(next)) return true;
     const there = await settings.putIfAbsent(key, rowOf(EMPTY_ROUTE));
+    // Another writer's row landed between the read and this put (a route, or a note): the row changed since, so the
+    // caller reads it again and judges it, never writes over it unread. Only the empty placeholder goes on to the
+    // compare-and-set.
+    if (!isEmpty(routeOf(there))) return false;
     return replaceRoute(settings, id, there, next, claim);
   }
   if (isEmpty(next) && claim === undefined) return settings.removeIf(key, seen);

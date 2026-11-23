@@ -46,12 +46,12 @@ export const dialApartWords = (label: string): string => `no run on this server 
 /** A runner's relay of the paired computers (dial-relay.ts): its own hub, where the server moves a box's socket for a
  *  run of this runner. `bring` routes the box here for `run` (its hold's end `until`, ms; under `claim`, the run's claim,
  *  so a superseded claim's take throws Fenced) and resolves once the box is on the hub; it rejects with code
- *  computer_unavailable in words (another run holds it, it is not attached, it did not come in time), never hanging past
- *  PAIRED_BRING_MS. `letGo` ends `hold` (once every remove or KILL it sent has answered), then drops the route where no
- *  hold is left. */
+ *  computer_unavailable in words (another run holds it, it is not attached, it did not come in time, its claim was
+ *  cancelled: `signal`, the create's, which drops the route it took at once), never hanging past PAIRED_BRING_MS.
+ *  `letGo` ends `hold` (once every remove or KILL it sent has answered), then drops the route where no hold is left. */
 export interface PairedRelay {
   readonly hub: AttachHub;
-  bring(row: Pick<PairedComputerRow, "id" | "name">, hold: { readonly run: string; readonly until: number; readonly claim?: Claim }): Promise<void>;
+  bring(row: Pick<PairedComputerRow, "id" | "name">, hold: { readonly run: string; readonly until: number; readonly claim?: Claim; readonly signal?: AbortSignal }): Promise<void>;
   letGo(computer: string, hold?: string, run?: string): Promise<void>;
 }
 
@@ -183,11 +183,12 @@ function relayedProvider(row: PairedComputerRow, relay: PairedRelay, claim: Clai
       const run = spec.labels?.[RUN_LABEL];
       if (run === undefined) return inner.create(spec, context);
       try {
-        await relay.bring(row, { run, until: Date.now() + runLifetimeMs(spec), ...(claim ? { claim } : {}) });
+        // The claim's cancel (the create's signal) ends the bring's wait at once, the route it took dropped.
+        await relay.bring(row, { run, until: Date.now() + runLifetimeMs(spec), ...(claim ? { claim } : {}), ...(context.signal ? { signal: context.signal } : {}) });
       } catch (error) {
         // A superseded claim (Fenced), and any failure that is not the bring's in words, is the claim's to answer.
         if ((error as { code?: unknown }).code !== "computer_unavailable") throw error;
-        return fail("refused", (error as Error).message);
+        return fail(context.signal?.aborted ? "aborted" : "refused", (error as Error).message);
       }
       const made = await inner.create(spec, context);
       if (!made.ok) {

@@ -338,7 +338,8 @@ export interface AttachRoutesOptions {
    *  (the console's) is 401 as one it does not know. */
   readonly machinesOnly?: boolean;
   /** No runner in this server's process (ServeOptions.runnerApart): while no runner relays (`relayed`), a pairing code
-   *  and the pair answer say no run here can use a paired computer, and what to do so one can (RUNNER_APART_WORDS). */
+   *  and the pair answer say no run here can use a paired computer, and what to do so one can (RUNNER_APART_WORDS).
+   *  Not runnerApart, the route tick stops at its read while no route row is there and no box is relayed. */
   readonly runnerApart?: boolean;
   /** Whether a runner in a process of its own relays now (server.ts relayed), read at each pairing code and pair answer;
    *  absent: none does. */
@@ -740,20 +741,24 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     ws.close(ATTACH_CLOSE.going, closeReason(why));
   };
 
-  /** The server's route tick (every PAIRED_ROUTE_MS, server.ts, while its runner runs apart): one read of every route
+  /** The server's route tick (every PAIRED_ROUTE_MS, server.ts, its runner apart or beside it): one read of every route
    *  row, compared with where each box's socket is now (this hub, or the runner it is relayed to, in this process's
    *  memory). A socket in the wrong place (here with a route, relayed to a runner its route no longer names, relayed with
    *  no route) is closed with 1001, its redial routed; a box routed and attached nowhere, neither moving nor mid-dial, gets
    *  its route noted "not attached now", which ends its claim's wait at once. An empty row, and a row of a computer that
-   *  is no longer paired, goes. Nothing while no computer is paired. It judges no runner's liveness: a stale route is
-   *  dropped at the box's next upgrade. */
+   *  is no longer paired, goes. Nothing while no computer is paired; with this server's runner beside it (not
+   *  runnerApart), nothing past that one read while no route row is there and no box is relayed. It judges no runner's
+   *  liveness: a stale route is dropped at the box's next upgrade. */
   async function tick(): Promise<void> {
     if (options.owner !== undefined || settings === undefined || closing) return;
     known ??= new Map((await paired.list()).map((row) => [row.id, row.name]));
     if (known.size === 0 && relayedPaired.size === 0) return;
+    const rows = await allRoutes(settings);
+    // With its runner beside it, only a runner apart on another host takes a route: the read says whether one did. A
+    // box still relayed counts too, since the drop that ended its route (with no note) removed the row.
+    if (options.runnerApart !== true && rows.length === 0 && relayedPaired.size === 0) return;
     const at = now();
     for (const [id, since] of moving) if (at - since > PAIRED_BRING_MS) moving.delete(id);
-    const rows = await allRoutes(settings);
     const routes = new Map(rows.map((row) => [row.id, row.route]));
     for (const [id, relayed] of relayedPaired) {
       const route = routes.get(id);

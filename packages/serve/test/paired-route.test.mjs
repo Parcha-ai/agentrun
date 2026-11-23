@@ -95,6 +95,23 @@ test("a route whose run is final is taken by a new run, a completed, a cancelled
   assert.equal((await readRoute(store.settings, BOX)).run, "run-unknown", "the route left as it was");
 });
 
+test("a take that read no row while another run's route landed reads the row again and judges it: refused in words, the route left as it was", async (t) => {
+  const { store, deps, want } = await routed(t);
+  await takeRoute(deps, BOX, want("runner-a", "run-1"));
+  // The take's first read misses run-1's row (it lands between the read and the put); every read after sees it.
+  let misses = 1;
+  const settings = {
+    get: async (key) => (misses-- > 0 ? undefined : store.settings.get(key)),
+    putIfAbsent: (key, value) => store.settings.putIfAbsent(key, value),
+    replaceIf: (key, was, value, claim) => store.settings.replaceIf(key, was, value, claim),
+    removeIf: (key, was) => store.settings.removeIf(key, was),
+  };
+  const late = await takeRoute({ ...deps, settings }, BOX, want("runner-b", "run-2"), { name: "desk-1" });
+  assert.equal(late.taken, false, "another run's route on a live runner is never written over unread");
+  assert.equal(late.why, "desk-1 is held by run run-1 on runner runner-a: one run at a time");
+  assert.deepEqual(await readRoute(store.settings, BOX), { runner: "runner-a", incarnation: "inc-a", run: "run-1", until: UNTIL, refused: null }, "the route left as it was");
+});
+
 test("a drop goes only for the route's own runner and incarnation (and run, where given); a note is kept on the row and goes with the next empty write", async (t) => {
   const { store, deps, want } = await routed(t);
   await takeRoute(deps, BOX, want("runner-a", "run-1"));

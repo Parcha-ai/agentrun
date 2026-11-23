@@ -50,6 +50,8 @@ export interface RunnerRelay {
 
 /** A claim's failure to have its paired computer here, in words: the claim fails computer_unavailable with them. */
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
+/** A bring whose claim was cancelled (its create's signal aborted) before the box reached runner `runner`. */
+const cancelledWords = (name: string, runner: string): string => `${name} was not brought to runner ${runner}: this run's claim was cancelled while it waited for the box, and its route was let go`;
 
 export interface RunnerRelayOptions {
   readonly store: Pick<Store, "mintedTokens" | "pairedComputers" | "settings" | "runners" | "runs">;
@@ -109,7 +111,9 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
   });
   const paired: PairedRelay = {
     hub,
-    async bring(row, { run, until, claim }) {
+    async bring(row, { run, until, claim, signal }) {
+      // A claim cancelled before its bring takes nothing.
+      if (signal?.aborted) throw unavailable(cancelledWords(row.name, runner));
       bringing.set(row.id, run);
       try {
         const took = await takeRoute({ settings: store.settings, runners: store.runners, runs: store.runs }, row.id, { ...mine, run, until }, { ...(claim ? { claim } : {}), name: row.name });
@@ -117,6 +121,13 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
         held.set(row.id, { run, since: now(), seenHold: false });
         const end = now() + PAIRED_BRING_MS;
         for (;;) {
+          // The claim was cancelled while it waited: its route goes (the row removed while it is still this run's), and
+          // the claim fails in words at once, never waiting out PAIRED_BRING_MS.
+          if (signal?.aborted) {
+            await dropRoute(store.settings, row.id, { ...mine, run }).catch(() => undefined);
+            held.delete(row.id);
+            throw unavailable(cancelledWords(row.name, runner));
+          }
           if (hub.online(row.id)) return;
           const route = await readRoute(store.settings, row.id);
           const ours = route.runner === runner && route.incarnation === incarnation && route.run === run;
@@ -128,7 +139,8 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
             held.delete(row.id);
             throw unavailable(why);
           }
-          await sleep(PAIRED_BRING_POLL_MS);
+          // A cancel wakes the wait at once; the loop's top answers it.
+          await sleep(PAIRED_BRING_POLL_MS, undefined, signal ? { signal } : undefined).catch(() => undefined);
         }
       } finally {
         if (bringing.get(row.id) === run) bringing.delete(row.id);

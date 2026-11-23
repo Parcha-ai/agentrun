@@ -324,7 +324,8 @@ is a compare-and-set.
   route, on the server's own hub; with a live route, relayed to the runner, which takes a paired token only while the
   route names it; with a stale route, refused `503` in words the server keeps on the route, and the route dropped.
 - **The run waits for it.** `create` waits for the computer's socket on the runner for the computer's longest redial,
-  a relay's connect and a `hello`, and is refused in words naming the runner when it does not arrive. The run's
+  a relay's connect and a `hello`, and is refused in words naming the runner when it does not arrive. A cancel of the
+  run's claim ends the wait at once: the route it took is dropped, and `create` answers `aborted` in words. The run's
   `release`, or the runner's sweep of a hold it no longer has, ends the hold, then drops the route, so the computer's
   next dial comes back to the server.
 - **The list says where it is.** `GET /v2/computers` lists a routed computer's run, its runner (`held_on`) and the

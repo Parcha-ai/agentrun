@@ -1401,9 +1401,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
     log: attachLog,
   });
-  // With its runner apart, a paired computer's socket goes where its route says (workspace/paired-route.ts): the tick
-  // moves a socket in the wrong place, every PAIRED_ROUTE_MS (nothing while no computer is paired).
-  const routeTick = options.runnerApart === true && options.apiOnly !== true
+  // A paired computer's socket goes where its route says (workspace/paired-route.ts): the tick moves a socket in the
+  // wrong place, every PAIRED_ROUTE_MS. A runner apart takes a route whether this server's own runner runs beside it or
+  // not (its runners on other hosts, AGENTRUN_RUNNER_HOSTS), so the tick runs on both. It does nothing while no computer
+  // is paired; with a runner beside it, nothing past its one read of the routes while no route row is there and no box
+  // is relayed (computer-attach.ts tick).
+  const routeTick = options.apiOnly !== true
     ? setInterval(() => void attach.tick().catch((error: unknown) => attachLog("computer_route_tick_failed", { error: error instanceof Error ? error.message : String(error) })), PAIRED_ROUTE_MS)
     : undefined;
   routeTick?.unref();
