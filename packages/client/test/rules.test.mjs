@@ -67,6 +67,22 @@ test("an error body that echoes the key never reaches a message, and the error o
   assert.ok(!inspect(client, { depth: 8 }).includes(KEY) && !JSON.stringify(client).includes(KEY), "nor does the printed client");
 });
 
+test("a refusal's message says the server's reason, with the key cut from it, on one line", async (t) => {
+  const server = await listener(t, (req) => {
+    if (req.url === "/v2/agents") return json(422, { error: { code: "invalid_input", message: `name is taken (key ${KEY})\nby agent a` } });
+    if (req.url === "/v2/runs") return json(409, { error: { code: "conflict", message: "x".repeat(400) } });
+    return json(403, { error: { code: "forbidden", message: "Only the owner may archive an agent." } });
+  });
+  const client = new AgentRun({ baseUrl: server.base, apiKey: KEY, maxRetries: 0 });
+  const taken = await thrown(client.agents.list());
+  assert.ok(taken instanceof AgentRunRefused);
+  assert.equal(taken.message, "The server refused GET /agents: 422 invalid_input: name is taken (key [hidden]) by agent a");
+  assert.equal((await thrown(client.runs.list())).message, `The server refused GET /runs: 409 conflict: ${"x".repeat(299)}…`);
+  const owner = await thrown(client.agents.archive("a"));
+  assert.ok(owner instanceof AgentRunAuthError);
+  assert.equal(owner.message, "The server refused the API key for POST /agents/{agent_id}/archive: 403 forbidden: Only the owner may archive an agent.");
+});
+
 test("a key that is not a valid header value, a missing key and a base URL that would carry it elsewhere are refused before any request", async (t) => {
   const server = await listener(t);
   for (const apiKey of [`${KEY}\nX-Other: 1`, `${KEY} `, "a\tb", "ключ", "a\x7f"]) {

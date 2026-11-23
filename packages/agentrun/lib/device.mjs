@@ -2,15 +2,13 @@
 // `sign_in.device`, the metadata's URL and the scope to ask for. The person opens the address printed, enters the code
 // and approves there; the token endpoint then answers a token, which login keeps where it keeps a pasted one. Every URL
 // fetched is on the target's own origin, over https unless the target is on this machine; no redirect is followed; each
-// answer's size and shape are checked before any of it is used. Every request names this CLI and its version
-// (User-Agent), so the page that approves a code can say what asked for it. The flow's first line names the server
-// signed in to, and a line says so when the address to open is on another origin. The device code and the token are
-// never printed, never in an error and never in argv.
-import { readFileSync } from "node:fs";
+// answer's size and shape are checked before any of it is used. The device code and the token are never printed, never
+// in an error and never in argv.
+import { OWN_VERSION } from "./own.mjs";
 import { CLOUD_CONSOLE, CLOUD_URL } from "./target.mjs";
 
 /** What each request of the flow names itself: this package and its version. */
-const USER_AGENT = `agentrun-cli/${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
+const USER_AGENT = `agentrun-cli/${OWN_VERSION}`;
 
 /** A sign-in that stopped: its exit code (cli.mjs's), and words of this CLI's own, never a server's answer. */
 export class SignInError extends Error {
@@ -38,7 +36,9 @@ const GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]); // key-gate: loopback-rule the hosts a device sign-in may reach over http
 const VISIBLE = /^[\x21-\x7e]{1,2048}$/;
-const USER_CODE = /^[\x20-\x7e]{1,256}$/;
+/** A user code is printed on the line after the cross-origin one: a short token with no space, so a server can't put a
+ *  sentence of its own beside the warning. */
+const USER_CODE = /^[\x21-\x7e]{1,32}$/;
 const SECRET = /^[\x21-\x7e]{1,8192}$/;
 const SCOPE_TOKEN = "[\\x21\\x23-\\x5b\\x5d-\\x7e]+";
 const SCOPE = new RegExp(`^${SCOPE_TOKEN}(?: ${SCOPE_TOKEN})*$`);
@@ -140,16 +140,11 @@ export function deviceOffer(capabilities, base) {
   return { metadata, scope };
 }
 
-/** AgentRun cloud's API and the origin of its device page, its console: the one pair the cross-origin line is not said
- *  for. It is exempt from that line alone, never from a check. */
 const CLOUD_PAIR = { api: new URL(CLOUD_URL).origin, page: new URL(CLOUD_CONSOLE).origin };
 
-/** The origins the person is told the code is approved at: those of `addresses` (the ones printed to open, any of them
- *  null when absent) other than the target's, each once. An address on another origin is taken, not refused: a
- *  self-hosted install may serve its console on another origin, and this CLI cannot know which. So the line names both
- *  origins, and a server that hands out another service's code, to keep the token approved there, is seen before the
- *  code is approved. Cloud's API with its device page on its console is the known pair, named by neither: a warning
- *  on every cloud sign-in would teach people to skip it. */
+/** The origins of the printed `addresses` other than the target's, each once. Another origin is taken, not refused (a
+ *  self-hosted console may live elsewhere), so the person is told it before the code. Cloud's API with its console page
+ *  is the one pair never named, and it is exempt from this line alone. */
 export function elsewhereOf(target, addresses) {
   const own = new URL(target).origin;
   const known = (origin) => own === CLOUD_PAIR.api && origin === CLOUD_PAIR.page;

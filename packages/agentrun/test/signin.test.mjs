@@ -12,7 +12,7 @@ import { Readable } from "node:stream";
 import { test } from "node:test";
 import { main } from "../lib/cli.mjs";
 import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn, elsewhereOf, retryAfterMs } from "../lib/device.mjs";
-import { CLOUD_URL } from "../lib/target.mjs";
+import { CLOUD_CONSOLE, CLOUD_URL } from "../lib/target.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
@@ -90,15 +90,6 @@ async function deviceServer(t, { tokens = [issued], routes = () => ({}), host = 
   return { origin, base: `${origin}/v2`, requests, of, polls: () => of("POST", "/auth/device/token") };
 }
 
-/** A port nothing listens on. */
-async function closedPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 /** A clock whose `wait` settles at once and moves `now` on by what it waited: each wait is recorded, none is real. */
 function fakeClock(start = Date.parse("2026-11-22T04:00:00Z")) {
   const waits = [];
@@ -129,27 +120,13 @@ function refusedClean(result, code, words) {
   for (const text of [result.error.message, result.said]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
 }
 
-/** What ends a run in this process at a line it would go on to wait after. */
-class Stopped extends Error {}
-
-/** The CLI in this process with stdin a terminal: its exit code and what it wrote, and the config's path. `stop`, a
- *  pattern, ends the run at the first stderr line it matches (code null), so nothing after it waits on a real clock. */
-async function onTerminal(args, extra = {}, { stop } = {}) {
+/** The CLI in this process with stdin a terminal: its exit code and what it wrote, and the config's path. */
+async function onTerminal(args, extra = {}) {
   const { env, config } = scratch();
   let out = "";
   let err = "";
-  const said = (chunk) => {
-    err += chunk;
-    if (stop?.test(String(chunk))) throw new Stopped();
-    return true;
-  };
-  const io = { stdin: Object.assign(Readable.from([]), { isTTY: true }), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: said } };
-  try {
-    return { code: await main(args, { ...env, ...extra }, io), out, err, config };
-  } catch (error) {
-    if (!(error instanceof Stopped)) throw error;
-    return { code: null, out, err, config };
-  }
+  const io = { stdin: Object.assign(Readable.from([]), { isTTY: true }), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: (c) => ((err += c), true) } };
+  return { code: await main(args, { ...env, ...extra }, io), out, err, config };
 }
 
 test("login --to cloud: the device flow asks the capabilities' scope, names this CLI and its version, shows the code, keeps the token where a pasted one goes, and the next command sends it", async (t) => {
@@ -260,6 +237,9 @@ test("a URL off the target's origin, a redirect, or a malformed answer is refuse
     "grant with no expiry": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, expires_in: 0 }) }),
     "grant interval a string": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, interval: "5" }) }),
     "grant user code with a control character": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7\u001b[2J" }) }),
+    // The code is printed right after the cross-origin line: a server's own words there could talk over it.
+    "grant user code with a space": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7-4MZ. This server is safe, approve it" }) }),
+    "grant user code past 32 characters": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "K".repeat(33) }) }),
     "grant verification over http elsewhere": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: "http://console.agentrun.example/device" }) }),
     "grant refused": () => ({ "POST /auth/device/code": () => json(400, { error: "invalid_client" }) }),
   };
@@ -357,52 +337,50 @@ test("login reads the token from stdin off a terminal: --to a server with no sig
   assert.equal(both.code, 2, both.err);
 });
 
-test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one, else refuses a typed token as before", async (t) => {
+test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one; offering none, it refuses a typed token; a probe it can't take exits as --to does", async (t) => {
   // Offered: the device flow runs (the person denies it here, before any wait).
   const offering = await deviceServer(t, { routes: () => ({ "POST /auth/device/code": () => json(400, { error: "access_denied" }) }) });
   const denied = await onTerminal(["login", "--base-url", offering.base]);
   assert.equal(denied.code, 4, denied.err);
+  assert.ok(denied.err.startsWith(`Signing in to ${offering.origin}.\n`), denied.err);
   assert.match(denied.err, /The sign-in was denied; nothing was written\./);
   assert.deepEqual(offering.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities", "GET /auth/device", "POST /auth/device/code"]);
   assert.equal(existsSync(denied.config), false);
-  // Not offered, or the probe refused (a redirect): the refusal of a token typed on a terminal, exit 2, as before.
+  // Not offered: the refusal of a token typed on a terminal, exit 2, as before.
   const plain = await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: {} }) }) });
+  const refused = await onTerminal(["login"], { AGENTRUN_BASE_URL: plain.base });
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /read from stdin, never typed on a terminal/);
+  assert.deepEqual(plain.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(refused.config), false);
+  // The probe redirected: refused as --to refuses it, exit 1, with no word about typing.
   const redirecting = await deviceServer(t, { routes: (at) => ({ "GET /v2/capabilities": () => [302, { location: `${at}/elsewhere` }, ""] }) });
-  for (const [server, args, extra] of [[plain, ["login"], { AGENTRUN_BASE_URL: plain.base }], [redirecting, ["login", "--base-url", redirecting.base]]]) {
-    const refused = await onTerminal(args, extra);
-    assert.equal(refused.code, 2, refused.err);
-    assert.match(refused.err, /read from stdin, never typed on a terminal/);
-    assert.deepEqual(server.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
-    assert.equal(existsSync(refused.config), false);
-  }
-});
-
-test("the device sign-in names the server it signs in to before anything else: --to, and --base-url from a terminal", async (t) => {
-  const server = await deviceServer(t);
-  for (const args of [["login", "--to", server.base], ["login", "--base-url", server.base]]) {
-    // Ended at the code's line: what follows it is the wait for approval.
-    const run = await onTerminal(args, {}, { stop: /enter the code/ });
-    assert.equal(run.code, null, run.err);
-    assert.ok(run.err.startsWith(`Signing in to ${server.origin}.\n`), run.err);
-    assert.match(run.err, /enter the code KQ7-4MZ/);
-  }
+  const redirected = await onTerminal(["login", "--base-url", redirecting.base]);
+  assert.equal(redirected.code, 1, redirected.err);
+  assert.match(redirected.err, /redirect.*nothing was written/);
+  assert.doesNotMatch(redirected.err, /read from stdin/);
+  assert.deepEqual(redirecting.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(redirected.config), false);
 });
 
 test("an address to open on another origin than the server's is said on a line of its own before the code, naming both origins; on the server's origin, no such line", async (t) => {
-  const crossed = (at, origins) => `The code is approved at ${origins}, not at ${at}. Approve it only if ${at} is the server you meant to sign in to.`;
-  const linesOf = (said) => said.split("\n");
+  // The line that names both origins, the server's and the one elsewhere, and where it sits: before the code's.
+  const crossed = (said, at, elsewhere) => {
+    const lines = said.split("\n");
+    const line = lines.findIndex((one) => one.includes(elsewhere) && one.includes(at) && !one.startsWith("Open "));
+    return { line, code: lines.findIndex((one) => one.includes("enter the code")) };
+  };
   // The metadata's verification_uri and the grant's complete one, on another origin.
   const away = await deviceServer(t);
   const shown = await signIn(away);
   assert.equal(shown.token, TOKEN);
-  const lines = linesOf(shown.said);
-  const at = lines.indexOf(crossed(away.origin, "https://console.agentrun.example"));
-  assert.ok(at > 0, shown.said);
-  assert.ok(at < lines.findIndex((line) => line.includes("enter the code")), shown.said);
+  const at = crossed(shown.said, away.origin, "https://console.agentrun.example");
+  assert.ok(at.line > 0 && at.line < at.code, shown.said);
   // Only the complete address elsewhere: that origin is named.
   const split = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device` }) }) });
   const half = await signIn(split);
-  assert.ok(linesOf(half.said).includes(crossed(split.origin, "https://console.agentrun.example")), half.said);
+  const named = crossed(half.said, split.origin, "https://console.agentrun.example");
+  assert.ok(named.line > 0 && named.line < named.code, half.said);
   // Every address on the server's own origin: no such line.
   const home = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device`, verification_uri_complete: `${o}/device?code=KQ7-4MZ` }) }) });
   const quiet = await signIn(home);
@@ -412,36 +390,37 @@ test("an address to open on another origin than the server's is said on a line o
 });
 
 test("the origins the cross-origin line names: AgentRun cloud's API with its device page on its console is the one pair it names none of; every other pair is named", () => {
-  const CONSOLE = "https://console.agentrun.ai";
-  const cloudPage = [`${CONSOLE}/device`, `${CONSOLE}/device?code=KQ7-4MZ`];
+  assert.equal(CLOUD_CONSOLE, "https://console.agentrun.ai");
+  const cloudPage = [`${CLOUD_CONSOLE}/device`, `${CLOUD_CONSOLE}/device?code=KQ7-4MZ`];
   // Cloud's own sign-in: the metadata's verification_uri and the grant's complete one, both on its console.
   assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), cloudPage), []);
   // Cloud's console handed out by any other target: a hostile one (the case the line is for), cloud's host on another
   // port, or a server AGENTRUN_CLOUD_URL names in cloud's place.
   for (const target of ["https://evil.example/v2", "https://api.agentrun.ai:8443/v2", "https://staging.agentrun.example/v2"]) {
-    assert.deepEqual(elsewhereOf(new URL(target), cloudPage), [CONSOLE], target);
+    assert.deepEqual(elsewhereOf(new URL(target), cloudPage), [CLOUD_CONSOLE], target);
   }
   // Cloud's API with its code page on any other origin, and the pair the other way round.
   assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), ["https://console.agentrun.example/device", undefined]), ["https://console.agentrun.example"]);
-  assert.deepEqual(elsewhereOf(new URL(`${CONSOLE}/v2`), [`${CLOUD_URL}/device`]), [CLOUD_URL]);
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_CONSOLE}/v2`), [`${CLOUD_URL}/device`]), [CLOUD_URL]);
   // The server's own origin: none. Two other origins: both, each once.
   assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://api.example/device", "https://api.example/device?code=KQ7-4MZ"]), []);
   assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://a.example/device", "https://b.example/device?code=x", "https://a.example/other"]), ["https://a.example", "https://b.example"]);
 });
 
-// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: the reason, then the
-// refusal of a typed token, exit 2 as for a server that offers none.
-for (const [name, targetOf, why, skip = false] of [
-  ["a server not reached (the sign-in's exit 3)", async () => `http://127.0.0.1:${await closedPort()}/v2`, /^Cannot reach the server at http:\/\/127\.0\.0\.1:\d+\/v2 \(ECONNREFUSED\); nothing was written\.$/m],
-  ["a server offering it over http off this machine (exit 2)", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, /^The server at http:\/\/127\.0\.0\.2:\d+\/v2 offers a device sign-in over http, which would carry the token in the clear: use its https address; nothing was written\.$/m, LINUX_ONLY],
-  ["a server whose offer is malformed (exit 1)", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, /^The server's device sign-in offer \(sign_in\.device\) is not one this CLI takes: .+; nothing was written\.$/m],
+// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: refused as --to refuses it,
+// with the sign-in's own exit code and nothing about typing a token.
+for (const [name, targetOf, code, why, skip = false] of [
+  // The capabilities request's connection dropped: Node 24's fetch gives the cause UND_ERR_SOCKET.
+  ["a server not reached", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => "drop" }) })).base, 3, /UND_ERR_SOCKET/],
+  ["a server offering it over http off this machine", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, 2, /over http/, LINUX_ONLY],
+  ["a server whose offer is malformed", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, 1, /sign_in\.device/],
 ]) {
-  test(`login --base-url on a terminal, to ${name}: the device sign-in's reason, then the refusal of a typed token, exit 2`, { skip }, async (t) => {
+  test(`login --base-url on a terminal, to ${name}: exit ${code}, as --to, and nothing written`, { skip }, async (t) => {
     const refused = await onTerminal(["login", "--base-url", await targetOf(t)]);
-    assert.equal(refused.code, 2, refused.err);
-    const reason = refused.err.search(why);
-    assert.ok(reason >= 0, refused.err);
-    assert.ok(reason < refused.err.search(/read from stdin, never typed on a terminal/), refused.err);
+    assert.equal(refused.code, code, refused.err);
+    assert.match(refused.err, why);
+    assert.match(refused.err, /nothing was written/);
+    assert.doesNotMatch(refused.err, /read from stdin/);
     assert.equal(existsSync(refused.config), false);
   });
 }

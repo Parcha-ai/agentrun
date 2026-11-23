@@ -272,13 +272,13 @@ case's `max_cost_usd`, and each `llm` grade is a run of its own, capped at $0.50
 |---|---|
 | `--case NAME` | A case to run; repeat it. Without one, every case. |
 | `--runs N` | Runs of each case, in place of each case's `runs`. |
-| `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. |
+| `--server URL` | Run on that server instead, with its token as the CLI finds one (`AGENTRUN_API_KEY`, the CLI's config, or the data directory's for the server on this machine). The token goes to the runner over the launcher's pipe and is never printed. An eval's runs carry no `keys`, so on a server started with `AGENTRUN_RUN_KEYS=1` that lacks a tool key the package declares, the eval stops at the first case's apply, before any run, names the key and exits 2. |
 | `--on-data DIR` | Run the eval's own server on DIR, a stopped server's data folder, in place of a temp one: the runs use what that server keeps (its ChatGPT sign-in, so a package is measured on the owner's plan), and every case's fakes still bind (`now`, `email`, `calendar`, `web`, `monid`). The agents the eval made are archived there, and the folder stays, its tool settings as they were (the agent's own pin holds a pinned write, as on `--server`). Refused with `--server`, while another server holds DIR, when DIR's server has work of its own (an enabled trigger, a run not ended) that the eval's server and runner would take up, for an email case when DIR's server keeps an email account, which the case's fake mailbox would replace, and for a calendar case when DIR's server keeps a calendar. A case that fakes an MCP server DIR's server keeps by the same name fails, as on `--server`. |
 | `--grader-model PROVIDER/MODEL` | The `llm` graders' model. Absent: the server's default. |
 | `--report FILE` | The whole report as JSON: per case, per run and per grader, its pass, its reason and its cost. A summary goes to stdout either way, progress to stderr. |
 | `--faux MODULE` | Answer every model request from the module, as the server's `--faux` does: no key, no network. |
 
-It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a flag, the package or a case is wrong.
+It exits 0 when every case passed, 1 when one failed, and 2 when nothing ran: a flag, the package or a case is wrong, or the server would refuse every run.
 A Ctrl-C cancels the run in progress and cleans up as the end does (a second one leaves at once), and exits 130 with no
 report.
 Before anything runs, every case named is read and checked whole: the prompt's front matter, `case.yaml` against the

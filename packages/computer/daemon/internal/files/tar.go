@@ -170,7 +170,9 @@ func entryError(name string, err error) error {
 }
 
 // walk opens the directory that parts name below root, one name at a time from root's descriptor, never following a
-// symlink; with create, a missing directory is made (0755 less the umask). The caller closes what it returns.
+// symlink; with create, a missing directory is made 0755 whatever the umask (init on the exec path runs under 077), as
+// an archive's own directory gets its header's mode, so a synced folder never records a mode no one gave. The caller
+// closes what it returns.
 func walk(root int, parts []string, create bool) (int, error) {
 	dir, err := openDir(root, ".")
 	if err != nil {
@@ -179,7 +181,10 @@ func walk(root int, parts []string, create bool) (int, error) {
 	for i, part := range parts {
 		next, err := openDir(dir, part)
 		if create && errors.Is(err, syscall.ENOENT) {
-			if err = syscall.Mkdirat(dir, part, 0o755); err == nil || errors.Is(err, syscall.EEXIST) {
+			if err = syscall.Mkdirat(dir, part, 0o755); err == nil {
+				err = chmodDir(dir, part, 0o755)
+			}
+			if err == nil || errors.Is(err, syscall.EEXIST) {
 				if betweenCheckAndUse != nil {
 					betweenCheckAndUse(strings.Join(parts[:i+1], "/"))
 				}
