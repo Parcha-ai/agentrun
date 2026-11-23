@@ -38,3 +38,6 @@ __pycache__/
 *.pyc
 python/build/
 *.egg-info/
+
+# Binaries scripts/build-binary.mjs compiles
+.binary/
