@@ -1707,12 +1707,15 @@ test("LVIII: an npm `_`-key is its own anchor: any character but a letter, a dig
   }
   // No `=` after the key, a reference as its value, a short value, or the key a member's (`._auth`) or a longer name's
   // tail (`foo_authToken`, `a__auth`): as before.
-  for (const text of ["the field is 12:_auth", "_authToken=\${NPM_TOKEN}", "see x\u2192_authToken=\${NPM_TOKEN}", "note a:12:_authToken=abc", "echo x-12-_authToken=foo", `foo_authToken=${t}`, `a__auth=${t}`, `this._auth=t.authToken`, `self._password=cfg.pw`]) {
+  for (const text of ["the field is 12:_auth", "_authToken=\${NPM_TOKEN}", "see x\u2192_authToken=\${NPM_TOKEN}", "note a:12:_authToken=abc", "echo x-12-_authToken=foo", `a__auth=${t}`, `this._auth=t.authToken`, `self._password=cfg.pw`]) {
     for (const wrap of wrappers) await kept(wrap(text));
   }
-  // `x_password=` stays secret-assign's NAME=value cut, as before.
-  const out = await gone(`x_password=${t}`, [t]);
-  assert.deepEqual(out.cuts.map((cut) => cut.rule), ["secret-assign"]);
+  // `x_password=` stays secret-assign's NAME=value cut, as before; `foo_authToken=` is one too since a camel hump
+  // separates a name's segments whatever its value (ruling LXXII: FOO_AUTH_TOKEN), never NPMRC_AUTH's.
+  for (const text of [`x_password=${t}`, `foo_authToken=${t}`]) {
+    const out = await gone(text, [t]);
+    assert.deepEqual(out.cuts.map((cut) => cut.rule), ["secret-assign"]);
+  }
 });
 
 /** The four ways a run's text reaches the scrubber: raw, a JSON string, a JSON string in a JSON string, a tool result. */
@@ -1746,7 +1749,22 @@ test("LXI a: a connection string's password (libpq, ADO, ODBC), any case, mid-li
   await labelCutIn([`password= ${pw}`], pw, "secret-assign");
   // No value, a reference, a placeholder, an elided value, code's names and a format string's fields, the shell's
   // working directory: kept.
-  for (const text of ["password=", "password=\tdbname=w", "token= next=1", "pwd=$(pwd)", `psql "host=db.sample.zz user=app password= dbname=widgets"`, "password=<your-password>", "the password=... field", "cd /srv; PWD=/srv/app make", "conn = connect(host=h, password=password)", "    password=pw,", "connect(user=u, password=settings.DB_PASS)", "f\"host={host} password={password}\"", "s = \"Server=x;PWD={pw!r};\"", "Driver={ODBC};UID=sa;PWD={db_secret};", "def f(password=None):", "kwargs: password=getpass()"]) {
+  for (const text of ["password=", "pwd=$(pwd)", `psql "host=db.sample.zz user=app password= dbname=widgets"`, "password=<your-password>", "the password=... field", "cd /srv; PWD=/srv/app make", "conn = connect(host=h, password=password)", "    password=pw,", "connect(user=u, password=settings.DB_PASS)", "f\"host={host} password={password}\"", "s = \"Server=x;PWD={pw!r};\"", "Driver={ODBC};UID=sa;PWD={db_secret};", "def f(password=None):", "kwargs: password=getpass()"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXVII: `name= next=v` is an empty value only where the context decides it (a connection string, a command prefix); a config line's next word is its value, cut", async () => {
+  // A .env's or a .properties' `DB_PASSWORD= realm=Amber9` may hold the password `realm=Amber9`: undecidable, so cut.
+  await labelCutIn([
+    "DB_PASSWORD= realm=Amber9",
+    "db.password= realm=Amber9",
+    "DB_PASSWORD= realm=Amber9\nDB_USER=app",
+    "config.env:3:DB_PASSWORD= realm=Amber9",
+  ], "realm=Amber9", "secret-assign");
+  // Blanks separate assignments here, so the blank ends an empty value: an assignment right before it on its line, or
+  // a command it prefixes.
+  for (const text of [`psql "host=db.sample.zz user=app password= dbname=widgets"`, "TOKEN= OTHER=1 ./run.sh", "env A=1 DB_PASSWORD= realm=Amber9 ./run.sh", "export A=1 DB_PASSWORD= realm=Amber9"]) {
     for (const wrap of FOUR_WRAPS) await kept(wrap(text));
   }
 });
@@ -1879,4 +1897,349 @@ test("LXIII: a 2 MB line of minified JSON scrubs in cut mode in under 5 s (pairQ
   const took = performance.now() - started;
   assert.equal(out.ok, true);
   assert.ok(took < 5_000, `${Math.round(took)} ms`);
+});
+
+test("LXVIII: a connection string's password: blanks around `=` (libpq, ADO), an ADO value's blanks to its `;`, ODBC braces holding `}}` or `{`", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `host=db password = ${pw} dbname=x`,
+    `psql 'host=db user=app password = ${pw}'`,
+    `Server=db; Database=x; User Id=sa; Password = ${pw};`,
+    `Driver={ODBC};UID=sa;PWD={a}}${pw}};`,
+    `Driver={ODBC};UID=sa;PWD={ab{${pw}};`,
+  ], pw, "connection-string");
+  // ADO runs an unquoted value to its `;`: every word of it is cut, in one cut, raw and in appsettings JSON.
+  const ado = `Server=db;Database=x;User Id=sa;Password=Copper lumen ${pw};`;
+  for (const text of [ado, JSON.stringify({ ConnectionStrings: { Default: ado } }, null, 2), `Server=db;Password=Copper lumen ${pw}`]) {
+    for (const wrap of FOUR_WRAPS) {
+      const wrapped = wrap(text);
+      const out = await gone(wrapped, ["Copper", "lumen", pw]);
+      assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["connection-string", "label", true]], wrapped);
+    }
+  }
+  assert.equal((await oneCut(ado)).text, "Server=db;Database=x;User Id=sa;Password=[redacted:connection-string];");
+  // A letters-only braced value is a template's field (as ruled); a template's `{{...}}`, an empty or referenced value,
+  // a string concatenation, code's spaced `=` with no connection string around it, and an empty spaced value: kept.
+  for (const text of [
+    "Driver={ODBC};UID=sa;PWD={CopperLumenHorseBattery};",
+    "password={{db_password}}",
+    "Server=db;PWD={{ db_pw }};",
+    "Server=db;Password=;",
+    "Server=db;Password=$DB_PASSWORD;",
+    "Server=db; Password = {password};",
+    `conn = "Server=db;Password=" + pw`,
+    "x = 1; password = config.password",
+    "int x=1; password = getPw();",
+    "password = getpass.getpass()",
+    "the password = what you typed",
+    "cd /srv; PWD=/srv/app make",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXIX: connection-string reads one long line in time linear in it (`;password=abcdefghij` x N, the rule alone): 400 KB under 1 s, 2 MB under 2 s", async () => {
+  const rule = SCRUB_RULES.find((each) => each.id === "connection-string");
+  const unit = ";password=abcdefghij";
+  for (const [size, bound] of [[400_000, 1_000], [2_000_000, 2_000]]) {
+    const n = Math.floor(size / unit.length);
+    const text = unit.repeat(n);
+    const started = performance.now();
+    const out = await scrubWith([rule], text, { mode: "count" });
+    const took = performance.now() - started;
+    assert.equal(out.cuts.length, n);
+    assert.ok(took < bound, `${size} chars: ${Math.round(took)} ms`);
+  }
+});
+
+test("LXX: a command's environment after a prompt, before `&&` or `;`, after `export`, or as a flag's NAME=value (docker -e, --env, --from-literal=) is cut", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `db_password=${pw} && ./run.sh`,
+    `db_password=${pw}; ./run.sh`,
+    `export db_password=${pw} && ./run.sh`,
+    `export db_password=${pw}; ./run.sh`,
+    `docker run -e db_password=${pw} img`,
+    `docker run --env db_password=${pw} img`,
+    `docker run --env=db_password=${pw} img`,
+    `docker run -e "db_password=${pw}" img`,
+    `docker compose run -e db_password=${pw} web`,
+    `kubectl create secret generic app --from-literal=password=${pw}`,
+    `bob@h:~/app$ db_password=${pw} ./run.sh`,
+    `root@h:~# db_password=${pw} ./run.sh`,
+    `# db_password=${pw} ./run.sh`,
+  ], pw, "secret-assign");
+  // A `;` after the value ends a statement in code as in a shell: there code's shapes (an identifier in code's casing)
+  // stay no value. A flag's name with no `=value`, a reference: kept.
+  for (const text of [
+    "db_password=userInput;",
+    "  api_token=newToken; count++;",
+    "client_secret=next_secret; done",
+    "docker run --rm -e POSTGRES_PASSWORD -e API_KEY -p 5432:5432 postgres:17",
+    "kubectl create secret generic db-credentials --from-literal=password=$DB_PASSWORD --dry-run=client -o yaml",
+    "docker run -e db_password=${DB_PASSWORD} img",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXXI: a form's password: Rails' user[password] raw or encoded, *_password and password_confirmation at any length, the value to its argument's end", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `POST /users/sign_in user[login]=bob&user[password]=${pw}&commit=Log+in`,
+    `user%5Blogin%5D=bob&user%5Bpassword%5D=${pw}&commit=Log+in`,
+    `user%5Bpassword%5D=${pw}&x=1`,
+    `curl -d "user[password]=${pw}" https://x.io`,
+    `curl -d "user=bob&new_password=${pw}" https://x.io`,
+    `?user=bob&password_confirmation=${pw}`,
+    `?current_password=${pw}`,
+    `&old_password=${pw}`,
+    `?password=ab'${pw}`,
+    `?password=ab\\${pw}`,
+    `?password=ab[${pw}`,
+    `?password=ab#${pw}`,
+    `?password=ab<${pw}`,
+  ], pw, "query-password");
+  await labelCutIn(["login?user=bob&new_password=abc"], "abc", "query-password");
+  // The value ends where its argument does: the quote, bracket or parenthesis the argument opened before the key.
+  for (const [text, out] of [
+    [`curl -d "user=bob&password=${pw}" https://x.io`, `curl -d "user=bob&password=[redacted:query-password]" https://x.io`],
+    [`see [login](https://x.io/in?password=${pw}) next`, `see [login](https://x.io/in?password=[redacted:query-password]) next`],
+    [`{"url":"https://x.io/in?password=${pw}","n":1}`, `{"url":"https://x.io/in?password=[redacted:query-password]","n":1}`],
+    [`<https://x.io/in?password=${pw}> next`, `<https://x.io/in?password=[redacted:query-password]> next`],
+  ]) assert.equal((await oneCut(text)).text, out);
+  for (const text of ["https://x.io/a?password=&next=1", "https://x.io/a?new_password=$PW", "url = f\"?user={u}&new_password={pw}\"", "https://x.io/r?password_reset=1", "params[password]=pw", "form[password]=newPassword", "see [docs](https://x.io/in?password=$PW)"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
+  const pw = "Tq7Wm2Rk9Zx";
+  await labelCutIn([
+    `dbPassword: ${pw}`,
+    `clientSecret: ${pw}`,
+    `accessToken: ${pw}`,
+    `apiToken: ${pw}`,
+    `authToken=${pw}`,
+    `dbPassword=${pw}`,
+    `npmAuthToken: ${pw}`,
+    `secrets:\n  dbPassword: ${pw}`,
+    `  dbPassword = ${pw}`,
+  ], pw, "secret-assign");
+  // Code's evidence (a declaration, an entry's end, a call, a type, a reference) decides as for any other name; a Helm
+  // reference to a Secret object by its resource name (`existingSecret: app-credentials`) is no value.
+  for (const text of [
+    "const dbPassword = getPw()",
+    "const dbPassword = rawPassword",
+    "{dbPassword: pw}",
+    "  dbPassword: dbPassword,",
+    "return { clientSecret: clientSecret }",
+    "dbPassword: string",
+    "  accessToken: string;",
+    "apiToken: SecretStr",
+    "  clientSecret: process.env.CLIENT_SECRET",
+    "this.authToken = token;",
+    "const clientSecret = cfg.clientSecret;",
+    "auth:\n  existingSecret: app-credentials\n  secretKeys:\n    adminPasswordKey: admin-password",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+
+// ---------- the opus re-read on #3570 @ f7284f0055: LXXIII-LXXVII (perf, LXII a/b/d, LVIII near-variants) ----------
+
+/** One rule's find on `text` alone, in the context the engine builds for a view (secret-cut.ts contextOf): the raw view,
+ *  its line bounds, nothing held, `extra` (a call's command or path). Its hits, and the CPU time it took in ms. */
+const ruleAlone = async (id, text, extra = {}) => {
+  const { lineBounds } = await import("../dist/secret-rules.js");
+  const rule = SCRUB_RULES.find((each) => each.id === id);
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings), ...extra };
+  const before = process.cpuUsage();
+  const hits = await rule.find(view.text, ctx);
+  const used = process.cpuUsage(before);
+  return { hits, ms: (used.user + used.system) / 1000 };
+};
+const repeatTo = (piece, size) => piece.repeat(Math.ceil(size / piece.length));
+
+test("LXXIII a: docker-auth reads many \"auth\" keys in linear time: \"auths\" and the call's paths are found once a text, never once a match", async () => {
+  const command = `cat notes.txt ${"x ".repeat(500)}`;
+  // The call's paths are split once a text: a 4 KB command over 6,000 matches is one split (a split once a match: ~2 s).
+  {
+    const { hits, ms } = await ruleAlone("docker-auth", repeatTo('{"auth":"abcd"},', 100_000), { command: `cat notes.txt ${"x ".repeat(2_000)}` });
+    assert.ok(ms < 500, `4 KB command, 100 KB of "auth" keys: ${Math.round(ms)} ms CPU`);
+    assert.deepEqual(hits, []);
+  }
+  // f7284f0055 searched back for "auths" and split the command once a match: ~2 s CPU here at 200 KB, over 120 s at 2 MB.
+  for (const piece of ['{"auth":"abcd"},', '"auth": "abcd"\n']) {
+    const { hits, ms } = await ruleAlone("docker-auth", repeatTo(piece, 200_000), { command });
+    assert.ok(ms < 1_000, `${JSON.stringify(piece)} x 200 KB: ${Math.round(ms)} ms CPU`);
+    assert.deepEqual(hits, []);
+  }
+  // The lead's bar: each 2 MB repro alone in under 2 s.
+  for (const piece of ['{"auth":"abcd"},', '"auth": "abcd"\n']) {
+    const { ms } = await ruleAlone("docker-auth", repeatTo(piece, 2_000_000), { command });
+    assert.ok(ms < 2_000, `${JSON.stringify(piece)} x 2 MB: ${Math.round(ms)} ms CPU`);
+  }
+  // Still read where it was: under "auths", or in a config.json the command names.
+  const v = Buffer.from(`bob:${R(14, 77)}`).toString("base64");
+  assert.equal((await ruleAlone("docker-auth", `${'{"x":"y"},'.repeat(50)}{"auths":{"r.io":{"auth":"${v}"}}}`)).hits.length, 1);
+  assert.equal((await ruleAlone("docker-auth", `{"auth": "${v}"}`, { command: "jq . ~/.docker/config.json" })).hits.length, 1);
+  assert.equal((await ruleAlone("docker-auth", `{"auth": "${v}"}`, { command })).hits.length, 0);
+});
+
+test("LXXIII b: base64-pem reads a stack of wrap-width anchor lines in linear time: a wrap's lines are read once, never again from each line's anchor", async () => {
+  // f7284f0055 restarted inside the wrap lines a hit had consumed: ~2.5 s CPU here at 300 KB, 26 s at 2 MB.
+  for (const line of [`LS0tLS1CRUdJTi${"A".repeat(62)}\n`, `LS0tLS1CRUdJTi${"A".repeat(66)}\n`]) {
+    const { hits, ms } = await ruleAlone("base64-pem", repeatTo(line, 300_000));
+    assert.ok(ms < 1_000, `${line.length - 1}-column lines x 300 KB: ${Math.round(ms)} ms CPU`);
+    assert.ok(hits.length > 0);
+  }
+  for (const line of [`LS0tLS1CRUdJTi${"A".repeat(62)}\n`, `LS0tLS1CRUdJTi${"A".repeat(66)}\n`]) {
+    const { ms } = await ruleAlone("base64-pem", repeatTo(line, 2_000_000));
+    assert.ok(ms < 2_000, `${line.length - 1}-column lines x 2 MB: ${Math.round(ms)} ms CPU`);
+  }
+});
+
+/** A PEM block as text, its body synthetic, and that text base64'd whole after `pre` (bytes before the block). */
+const PEM_TEXT = `-----${"BEGIN"} PRIVATE KEY-----\n${R(64, 71)}\n${R(64, 72)}\n${R(40, 73)}\n-----${"END"} PRIVATE KEY-----\n`;
+const pemAt = (pre) => Buffer.concat([Buffer.from(pre), Buffer.from(PEM_TEXT)]).toString("base64");
+
+const PEM_OFFSETS = {
+  BOM: Buffer.from([0xef, 0xbb, 0xbf]),
+  newline: Buffer.from("\n"),
+  blank: Buffer.from(" "),
+  pkcs12: Buffer.from("Bag Attributes\n    localKeyID: 01 02 03 04\nKey Attributes: <No Attributes>\n"),
+};
+
+test("LXXIV a: a base64 PEM at any offset of its encoding (a BOM, a line break, a blank, a pkcs12 preamble) is a format cut, its run whole", async () => {
+  const offsets = PEM_OFFSETS;
+  for (const [name, pre] of Object.entries(offsets)) {
+    const enc = pemAt(pre);
+    const middle = Math.floor(enc.length / 2);
+    for (const text of [`tls:\n  key: ${enc}`, `  tls.key: ${enc}`]) {
+      for (const wrap of FOUR_WRAPS) {
+        const wrapped = wrap(text);
+        const out = await gone(wrapped, [enc.slice(middle, middle + 24), enc.slice(-48, -24)]);
+        assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["base64-pem", "format", false]], `${name}: ${wrapped.slice(0, 120)}`);
+      }
+    }
+  }
+  // Base64 of text with no PEM in it; an offset anchor glued after a letter (another run's middle, out of its
+  // alignment): kept.
+  const plain = Buffer.from(`\n${"plain words and no key in here. ".repeat(7)}`).toString("base64");
+  for (const text of [`  tls.key: ${plain}`, `  x: Q${pemAt(offsets.newline)}`, `  x: QQQ${pemAt(offsets.BOM)}`]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXXIV b: a base64 PEM's wrap under any line lead (Read, cat -n, grep with and without -n, a diff's +) is cut whole, the line after it kept", async () => {
+  const offsets = PEM_OFFSETS;
+  const leads = {
+    none: () => "",
+    read: (n) => `${String(n).padStart(6)}\u2192`,
+    "cat -n": (n) => `${String(n).padStart(6)}\t`,
+    grep: () => "secrets/key.b64:",
+    "grep -n": (n) => `secrets/key.b64:${n}:`,
+    "diff +": () => "+",
+  };
+  for (const pre of [Buffer.alloc(0), offsets.BOM, offsets.newline]) {
+    const wrapLines = pemAt(pre).match(/.{1,76}/g);
+    for (const [leadName, lead] of Object.entries(leads)) {
+      const text = [...wrapLines, "$ ls -l"].map((line, i) => `${lead(i + 1)}${line}`).join("\n");
+      for (const wrap of FOUR_WRAPS) {
+        const wrapped = wrap(text);
+        const out = await gone(wrapped, wrapLines.map((line) => line.slice(8, 32)));
+        assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["base64-pem", "format", false]], `${leadName}: ${wrapped.slice(0, 120)}`);
+        assert.ok(out.text.includes("$ ls -l"), `${leadName}: cut past its block: ${out.text.slice(-80)}`);
+      }
+    }
+  }
+  // Base64 of text with no PEM in it, wrapped under a lead: kept.
+  const plain = Buffer.from(`\n${"plain words and no key in here. ".repeat(7)}`).toString("base64");
+  for (const text of [plain.match(/.{1,76}/g).map((line, i) => `${String(i + 1).padStart(6)}\u2192${line}`).join("\n"), plain.match(/.{1,76}/g).map((line) => `+${line}`).join("\n")]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXXV: a k8s Secret in a git diff has its data values cut whichever marker (+, -, a context blank) each line has; a ConfigMap's, or another file's, are not", async () => {
+  const v = Buffer.from(R(18, 75)).toString("base64");
+  const old = Buffer.from(R(18, 76)).toString("base64");
+  const texts = [
+    ["+kind: Secret", "+data:", `+  api: ${v}`],
+    ["diff --git a/k8s/secret.yaml b/k8s/secret.yaml", "new file mode 100644", "--- /dev/null", "+++ b/k8s/secret.yaml", "@@ -0,0 +1,6 @@", "+apiVersion: v1", "+kind: Secret", "+metadata:", "+  name: app", "+data:", `+  api: ${v}`],
+    ["diff --git a/k8s/secret.yaml b/k8s/secret.yaml", "--- a/k8s/secret.yaml", "+++ b/k8s/secret.yaml", "@@ -1,4 +1,4 @@", " apiVersion: v1", " kind: Secret", " data:", `-  api: ${old}`, `+  api: ${v}`],
+    ["@@ -3,3 +3,2 @@", " kind: Secret", " data:", `-  api: ${v}`, "   region: bm9ydGg="],
+  ];
+  for (const lines of texts) {
+    for (const wrap of FOUR_WRAPS) {
+      const wrapped = wrap(lines.join("\n"));
+      const out = await gone(wrapped, [v, old]);
+      assert.ok(out.cuts.length > 0 && out.cuts.every((cut) => cut.rule === "k8s-secret" && cut.kind === "label" && cut.restorable), `${wrapped}: ${JSON.stringify(out.cuts)}`);
+    }
+  }
+  // A ConfigMap's diff; a Secret's file then a ConfigMap's in one diff; a ConfigMap after an added `---`: kept.
+  for (const lines of [
+    ["+kind: ConfigMap", "+data:", `+  api: ${v}`],
+    ["@@ -1,4 +1,4 @@", " kind: ConfigMap", " data:", `-  api: ${old}`, `+  api: ${v}`],
+    ["diff --git a/k8s/secret.yaml b/k8s/secret.yaml", "+++ b/k8s/secret.yaml", "@@ -0,0 +1,2 @@", "+kind: Secret", "+type: Opaque", "diff --git a/k8s/app.yaml b/k8s/app.yaml", "+++ b/k8s/app.yaml", "@@ -0,0 +1,3 @@", "+kind: ConfigMap", "+data:", `+  api: ${v}`],
+    ["+kind: Secret", "+type: Opaque", "+---", "+kind: ConfigMap", "+data:", `+  api: ${v}`],
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(lines.join("\n")));
+  }
+});
+
+test("LXXVI: an npm `_`-key's value after `=` with blanks, after a quoted key's `:`, or as `npm config set`'s next word is a label cut", async () => {
+  const t = "Zq8RtYw2Lp4Kx9VbN3mQa7Hs2Df5Gj8K";
+  const reg = `${"//"}npm.corp-sample.io/:`;
+  await labelCutIn([
+    `${reg}_authToken = ${t}`,
+    `_auth = ${t}`,
+    `${reg}_password =${t}`,
+    `npm config set ${reg}_authToken ${t}`,
+    `pnpm config set ${reg}_authToken ${t} --location=project`,
+    `npm set _auth ${t}`,
+    `"${reg}_authToken": "${t}"`,
+    `{"${reg}_authToken":"${t}"}`,
+  ], t, "secret-assign");
+  // Another key set, a get or a delete, npm config list's own mask, a reference, another key's JSON entry, prose: kept.
+  for (const text of [
+    `npm config set registry https:${"//"}npm.corp-sample.io/`,
+    `npm config get ${reg}_authToken`,
+    `npm config delete ${reg}_authToken`,
+    `${reg}_authToken = (protected)`,
+    `npm config set ${reg}_authToken \${NPM_TOKEN}`,
+    `"${reg}always-auth": "true"`,
+    "Set the _authToken field before you publish.",
+  ]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
+test("LXXVII: a credential file named through shell quotes, a $...FILE variable or Windows' pgpass.conf, and ~/.aws/credentials, ~/.npmrc, ~/.my.cnf, ~/.vault-token: the output is one dump", async () => {
+  const pw = "Copper8lumen80";
+  const pgpass = `db:5432:app:svc:${pw}`;
+  for (const [text, opts] of [
+    [pgpass, { command: "cat ~/'.pgpass'" }],
+    [pgpass, { command: 'cat ~/".pgpass"' }],
+    [pgpass, { command: "cat $PGPASSFILE" }],
+    [pgpass, { command: 'grep app "${PGPASSFILE}"' }],
+    [pgpass, { command: "type %APPDATA%\\postgresql\\pgpass.conf" }],
+    [pgpass, { command: "Get-Content C:\\Users\\bob\\AppData\\Roaming\\postgresql\\pgpass.conf" }],
+    [pgpass, { path: "C:\\Users\\bob\\AppData\\Roaming\\postgresql\\pgpass.conf" }],
+    [`[default]\naws_secret_access_key = ${pw}`, { command: "cat ~/.aws/credentials" }],
+    [`${"//"}npm.corp-sample.io/:_authToken=${pw}`, { command: "cat ~/.npmrc" }],
+    [`[client]\npassword = ${pw}`, { command: "cat ~/.my.cnf" }],
+    [pw, { command: "cat ~/.vault-token" }],
+  ]) {
+    const out = await gone(text, [pw], opts);
+    assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["credential-file", "dump", false]], `${JSON.stringify(opts)}: ${JSON.stringify(out.cuts)}`);
+  }
+  // A path that only holds pgpass, my.cnf or npmrc in a longer name, another aws file, a variable whose name only ends
+  // in FILE: no dump.
+  for (const command of ["cat docs/pgpass-setup.md", "cat ~/.pgpass.example", "grep -r my.cnf docs/", "cat ~/.npmrc-notes.txt", "cat ~/.aws/config", "echo $PROFILE", "cat $HOME/pgpass.txt"]) {
+    const out = await scrub(pgpass, { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
 });

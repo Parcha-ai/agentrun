@@ -291,3 +291,23 @@ test("LXIV: Gemini CLI's read_file (`absolute_path` in v0.1.18, `file_path` now)
   const gathered = await shareTexts(store, "cursor-notes", deps);
   assert.equal((await countCuts("cursor-notes", gathered.kind, gathered.texts, gathered.held)).cuts, 0);
 });
+
+test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE or a newly listed file (~/.aws/credentials) is one dump", async (t) => {
+  const { store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const counted = async (id) => {
+    const gathered = await shareTexts(store, id, deps);
+    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
+  };
+  for (const [id, command, output] of [["quoted-pgpass", "cat ~/'.pgpass'", pgpass], ["pgpassfile", "cat $PGPASSFILE", pgpass], ["aws-credentials", "cat ~/.aws/credentials", `[default]\naws_secret_access_key = ${pw}`]]) {
+    await oneCallRun(store, id, "Bash", { command }, output);
+    const count = await counted(id);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", id);
+  }
+  // A path that only holds pgpass in a longer name: no cut.
+  await oneCallRun(store, "pgpass-notes", "Bash", { command: "cat docs/pgpass-setup.md" }, pgpass);
+  assert.equal((await counted("pgpass-notes")).cuts, 0);
+});

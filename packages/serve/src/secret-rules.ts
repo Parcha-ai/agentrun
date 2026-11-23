@@ -111,11 +111,26 @@ export function lineBounds(text: string, ...lists: readonly (readonly StringSpan
       const i = placeBefore(opens, at);
       return i >= 0 && spans[i]![1] >= at ? [spans[i]!] : [];
     });
+  // The text's line breaks, found once on first ask and searched by halves (ruling LXIX): a scan from `at` to the
+  // nearest break is a scan to the text's start or end on one long line, once per match, quadratic in the line.
+  let breaks: number[] | undefined;
+  const lineBreaks = (): number[] => {
+    if (breaks === undefined) {
+      breaks = [];
+      for (let at = text.indexOf("\n"); at >= 0; at = text.indexOf("\n", at + 1)) breaks.push(at);
+    }
+    return breaks;
+  };
   return {
-    start: (at) => Math.max(text.lastIndexOf("\n", at - 1) + 1, ...holding(at).map(([open]) => open + 1)),
+    start: (at) => {
+      const all = lineBreaks();
+      const before = placeBefore(all, at);
+      return Math.max(before >= 0 ? all[before]! + 1 : 0, ...holding(at).map(([open]) => open + 1));
+    },
     end: (at) => {
-      const line = text.indexOf("\n", at);
-      return Math.min(line < 0 ? text.length : line, ...holding(at).map(([, close]) => close));
+      const all = lineBreaks();
+      const next = placeBefore(all, at) + 1;
+      return Math.min(next < all.length ? all[next]! : text.length, ...holding(at).map(([, close]) => close));
     },
   };
 }
@@ -868,33 +883,88 @@ const VENDOR_RULES: readonly ScrubRule[] = (
   }),
 );
 
-/** A PEM block stored base64'd whole (ruling LXII a): `-----BEGIN` encodes to `LS0tLS1CRUdJTi` at a base64 run's start
- *  (a k8s Secret's `tls.key`, a kubeconfig's `client-key-data`, `base64 key.pem`'s output). A format, never restorable:
- *  its run whole, and the lines a wrap carries it on (a first line of a wrap's width, 60 to 80 and a multiple of 4: each
- *  next line a run no longer than it, ending its line or its string (a decoded view blanks the string's quote before a `}`, `]` or `,`), the first shorter one
- *  its last). A certificate's (`client-certificate-data`) is
- *  cut too: public, but an over-cut fails closed (the lead, 13:37Z). */
-const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/]{40,4096}/g;
+/** A PEM block stored base64'd (rulings LXII a, LXXIV): a k8s Secret's `tls.key`, a kubeconfig's `client-key-data`,
+ *  `base64 key.pem`'s output. The anchor is `-----BEGIN ` as base64 writes it at any byte offset of the encoded text
+ *  (a BOM, a line break, a blank, a pkcs12 `Bag Attributes` preamble before the block): at an offset 0, 1 or 2 (mod 3)
+ *  it encodes to one of three fixed runs, which start 0, 2 or 3 characters (mod 4) into a 4-character group
+ *  (BASE64_PEM_ALIGN). The encoding starts at the run's start: a run whose start puts the anchor off its alignment is
+ *  another run's middle, no PEM's (`QQLS0t...`), unless what stands before the aligned start holds no letter or digit
+ *  (a diff's `+`, ruling X's reading). A format, never restorable: the run whole, its preamble too, and the lines a
+ *  wrap carries it on (a line of a wrap's width, 60 to 80 and a multiple of 4: each next line under the first line's
+ *  own lead (a Read tool's `     2→`, `cat -n`, grep's `file:`, a diff's `+`, as pemLines reads leads) or indented, a
+ *  run no longer than the first, ending its line or its string (a decoded view blanks the string's quote before a `}`,
+ *  `]` or `,`), the first shorter one its last). A certificate's (`client-certificate-data`) is cut too: public, but an
+ *  over-cut fails closed (the lead, 13:37Z). */
+const BASE64_PEM = /LS0tLS1CRUdJTi|0tLS0tQkVHSU4g|tLS0tLUJFR0lOI/g;
+const BASE64_PEM_ALIGN: Readonly<Record<string, number>> = { LS0tLS1CRUdJTi: 0, "0tLS0tQkVHSU4g": 2, tLS0tLUJFR0lOI: 3 };
+/** The fewest base64 characters after the anchor: a BEGIN line's encoding alone is no block. */
+const BASE64_PEM_BODY_MIN = 40;
 const BASE64_STD_BEFORE = /[A-Za-z0-9+/]/;
 const BASE64_STD_AFTER = /[A-Za-z0-9+/=]/;
-const BASE64_WRAP_LINE = /\r?\n[ \t]{0,32}([A-Za-z0-9+/]{1,80}={0,2})(?=[ \t]{0,8}(?:\r?\n|$|["',}\]]))/y;
+const BASE64_WRAP_BREAK = /[ \t]{0,8}\r?\n/y;
+const BASE64_WRAP_INDENT = /[ \t]{0,32}/y;
+const BASE64_WRAP_RUN = /[A-Za-z0-9+/]{1,80}={0,2}(?=[ \t]{0,8}(?:\r?\n|$|["',}\]]))/y;
 const BASE64_WRAP_LINES = 4096;
-function base64Pems(text: string): Hit[] {
+/** Whether a character code is standard base64's (no `=`): A-Z, a-z, 0-9, `+`, `/`. */
+const base64Code = (code: number): boolean => (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || code === 43 || code === 47;
+/** A wrap line's run after the line break at `at`: under `lead` (the first line's, as tokens) or indented, whichever
+ *  gives a run of the wrap's `width` (a full line), else the first that gives a shorter run (the last line). */
+function base64WrapLine(text: string, at: number, lead: readonly string[], width: number): { end: number; length: number } | undefined {
+  const starts: number[] = [];
+  if (lead.length) {
+    const led = leadLength(lead, text.slice(at, at + PEM_LEAD_MAX * 2));
+    if (led !== undefined) starts.push(at + led);
+  }
+  BASE64_WRAP_INDENT.lastIndex = at;
+  BASE64_WRAP_INDENT.exec(text);
+  starts.push(BASE64_WRAP_INDENT.lastIndex);
+  let last: { end: number; length: number } | undefined;
+  for (const start of starts) {
+    BASE64_WRAP_RUN.lastIndex = start;
+    const run = BASE64_WRAP_RUN.exec(text);
+    if (!run || run[0].length > width) continue;
+    const line = { end: start + run[0].length, length: run[0].length };
+    if (line.length === width) return line;
+    last ??= line;
+  }
+  return last;
+}
+function base64Pems(text: string, lines: LineBounds): Hit[] {
   const out: Hit[] = [];
-  for (const m of text.matchAll(BASE64_PEM)) {
-    if (!opensKey(text, m.index, BASE64_STD_BEFORE)) continue;
-    let end = keyEnd(text, m.index, m.index + m[0].length, BASE64_STD_AFTER);
-    const width = end - m.index;
+  // The base64 run holding each anchor, found by one walk forward (linear: never a walk back per anchor), and every
+  // anchor inside a block already cut skipped (ruling LXXIII: a wrap's lines are read once).
+  let scanned = 0;
+  let runStart = 0;
+  BASE64_PEM.lastIndex = 0;
+  for (let m = BASE64_PEM.exec(text); m; m = BASE64_PEM.exec(text)) {
+    const anchor = m.index;
+    for (; scanned < anchor; scanned++) if (!base64Code(text.charCodeAt(scanned))) runStart = scanned + 1;
+    // The group the anchor's first fixed character sits in starts at `group`; the encoding starts a whole number of
+    // groups before it, at the run's start or after what stands glued before it.
+    const group = anchor - BASE64_PEM_ALIGN[m[0]]!;
+    if (group < runStart) continue;
+    const start = runStart + ((group - runStart) % 4);
+    if (start > runStart && LETTER_OR_DIGIT.test(text.slice(runStart, start))) continue;
+    if (anchor - start > KEY_RUN_MAX) throw new Error("scrub: a base64 run before a PEM's anchor is past the scan's bound");
+    const anchorEnd = anchor + m[0].length;
+    let end = keyEnd(text, start, anchorEnd, BASE64_STD_AFTER);
+    let body = end - anchorEnd;
+    const width = end - start;
     if (width >= 60 && width <= 80 && width % 4 === 0) {
+      const lead = leadTokens(text.slice(Math.max(lines.start(start), start - PEM_LEAD_MAX), start));
       for (let n = 0; n < BASE64_WRAP_LINES; n++) {
-        BASE64_WRAP_LINE.lastIndex = end;
-        const line = BASE64_WRAP_LINE.exec(text);
-        if (!line || line[1]!.length > width) break;
-        end = BASE64_WRAP_LINE.lastIndex;
-        if (line[1]!.length < width) break;
+        BASE64_WRAP_BREAK.lastIndex = end;
+        if (!BASE64_WRAP_BREAK.exec(text)) break;
+        const line = base64WrapLine(text, BASE64_WRAP_BREAK.lastIndex, lead, width);
+        if (!line) break;
+        end = line.end;
+        body += line.length;
+        if (line.length < width) break;
       }
     }
-    out.push({ start: m.index, end });
+    if (body < BASE64_PEM_BODY_MIN) continue;
+    out.push({ start, end });
+    BASE64_PEM.lastIndex = Math.max(BASE64_PEM.lastIndex, end);
   }
   return out;
 }
@@ -924,8 +994,7 @@ const PASSWORD_NAMES: ReadonlySet<string> = new Set(["PGPASSWORD", "SSHPASS", "R
 const CAMEL_HUMP = /([a-z0-9])([A-Z])/g;
 const NAME_SEPARATORS = /[-_.]{1,8}/;
 const DIGITS_ONLY = /^\d{1,8}$/;
-/** `camel`: a camel hump separates segments too (`apiKey`, `clientSecret`), for a quoted value alone: a bare value
- *  after a camel-cased key is a config's reference more often than not (Helm's `existingSecret: app-credentials`). */
+/** `camel`: a camel hump separates segments too (`apiKey`, `clientSecret`); labelsSecret says when (ruling LXXII). */
 const secretName = (name: string, camel = false): boolean => {
   const segments = (camel ? name.replace(CAMEL_HUMP, "$1_$2") : name).toUpperCase().split(NAME_SEPARATORS).filter(Boolean);
   if (PASSWORD_NAMES.has(segments.join("_"))) return true;
@@ -936,6 +1005,17 @@ const secretName = (name: string, camel = false): boolean => {
   if (QUALIFIED_WORDS.has(last)) return segments.length > 1;
   if (CREDENTIAL_WORDS.has(last)) return true;
   return last === "KEY" && segments.length > 1 && KEY_QUALIFIERS.has(segments.at(-2)!);
+};
+/** A resource's name (DNS-1123: lower-case words joined by `-` or `.`): a k8s object's, which Helm's camelCase keys
+ *  reference (`existingSecret: app-credentials`). */
+const RESOURCE_NAME = /^[a-z0-9]{1,63}(?:[-.][a-z0-9]{1,63}){1,8}$/;
+/** Whether `name` labels a secret for its value (`bare`: the unquoted value, undefined when it is quoted), ruling LXXII:
+ *  a camel hump separates segments whatever the value (`dbPassword: v`, `clientSecret: v`, `authToken=v`), code's
+ *  readings decided by code's evidence and the placeholder check as for any name. A bare resource's name after a name
+ *  only a camel hump makes a credential's is a reference to a Secret object, no value. */
+const labelsSecret = (name: string, bare?: string): boolean => {
+  if (secretName(name)) return true;
+  return secretName(name, true) && (bare === undefined || !RESOURCE_NAME.test(bare));
 };
 const UPPER_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
 /** A line's lead a tool or a diff puts before what it shows (ruling XXVII): a Read tool's `    12→`, `cat -n`'s
@@ -993,8 +1073,17 @@ function iniSection(text: string, from: number): boolean {
  *  (ruling XXX). npm's underscore keys are credentials by name, so the key is its own anchor (ruling LVIII, after LII's
  *  line leads): anything but a letter or a digit before it opens it, anywhere on its line (`//registry/:`, a Read
  *  tool's `12→`, grep's `path:12:`, a diff's `+`, `foo 12:`, a blank, a quote). Not after `_` (`foo_authToken`,
- *  `a__auth`: a longer name's tail, secret-assign's), `$` or `.` (`this._auth=`: a member's). */
-const NPMRC_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)=${VALUE}`, "gd");
+ *  `a__auth`: a longer name's tail, secret-assign's), `$` or `.` (`this._auth=`: a member's). The key's separator is
+ *  any npm writes or reads (ruling LXXVI): `=` with blanks around it or none (ini allows them: `_authToken = tok`), or a
+ *  quoted key's `:` (`"//registry/:_authToken": "tok"`, a JSON or YAML map of npm's config). npm config list's own
+ *  mask, `= (protected)`, is no value VALUE reads. */
+const NPMRC_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)(?:[ \t]{0,3}=(?!=)|["'][ \t]{0,3}:)[ \t]{0,3}${VALUE}`, "gd");
+/** npm's (pnpm's, yarn's) `config set` or `set`, to its line's end or the next shell operator: there a key and its
+ *  value are two words (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
+const NPM_SET_COMMAND = /\b(?:npm|pnpm|yarn)[ \t]{1,3}(?:config[ \t]{1,3})?set(?=[ \t])[^\n;|&]{0,1024}/g;
+const NPM_SET_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)[ \t]{1,3}${VALUE}`, "gd");
+/** An npm key's value: a slot code does not fill (ruling XII). */
+const npmAuth = (m: RegExpExecArray): Hit | undefined => flagValue(valueHit(m, 2, 3, m[1]!));
 
 /** NAME=value, as a shell or .env writes it: a key-shaped name or one of PASSWORD_NAMES. An upper-case name (an
  *  environment variable's) is cut whatever its value; any other (a keyword argument, `token=tok`) when its value is a
@@ -1084,7 +1173,7 @@ const DOTTED_KEY_BEFORE = /(?:[A-Za-z0-9_-]{1,64}\.){1,8}$/;
 const assign = (text: string, lines: LineBounds, source?: string) => (m: RegExpExecArray): Hit | undefined => {
   const name = m[1]!;
   const bare = m[5] !== undefined && !escapeQuoted(source, m, 5); // group 5: the bare value
-  if (!secretName(name, !bare)) return undefined;
+  if (!labelsSecret(name, bare ? m[5] : undefined)) return undefined;
   const hit = valueHit(m, 2, 3, name);
   if (!hit) return undefined;
   // A bare value ending with `,`, `)` or `}` ends an argument or an entry: code's evidence (ruling XLV), so the code
@@ -1101,22 +1190,51 @@ const assign = (text: string, lines: LineBounds, source?: string) => (m: RegExpE
   if (CODE_KEYWORD.test(text.slice(key, m.index))) return undefined; // `self.token=token`: an attribute's, code's
   // Before a command on its line (`db_password=x ./run.sh`), a lower-case name=value is that command's environment, as
   // an upper-case one is (ruling LXI c).
-  if (key === m.index && commandEnv(text, m.index, end, lines)) return entry ? hit : { ...hit, code: false };
+  // After a `;` alone (code's statement as much as a shell's) code's shapes stay no value (ruling LXX).
+  const env = key === m.index ? commandEnv(text, m.index, end, lines) : undefined;
+  if (env === "statement") return hit;
+  if (env === "command") return entry ? hit : { ...hit, code: false };
   if (!keyStartAt(text, key, m.index, lines) || !lineEndAt(text, hit.end, lines)) return undefined;
   return entry ? hit : { ...hit, code: false };
 };
-/** What stands before a command's environment (ruling LXI c): its line's start (a lead, indentation, a prompt, `env`
- *  or `sudo`) or a shell's `;`, `&&`, `||` or `|`, then any other NAME=value before it. */
+/** A shell's prompt (ruling LXX): a virtualenv's `(name) ` maybe, a `user@host` and its `:path` or a bracketed
+ *  `[user@host dir]` maybe, then `$`, `#`, `%`, `>` or `❯` and a blank (`bob@h:~/app$ `, `root@h:~# `, `# `). */
+const PROMPT = String.raw`(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,64}(?::[^\s$#]{0,256})?|\[[^\]\n]{1,256}\])?[$#%>❯][ \t]{1,3}`;
+/** What stands before a command's environment (rulings LXI c, LXX): its line's start (a lead, indentation, a prompt:
+ *  group 1) or a shell's `;`, `&&`, `||` or `|`, then `env`, `sudo` or `export` maybe (group 2), then any other
+ *  NAME=value before it. */
 const ENV_PREFIX_BEFORE = new RegExp(
-  String.raw`(?:^${LINE_LEAD}?[ \t]{0,32}(?:[$%>❯][ \t]{1,3})?|(?:;|&&|\|\|?)[ \t]{1,8})(?:(?:env|sudo)[ \t]{1,3})?(?:[A-Za-z_][A-Za-z0-9_]{0,63}=[^\s;&|]{0,1024}[ \t]{1,8}){0,8}$`,
+  String.raw`(?:^${LINE_LEAD}?[ \t]{0,32}(${PROMPT})?|(?:;|&&|\|\|?)[ \t]{1,8})(?:(env|sudo|export)[ \t]{1,3})?(?:[A-Za-z_][A-Za-z0-9_]{0,63}=[^\s;&|]{0,1024}[ \t]{1,8}){0,8}$`,
 );
 /** What follows it: any other NAME=value, then a blank and a command's word (no `=` in it). */
 const ENV_PREFIX_AFTER = /^(?:[ \t]{1,8}[A-Za-z_][A-Za-z0-9_]{0,63}=[^\s;&|]{0,1024}){0,8}[ \t]{1,8}[A-Za-z0-9_./~][^\s=;&|]{0,1024}(?=[\s;&|]|$)/;
-/** Whether the name=value at [at, end) prefixes a command on its line (ruling LXI c). */
-const commandEnv = (text: string, at: number, end: number, lines: LineBounds): boolean => {
+/** Or a shell's `&&` or `||` (ruling LXX): the line goes on as a shell's, never code's. */
+const ENV_PREFIX_CHAIN = /^(?:[ \t]{1,8}[A-Za-z_][A-Za-z0-9_]{0,63}=[^\s;&|]{0,1024}){0,8}[ \t]{0,8}(?:&&|\|\|)/;
+/** Or a `;`: a statement's end in code as much as in a shell (ruling LXX). */
+const ENV_PREFIX_STATEMENT = /^(?:[ \t]{1,8}[A-Za-z_][A-Za-z0-9_]{0,63}=[^\s;&|]{0,1024}){0,8}[ \t]{0,8};/;
+/** Whether the name=value at [at, end) is a shell's environment on its line (rulings LXI c, LXX): "command" when it
+ *  prefixes a command or a shell's `&&`/`||` follows it, or a `;` does after a prompt, `env`, `sudo` or `export` (a
+ *  slot code does not fill); "statement" when a `;` follows it with no such mark (code's or a shell's: code's shapes
+ *  stay no value there); else undefined. */
+const commandEnv = (text: string, at: number, end: number, lines: LineBounds): "command" | "statement" | undefined => {
   const from = lines.start(at);
   const to = lines.end(end);
-  return at - from <= 320 && to - end <= 2048 && ENV_PREFIX_BEFORE.test(text.slice(from, at)) && ENV_PREFIX_AFTER.test(text.slice(end, to));
+  if (at - from > 320 || to - end > 2048) return undefined;
+  const before = ENV_PREFIX_BEFORE.exec(text.slice(from, at));
+  if (!before) return undefined;
+  const after = text.slice(end, to);
+  if (ENV_PREFIX_AFTER.test(after) || ENV_PREFIX_CHAIN.test(after)) return "command";
+  if (!ENV_PREFIX_STATEMENT.test(after)) return undefined;
+  return before[1] !== undefined || before[2] !== undefined ? "command" : "statement";
+};
+/** A flag whose value is itself NAME=value (ruling LXX): `docker run -e NAME=v`, `--env NAME=v`, `--env=NAME=v`,
+ *  `kubectl create secret generic x --from-literal=NAME=v`, a quote maybe before the name (group 1). The value is a
+ *  flag's, a slot code does not fill. */
+const ENV_FLAG = new RegExp(String.raw`(?<![\w-])-{1,2}[A-Za-z][A-Za-z0-9-]{0,63}(?:=|[ \t]{1,3})(["']?)([A-Za-z_][A-Za-z0-9_]{0,63})=(?!=)${VALUE}`, "gd");
+const envFlag = (m: RegExpExecArray): Hit | undefined => {
+  if (!labelsSecret(m[2]!, m[6])) return undefined;
+  const hit = valueHit(m, 3, 3, m[2]!);
+  return hit && { ...hit, code: false };
 };
 /** Whether a dotted key in [key, name) starts its line. The key's grammar takes a `-` (`max-pool-size`), so a grep -C
  *  lead (`app.yml-41-`) reads as its first segments: the line may start at any of the key's `.` or `-` (ruling XL). */
@@ -1129,13 +1247,25 @@ const keyStartAt = (text: string, key: number, name: number, lines: LineBounds):
 };
 /** A bare word that is itself a `name=value` (`dbname=widgets`, `next=1`), not base64's `=` padding at its end. */
 const NEXT_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}=(?!=)[^\s=]/;
+/** An assignment right before a name on its line, a blank between (`host=db `, `A=1 `): its line separates assignments
+ *  by blanks (ruling LXVII). */
+const ASSIGNMENT_BEFORE = /(?:^|[\s"';])[A-Za-z_][A-Za-z0-9_.-]{0,63}=\S{0,1024}[ \t]{1,8}$/;
+/** Whether the context decides that the blank after the name's `=` at [at, end) ends an empty value (ruling LXVII): an
+ *  assignment stands right before it on its line, or it prefixes a command (commandEnv). */
+const emptyByContext = (text: string, at: number, end: number, lines: LineBounds): boolean => {
+  const from = lines.start(at);
+  return (at - from <= 320 && ASSIGNMENT_BEFORE.test(text.slice(from, at))) || commandEnv(text, at, end, lines) !== undefined;
+};
 const configAssign = (text: string, nameGroup: number, lines: LineBounds, source?: string) => (m: RegExpExecArray): Hit | undefined => {
   const name = m[nameGroup]!;
   const value = escapeQuoted(source, m, nameGroup + 4) ? undefined : m[nameGroup + 4];
-  // `name= next=v`: `=` right after the name, then a blank, sets an empty value (libpq's `password= dbname=x`, a shell's
-  // `token= cmd`); the next word, itself an assignment, is not this name's value (ruling LXI's empty-value negative).
-  if (value !== undefined && text[m.index + name.length] === "=" && NEXT_ASSIGNMENT.test(value)) return undefined;
-  if (!secretName(name, value === undefined)) return undefined;
+  // `name= next=v`: `=` right after the name, then a blank, then a word that is itself an assignment. Where blanks
+  // separate assignments that blank ends an empty value: another assignment right before it on its line (libpq's
+  // `host=db password= dbname=x`, a shell's `A=1 B= c=2`) or a command it prefixes (`TOKEN= OTHER=1 ./run.sh`). Nothing
+  // else decides it: a .env's or a .properties' `DB_PASSWORD= realm=x` may hold the password `realm=x`, so the next
+  // word is the value, cut (ruling LXVII, narrowing LXI's empty-value negative).
+  if (value !== undefined && text[m.index + name.length] === "=" && NEXT_ASSIGNMENT.test(value) && emptyByContext(text, m.index, m.index + name.length + 1, lines)) return undefined;
+  if (!labelsSecret(name, value)) return undefined;
   const hit = valueHit(m, nameGroup + 1, 3, name);
   if (!hit || value === undefined) return hit;
   // A bare value is its line's whole value (a flow map, `{password: x}`, is beta 2's backlog: it reads as code's).
@@ -1154,9 +1284,16 @@ const configAssign = (text: string, nameGroup: number, lines: LineBounds, source
 };
 
 /** A connection string's password (ruling LXI a): libpq's `k=v k=v` (`psql "host=db password=..."`), ADO's `k=v;k=v;`
- *  and ODBC's (`PWD={...};`). The key, any case, opens the text or follows `;`, a blank or a quote; its value ends at
- *  `;`, a blank, a quote or the end, or is ODBC's braced value (group 2). */
-const CONNECTION_PASSWORD = new RegExp(String.raw`(?<![^\s;"'])(password|passwd|pwd)=(?:\{([^{}\n]{1,1024})\}|${VALUE})`, "dgi");
+ *  and ODBC's (`PWD={...};`). The key, any case, opens the text or follows `;`, a blank or a quote; blanks may stand
+ *  around its `=` (groups 2, 3: libpq and ADO allow them, ruling LXVIII); its value ends at `;`, a blank, a quote or the
+ *  end, or is ODBC's braced value (group 4: `}}` an escaped brace inside it, `{` any character but its first, so a
+ *  template's `{{...}}` is no braced value). */
+const CONNECTION_PASSWORD = new RegExp(String.raw`(?<![^\s;"'])(password|passwd|pwd)([ \t]{0,3})=([ \t]{0,3})(?:\{(?!\{)((?:[^}\n]|\}\}){1,1024})\}|${VALUE})`, "dgi");
+/** The pair before an ADO key's `;` (ruling LXVIII): a key (ADO's hold blanks, `User Id`) written right against its `=`,
+ *  read from the last `;` or quote before it. Code's `x = 1;` spaces its `=`. */
+const ADO_PAIR = /^[ \t]{0,8}[A-Za-z](?:[A-Za-z0-9 _.-]{0,62}[A-Za-z0-9_.-])?=/;
+/** The pairs before a key the connection-string reads, at most this far back on its line. */
+const CONNECTION_BEFORE = 1024;
 /** A braced value that is a format string's field, never ODBC's value: a name with no digit (`{password}`,
  *  `{cfg.pw}`), a position (`{0}`), or none, a conversion or a format spec after it (`{pw!r}`, `{pw:>8}`). ODBC braces
  *  exist to escape a `;` or `}` in a value, so braces holding only an identifier are a template's field far more often
@@ -1164,28 +1301,103 @@ const CONNECTION_PASSWORD = new RegExp(String.raw`(?<![^\s;"'])(password|passwd|
 const FORMAT_FIELD = /^(?:[A-Za-z_][A-Za-z_.]{0,127}|\d{1,3})?(?:![rsa])?(?::[^{}\n]{0,32})?$/;
 /** `pwd`'s value as a path: the shell's working directory (`PWD=/srv/app`), never a password. */
 const PWD_PATH = /^(?:[/~.]|[A-Za-z]:[\\/]|%2F)/i;
+/** Whether the key at `at` (its line from `from`) follows ADO's `;` that closes another pair (ruling LXVIII): blanks,
+ *  the `;`, and back to the `;` or quote before it, ADO_PAIR. */
+const adoKey = (text: string, at: number, from: number): boolean => {
+  let semi = at;
+  while (semi > from && (text.charAt(semi - 1) === " " || text.charAt(semi - 1) === "\t")) semi--;
+  if (semi <= from || text.charAt(semi - 1) !== ";") return false;
+  let open = semi - 1;
+  const limit = Math.max(from, semi - 1 - CONNECTION_BEFORE);
+  while (open > limit && !";\"'".includes(text.charAt(open - 1))) open--;
+  return ADO_PAIR.test(text.slice(open, semi - 1));
+};
 const connectionPassword = (text: string, lines: LineBounds) => (m: RegExpExecArray): Hit | undefined => {
   const key = m[1]!;
-  if (m[2] !== undefined) {
-    if (FORMAT_FIELD.test(m[2])) return undefined;
-    const [start, end] = m.indices![2]!;
+  const spaced = m[2] !== "" || m[3] !== "";
+  const from = lines.start(m.index);
+  const ado = adoKey(text, m.index, from);
+  // A blank around `=` is code's spacing as often as a connection string's: it is one only beside another pair, ADO's
+  // `;` closing one or libpq's pair and a blank right before the key (ruling LXVIII).
+  if (spaced && !ado && !(m.index - from <= 320 && ASSIGNMENT_BEFORE.test(text.slice(from, m.index)))) return undefined;
+  if (m[4] !== undefined) {
+    if (FORMAT_FIELD.test(m[4])) return undefined;
+    const [start, end] = m.indices![4]!;
     return { start, end, name: key, quoted: true };
   }
-  const hit = valueHit(m, 3, 1, key);
-  const value = m[6]; // the bare value
+  const hit = valueHit(m, 5, 1, key);
+  const value = m[8]; // the bare value
   if (!hit || value === undefined) return hit;
+  // libpq's `password= dbname=x`: the blank after `=` ends an empty value, the next pair stands after it (LXVII).
+  if (m[3] !== "" && NEXT_ASSIGNMENT.test(value)) return undefined;
   if (key.toLowerCase() === "pwd" && PWD_PATH.test(value)) return undefined;
+  // ADO runs an unquoted value to its `;` or its line's end, blanks inside it (`Password=Copper lumen x;`), its trailing
+  // blanks left out: read on when a blank follows the bare value.
+  let end = hit.end;
+  if (ado && (text.charAt(end) === " " || text.charAt(end) === "\t")) {
+    const rest = text.slice(end, Math.min(lines.end(end), end + 1024));
+    const semi = rest.indexOf(";");
+    end += (semi < 0 ? rest : rest.slice(0, semi)).trimEnd().length;
+  }
   // A connection string is config's, unless code's evidence stands (a keyword argument: `connect(password=pw)`).
-  const from = lines.start(m.index);
-  return codeEvidence(m.index - from <= 320 ? text.slice(from, m.index) : "", key, value, false) ? hit : { ...hit, code: false };
+  const before = m.index - from <= 320 ? text.slice(from, m.index) : "";
+  const out = { ...hit, end };
+  return codeEvidence(before, key, text.slice(hit.start, end), spaced) ? out : { ...out, code: false };
 };
-/** A query string's or a form body's password (ruling LXI b): after `?` or `&`, any length (url-credential's 16-character
- *  least holds for its other names). */
-const QUERY_PASSWORD = /(?<=[?&])(password|passwd|pwd)=([^\s&#"'\x60<>\\[\]]{1,1024})/dgi;
-const queryPassword = (m: RegExpExecArray): Hit | undefined => {
-  if (m[1]!.toLowerCase() === "pwd" && PWD_PATH.test(m[2]!)) return undefined;
-  const [start, end] = m.indices![2]!;
-  return { start, end, name: m[1]!, quoted: true };
+/** A query string's or a form body's password (rulings LXI b, LXXI): after `?` or `&`, any length (url-credential's
+ *  16-character least holds for its other names). The key's last name is password, passwd or pwd, after other name
+ *  segments maybe (`new_password`, `current_password`) or before `_confirmation` (Rails'); a form's nested key holds it
+ *  bracketed, as typed or percent-encoded (`user[password]`, `user%5Bpassword%5D`), and opens anywhere a word does (the
+ *  text's start, a blank, a quote: `curl -d "user[password]=..."`). The value (group 2) runs to a blank or the next `&`;
+ *  queryPassword ends it where its argument ends. */
+const QUERY_PASSWORD = new RegExp(
+  String.raw`(?:(?<=[?&])|(?<![^\s"'])(?=[A-Za-z0-9_-]{1,64}(?:\[|%5B)))(?:[A-Za-z0-9_-]{1,64}(?:\[|%5B)(?:[A-Za-z0-9_-]{1,64}(?:\]|%5D)(?:\[|%5B)){0,4})?((?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd)(?:[_-]confirmation)?)(?:\]|%5D)?=([^\s&]{1,1024})`,
+  "dgi",
+);
+/** The characters that open an argument's part, each with the one that closes it. */
+const ARGUMENT_CLOSERS: Readonly<Record<string, string>> = { '"': '"', "'": "'", "\x60": "\x60", "(": ")", "[": "]", "<": ">", "{": "}" };
+/** How far back from a key its argument's start is read (ruling LXXI): a longer argument's opener is missed, its value
+ *  read to the next blank, an over-cut a string's end still bounds (ruling XLIX). */
+const ARGUMENT_BACK = 512;
+const ARGUMENT_DEPTH = 64;
+/** The closer of the innermost part left open at each key of a text, read left to right once (ruling LXXI): from the
+ *  argument's start (the last blank before the first key, at most ARGUMENT_BACK back; every blank after starts another),
+ *  each quote opening or closing its own kind, each bracket opening its kind and each closer closing the innermost part
+ *  it closes. Keys are asked in rising order; one asked before the last restarts the read. */
+function argumentCloser(text: string): (at: number) => string | undefined {
+  let pos = -1;
+  let open: string[] = [];
+  return (at) => {
+    if (pos < 0 || at < pos) {
+      pos = at;
+      while (pos > 0 && at - pos < ARGUMENT_BACK && text.charCodeAt(pos - 1) > 32) pos--;
+      open = [];
+    }
+    for (; pos < at; pos++) {
+      const c = text.charAt(pos);
+      if (text.charCodeAt(pos) <= 32) open = [];
+      else if (open.at(-1) === c) open.pop();
+      else if (ARGUMENT_CLOSERS[c] !== undefined && open.length < ARGUMENT_DEPTH) open.push(ARGUMENT_CLOSERS[c]!);
+    }
+    return open.at(-1);
+  };
+}
+/** A query's or form's password (ruling LXXI): its value to a blank, the next `&` or the closer of the part its argument
+ *  left open before the key (`"`, `'`, `)`, `]`, `>`, `}`), never at a character a value holds (`'`, `\`, `[`, `#`, `<`
+ *  with no part open). After `?` or `&` it is a URL's or a form's literal; a bracketed key opening a word elsewhere
+ *  reads code's shapes as code's (`form[password]=newPassword`). */
+const queryPassword = (text: string) => {
+  const closer = argumentCloser(text);
+  return (m: RegExpExecArray): Hit | undefined => {
+    const [start, valueEnd] = m.indices![2]!;
+    const close = closer(m.index);
+    const cut = close === undefined ? -1 : m[2]!.indexOf(close);
+    const end = cut < 0 ? valueEnd : start + cut;
+    if (end <= start) return undefined;
+    if (m[1]!.toLowerCase().endsWith("pwd") && PWD_PATH.test(text.slice(start, end))) return undefined;
+    const query = m.index > 0 && "?&".includes(text.charAt(m.index - 1));
+    return query ? { start, end, name: m[1]!, quoted: true } : { start, end, name: m[1]! };
+  };
 };
 
 /** A k8s Secret's values (ruling LXII b): each key's under its `data:` (base64) or `stringData:` map, the key any name a
@@ -1204,12 +1416,31 @@ const K8S_ENTRY_JSON = /[ \t\r\n]{0,64}"([^"\\\n]{1,253})"[ \t\r\n]{0,64}:[ \t\r
 const indentOf = (body: string): number => body.length - body.trimStart().length;
 /** A line's body's start in the text (linesOf drops a numbered lead from the body). */
 const bodyAt = (line: Line): number => line.end - line.body.length;
+/** A unified diff's evidence in a text (ruling LXXV): a hunk's header, or a line a `+` opens (YAML opens none with it). */
+const DIFF_EVIDENCE = /^(?:@@ -\d{1,9}|\+)/;
+/** A diff line's `+` or `-` marker, never a file's header (`--- a/x`, `+++ b/x`) nor a YAML document's `---`. */
+const DIFF_MARKER = /^[+-](?!(?:--|\+\+)(?:[ \t]|$))/;
+/** A diff's file header: another file's lines start after it. */
+const DIFF_FILE_HEADER = /^(?:diff --git|\+\+\+)[ \t]/;
+/** `text`'s lines as the k8s reader reads them: in a diff (ruling LXXV), each line's marker column (` ` a context line's,
+ *  `+`, `-`) read as a blank, so a hunk's lines keep the indentation they have in the file whichever marker each has;
+ *  a document starts at a file's header or at a `---` under any marker. */
+function k8sLines(text: string): { lines: readonly Line[]; docStart: (row: number) => boolean } {
+  const read = linesOf(text);
+  if (!read.some((line) => DIFF_EVIDENCE.test(line.body))) return { lines: read, docStart: (row) => YAML_DOC_START.test(read[row]!.body) };
+  const lines = read.map((line) => (DIFF_MARKER.test(line.body) ? { ...line, body: ` ${line.body.slice(1)}` } : line));
+  const docStart = (row: number): boolean => {
+    const body = lines[row]!.body;
+    return YAML_DOC_START.test(read[row]!.body) || DIFF_FILE_HEADER.test(read[row]!.body) || (body.charAt(0) === " " && YAML_DOC_START.test(body.slice(1)));
+  };
+  return { lines, docStart };
+}
 function k8sSecretValues(text: string): Hit[] {
   const out: Hit[] = [];
-  const lines = linesOf(text);
+  const { lines, docStart } = k8sLines(text);
   for (let doc = 0; doc < lines.length; ) {
     let next = doc + 1;
-    while (next < lines.length && !YAML_DOC_START.test(lines[next]!.body)) next++;
+    while (next < lines.length && !docStart(next)) next++;
     if (lines.slice(doc, next).some((line) => K8S_SECRET_KIND.test(line.body))) {
       for (let at = doc; at < next; at++) {
         const data = K8S_DATA.exec(lines[at]!.body);
@@ -1263,12 +1494,21 @@ const DOCKER_AUTH = /"(auth|identitytoken|registrytoken)"[ \t]{0,8}:[ \t]{0,8}"(
 const DOCKER_AUTHS = '"auths"';
 const DOCKER_CONFIG = /(?:^|[\\/])config\.json$/;
 const DOCKER_AUTHS_BEFORE = 65_536;
-const dockerAuth = (text: string, ctx: ScrubContext) => (m: RegExpExecArray): Hit | undefined => {
-  const auths = text.lastIndexOf(DOCKER_AUTHS, m.index);
+/** Each `"auths"` in the text and whether the call read a config.json are found once a text (ruling LXXIII), never
+ *  once a match: a text of many `"auth"` keys is read in linear time. */
+const dockerAuth = (text: string, ctx: ScrubContext): ((m: RegExpExecArray) => Hit | undefined) => {
   const read = [ctx.path, ...commandPaths(ctx.command)].some((path) => path !== undefined && DOCKER_CONFIG.test(path));
-  if (!read && (auths < 0 || m.index - auths > DOCKER_AUTHS_BEFORE)) return undefined;
-  const [start, end] = m.indices![2]!;
-  return { start, end, name: m[1]!, quoted: true };
+  const auths: number[] = [];
+  if (!read) for (let at = text.indexOf(DOCKER_AUTHS); at >= 0; at = text.indexOf(DOCKER_AUTHS, at + 1)) auths.push(at);
+  return (m) => {
+    if (!read) {
+      // The last `"auths"` at or before the match.
+      const before = placeBefore(auths, m.index + 1);
+      if (before < 0 || m.index - auths[before]! > DOCKER_AUTHS_BEFORE) return undefined;
+    }
+    const [start, end] = m.indices![2]!;
+    return { start, end, name: m[1]!, quoted: true };
+  };
 };
 
 const SSHPASS = new RegExp(String.raw`\bsshpass[ \t]{1,3}-p[ \t]{0,3}${VALUE}`, "gd");
@@ -1491,10 +1731,20 @@ export const envFilePath = (path: string): boolean => {
 const SSH_FILE = /(?:^|[\\/])\.ssh[\\/][^\\/]{1,512}$/;
 /** A path under a .ssh folder. */
 export const sshFilePath = (path: string): boolean => SSH_FILE.test(path);
-/** A file of credentials, path-anchored like ~/.ssh's: .netrc (_netrc), .pgpass, .git-credentials, .pypirc, a docker
- *  config (~/.docker/config.json), a kubeconfig (~/.kube/config, kubeconfig, *.kubeconfig). */
-const CREDENTIAL_FILE = /(?:^|[\\/])(?:[._]netrc|\.pgpass|\.git-credentials|\.pypirc|\.docker[\\/]config\.json|\.kube[\\/]config|[A-Za-z0-9_.-]{0,64}kubeconfig(?:\.ya?ml)?)$/i;
-export const credentialFilePath = (path: string): boolean => CREDENTIAL_FILE.test(path);
+/** A file of credentials, path-anchored like ~/.ssh's: .netrc (_netrc), .pgpass (pgpass.conf on Windows, under
+ *  %APPDATA%\postgresql), .git-credentials, .pypirc, .npmrc, .my.cnf, .vault-token, ~/.aws/credentials, a docker config
+ *  (~/.docker/config.json), a kubeconfig (~/.kube/config, kubeconfig, *.kubeconfig). Ruling LXXVII added pgpass.conf
+ *  and the four after .pypirc, the lead's list, no more. */
+const CREDENTIAL_FILE = /(?:^|[\\/])(?:[._]netrc|\.pgpass|pgpass\.conf|\.git-credentials|\.pypirc|\.npmrc|\.my\.cnf|\.vault-token|\.aws[\\/]credentials|\.docker[\\/]config\.json|\.kube[\\/]config|[A-Za-z0-9_.-]{0,64}kubeconfig(?:\.ya?ml)?)$/i;
+/** A variable that names a credential file by that file's own name (ruling LXXVII): `$PGPASSFILE`, `${PGPASSFILE}`
+ *  (libpq's override of ~/.pgpass), `$NETRC_FILE`. Its name less a trailing `FILE` or `_FILE`, as a dotted base name,
+ *  is one CREDENTIAL_FILE names. */
+const FILE_VARIABLE = /^\$\{?([A-Za-z_][A-Za-z0-9_]{0,63}?)_?FILE\}?$/i;
+export const credentialFilePath = (path: string): boolean => {
+  if (CREDENTIAL_FILE.test(path)) return true;
+  const variable = FILE_VARIABLE.exec(path);
+  return variable !== null && CREDENTIAL_FILE.test(`/.${variable[1]!.toLowerCase()}`);
+};
 
 /** A .env file's line: blank, a comment, or NAME=value (maybe after `export `). */
 const ENV_FILE_LINE = /^\s{0,8}(?:#.*|(?:export\s{1,3})?[A-Za-z_][A-Za-z0-9_.-]{0,127}\s{0,3}=.*|)$/;
@@ -1513,10 +1763,11 @@ const sshLine = (body: string): boolean =>
 
 /** The text whole, its trailing blanks left out, when the caller says it is the content of a file `fits` names. */
 /** The words of a call's command that may name a file: split at blanks and shell operators, an option's `--name=` and
- *  a word's quotes dropped (`grep app ~/.pgpass`, `jq . "$HOME/.docker/config.json"`, `--env-file=.env`). */
+ *  a word's quotes dropped, wherever they stand in it as the shell removes them (`grep app ~/.pgpass`,
+ *  `jq . "$HOME/.docker/config.json"`, `--env-file=.env`, `cat ~/'.pgpass'`, ruling LXXVII). */
 const COMMAND_WORD_SPLIT = /[\s|;&<>()]{1,64}/;
 const OPTION_NAME = /^-{1,2}[A-Za-z0-9-]{1,64}=/;
-const WORD_QUOTES = /^["']|["']$/g;
+const WORD_QUOTES = /["']/g;
 const COMMAND_MAX = 65_536;
 export const commandPaths = (command: string | undefined): string[] =>
   command === undefined ? [] : command.slice(0, COMMAND_MAX).split(COMMAND_WORD_SPLIT).map((word) => word.replace(OPTION_NAME, "").replace(WORD_QUOTES, "")).filter(Boolean);
@@ -1693,7 +1944,7 @@ function ipv6(text: string, m: RegExpExecArray): Hit | undefined {
 export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   ...SHAPE_RULES,
   ...VENDOR_RULES,
-  rule("base64-pem", "format", (text, ctx) => base64Pems(nestedBlanked(text, ctx?.source))),
+  rule("base64-pem", "format", (text, ctx) => base64Pems(nestedBlanked(text, ctx?.source), linesOfContext(text, ctx))),
   SECRETLINT,
   HELD,
   rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command)]),
@@ -1716,10 +1967,9 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
       ...each(text, ASSIGN_SPACED, notFlag(text, lines, configAssign(text, 1, lines, ctx?.source))),
       ...each(text, ASSIGN_COLON, notFlag(text, lines, configAssign(text, 2, lines, ctx?.source)), afterBlank),
       ...each(text, ENV_ASSIGN, envAssign),
-      ...each(text, NPMRC_AUTH, (m) => {
-        const hit = valueHit(m, 2, 3, m[1]!);
-        return hit && { ...hit, code: false };
-      }),
+      ...each(text, ENV_FLAG, envFlag),
+      ...each(text, NPMRC_AUTH, npmAuth),
+      ...inside(text, NPM_SET_COMMAND, NPM_SET_AUTH, npmAuth),
     ];
   }),
   rule("k8s-secret", "label", (text) => [
@@ -1731,7 +1981,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   ]),
   rule("docker-auth", "label", (text, ctx) => each(text, DOCKER_AUTH, dockerAuth(text, ctx))),
   rule("connection-string", "label", (text, ctx) => each(text, CONNECTION_PASSWORD, connectionPassword(text, linesOfContext(text, ctx)))),
-  rule("query-password", "label", (text) => each(text, QUERY_PASSWORD, queryPassword)),
+  rule("query-password", "label", (text) => each(text, QUERY_PASSWORD, queryPassword(text))),
   rule("home-path", "personal", homeFolders, { shapeClass: "home", replacement: "<user>" }),
   rule("email", "personal", (text, ctx) => each(text, EMAIL, email(text, ctx.source, urlUserinfos(text))), { shapeClass: "email" }),
   rule("private-ip", "personal", (text) => [...each(text, IPV4, (m) => ipv4(text, m)), ...each(text, IPV6, (m) => ipv6(text, m))], { shapeClass: "ip" }),
@@ -1742,12 +1992,12 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
-  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
+  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_SET_COMMAND, NPM_SET_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
   REDIS_COMMAND, REDIS_A, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_USER, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
-  CREDENTIAL_FILE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
+  CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
-  BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, CONNECTION_PASSWORD, FORMAT_FIELD, PWD_PATH, QUERY_PASSWORD, NEXT_ASSIGNMENT,
-  BASE64_PEM, BASE64_STD_BEFORE, BASE64_STD_AFTER, BASE64_WRAP_LINE, K8S_SECRET_KIND, YAML_DOC_START, K8S_DATA, K8S_ENTRY, BLOCK_SCALAR, QUOTED_WHOLE, K8S_SECRET_JSON, K8S_DATA_JSON, K8S_ENTRY_JSON,
+  BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, RESOURCE_NAME, CONNECTION_PASSWORD, ADO_PAIR, FORMAT_FIELD, PWD_PATH, QUERY_PASSWORD, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,
+  BASE64_PEM, BASE64_STD_BEFORE, BASE64_STD_AFTER, BASE64_WRAP_BREAK, BASE64_WRAP_INDENT, BASE64_WRAP_RUN, K8S_SECRET_KIND, YAML_DOC_START, K8S_DATA, K8S_ENTRY, BLOCK_SCALAR, QUOTED_WHOLE, K8S_SECRET_JSON, K8S_DATA_JSON, K8S_ENTRY_JSON, DIFF_EVIDENCE, DIFF_MARKER, DIFF_FILE_HEADER,
   KUBE_KEY_DATA, DOCKER_AUTH, DOCKER_CONFIG, COMMAND_WORD_SPLIT, OPTION_NAME, WORD_QUOTES,
 });
