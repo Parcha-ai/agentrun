@@ -120,7 +120,8 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
   });
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // A byte order mark is kept as the character it is: the text is the file's bytes, as the census counted them.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new ApiError("unsupported_media_type", "a cut read answers UTF-8 text, and this file's bytes are not");
   }

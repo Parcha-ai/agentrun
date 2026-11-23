@@ -43,3 +43,15 @@ test("a launch seal keeps retired values and the lost mark: the runner's cut lis
   assert.notEqual(sealRunLaunch(key, "run_1", { lost: true }), null, "a lost mark alone is still sealed");
   assert.equal(sealRunLaunch(key, "run_1", { retired: [] }), null, "nothing held, nothing retired: no seal");
 });
+
+test("a handed MCP header's credential is cut alone, whatever its scheme: a Basic one, the user:password it encodes and the password too", () => {
+  const password = `not-a-secret-${"basic-password"}-3f9d`;
+  const basic = Buffer.from(`agent-user:${password}`).toString("base64");
+  const values = handedSecretValues({ mcp: { files: { headers: { authorization: `Basic ${basic}`, "x-api-key": `Token not-a-secret-${"token-scheme"}-88e1` }, origin: ORIGIN } } });
+  assert.ok(values.includes(basic), "the Basic credential");
+  assert.ok(values.includes(password), "the password it encodes");
+  assert.ok(values.includes(`not-a-secret-${"token-scheme"}-88e1`), "another scheme's credential");
+  assert.equal(cutHanded(`curl -H "Authorization: Basic ${basic}" and -u agent-user:${password}`, values), `curl -H "Authorization: Basic [redacted]" and -u [redacted]`);
+  const launch = launchValuesOf(Buffer.alloc(32, 7), "run_1", sealRunLaunch(Buffer.alloc(32, 7), "run_1", { mcp: { files: { headers: { authorization: `Basic ${basic}` }, origin: ORIGIN } } }));
+  assert.ok(launch.includes(basic) && launch.includes(password), "a served read and the end's census list them from the launch");
+});

@@ -50,7 +50,8 @@ function byteRanges(text: string, spans: readonly Span[]): [number, number][] {
 }
 
 /** The census of the run's files in `workspace` for `values` (the handed secrets, as the cut lists them): each file a
- *  cut read would answer (text by its type, UTF-8 with no NUL, at most RUN_FILE_CUT_MAX bytes) counted with where
+ *  cut read would answer (text by its type, UTF-8 with no NUL, at most RUN_FILE_CUT_MAX bytes; a byte order mark kept as
+ *  a character, as the cut read keeps it, so each byte range falls where the text's cut does) counted with where
  *  redactSecrets would cut the values in it (heldSpans), up to CENSUS_FILES_MAX files and CENSUS_BYTES_MAX bytes. A file
  *  a cut read refuses (415, 413) is left out: it is refused after the end too. */
 export async function censusOf(workspace: Workspace, values: readonly string[]): Promise<Census> {
@@ -58,7 +59,7 @@ export async function censusOf(workspace: Workspace, values: readonly string[]):
   let partial = deep || files.length > CENSUS_FILES_MAX;
   let read = 0;
   const counted: Record<string, CensusFile> = {};
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   for (const file of files.slice(0, CENSUS_FILES_MAX)) {
     if (!cutsAsText(typeOf(file.path)) || file.size_bytes > RUN_FILE_CUT_MAX) continue;
     if (file.unreadable) {
@@ -108,7 +109,7 @@ export function censusCut(census: string, path: string, bytes: Uint8Array, text:
   if (typeof entry !== "object" || entry === null || entry.sha256 !== sha256(bytes)) return "unreadable";
   if (entry.cut === "whole") return "whole";
   if (!Array.isArray(entry.cut)) return "unreadable";
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   const out: Span[] = [];
   let byte = 0;
   let char = 0;

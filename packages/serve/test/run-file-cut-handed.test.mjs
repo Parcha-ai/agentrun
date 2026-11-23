@@ -87,10 +87,11 @@ async function liveRun(t, { start = {}, serverKey, text = "Answered." } = {}) {
   return { ...server, runId, work, release: () => front.release(), ended };
 }
 
-/** A cut read of run `runId`'s file `path`: [status, text or error code]. */
+/** A cut read of run `runId`'s file `path`: [status, text or error code]. Its bytes decoded with a byte order mark kept
+ *  (Response.text() drops one). */
 async function cutRead({ baseUrl, token, runId }, path) {
   const res = await get(baseUrl, token, `/runs/${runId}/files/${path}?cut=run`);
-  return res.status === 200 ? [200, await res.text()] : [res.status, (await res.json()).error?.code];
+  return res.status === 200 ? [200, new TextDecoder("utf-8", { ignoreBOM: true }).decode(await res.arrayBuffer())] : [res.status, (await res.json()).error?.code];
 }
 
 /** One raw write to the server's store under `data`, waiting out a live runner's write as long as a loaded box holds one. */
@@ -239,4 +240,18 @@ test("a message sealed over a launch whose sealed part doesn't open here keeps t
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "a fresh seal is no reason to read the run cut of the new key alone");
   run.release();
+});
+
+test("a file that starts with a byte order mark, or holds one later, is cut at the same bytes after the run's end as while it ran: no end of the key shows", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  const bom = `\uFEFFkey=${KEY}\nthe rest stays.\n`;
+  const inner = `\uFEFFfirst\n\uFEFFkey=${KEY} done\n`;
+  await writeFile(join(run.work, "bom.txt"), bom);
+  await writeFile(join(run.work, "inner.txt"), inner);
+  const live = [await cutRead(run, "bom.txt"), await cutRead(run, "inner.txt")];
+  for (const [status, text] of live) assert.ok(status === 200 && text.includes("key=[redacted]") && !text.includes(KEY.slice(-3)), `live: cut by value (${text})`);
+  await run.ended();
+  const ended = [await cutRead(run, "bom.txt"), await cutRead(run, "inner.txt")];
+  assert.deepEqual(ended, live, "ended: the census cuts the same characters, no end of the key left over");
+  assert.deepEqual(live, [[200, "\uFEFFkey=[redacted]\nthe rest stays.\n"], [200, "\uFEFFfirst\n\uFEFFkey=[redacted] done\n"]], "the mark served as written, as a raw read serves it");
 });

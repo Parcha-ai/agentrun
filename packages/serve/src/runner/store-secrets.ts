@@ -30,8 +30,9 @@ export type StoreSecretsStore = Pick<Store, "sealedSecrets">;
 /** The keys of a sealed JSON value that hold secrets: OAuth tokens, a client's secret, a PKCE verifier. */
 const JSON_SECRETS = ["access_token", "refresh_token", "id_token", "client_secret", "verifier"];
 
-/** The secret strings of an opened JSON value: each header's value (a bearer's token alone too), and every string under
- *  one of JSON_SECRETS, wherever it is nested. */
+/** The secret strings of an opened JSON value: each header's value, and its credential alone where it is a scheme's
+ *  (`Bearer <token>`, `Basic <credential>`, `Token <key>`: a value with a space is never listed whole, server-secrets.ts),
+ *  a Basic credential's `user:password` and password too; and every string under one of JSON_SECRETS, wherever nested. */
 function jsonSecrets(text: string): string[] {
   let value: unknown;
   try {
@@ -52,8 +53,13 @@ function jsonSecrets(text: string): string[] {
     for (const header of Object.values(headers as Record<string, unknown>)) {
       if (typeof header !== "string") continue;
       out.push(header);
-      const bearer = /^Bearer\s+(.+)$/i.exec(header);
-      if (bearer) out.push(bearer[1]!);
+      const scheme = /^([A-Za-z][\w.-]*)\s+(\S+)\s*$/.exec(header);
+      if (!scheme) continue;
+      out.push(scheme[2]!);
+      if (scheme[1]!.toLowerCase() !== "basic") continue;
+      const pair = Buffer.from(scheme[2]!, "base64").toString("utf8");
+      const colon = pair.indexOf(":");
+      if (colon > 0 && !/[\u0000-\u001f\ufffd]/.test(pair)) out.push(pair, pair.slice(colon + 1));
     }
   }
   walk(value);
