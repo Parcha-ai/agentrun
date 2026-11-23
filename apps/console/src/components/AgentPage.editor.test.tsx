@@ -50,8 +50,8 @@ async function until(ok: () => boolean) {
   while (!ok() && Date.now() < end) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   expect(ok()).toBe(true);
 }
-async function openApp(archived = false, view = "versions", skills: string[] = []) {
-  let current: Agent = { ...managed, definition: { ...managed.definition, skills }, archived_at: archived ? "2026-11-13T00:00:00Z" : null };
+async function openApp(archived = false, view = "versions", skills: string[] = [], description?: string) {
+  let current: Agent = { ...managed, definition: { ...managed.definition, skills, ...(description ? { description } : {}) }, archived_at: archived ? "2026-11-13T00:00:00Z" : null };
   const writes: { method: string; path: string; body: unknown }[] = [];
   const savedEtags: (string | null)[] = [];
   const path = `/v2/agents/${encodeURIComponent(current.agent_id)}`;
@@ -94,6 +94,16 @@ async function openApp(archived = false, view = "versions", skills: string[] = [
 }
 
 describe("AgentPage settings navigation", () => {
+  it("labels the editable description when the overview also has a description", async () => {
+    const { host } = await openApp(false, "settings", [], "Reviews the source files.");
+    await until(() => !!host.querySelector('input#agent-description'));
+    const field = host.querySelector<HTMLInputElement>('input#agent-description')!;
+    const label = host.querySelector<HTMLLabelElement>('label[for="agent-description"]')!;
+    expect(label.control).toBe(field);
+    expect([...field.labels!]).toContain(label);
+    expect(field.value).toBe("Reviews the source files.");
+  });
+
   it("links the Settings breadcrumb back to the agent and guards unsaved changes", async () => {
     const { host, writes } = await openApp(false, "settings");
     await until(() => !!host.querySelector("#agent-instructions"));

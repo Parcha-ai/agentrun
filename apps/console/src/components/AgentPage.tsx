@@ -244,12 +244,12 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
             {editing ? <h2 className="text-2xl font-semibold lg:shrink-0">{d.name}</h2> : <h1 className="text-2xl font-semibold lg:shrink-0">{d.name}</h1>}
             {d.approvals === "never" && <Chip tone="warning" className="mt-2 lg:shrink-0 lg:self-start" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
             <div ref={descriptionScroll} data-agent-description {...(scrolling.description ? { tabIndex: 0, role: "region", "aria-label": "Agent description" } : {})} className={cn("scroll-quiet min-w-0 lg:-mr-4 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-2.5", d.description ? "lg:min-h-7" : "lg:min-h-0")}>
-              {d.description && <p id="agent-description" className={cn("mt-2 break-words text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
+              {d.description && <p id="agent-overview-description" className={cn("mt-2 break-words text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
             </div>
             <p className="mt-3 break-all font-mono text-label text-muted-foreground lg:shrink-0">{agent.agent_id}</p>
           </div>
           <div ref={detailsScroll} data-agent-details className="scroll-quiet min-w-0 space-y-6 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5">
-          <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">
+          <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-overview-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">
             <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden /><span className="truncate">{overviewFacts.map(([label, value]) => factWords[label] ?? (typeof value === "string" ? value : "")).filter(Boolean).join(" · ")}</span>
           </button>
           <dl id="agent-facts" className={cn("grid grid-cols-2 gap-3", !factsOpen && "max-sm:hidden")} aria-label="Current revision">

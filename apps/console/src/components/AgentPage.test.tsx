@@ -121,9 +121,9 @@ describe("AgentPage overview and run workspace", () => {
     const description = heading.querySelector<HTMLElement>("[data-agent-description]")!;
     for (const c of ["lg:max-h-[50%]", "lg:flex", "lg:flex-col", "lg:shrink-0"]) expect(heading.className.split(" "), c).toContain(c);
     for (const c of ["scroll-quiet", "lg:min-h-7", "lg:overflow-y-auto"]) expect(description.className.split(" "), c).toContain(c);
-    expect(description.querySelector("#agent-description")?.textContent).toContain("Checks invoices.");
+    expect(description.querySelector("#agent-overview-description")?.textContent).toContain("Checks invoices.");
     // A word longer than the column wraps: the box shows nothing sideways.
-    expect(description.querySelector("#agent-description")!.className.split(" ")).toContain("break-words");
+    expect(description.querySelector("#agent-overview-description")!.className.split(" ")).toContain("break-words");
     expect(heading.contains(overview.querySelector("h1"))).toBe(true);
     expect(description.contains(overview.querySelector("h1"))).toBe(false);
     expect(description.textContent).not.toContain("invoice-checker");
