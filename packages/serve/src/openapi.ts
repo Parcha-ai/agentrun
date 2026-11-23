@@ -2881,7 +2881,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-server-names": {
     get: {
       operationId: "listMcpServerNames", tags: ["local"], summary: "The names of the MCP servers saved here, and nothing else of them",
-      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), which serves no other settings route: a host that builds runs from saved servers reads it to hold back a job whose server isn't saved here, before its launch is refused for it.",
+      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), which serves no other settings route.",
       responses: { "200": json({ type: "object", additionalProperties: false, required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } }, "The saved servers' names."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "mcpservernames/1",
     },
