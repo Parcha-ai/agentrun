@@ -595,11 +595,13 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const dir = src.where;
   const problems: string[] = [];
   const bad = (where: string, message: string) => void problems.push(`${where}: ${message}`);
+  /** The entries of the folder at `sub`, every read of a folder's entries here: a hidden file or folder (.env,
+   *  .DS_Store, .cache/) is no part of a package, at its top or anywhere under it, so it is left out, never refused. */
+  const entries = (sub: string) => src.entries(sub).filter((entry) => !entry.name.startsWith("."));
   /** The regular files under `sub`, by path from it with forward slashes; a link or any other kind of entry is a
-   *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). A hidden file
-   *  or folder (.env, .DS_Store) is no part of a package: left out. */
+   *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). */
   const files = (sub: string): string[] =>
-    src.entries(sub).filter((entry) => !entry.name.startsWith(".")).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
+    entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
       const path = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) return files(path);
       if (!entry.isFile()) return bad(path, "is not a regular file or a folder (links are refused)"), [];
@@ -631,7 +633,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const name = src.name;
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
-  for (const entry of src.entries("")) {
+  for (const entry of entries("")) {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
@@ -870,7 +872,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
   const skills: Record<string, string> = {};
-  const skillDirs = kind("skills") === "dir" ? src.entries("skills") : [];
+  const skillDirs = kind("skills") === "dir" ? entries("skills") : [];
   for (const entry of skillDirs) {
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(`skills/${entry.name}`, "skills/ holds only skill folders, each named in lowercase letters, digits and dashes");
@@ -885,7 +887,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (skill && (skill.data.name !== entry.name || typeof skill.data.description !== "string" || !skill.data.description.trim())) bad(`skills/${entry.name}/SKILL.md`, `its front matter names the skill (${entry.name}) and describes it`);
     for (const path of own) skills[`${entry.name}/${path}`] = text(`skills/${entry.name}/${path}`);
   }
-  const rules = kind("rules") === "dir" ? src.entries("rules") : [];
+  const rules = kind("rules") === "dir" ? entries("rules") : [];
   if (rules.length && !skillDirs.length) bad("rules/", "rules ship beside each skill's SKILL.md, and the package has no skill");
   const ruleNames: string[] = [];
   for (const entry of rules) {
@@ -907,7 +909,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
   const evals: string[] = [];
-  for (const entry of kind("evals") === "dir" ? src.entries("evals") : []) {
+  for (const entry of kind("evals") === "dir" ? entries("evals") : []) {
     const at = `evals/${entry.name}`;
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(at, "evals/ holds only case folders, each named in lowercase letters, digits and dashes");
