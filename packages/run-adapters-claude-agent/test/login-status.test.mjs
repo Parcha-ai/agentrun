@@ -9,7 +9,7 @@
 // or different one fails. The others use stand-in CLIs that note what they were started with beside themselves.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -144,6 +144,33 @@ test("the pinned CLI's status check on the CLI's default folder writes nothing i
   assert.equal(sha256(account), before.sha, "the person's account file keeps its bytes (the pinned CLI rewrites a file whose migration number is not its own)");
   assert.equal(statSync(account).mtimeMs, before.mtime, "the person's account file keeps its mtime");
   assert.deepEqual(listing(home), before.list, 'nothing new under the home: no settings file, backup or lock');
+});
+
+test("the pinned CLI's status check on AgentRun's own login, run in the person's home, writes nothing outside the login's folder: every file of the home keeps its bytes and mtime, and no lock is left anywhere", { skip, timeout: 60_000 }, async () => {
+  assert.equal(problem, undefined, problem);
+  // The person's home, with what their own Claude Code and other tools keep there: an account file on another migration
+  // number (the pinned CLI rewrites one that isn't its own), a settings file and a config folder.
+  const home = scratch();
+  const past = new Date('2026-01-01T00:00:00Z');
+  writeFileSync(join(home, '.claude.json'), `${JSON.stringify({ numStartups: 3, hasCompletedOnboarding: true, projects: {}, migrationVersion: 15 }, null, 2)}\n`, { mode: 0o600 });
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(join(home, '.claude', 'settings.json'), '{"theme":"dark"}\n');
+  mkdirSync(join(home, '.config', 'tool'), { recursive: true });
+  writeFileSync(join(home, '.config', 'tool', 'config'), 'sentinel\n');
+  const files = listing(home).filter((path) => !path.endsWith('/'));
+  for (const file of files) utimesSync(join(home, file), past, past);
+  const snapshot = () => Object.fromEntries(files.map((file) => [file, { sha: sha256(join(home, file)), mtime: statSync(join(home, file)).mtimeMs }]));
+  const before = { list: listing(home), files: snapshot() };
+  // AgentRun's own login: a folder in its data dir, outside the home, that no sign-in has filled yet.
+  const data = scratch();
+  const login = { dir: join(data, 'claude-login'), profiles: join(data, 'claude-login', 'anthropic') };
+  mkdirSync(login.dir, { mode: 0o700 });
+  const status = await claude.claudeLoginStatus(pinned, login, { path: '/usr/bin:/bin', home });
+  assert.deepEqual(status, OUT, 'the answer still reads as a status: signed out');
+  assert.deepEqual(listing(home), before.list, 'nothing new under the home: no account file, settings, backup or lock');
+  assert.deepEqual(snapshot(), before.files, "every file of the person's home keeps its bytes and mtime");
+  assert.deepEqual(listing(data).filter((path) => !path.startsWith('claude-login/') && path !== 'claude-login/'), [], 'nothing beside the login folder in the data dir');
+  assert.deepEqual(listing(data).filter((path) => /\.lock\/?$/.test(path)), [], 'no lock is left in the login folder');
 });
 
 test("the status check on the CLI's default folder runs in the person's home with a copy of their account file as its config dir, outside that home, and the run's credentials dir: empty on macOS, the folder elsewhere", async () => {
