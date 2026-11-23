@@ -163,8 +163,8 @@ function StretchLane({ title, swatch, bars, rows, now, from }: { title: string; 
       <p className="caps flex items-center gap-1.5 text-label text-muted-foreground"><Swatch className={swatch} />{title}</p>
       <div className="relative mt-1.5" style={{ height: rows * 12 - 4 }}>
         {bars.map(({ stretch, left, width, row, before, after }) => (
-          <span key={stretch.key} data-stretch={stretch.key} title={`${stretch.name}, ${stretch.to === null ? "no end recorded" : `up ${duration(stretch.to - stretch.from)}`}, from ${since(stretch.from - from)}`}
-            style={{ left: `${left}%`, width: `${width}%`, top: row * 12 }} className={cn("trace-mark absolute h-2 min-w-0.5", swatch, before && "border-l-0", after && "border-r-0", stretch.to === null && now > stretch.from && "border-r-0")} />
+          <span key={stretch.key} data-stretch={stretch.key} title={`${stretch.name}, ${stretch.to === null ? "no end recorded" : `up ${duration(stretch.to - stretch.from!)}`}, from ${since(stretch.from! - from)}`}
+            style={{ left: `${left}%`, width: `${width}%`, top: row * 12 }} className={cn("trace-mark absolute h-2 min-w-0.5", swatch, before && "border-l-0", after && "border-r-0", stretch.to === null && now > stretch.from! && "border-r-0")} />
         ))}
       </div>
     </div>
@@ -512,9 +512,10 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
   );
 }
 
-/** The run's computers and browser sessions, a row each: when it started against the first request, how long it was up,
- *  and how much of that is in the run's cost. The overview draws the same on its time axis. */
-function Stretches({ usage, from, now }: { usage: RunUsage; from: number; now: number }) {
+/** The run's computers and browser sessions, a row each: when it started against the first request (`anchor`: against
+ *  the run's start, for a run with no request), how long it was up, and how much of that is in the run's cost. The
+ *  overview draws the same on its time axis. A session whose start is not recorded has a row too, with what was charged. */
+function Stretches({ usage, from, now, anchor }: { usage: RunUsage; from: number; now: number; anchor?: string }) {
   const { computers, browsers } = useMemo(() => stretches(usage), [usage]);
   const all = [...computers, ...browsers];
   if (!all.length) return null;
@@ -533,8 +534,8 @@ function Stretches({ usage, from, now }: { usage: RunUsage; from: number; now: n
                   <span className="flex items-center gap-2 font-mono"><Swatch className={stretch.kind === "computer" ? COMPUTER_TONE : SESSION_TONE} />{stretch.name}</span>
                   {stretch.about && <span className="block break-all pl-4 text-muted-foreground">{stretch.about}</span>}
                 </th>
-                <td className={td}>{since(stretch.from - from)}</td>
-                <td className={td}>{stretch.to !== null ? duration(stretch.to - stretch.from) : `No end recorded · ${duration(Math.max(0, now - stretch.from))} so far`}</td>
+                <td className={td}>{stretch.from !== null ? since(stretch.from - from, anchor) : "Not recorded"}</td>
+                <td className={td}>{stretch.from === null ? "Not recorded" : stretch.to !== null ? duration(stretch.to - stretch.from) : `No end recorded · ${duration(Math.max(0, now - stretch.from))} so far`}</td>
                 <td className={td}>{stretch.counted !== null ? duration(stretch.counted * 1000) : "Unknown"}</td>
                 <td className="px-3 py-2 text-left align-top text-muted-foreground">{stretch.notes.length ? stretch.notes.join(". ") : NONE}</td>
               </tr>
@@ -900,6 +901,9 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
             )}
             {usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
               : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>}
+            {/* A run can make a computer and end before its first request, and a CLI run's record may keep no call: its
+                computers and sessions are listed all the same, against the run's start. */}
+            {usage && <Stretches usage={usage} from={Date.parse(run.created_at)} now={now} anchor="the run's start" />}
           </>
         ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} run={run} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>

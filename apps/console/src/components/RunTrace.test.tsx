@@ -479,6 +479,27 @@ describe("the Dev tools tab", () => {
       ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
     ]);
   });
+  it("lists a session whose start was never recorded, with what was charged for it, and draws no bar for it", async () => {
+    // Its runner died before the release that writes a session's start and end: the charge is still the run's.
+    const lost = { ...USAGE_MACHINES.browser_sessions![0]!, tag: "browser-2", provider_session_id: null, started_at: null, ended_at: null, release_reason: "lost", charged_seconds: 42 };
+    const usage = { ...USAGE_MACHINES, computer_intervals: [], browser_sessions: [lost, USAGE_MACHINES.browser_sessions![0]!] };
+    const host = await open(TRACE, { readUsage: vi.fn(async () => usage) });
+    expect(overviewOf(host).querySelectorAll("[data-stretch]")).toHaveLength(1);
+    await pick(host, "trace-view", "breakdown");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["browserbase browserbb_9d2c41", "+0:56.6", "1m 00s", "1m 00s", "Closed by the agent"],
+      ["browserbase browser", "Not recorded", "Not recorded", "42.0 s", "Lost"],
+    ]);
+  });
+  it("lists a run's computers though its trace has no request and no call, against the run's start", async () => {
+    // A run that made its computer and failed before its first request: the sandbox was made 1 s after the run began.
+    const empty = { run_id: TRACE.run_id, model_requests: "priced" as const, spans: [], dropped: 0 };
+    const host = await open(empty, { readUsage: vi.fn(async () => ({ ...USAGE_MACHINES, lines: [], browser_sessions: [] })) });
+    expect(host.textContent).toContain("This run made no model request and called no tool.");
+    expect([...host.querySelectorAll("section[aria-label='Computers and browser sessions'] tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona sandbox2 vCPU · 4 GB · 10 GB disk", "+0:01.0", "3m 59s", "3m 46s", "–None"],
+    ]);
+  });
   it("draws no such lane and lists none for a run that made no computer and opened no browser, or whose usage is not read", async () => {
     for (const readUsage of [vi.fn(async () => USAGE_CLI), undefined]) {
       const host = await open(TRACE, { readUsage, view: "breakdown" });

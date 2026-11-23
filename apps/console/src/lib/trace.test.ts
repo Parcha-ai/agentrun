@@ -401,8 +401,13 @@ describe("what was up beside the run's calls: its computers and browser sessions
     const session = { ...USAGE_MACHINES.browser_sessions![0]!, ended_at: null, release_reason: null, charged_seconds: null };
     const { computers, browsers } = stretches({ computer_intervals: [computer], browser_sessions: [session, { ...session, tag: "browser-2", started_at: null }] });
     expect([computers[0]!.about, computers[0]!.to, computers[0]!.notes]).toEqual(["2 vCPU · 4 GB · 2 H100 GPU", null, ["Kept while the run waited for a person", "Attempt 1: cut and worked again"]]);
-    // A session whose start is not recorded has no place on the axis: left out, never drawn at the run's start.
-    expect(browsers.map((b) => [b.key, b.to, b.counted, b.notes])).toEqual([["b:0:browser-1", null, null, []]]);
+    // A session whose start is not recorded (its runner died before its release was written) is still one of the run's,
+    // with what was charged for it: kept, after the ones with a start, and with no place on the axis.
+    const lost = { ...session, tag: "browser-2", started_at: null, ended_at: new Date(TRACE_START + 90_000).toISOString(), charged_seconds: 42 };
+    const both = stretches({ computer_intervals: [], browser_sessions: [lost, session] }).browsers;
+    expect(both.map((b) => [b.key, b.from, b.to, b.counted])).toEqual([["b:1:browser-1", TRACE_START + 60_000, null, null], ["b:0:browser-2", null, null, 42]]);
+    expect(stretchLane(both, window, TRACE_END).bars.map((bar) => bar.stretch.key)).toEqual(["b:1:browser-1"]);
+    expect(browsers.map((b) => [b.key, b.to, b.counted, b.notes])).toEqual([["b:0:browser-1", null, null, []], ["b:1:browser-2", null, null, []]]);
   });
   it("places each on the trace's window: the part before the first request or after the last call is not drawn, and is said", () => {
     const { computers, browsers } = stretches(USAGE_MACHINES);
@@ -418,5 +423,7 @@ describe("what was up beside the run's calls: its computers and browser sessions
   });
   it("says when one started against the first request", () => {
     expect([since(-2400), since(0), since(56_600)]).toEqual(["2.4 s before the first request", "+0:00.0", "+0:56.6"]);
+    // A run with no request measures from its own start.
+    expect(since(-500, "the run's start")).toBe("500 ms before the run's start");
   });
 });
