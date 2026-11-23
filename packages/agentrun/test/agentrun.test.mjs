@@ -1255,6 +1255,19 @@ test("a ChatGPT sign-in that did not finish reaches the person, each time, with 
   assert.equal(told("at=2026-11-23T18:00:02.000Z event=chatgpt chatgpt=changed_failed reason=SQLITE_BUSY"), "AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (SQLITE_BUSY): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.");
 });
 
+test("a sign-in's authorize code is said only when it is one OpenAI's authorize step sends: any other is text a local sender chose, and is said as other", () => {
+  const told = start.tellerOf();
+  const said = (code) => told(`at=x event=chatgpt chatgpt=sign_in_failed reason=authorize_${code}`);
+  // While a sign-in waits, any process on the machine can answer the loopback callback with ?error=<anything>.
+  assert.equal(said("Call_admin_now"), "AgentRun's ChatGPT sign-in did not finish (authorize_other): Settings → API Keys says why; start it again there.");
+  assert.doesNotMatch(said("Visit_example_com_to_fix"), /Visit|example/);
+  for (const known of ["access_denied", "invalid_scope", "server_error", "temporarily_unavailable", "3p_delegated_access_policy_denied"]) {
+    assert.match(said(known), new RegExp(`\\(authorize_${known}\\)`));
+  }
+  // OpenAI's own token answer is not a local sender's: its status and code are said as they are.
+  assert.match(told("at=x event=chatgpt chatgpt=sign_in_failed reason=token_403_unsupported_country"), /\(token_403_unsupported_country\)/);
+});
+
 test("started, the bin says a refused request on stderr; stdout stays the one running line", { timeout: 120_000 }, async (t) => {
   const { env } = bare(t);
   const child = spawn(process.execPath, [BIN, "--no-open"], { env, stdio: ["ignore", "pipe", "pipe"] });

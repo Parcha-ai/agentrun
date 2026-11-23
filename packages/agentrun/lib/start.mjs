@@ -288,6 +288,18 @@ function fieldsOf(line) {
   return fields;
 }
 
+/** The authorize step's error codes (RFC 6749 4.1.2.1) and OpenAI's own for a workspace whose admin turned the plan off. */
+const AUTHORIZE_CODES = new Set(["invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable", "3p_delegated_access_policy_denied"]);
+
+/** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
+ *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
+ *  sends is said as `authorize_other` (the server's log keeps it). */
+function signInReason(reason) {
+  if (reason === undefined) return "no reason given";
+  const authorize = /^authorize_(.+)$/.exec(reason);
+  return authorize && !AUTHORIZE_CODES.has(authorize[1]) ? "authorize_other" : reason;
+}
+
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
  *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. A ChatGPT sign-in that
@@ -299,7 +311,7 @@ export function tellerOf() {
   let full = false;
   return (line) => {
     const fields = fieldsOf(line);
-    if (fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed") return `AgentRun's ChatGPT sign-in did not finish (${fields.reason ?? "no reason given"}): Settings → API Keys says why; start it again there.`;
+    if (fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed") return `AgentRun's ChatGPT sign-in did not finish (${signInReason(fields.reason)}): Settings → API Keys says why; start it again there.`;
     if (fields.event === "chatgpt" && fields.chatgpt === "changed_failed") return `AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (${fields.reason ?? "no reason given"}): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.`;
     let words;
     let key;
