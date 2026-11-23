@@ -8,6 +8,7 @@ import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import * as refusal from "../dist/key-refusal.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf } from "../dist/timeline/index.js";
 import { cut } from "../dist/timeline/util.js";
+import { linkCheck } from "../dist/link-check.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 const { redactedAnswer, redactedOutput } = refusal;
@@ -303,6 +304,14 @@ test("a call's result that shows as almost nothing once its URLs lose their quer
   const shown = refusal.redactedCall(text, [CUT_KEY], CALL_RESULT_CHARS, scrubUrls);
   assert.ok(Date.now() - began < 1500, `${Date.now() - began} ms`);
   assert.ok(shown.startsWith(" https://e.com/?x=… https://e.com/?x=…") && shown.length < 120_000, shown.slice(0, 80));
+  // Stopped short of 120,000 shown characters, it still ends as a cut result does ("..."), so the link check names the
+  // call as cut: 60 such URLs, then a link past where the read stopped.
+  const short = `${` https://e.com/?x=${"q".repeat(8150)}`.repeat(60)} see https://example.org/report end`;
+  const served = resultTextOf(short);
+  assert.ok(served.endsWith("...") && !served.includes("example.org"), served.slice(-80));
+  assert.match(linkCheck("The report: https://example.org/report", [{ name: "bash", result: served }]), /call 1's links were cut/);
+  // Read to its end, a result that shows as little is not marked.
+  assert.ok(!resultTextOf(` https://e.com/?x=${"q".repeat(8150)} end`).endsWith("..."));
 });
 
 test("compact JSON past a piece with no whitespace is read in pieces cut at its quotes (an array of numbers, at its commas), never withheld for its length; a held value in it is cut in place", () => {

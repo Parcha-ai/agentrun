@@ -114,8 +114,10 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
  *  the result or its head. */
 export function redactedCall(text: string, secrets: readonly string[], shown: number, show: (piece: string) => string = (piece) => piece): string {
   if (!text) return text;
-  const { out, seen } = inPieces(text, secrets, shown, show);
-  return heldIn(seen, secrets) ? "[redacted]" : out;
+  const { out, seen, short } = inPieces(text, secrets, shown, show);
+  // A read that stopped on what it read, before what it shows reached `shown`, ends as a cut does ("...", timeline/util.ts
+  // cut), so a reader (the link check) knows it is not whole.
+  return heldIn(seen, secrets) ? "[redacted]" : short ? `${out}...` : out;
 }
 
 /** Whether the joined pieces still hold a held value or a secret shape: one a cut split, each piece's own redacted. Each
@@ -135,7 +137,7 @@ type Seen = { values: string; shapes: string; unread: boolean };
  *  value or a shape the cut split. With `enough`, no piece is read once the pieces show more than `enough` characters,
  *  and the text where they stopped, `hold` characters the matcher sees of it (peek), goes to the pass the same way.
  *  Each piece is redacted, then shown as `show` makes it: `out` is what the pieces show, the pass reads them unshown. */
-function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY, show: (piece: string) => string = (piece) => piece): { out: string; seen: Seen } {
+function inPieces(text: string, secrets: readonly string[], enough = Number.POSITIVE_INFINITY, show: (piece: string) => string = (piece) => piece): { out: string; seen: Seen; short: boolean } {
   const hold = 6 * secrets.reduce((most, value) => Math.max(most, value.length), 0) + 16;
   const out: string[] = [];
   const values: string[] = [];
@@ -191,7 +193,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
       shapes.push(redactSecrets(rest, secrets, Buffer.byteLength(rest)));
     }
   }
-  return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join(""), unread } };
+  return { out: out.join(""), seen: { values: values.join(""), shapes: shapes.join(""), unread }, short: from < text.length && shown <= enough };
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
