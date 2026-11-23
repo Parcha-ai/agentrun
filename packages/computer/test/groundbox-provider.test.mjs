@@ -3,7 +3,7 @@
 // create, get, list, delete, exec, upload and extend, and how it reads the answers back. The adapter's lifecycle is
 // tested once, against its fake host (hosted-provider.test.mjs); Groundbox's own is proven live.
 import assert from "node:assert/strict";
-import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -25,6 +25,21 @@ const LABELS = { "agentrun.computer": "1", "agentrun.computer.name": NAME };
 const HAS_PROC = existsSync("/proc/self/stat");
 /** The kill runs the shared pid kill as root: as root already, or through passwordless sudo, as in a sandbox. */
 const CAN_KILL = HAS_PROC && (process.getuid() === 0 || (() => { try { execFileSync("sudo", ["-n", "true"], { stdio: "ignore" }); return true; } catch { return false; } })());
+/**
+ * The pids of process group `pgid` still running, from /proc. A killed process is no longer running though kill(-pgid, 0)
+ * still finds it until it is reaped: a zombie (Z), or one its reaper has taken and not yet released (X).
+ */
+const runningIn = (pgid) =>
+	readdirSync("/proc").filter((pid) => {
+		if (!/^\d+$/.test(pid)) return false;
+		try {
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+			const [state, , group] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+			return Number(group) === pgid && state !== "Z" && state !== "X";
+		} catch {
+			return false; // it ended while the scan ran
+		}
+	});
 
 const sandbox = (fields = {}) => ({ id: ID, status: "running", metadata: LABELS, created_at: "2026-11-18T00:00:00.000Z", stop_reason: null, ...fields });
 const refusal = (code, message) => ({ error: { code, message } });
@@ -364,7 +379,11 @@ test("kill is the shared pid kill of the sh's recorded pid, as root: the command
 	const kill = calls.findLast((call) => call.path.endsWith("/exec")).body;
 	assert.deepEqual([kill.args.slice(0, 2), kill.args.slice(3, 5), kill.stdin_base64], [["sh", "-c"], ["sh", dir], undefined]);
 	assert.equal(existsSync(dir), false, "the kill removed the command's directory");
-	assert.throws(() => process.kill(-child.pid, 0), "nothing of the command's process group is left");
+	// wait answered once every process of the group had closed the command's output, which a killed process does as it
+	// exits. Its parent, or init when the parent died first, reaps it a moment later, and a process that has closed its
+	// files can still read as running until it is a zombie: the group gets 2 s, and one the kill missed runs on past it.
+	for (let at = 0; at < 100 && runningIn(child.pid).length > 0; at++) await new Promise((done) => setTimeout(done, 20));
+	assert.deepEqual(runningIn(child.pid), [], "nothing of the command's process group is left running");
 });
 
 test("the exec passes every check of the exec pre-check, over the command stream's own messages", async (t) => {
