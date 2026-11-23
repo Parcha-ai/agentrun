@@ -18,7 +18,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
-import { meterFor, publicMedia } from "../fal-price.js";
+import { falBills, meterNamed, publicMedia } from "../fal-price.js";
 import { FAUX_ENV } from "../model.js";
 import { fetchOptions } from "../web-fetch-direct.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
@@ -217,8 +217,8 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
       if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
-      // A metered server's job is priced from its input, when the call runs: no price to show before it.
-      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
+      // fal's job is priced from its input when the call runs, after the person's allow.
+      return meterNamed(pinned.url, pinned.meter) && falBills(parsed!.tool) ? "priced by usage" : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
     fresh: () => step.fresh(),
