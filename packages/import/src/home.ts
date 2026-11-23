@@ -3,7 +3,7 @@
 // into a resumed one's); a subagent's is no session of its own but its parent's.
 import { createHash } from "node:crypto";
 import { relative, sep } from "node:path";
-import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
+import { type Catalog, builtinCatalog, priceRequests } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
@@ -33,32 +33,13 @@ export type SessionTotals = {
   subagents: number;
 };
 
-/** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
- *  source has read with the locator that read each first, and which locators found a record another read first, so a
- *  second pass reads only what was written since. It holds no session text (its reads are turns: false: counts, ids and
- *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. */
-export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
-
-/** One source's part of a HomeState. */
-type SourceState = {
-  cursors: Map<string, unknown>;
-  /** Each record read (the reader's "u:"/"m:" keys), with the locator (locatorKey) that read it first: the one it counts in. */
-  owners: Map<string, string>;
-  /** For each locator, the locators whose records it found already read (its copies' owners). */
-  copied: Map<string, Set<string>>;
-};
-
 export type ParseOptions = {
   /** The sources to read (default: every registered one). */
   sources?: readonly (Source | (string & {}))[];
   /** The readers to read them with (default: the registry's). */
   readers?: Readers;
-  /** Kept across calls: a pass goes on from where the last one stopped (see HomeState). */
-  state?: HomeState;
   /** The catalog to price requests with; false prices none (cost is then the source's own or null). Default: pi-ai's. */
   catalog?: Catalog | false;
-  /** pi-ai's calculateCost, when the caller imported pi-ai itself (the CLI); else priceRequests loads it. */
-  calculateCost?: CalculateCost;
   /** Where the readers look for a source's own directory (CLAUDE_CONFIG_DIR, CODEX_HOME). Default: none, the home's. */
   env?: Env;
   /** Where each locator its reader could not read goes (unopenable, an I/O error midway); the rest are totalled. Without
@@ -88,15 +69,14 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
 type Part = { locator: Locator; read: SessionRead };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, catalog, env, failures }: ParseOptions = {}): Promise<SessionTotals[]> {
   let prices: Promise<Catalog | undefined> | undefined;
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   const failed: ReadFailure[] = [];
-  if (state) state.read = 0;
   for (const source of sources) {
-    const { tops, children, unread } = await readSource(home, source, readers, env, state);
-    out.push(...(await totalsOf(home, source, tops, children, priceWith, calculateCost)));
+    const { tops, children, unread } = await readSource(home, source, readers, env);
+    out.push(...(await totalsOf(home, source, tops, children, priceWith)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
@@ -104,79 +84,32 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   return out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`.
- *  A pass handed a state goes on from its cursors, and comes out as a fresh pass would: a record copied into many files
- *  counts in the first of them in the order as it is now. The whole source is read again when a locator it read before is
- *  gone, when its reader could not go on from its cursor (a new inode, truncated, rewritten), or when a locator holding a
- *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
- *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+/** `source`'s locators read in the import's order, sessions first, then the subagents beside them, through one `seen`: a
+ *  record copied into many files counts in the first of them. */
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
   const childList = await childrenOf(home, source, { ...(env ? { env } : {}), readers });
-  // Each locator's place in this pass's order of reading.
-  const place = new Map([...listed.map(({ locator }) => locatorKey(locator)), ...childList.map(({ locator }) => locatorKey(locator))].map((key, at) => [key, at]));
-  // Whether a locator holds a copy of a record that now counts after it: the fresh pass would count it in that locator.
-  const outOfOrder = (kept: SourceState) => [...kept.copied].some(([key, owners]) => [...owners].some((owner) => place.get(owner)! > place.get(key)!));
-  for (let pass = 0; ; pass += 1) {
-    let kept = state ? (state.sources ??= {})[source] : undefined;
-    if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
-    if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: new Map(), copied: new Map() };
-    const { owners, copied } = kept ?? { owners: new Map<string, string>(), copied: new Map<string, Set<string>>() };
-    let restarted = false;
-    const unread: { locator: Locator; error: unknown }[] = [];
-    const read = async (locator: Locator): Promise<SessionRead[]> => {
-      const key = locatorKey(locator);
-      const cursor = kept?.cursors.get(key);
-      // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
-      // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
-      // holds, which a retry would take for a copy.
-      const mine = new Map<string, string>();
-      const found = new Set<string>();
-      const seen = {
-        has: (record: string) => {
-          const owner = owners.get(record) ?? mine.get(record);
-          if (owner === undefined) return false;
-          if (owner !== key) found.add(owner);
-          return true;
-        },
-        add(record: string) {
-          if (!owners.has(record) && !mine.has(record)) mine.set(record, key);
-          return this;
-        },
-      } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
-      if (!result) {
-        // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
-        // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
-        // copy) skipped them, though the fresh pass counts them there: the source is read again.
-        if (kept && cursor !== undefined) {
-          kept.cursors.delete(key);
-          for (const [record, owner] of owners) if (owner === key) owners.delete(record);
-          copied.delete(key);
-          if ([...copied.values()].some((owners) => owners.has(key))) restarted = true;
-        }
-        return [];
-      }
-      for (const [record, owner] of mine) owners.set(record, owner);
-      if (found.size) for (const owner of found) (copied.get(key) ?? copied.set(key, new Set()).get(key)!).add(owner);
-      if (cursor !== undefined && !result.resumed) restarted = true;
-      if (state) state.read! += result.read;
-      kept?.cursors.set(key, result.cursor);
-      return result.sessions;
-    };
-    const tops: Part[] = [];
-    for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
-    const children: (Part & { of: Locator })[] = [];
-    for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
-    // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
-    // again, from nothing.
-    if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children, unread };
-    state!.sources![source] = undefined;
-  }
+  const seen = new Set<string>();
+  const unread: { locator: Locator; error: unknown }[] = [];
+  // A locator that cannot be read (unopenable, an I/O error midway) adds nothing, not even the records it read before it
+  // failed: a later file's copy of them counts, as if the failed one were not there. The caller hears of it.
+  const read = async (locator: Locator): Promise<SessionRead[]> => {
+    const mine = new Set<string>();
+    const staged = { has: (record: string) => seen.has(record) || mine.has(record), add: (record: string) => (mine.add(record), staged) } as Set<string>;
+    const result = await reader.read(locator, { turns: false, seen: staged }).catch((error: unknown) => void unread.push({ locator, error }));
+    if (!result) return [];
+    for (const record of mine) seen.add(record);
+    return result.sessions;
+  };
+  const tops: Part[] = [];
+  for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: session });
+  const children: (Part & { of: Locator })[] = [];
+  for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: session, of });
+  return { tops, children, unread };
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], priceWith: () => Promise<Catalog | undefined>): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -235,7 +168,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
     if (cost === undefined) {
       const catalog = await priceWith();
-      cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
+      cost = catalog ? await priceRequests(requests, catalog) : undefined;
     }
     const { key, file } = keyOf(home, first.locator);
     out.push({

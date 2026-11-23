@@ -58,7 +58,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     session.state = message.stopReason === "error" ? "failed" : message.stopReason === "aborted" ? "stopped" : "completed";
     // A request cut before its end has only the start of its counts: unknown, as a live run's.
     const tokens = message.stopReason === "aborted" ? undefined : normalizeUsage("pi", message.usage);
-    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
+    // Without turns, no answer text, nor a failed request's error message: the request is kept for its counts.
     add({
       role: "assistant",
       text: keep ? text : "",
@@ -68,7 +68,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       ...(session.model ? { model: session.model } : {}),
       ...(state.effort ? { effort: state.effort } : {}),
       ...(tokens ? { usage: tokens } : {}),
-      ...(message.stopReason === "error" ? { error: str(message.errorMessage) ?? "unknown error" } : {}),
+      ...(message.stopReason === "error" ? { error: keep ? (str(message.errorMessage) ?? "unknown error") : "API error" } : {}),
     });
   }
 }

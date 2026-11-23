@@ -168,7 +168,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       role: "toolResult" as const,
       callId: id,
       name: names.get(id) ?? "",
-      // Without turns, no output text: the result is kept for whether it failed, in the result and the cursor alike.
+      // Without turns, no output text: the result is kept for whether it failed.
       text: keep ? textOf(output) : "",
       isError: stated ?? codex.items.get(id) ?? false,
       at,
@@ -216,8 +216,6 @@ const spec: LineSource<"codex", Own> = {
     return ordered;
   },
   idOf: (file) => basename(file, ".jsonl"),
-  // A turns: false cursor keeps each held prompt for its count alone: a read resumed from it gives no first prompt.
-  forget: (own) => ({ ...own, held: own.held.map(({ index, turn }) => ({ index, turn: { ...turn, text: "" } as Turn })) }),
 };
 
 export const codex = lineReader(spec);

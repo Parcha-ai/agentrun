@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, piSession, sessionId } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -99,3 +99,17 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   const after=statSync(oversized);assert.equal(after.size,before.size);assert.equal(after.mtimeMs,before.mtimeMs);
  });
 }
+
+test('a pi session whose session record names no id is exported under the id its reader gives it, not skipped as changed',async t=>{
+ const f=await fixture(t),target={...f.target,runtime:'pi'};
+ const file=piSession(f.home,f.project,7);
+ // pi names the session in its file too (<time>_<id>.jsonl): with no id in the record, that is the session's id.
+ const records=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ delete records[0].id;
+ const stat=statSync(file);writeFileSync(file,records.map(r=>JSON.stringify(r)).join('\n')+'\n');utimesSync(file,stat.atime,stat.mtime);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ const exported=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+ assert.deepEqual(exported.skipped,[]);
+ assert.deepEqual(exported.sessions.map(s=>s.id),[sessionId(7)]);
+});

@@ -113,8 +113,9 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
-    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
+    // Without turns, no answer text, nor a failed request's (its error says only that it failed): the request is kept
+    // for its counts.
+    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: keep ? text || "API error" : "API error" } : {}), ...mark };
     if (key) {
       own.keyed.set(key, turn);
       seen.add(`m:${key}`);
@@ -214,8 +215,6 @@ const spec: LineSource<"claude-code", Own> = {
     return turns;
   },
   idOf: (file) => basename(file, ".jsonl"),
-  // A turns: false cursor keeps no title: a read resumed from it gives none.
-  forget: (own) => ({ ...own, titles: { summaries: [], uuids: new Set() } }),
 };
 
 export const claudeCode = lineReader(spec);

@@ -9,7 +9,7 @@ export const READERS = {
   "claude-code": claudeCode,
   codex,
   pi,
-} as const satisfies Record<string, Reader<string, any>>;
+} as const satisfies Record<string, Reader<string>>;
 
 export type Source = keyof typeof READERS;
 export const SOURCES = Object.keys(READERS) as Source[];

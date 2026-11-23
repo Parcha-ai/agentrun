@@ -1,6 +1,6 @@
 // What requests cost at a catalog's list prices: pi-ai's catalog and its calculateCost, the pricing serve's import
 // estimates a session with when the source wrote no cost of its own. pi-ai is a dependency, loaded on the first price asked
-// for: where it is missing (a bundle built without it), no price.
+// for (not at startup); a load that fails throws with its reason.
 import type { Usage } from "./types.js";
 
 export type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number; tiers?: unknown };
@@ -20,26 +20,24 @@ export function catalogOf(models: readonly { id: string; provider: string; cost?
   return out;
 }
 
-/** pi-ai's built-in catalog, by model id; undefined when pi-ai is not installed. serve prices with its own catalog
- *  (pi-ai's, with serve's overrides and added models), which it passes in; the CLI imports pi-ai itself. */
-export async function builtinCatalog(): Promise<Catalog | undefined> {
-  const loaded = await import("@earendil-works/pi-ai/providers/all").catch(() => undefined);
-  return loaded ? catalogOf(loaded.builtinModels().getModels()) : undefined;
+/** pi-ai's built-in catalog, by model id. serve prices with its own catalog (pi-ai's, with serve's overrides and added
+ *  models), which it passes in. */
+export async function builtinCatalog(): Promise<Catalog> {
+  return catalogOf((await import("@earendil-works/pi-ai/providers/all")).builtinModels().getModels());
 }
 
-/** pi-ai's calculateCost: what one request's usage costs at a model's price. */
-export type CalculateCost = (model: { cost: ModelCost }, usage: Usage & { totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } }) => { total: number };
+/** pi-ai's calculateCost, as this file calls it: what one request's usage costs at a model's price. */
+type CalculateCost = (model: { cost: ModelCost }, usage: Usage & { totalTokens: number; cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number } }) => { total: number };
 
 /** A request to price: the model it ran on ("provider/model"), and its tokens. */
 export type Priced = { model?: string; usage?: Usage };
 
 /** What `requests` cost at `catalog`'s list prices, each at its own provider's entry for its model, rounded to a
  *  millionth of a dollar: undefined when one request's tokens are unknown or its provider does not list its model (the
- *  request was served at a price no one lists here), or pi-ai is not installed (no `calculateCost` handed in). A provider's $0 entry is $0. A request of
- *  no tokens costs nothing at any price. */
-export async function priceRequests(requests: readonly Priced[], catalog: Catalog, calculateCost?: CalculateCost): Promise<number | undefined> {
-  const calculate = calculateCost ?? ((await import("@earendil-works/pi-ai").catch(() => undefined))?.calculateCost as CalculateCost | undefined);
-  if (!calculate) return undefined;
+ *  request was served at a price no one lists here). A provider's $0 entry is $0. A request of no tokens costs nothing at
+ *  any price. */
+export async function priceRequests(requests: readonly Priced[], catalog: Catalog): Promise<number | undefined> {
+  const calculate = (await import("@earendil-works/pi-ai")).calculateCost as unknown as CalculateCost;
   let total = 0;
   for (const { model, usage } of requests) {
     if (!usage) return undefined;

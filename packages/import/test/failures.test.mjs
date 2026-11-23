@@ -53,59 +53,36 @@ test("--known-answer exits 1 with one stderr line per unreadable file, its key a
   for (const text of [PROMPT, "work-fixture", SESSION, dir]) assert.equal(result.stderr.includes(text), false, `stderr holds no ${text}`);
 });
 
-test("a read that fails partway leaves the state as it was: a retry with the same state gives the fresh pass's totals", async (t) => {
-  const dir = await tempHome(t);
-  await writeJsonl(claudeFile(dir), [
-    claudeUser({ uuid: "u1", text: PROMPT, i: 0 }),
-    claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1 }),
-    claudeUser({ uuid: "u2", text: "More.", i: 2 }),
-    claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 6), i: 3 }),
-  ]);
-  // Claude Code's reader, failing after it has noted three records: an I/O error midway through the file.
-  const real = READERS["claude-code"];
-  const failing = {
-    ...real,
-    read: (locator, cursor, options) => {
-      let noted = 0;
-      const seen = {
-        has: (key) => options.seen.has(key),
-        add(key) {
-          if (++noted > 3) throw Object.assign(new Error("injected"), { code: "EIO" });
-          options.seen.add(key);
-          return this;
-        },
-      };
-      return real.read(locator, cursor, { ...options, seen });
-    },
-  };
-  const state = {};
-  const failures = [];
-  assert.deepEqual(await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, state, failures, catalog: false }), []);
-  assert.equal(failures.length, 1);
-  const retry = await parseHome(dir, { sources: ["claude-code"], state, catalog: false });
-  const fresh = await parseHome(dir, { sources: ["claude-code"], catalog: false });
-  assert.equal(fresh[0].calls, 2);
-  assert.deepEqual(retry, fresh);
-});
-
-test("a resumed read that fails gives up the records it held: copies in later files count, as in a fresh pass, and the next pass reads it from its start", async (t) => {
+test("a read that fails partway adds none of the records it read: a later file's copy of them counts, as if the failed file were not there", async (t) => {
   const dir = await tempHome(t);
   const ORIGINAL = "00000000-0000-4000-8000-0000000000a1";
   const RESUMED = "00000000-0000-4000-8000-0000000000b2";
   const shared = [claudeUser({ uuid: "u1", text: PROMPT, i: 0, session: ORIGINAL }), claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1, session: ORIGINAL })];
-  const original = await writeJsonl(claudeFile(dir, ORIGINAL), shared);
-  const resumed = await writeJsonl(claudeFile(dir, RESUMED), [...shared.map((r) => ({ ...r, sessionId: RESUMED })), claudeUser({ uuid: "u2", text: "More.", i: 10, session: RESUMED })]);
+  const original = await writeJsonl(claudeFile(dir, ORIGINAL), [...shared, claudeUser({ uuid: "u2", text: "More.", i: 2, session: ORIGINAL })]);
+  const resumed = await writeJsonl(claudeFile(dir, RESUMED), [...shared.map((r) => ({ ...r, sessionId: RESUMED })), claudeUser({ uuid: "u3", text: "More.", i: 10, session: RESUMED })]);
   await utimes(original, 1_000, 1_000);
   await utimes(resumed, 2_000, 2_000);
+  // Claude Code's reader, failing on the original's third record, after it has noted the shared ones: an I/O error midway.
   const real = READERS["claude-code"];
-  // The original cannot be read this once (an I/O error), the copy can.
-  const failing = { ...real, read: (locator, cursor, options) => (locator.file === original ? Promise.reject(Object.assign(new Error("injected"), { code: "EIO" })) : real.read(locator, cursor, options)) };
-  const scan = (readers, state) => parseHome(dir, { sources: ["claude-code"], catalog: false, failures: [], ...(readers ? { readers: { "claude-code": readers } } : {}), ...(state ? { state } : {}) });
-  const state = {};
-  await scan(undefined, state);
-  const failed = await scan(failing, state);
-  assert.deepEqual(failed, await scan(failing), "the failed pass is the fresh pass with the same failure");
-  assert.equal(failed[0].calls, 1, "the copy holds the shared request");
-  const after = await scan(undefined, state);
-  assert.deepEqual(after, await scan(), "the next pass is the fresh pass");
+  const failing = {
+    ...real,
+    read: (locator, options) => {
+      if (locator.file !== original) return real.read(locator, options);
+      const seen = {
+        has: (key) => options.seen.has(key),
+        add(key) {
+          if (key === "u:u2") throw Object.assign(new Error("injected"), { code: "EIO" });
+          options.seen.add(key);
+          return this;
+        },
+      };
+      return real.read(locator, { ...options, seen });
+    },
+  };
+  const failures = [];
+  const totals = await parseHome(dir, { sources: ["claude-code"], readers: { "claude-code": failing }, failures, catalog: false });
+  assert.equal(failures.length, 1);
+  assert.equal(totals.length, 1);
+  assert.equal(totals[0].calls, 1, "the copy holds the shared request");
+  assert.equal(totals[0].turns, 2, "and the shared prompt");
 });

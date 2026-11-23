@@ -65,7 +65,7 @@ test("a bare message id a store kept before keys held request ids (seen as \"l:\
   assert.equal(session.copies, 1);
 });
 
-test("a last line still being written counts in the seen a caller shares across reads that keep no cursor (readSession)", async (t) => {
+test("a last line with no newline yet is read like any other: it counts in the seen a caller shares across reads", async (t) => {
   const home = await tempHome(t);
   const answer = claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 7), i: 1 });
   const first = claudeFile(home, "00000000-0000-4000-8000-0000000000d1");

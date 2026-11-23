@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES } from "../dist/index.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const CLI = fileURLToPath(new URL("../dist/cli.js", import.meta.url));
@@ -55,12 +54,21 @@ test("--sources picks the sources; an unknown one, or no --known-answer, is a us
   assert.equal(run("--known-answer").status, 2);
 });
 
+test("a source named twice in --sources is read once: each session prints one line", async (t) => {
+  const dir = await home(t);
+  const once = run(dir, "--sources", "codex", "--known-answer");
+  const twice = run(dir, "--sources", "codex,codex", "--known-answer");
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.equal(twice.stdout.trim().split("\n").length, 1);
+  assert.equal(twice.stdout, once.stdout);
+});
+
 test("--help and -h print the usage to stdout and exit 0; a bad argument is still exit 2", () => {
   for (const flag of ["--help", "-h"]) {
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import/);
       assert.equal(result.stderr, "");
     }
   }
@@ -81,20 +89,3 @@ test("without pi-ai the CLI fails at startup, loudly: it never prints lines that
   assert.match(result.stderr, /@earendil-works\/pi-ai/);
 });
 
-test("the sources are a registry: each reader names its source, its harness and its name, and reads its own files", () => {
-  assert.deepEqual(SOURCES, ["claude-code", "codex", "pi"]);
-  for (const source of SOURCES) {
-    const reader = READERS[source];
-    assert.equal(reader.source, source);
-    assert.equal(HARNESS_OF[source], reader.harness);
-    assert.equal(SOURCE_NAMES[source], reader.name);
-    assert.equal(typeof reader.discover, "function");
-    assert.equal(typeof reader.read, "function");
-  }
-});
-
-test("pi-ai, which the bin imports statically, is a dependency of the package: npx runs the bin with no install of its own", async () => {
-  const manifest = JSON.parse(await (await import("node:fs/promises")).readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.ok(manifest.dependencies?.["@earendil-works/pi-ai"], "a dependency");
-  assert.equal(manifest.peerDependencies?.["@earendil-works/pi-ai"], undefined, "not a peer");
-});

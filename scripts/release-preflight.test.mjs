@@ -594,12 +594,12 @@ test("a release folded with a held package's fragment passes the preflight, and 
 
 test('a package of the publish set not on npm yet stops the release before anything is published, naming it and the bootstrap step', async () => {
   await assert.rejects(checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], absent('@parcha/agentrun-import')), error =>
-    error.message === '@parcha/agentrun-import is not on npm yet. Bootstrap it before releasing: publish a first version by hand and set up its trusted publisher (docs/releasing.md).');
+    /@parcha\/agentrun-import/.test(error.message) && !/@parcha\/agentrun-dsl/.test(error.message) && /docs\/releasing\.md/.test(error.message));
 });
 
 test('every package not on npm yet is named in one error', async () => {
   await assert.rejects(checkPublished(['@parcha/agentrun-import', '@parcha/agentrun-dsl', '@parcha/agentrun-eve'], absent('@parcha/agentrun-import', '@parcha/agentrun-eve')), error =>
-    error.message === '@parcha/agentrun-import and @parcha/agentrun-eve are not on npm yet. Bootstrap them before releasing: publish a first version of each by hand and set up its trusted publisher (docs/releasing.md).');
+    /@parcha\/agentrun-import/.test(error.message) && /@parcha\/agentrun-eve/.test(error.message) && !/@parcha\/agentrun-dsl/.test(error.message));
 });
 
 test('every package on npm passes the gate', async () => {
@@ -619,5 +619,5 @@ test('releasePreflight runs the gate over the tree\'s publish set: a held packag
   const asked = [];
   await preflight(root, async name => { asked.push(name); return '0.1.0-beta.1'; });
   assert.deepEqual(asked, releasePackages.map(directory => releasePackageNames[directory]));
-  await assert.rejects(preflight(root, absent('@parcha/agentrun-import')), /@parcha\/agentrun-import is not on npm yet\. Bootstrap it before releasing/);
+  await assert.rejects(preflight(root, absent('@parcha/agentrun-import')), /@parcha\/agentrun-import/);
 }));

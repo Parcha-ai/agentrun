@@ -8,13 +8,12 @@
 // A file that cannot be read makes the answer incomplete: no line is printed, one stderr line names each such file by
 // its source, key and error code (never its path), and the exit is 1.
 //
-// pi-ai is imported here, statically: the prices are part of the answer, so a bundle (bun build --compile) carries it,
-// and a run without it fails at startup instead of printing lines that price nothing. The library loads it only to price.
+// pi-ai's catalog is imported here, statically: the prices are part of the answer, so a bundle (bun build --compile)
+// carries pi-ai, and a run without it fails at startup instead of printing lines that price nothing.
 import { parseArgs } from "node:util";
-import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { parseHome, type ReadFailure } from "./home.js";
-import { type CalculateCost, catalogOf } from "./price.js";
+import { catalogOf } from "./price.js";
 import { SOURCES, type Source } from "./readers/index.js";
 
 const USAGE = `usage: agentrun-import <home> [--sources ${SOURCES.join(",")}] --known-answer`;
@@ -44,11 +43,12 @@ async function main(): Promise<void> {
   }
   if (positionals.length !== 1) usage("one home directory, please");
   if (!values["known-answer"]) usage("--known-answer is the one output there is");
-  const sources = values.sources === undefined ? SOURCES : values.sources.split(",").map((name) => name.trim());
+  // A source named twice is read once: a repeat would print its every session twice.
+  const sources = values.sources === undefined ? SOURCES : [...new Set(values.sources.split(",").map((name) => name.trim()))];
   const unknown = sources.filter((name) => !(SOURCES as readonly string[]).includes(name));
   if (unknown.length || !sources.length) usage(`unknown source: ${unknown.join(", ") || "(none)"}`);
   const failures: ReadFailure[] = [];
-  const sessions = await parseHome(positionals[0]!, { sources: sources as Source[], catalog: catalogOf(builtinModels().getModels()), calculateCost: calculateCost as unknown as CalculateCost, failures });
+  const sessions = await parseHome(positionals[0]!, { sources: sources as Source[], catalog: catalogOf(builtinModels().getModels()), failures });
   if (failures.length) {
     for (const { source, key, error } of failures) process.stderr.write(`agentrun-import: cannot read ${source} ${key} (${codeOf(error)})\n`);
     process.exitCode = 1;

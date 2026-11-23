@@ -9,10 +9,10 @@ import type { SessionOf } from "./types.js";
 export type Session = SessionOf<Source>;
 
 /** The readers a call reads with: the registry's, or one a caller hands in (a test's, a source not yet registered). */
-export type Readers = Readonly<Record<string, Reader<string, any>>>;
+export type Readers = Readonly<Record<string, Reader<string>>>;
 
 /** The reader of `source` among `readers`; one that is not there throws. */
-export function readerOf(source: string, readers: Readers = READERS): Reader<string, unknown> {
+export function readerOf(source: string, readers: Readers = READERS): Reader<string> {
   const reader = readers[source];
   if (!reader) throw new Error(`no reader for the source ${source}`);
   return reader;
@@ -51,7 +51,7 @@ export async function childrenOf(home: string, source: string, { env, readers }:
  *  listing shows. A locator whose session is not there throws. */
 export async function readSession(locator: Locator | string, source: string, { readers, ...options }: ReadOptions & { readers?: Readers } = {}): Promise<Session> {
   const at = typeof locator === "string" ? { file: locator } : locator;
-  const { sessions } = await readerOf(source, readers).read(at, undefined, { ...options, keepsCursor: false });
+  const { sessions } = await readerOf(source, readers).read(at, options);
   const found = at.id === undefined ? sessions[0] : sessions.find(({ locator }) => locator.id === at.id);
   if (!found) throw new Error(`no session ${at.id ?? ""} in ${at.file}`);
   const session = found.session as Session;

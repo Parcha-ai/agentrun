@@ -1,8 +1,7 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
-subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
-server imports past sessions through it.
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage, and
+subagents counted under their parent. AgentRun's server imports past sessions through it.
 
 ## Totals for a home
 
@@ -17,15 +16,11 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   it for a file that holds many sessions. Lines come sorted by key.
 - `tokens.input` is the input neither read from nor written to the cache, for every source (see `normalizeUsage`).
 - `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's per-request cost), else the
-  requests at pi-ai's list prices (a dependency, loaded on the first price), else `null`.
+  requests at pi-ai's list prices (a dependency, loaded on the first price; a load that fails throws), else `null`.
 - `turns` counts the person's messages; `calls` the model requests, its subagents' with them, each once.
-- `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since, and
-  returns what a fresh call would. When a file holding a copied record now comes before the file it counts in (an append
-  moved the original after its resumed copy, or a new file sorts before one it shares records with), that source is read
-  again from the start. The state holds counts, record ids and paths, never a prompt, title, working directory or
-  answer; a file that fails to read gives up what it held and is read from its start next time.
+- Each call reads every file whole. A record copied into many files (a resumed session's) counts in the first of them.
 - `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
-  totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
+  totalled, as if the failed file were not there; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 
 ## Known answer
@@ -64,21 +59,20 @@ A source is a `Reader` in the registry (`READERS`), with the harness that runs w
 
 ```ts
 type Locator = { file: string; id?: string };
-type Reader<S extends string, C> = {
+type Reader<S extends string> = {
   source: S;
   name: string;
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  idOf(locator: Locator): string; // the id of a session no record names
+  read(locator: Locator, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[] }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
 };
 ```
 
-The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
-with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
-line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
-newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
+A JSONL source builds its reader with `lineReader` from a per-record function; a last line with no newline yet is read
+like any other. A source that keeps many sessions in one file (a SQLite database) implements
 `discover` and `read` itself and returns one locator per session, with its `id`.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
