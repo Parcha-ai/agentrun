@@ -374,11 +374,12 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
     // The deployment last seen, so a wait that runs out says where it stopped: QUEUED or INITIALIZING (Railway never
-    // started it), BUILDING (the image pull), DEPLOYING (the health check), or none listed.
+    // started it), BUILDING (the image pull), DEPLOYING (the health check), or none listed. A poll that lists none keeps
+    // the one seen before: a list that goes empty never hides a deployment that was there.
     let seen;
     const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async () => {
       const d = edges((await client.call("Deployments", { input: { projectId, environmentId, serviceId } })).deployments)[0];
-      seen = d;
+      seen = d ?? seen;
       if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id}); its last log lines:\n${await lastLines(client, d.id)}`);
       return d?.status === "SUCCESS" ? d : undefined;
     }).catch(async (error) => {

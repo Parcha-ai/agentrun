@@ -273,6 +273,26 @@ test("a deploy that never succeeds in its 20 minutes is reported with the status
   }
 });
 
+test("a deploy whose deployment is listed once and then no more is reported with the one it saw, never as none listed", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const client = planClient({ log: quiet, workspaceId: "ws" });
+    const call = client.call.bind(client);
+    client.sleep = async (ms) => { now += ms; };
+    let polls = 0;
+    client.call = async (op, v) => (op === "Deployments" ? (await call(op, v), { deployments: { edges: ++polls === 1 ? [{ node: { id: "<deployment>", status: "QUEUED" } }] : [] } }) : call(op, v));
+    const rows = await run(client, { workspaceId: "ws", log: quiet });
+    const stopped = rows.find((r) => r[0] === "stopped")[2];
+    assert.ok(polls > 2, `polled ${polls} times`);
+    assert.match(stopped, /deploy succeeded: not within 1200 s: deployment <deployment> was still QUEUED; its last log lines:/);
+    assert.doesNotMatch(stopped, /listed no deployment/);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("the walk's Railway cost: each metric sample held until the next, the last until the reading, at the list prices", async () => {
   const client = planClient({ log: quiet, workspaceId: "ws" });
   const got = await usageOf(client, { projectId: "p", environmentId: "e", serviceId: "s", since: 0, now: 120_000 });
