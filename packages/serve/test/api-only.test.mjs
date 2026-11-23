@@ -9,12 +9,14 @@
 // profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
-const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
+const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
+const { API_ONLY_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
@@ -39,11 +41,16 @@ const at = (path, agent, run) => path.replace("{agent}", agent).replace("{run}",
 
 test("AGENTRUN_API_ONLY is on for 1 or true, off when unset, empty, 0 or false, and refused in words otherwise", () => {
   assert.equal(API_ONLY_ENV, "AGENTRUN_API_ONLY");
-  for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(apiOnlyFrom({ AGENTRUN_API_ONLY: value }), true, value);
-  for (const value of [undefined, "", "0", "false", "False"]) assert.equal(apiOnlyFrom(value === undefined ? {} : { AGENTRUN_API_ONLY: value }), false, String(value));
+  const read = (value) => switchFrom(API_ONLY_ENV, value === undefined ? {} : { AGENTRUN_API_ONLY: value });
+  for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(read(value), true, value);
+  for (const value of [undefined, "", "0", "false", "False"]) assert.equal(read(value), false, String(value));
   for (const value of ["yes", "on", "2", "api"]) {
-    assert.throws(() => apiOnlyFrom({ AGENTRUN_API_ONLY: value }), (error) => error instanceof TypeError && error.message === `AGENTRUN_API_ONLY is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(value)}`, value);
+    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message === `AGENTRUN_API_ONLY is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(value)}`, value);
   }
+});
+
+test("the switches' module imports nothing: the CLI reads both before the rest of the server loads", () => {
+  assert.doesNotMatch(readFileSync(new URL("../dist/env-switch.js", import.meta.url), "utf8"), /^\s*import\b|\bfrom\s*["']|\bimport\s*\(/m);
 });
 
 test("every route the profile serves is a route of the server", () => {
@@ -59,7 +66,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
-    ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
+    ["GET", "/v2/capabilities"], ["GET", "/v2/settings/mcp-server-names"], ["GET", "/v2/health"], ["GET", "/v2/usage"], ["GET", "/v2/capacity"], ["POST", "/v2/templates/import"],
     ["GET", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1/archil"], ["DELETE", "/v2/agents/a1"], ["DELETE", "/v2/agents/a1/learning"], ["DELETE", "/v2/runs/run_1"], ["GET", "/v2/computers/daemon"],
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],

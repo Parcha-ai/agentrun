@@ -58,7 +58,7 @@ export const HARNESS_INSTALL = {
 export const HARNESS_SIGN_IN = {
   command: ["harness", "sign-in"],
   pathParams: [],
-  summary: "Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); runs on this server then use it when the recipe's keys are not set",
+  summary: "Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); a server you start with --harness-sign-in on your own machine then runs your own runs on it",
   help: [
     ["--recipe FILE", "the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE"],
     ["--data DIR", "the data directory the recipe's agent was installed into (default ~/.agentrun)"],

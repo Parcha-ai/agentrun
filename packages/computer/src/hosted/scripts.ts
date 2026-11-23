@@ -108,9 +108,10 @@ export const INIT_LOG = `${SOCKET_DIR}-init.log`;
 
 /**
  * Starts init detached from the call that starts it: in a session of its own (setsid), its output to the log, its stdin
- * none, so the vendor's call ends at once and nothing of it holds init. As root, or through passwordless sudo.
+ * none, so the vendor's call ends at once and nothing of it holds init. As root, or through passwordless sudo, under
+ * umask 077, so the log is root's alone whatever the vendor's umask.
  */
-const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
+const START_SCRIPT = ["# agentrun-computer: start", "l=$1; shift", ROOT, `exec $p sh -c 'umask 077; exec >"$0" 2>&1 </dev/null; setsid "$@" &' "$l" "$@"`].join("\n");
 
 /**
  * The session buses a vendor's own processes leave in /tmp (Daytona's D-Bus, /tmp/dbus-Y8OW6E3FDx), which no network
@@ -259,6 +260,24 @@ export function hostedCommands({
 		rootOnly: argvOf(ROOT_ONLY_SCRIPT, rootOnly),
 		entrypoint: argvOf(ENTRYPOINT_SCRIPT, [DAEMON_IN_COMPUTER, String(waitS), WORK, display, nonce, ...(gate === undefined ? [] : ["--gate", gate]), ...initArgs]),
 	};
+}
+
+/**
+ * The shell line a provider that starts agentrun-dial itself runs, as root, under umask 077 whatever the vendor's, as on
+ * the exec path (START_SCRIPT): init's start log is root's alone, and init and every program the computer runs inherit
+ * 077 (init gives /work to the computer's user, 0700). On
+ * dial the adapter runs nothing in the machine, so the line runs the steps the exec path runs before init first:
+ * rootOnly made root's alone when it names paths (HostFacts.rootOnly), then the session buses in /tmp closed
+ * (SESSION_BUSES). Joined by &&, so a step that fails starts nothing, and the machine never dials. attach, when given, is
+ * AGENTRUN_ATTACH_URL's quoted assignment on the line.
+ */
+export function dialLaunch({ rootOnly = [], attach }: { rootOnly?: readonly string[] | undefined; attach?: string } = {}): string {
+	return [
+		"umask 077",
+		...(rootOnly.length > 0 ? [shellLine(hostedCommands({ rootOnly }).rootOnly)] : []),
+		shellLine(hostedCommands().sockets),
+		`${attach === undefined ? "" : `AGENTRUN_ATTACH_URL=${quote(attach)} `}exec ${AGENTRUN_DIAL}`,
+	].join(" && ");
 }
 
 export interface ChildCommandOptions {

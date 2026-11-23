@@ -193,7 +193,7 @@ test("a box that cannot be asked ends the run failed in words, never as if it ha
   assert.equal(requests.length, 0, "no model request was made");
   const served = await run.served();
   assert.equal(served.error.code, "run_failed");
-  assert.equal(served.error.message, "This agent's sandbox on Docker could not be checked for the programs it needs (chrome, ffmpeg, ffprobe, hyperframes): the connection to c1 ended. Nothing ran.");
+  assert.equal(served.error.message, "This agent's sandbox on Docker could not be checked for what it needs (chrome, ffmpeg, ffprobe, hyperframes): the connection to c1 ended. Nothing ran.");
   assert.equal(row.state, "failed");
   assert.deepEqual(run.docker.released, ["c1"]);
 });

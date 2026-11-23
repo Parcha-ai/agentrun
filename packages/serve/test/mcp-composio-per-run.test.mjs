@@ -14,7 +14,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, secretWritePath, serve, serverLog, storeBytes, whenFree } from "./support.mjs";
 
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
-const { COMPOSIO_USER } = await import("../dist/composio-preset.js");
+const { COMPOSIO_LISTING_USER, COMPOSIO_USER, COMPOSIO_USER_ID } = await import("../dist/composio-preset.js");
 const { composioMadeKey } = await import("../dist/composio-made.js");
 const { ISSUE_ADDED } = await import("./fixtures/fake-composio.mjs");
 
@@ -25,15 +25,17 @@ const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 // inbox read, a call that answers the account it runs as.
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
 const TOOLKITS = { gmail: { no_auth: false, tools: [ADD] } };
-const USER_A = "grep-user-alice-0001";
+const USER_A = "host-user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
-const USER_B = "grep-user-bob-0002";
+const USER_B = "host-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
+// A Composio user id with a ':', such as a team's.
+const TEAM = "team:tenant-0042";
+const ACCOUNT_TEAM = "ca_team_gmail_0042";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
 // The preset's default user (`agentrun`) has its own account too: the one a single-user preset server calls as.
-const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
-const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
+const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [TEAM]: [ACCOUNT_TEAM], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const bind = (user, account) => ({ mail: { composio_user_id: user, ...(account ? { connected_account_id: account } : {}) } });
 
@@ -75,6 +77,18 @@ test("two users, one per-run Gmail server: B's run is called at Composio as B's 
     assert.match(run.answer, /The tool said: 5/, `${who}'s call answered`);
     assert.deepEqual(run.sent.map(asWho), run.sent.map(() => mine), `every request of ${who}'s run is as ${who}'s user and account`);
     assert.deepEqual(run.sent.filter((entry) => theirs.some((value) => entry.path.includes(value))), [], `none of ${who}'s run's requests names the other user or account`);
+  }
+});
+
+test("a user id with a ':' binds a run as any other does; a space, a slash or the listing-only user's ~ is still refused", async (t) => {
+  const s = await setup(t);
+  const team = await runOnce(s, bind(TEAM, ACCOUNT_TEAM));
+  assert.equal(toolCalls(team.sent).length, 1, `the team's one call reached Composio: ${team.answer}`);
+  assert.match(team.answer, /The tool said: 5/, "the team's call answered");
+  assert.deepEqual(team.sent.map(asWho), team.sent.map(() => [TEAM, ACCOUNT_TEAM]), "every request is as the team's user and account");
+  for (const user of ["team:has space", "team:a/b", COMPOSIO_LISTING_USER]) {
+    const refused = await s.api("POST", "/agents/reader/runs", { input: { content: "Hi" }, mcp_auth: bind(user, ACCOUNT_TEAM) });
+    assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.field, refused.body.error?.fields?.[0]?.reason], [422, "mcp_auth.mail.composio_user_id", "invalid"], `${user}: ${JSON.stringify(refused.body)}`);
   }
 });
 
@@ -239,11 +253,11 @@ test("a binding naming another user's account, or a user with no account, gets C
   assert.deepEqual(crossed.sent.map(asWho), crossed.sent.map(() => [USER_B, ACCOUNT_A]), "sent as bound");
   assert.doesNotMatch(crossed.answer, /The tool said: 5\b/, "the call ran nothing");
   assert.match(crossed.answer, /does not match the provided user ID/, crossed.answer);
-  const stranger = await runOnce(s, bind("grep-user-carol-0003"));
+  const stranger = await runOnce(s, bind("host-user-carol-0003"));
   assert.equal(toolCalls(stranger.sent).length, 1, stranger.answer);
   assert.doesNotMatch(stranger.answer, /The tool said: 5\b/, "the call ran nothing");
   assert.match(stranger.answer, /No connected account found for user ID/, stranger.answer);
-  assert.equal(stranger.answer.includes("grep-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
+  assert.equal(stranger.answer.includes("host-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
 });
 
 test("the console's edit form previews a per-run server at its saved address ({name, url, auth}): listed as the listing-only user, as a preview by name is", async (t) => {

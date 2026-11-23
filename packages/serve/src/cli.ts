@@ -16,9 +16,8 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { apiOnlyFrom } from "./api-only.js";
-import { runKeysFrom } from "./run-keys-env.js";
-import { harnessModulesOf } from "./harness-table.js";
+import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
+import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
 import { installEnvProxy } from "./env-proxy.js";
@@ -34,7 +33,7 @@ surviveClosedPipes();
 // (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
 installEnvProxy();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose|cursor [--data DIR]
@@ -83,6 +82,16 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     separated): a path, or a package installed with npm install --prefix DIR/harnesses PACKAGE, whose
                     entries(builtins) export adds harnesses of its own to this server and its runner. It never replaces
                     a built-in harness (pi, claude-agent, codex, opencode); one that does, or is missing, refuses the start
+  --harness-recipe FILE
+                    a harness recipe to add a harness from (repeatable; default AGENTRUN_SERVE_HARNESS_RECIPES, comma-
+                    separated), installed into DIR with agentrun harness install --recipe FILE. Its harness runs once a
+                    harness-check of it passed on DIR, through this server's model proxy (a plan-billed one's keys are
+                    not saved on a server yet); a recipe the loader refuses, or whose id another harness has, refuses
+                    the start
+  --harness-sign-in run a person's runs of a plan-billed recipe with a sign-in on your own sign-in (agentrun harness
+                    sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
+                    unless the server listens on loopback with no public address, keeps its store in DIR (no
+                    AGENTRUN_STORE_URL), runs its runs beside it as its own user, and takes one API token
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -288,7 +297,7 @@ if (process.argv[2] === "sign-in-harness") {
     console.error(done.message);
     process.exit(1);
   }
-  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, and runs on it on this server when the recipe's keys are not set. AgentRun never reads it.`);
+  console.log(`Signed in: the agent keeps its sign-in in ${done.home}, and a server you start with --harness-sign-in on this machine runs your own runs on it. AgentRun never reads it.`);
   process.exit(0);
 }
 
@@ -448,6 +457,8 @@ try {
       learning: { type: "string" },
       "no-runner": { type: "boolean", default: false },
       "harness-module": { type: "string", multiple: true, default: [] },
+      "harness-recipe": { type: "string", multiple: true, default: [] },
+      "harness-sign-in": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   }));
@@ -513,8 +524,8 @@ process.on("SIGTERM", signalled);
 let apiOnly: boolean;
 let runKeys: boolean;
 try {
-  apiOnly = apiOnlyFrom(process.env);
-  runKeys = runKeysFrom(process.env);
+  apiOnly = switchFrom(API_ONLY_ENV);
+  runKeys = switchFrom(RUN_KEYS_ENV);
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
@@ -558,6 +569,10 @@ try {
     ...(values["max-runs"] !== undefined ? { maxRuns: Number(values["max-runs"]) } : {}),
     // The owner's harness modules: --harness-module, else AGENTRUN_SERVE_HARNESS_MODULES (harness-table.ts).
     ...(harnessModulesOf(values["harness-module"], process.env).length ? { harnessModules: harnessModulesOf(values["harness-module"], process.env) } : {}),
+    // And its harness recipes: --harness-recipe, else AGENTRUN_SERVE_HARNESS_RECIPES (harness-table.ts).
+    ...(harnessRecipesOf(values["harness-recipe"], process.env).length ? { harnessRecipes: harnessRecipesOf(values["harness-recipe"], process.env) } : {}),
+    // Their runs on the owner's own sign-in, only as the owner says it here (no setting names it) and the start proves.
+    ...(values["harness-sign-in"] ? { harnessSignIn: true } : {}),
     ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
