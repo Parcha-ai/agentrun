@@ -37,10 +37,10 @@ function server(read: () => Answer | Promise<Answer>, write: (call: Call) => Ans
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, onChange?: () => void) {
+async function open(v2: ReturnType<typeof createClient>, onChange?: () => void, available?: boolean) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, onChange }) })));
+  act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, onChange, available }) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const button = (label: RegExp) => [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()));
@@ -150,6 +150,14 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     const page = await open(v2);
     expect(page.row()!.textContent).toContain(refused);
     expect(page.button(/^Turn on$/)).toBeUndefined();
+  });
+
+  it("switched off, as capabilities say (features.claude_login false): no row, and no request, so the browser logs no 404", async () => {
+    const { v2, calls } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: off" } }), () => OFF);
+    const page = await open(v2, undefined, false);
+    expect(page.row()).toBeNull();
+    expect(calls.filter((call) => call.path.startsWith("/v2/settings/claude-login"))).toEqual([]);
+    expect(page.host.textContent).toContain(ANTHROPIC_KEY_CREDITS);
   });
 
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {

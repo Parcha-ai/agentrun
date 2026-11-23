@@ -26,8 +26,9 @@ const STATE: Record<ClaudeLoginView["state"], { tone: ChipTone; words: string }>
  *  here, then Turn on; where the server refuses the mode, its one line instead. On: what the CLI says (who and which
  *  plan), or the command that signs it in on the server's machine and, where the browser is on that machine, a button
  *  that starts the CLI's own sign-in; Turn off. Nothing on a server with the mode switched off (its GET is a 404).
- *  `onChange`: after a turn on or off, which change what Claude Agent runs on. */
-export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void }) {
+ *  `available`: capabilities' `features.claude_login`; false (switched off, or capabilities not read yet) asks nothing, so
+ *  the browser never logs the 404. `onChange`: after a turn on or off, which change what Claude Agent runs on. */
+export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, available = true }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; available?: boolean }) {
   const [view, setView] = useState<ClaudeLoginView | null>(null);
   const [place, setPlace] = useState<ClaudeLoginView["place"]>("agentrun");
   const [onlyMe, setOnlyMe] = useState(false);
@@ -40,10 +41,11 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange }: {
   const writing = useRef(false);
   const reading = useRef(false);
   useEffect(() => {
+    if (!available) { setView(null); return; }
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
-  }, [v2]);
+  }, [v2, available]);
   const refresh = () => {
     if (reading.current || writing.current) return;
     reading.current = true;

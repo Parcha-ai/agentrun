@@ -151,6 +151,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const first = await serve(t, { faux: undefined, runner: false });
   assert.equal((await first.api("PUT", "/settings/claude-login", { only_me: true })).status, 200);
   assert.equal((await offerOf(first.api)).available, true);
+  assert.equal((await first.api("GET", "/capabilities")).body.features.claude_login, true, "the routes answer: capabilities say so");
   await first.stop();
 
   process.env[CLAUDE_LOGIN_ENV] = "off";
@@ -162,6 +163,8 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
     assert.match(answer.body.error.message, new RegExp(`^${name}: .*${CLAUDE_LOGIN_ENV}=off\\.$`), JSON.stringify(answer.body));
   }
   assert.equal((await offerOf(second.api)).available, false, "no key: claude-agent runs nothing");
+  // The console asks capabilities first, so a page never asks a route that answers 404 (a browser logs every one).
+  assert.equal((await second.api("GET", "/capabilities")).body.features.claude_login, false, "the routes are 404: capabilities say so");
   assert.ok(lines.some((line) => line.includes(`turned off: ${CLAUDE_LOGIN_ENV}=off`)), lines.join("\n"));
   await second.stop();
 

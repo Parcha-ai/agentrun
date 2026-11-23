@@ -4097,6 +4097,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Settings → Computers: the computer kinds an agent's `computer` may name here.",
       ...COMPUTER_MARK,
     },
+    claude_login: {
+      type: "boolean",
+      description: "Whether /settings/claude-login answers here. False when AGENTRUN_CLAUDE_CODE_LOGIN=off, or when the server listens past loopback (Docker) without AGENTRUN_CLAUDE_CODE_LOGIN=on: those routes are then 404, so a client asks this first.",
+      "x-agentrun-serve": "claudelogin/1",
+    },
     tool_keys: {
       type: "object", additionalProperties: false, required: ["routes", "at_rest"],
       properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" } },

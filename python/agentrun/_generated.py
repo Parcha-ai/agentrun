@@ -7329,6 +7329,7 @@ class Features(_FeaturesRequired, total=False):
     learning: Literal["on", "off"]
     browser_live: FeaturesBrowserLive
     computers: FeaturesComputers
+    claude_login: bool
     tool_keys: FeaturesToolKeys
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
