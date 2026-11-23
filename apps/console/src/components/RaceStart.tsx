@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Field, Input, Textarea } from "@/components/ui/field";
@@ -41,6 +41,9 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
   const [sending, setSending] = useState(false);
   const busy = useRef(false);
   const [asked, setAsked] = useState(false);
+  // A form left while its lanes start opens no race: the person went somewhere else meanwhile.
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   if (runnable.length === 0) return (
     <div className="flex flex-col">
@@ -53,6 +56,8 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
   const taskMissing = !task.trim();
   const capWrong = !(Number.isFinite(capUsd) && capUsd > 0);
   const startedAny = Object.values(outcomes).some((o) => "run" in o);
+  // The task and cap every lane runs: fixed once a request leaves, so a lane started again runs what the others did.
+  const fixed = startedAny || sending;
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
@@ -77,7 +82,7 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
     busy.current = false;
     setSending(false);
     setOutcomes(next);
-    if (lanes.every((_, i) => next[i] && "run" in next[i])) go(`#/races/${encodeURIComponent(label)}`);
+    if (mounted.current && lanes.every((_, i) => next[i] && "run" in next[i])) go(`#/races/${encodeURIComponent(label)}`);
   };
 
   return (
@@ -89,10 +94,10 @@ export function RaceStart({ v2, harnesses, go, label: given }: { v2: Pick<Client
       <form className="flex max-w-5xl flex-col gap-6 p-5 md:p-8" onSubmit={(e) => { e.preventDefault(); void start(); }}>
         <p className="text-body text-muted-foreground">Each lane runs the same task on its own harness and model, as an agent and a run of its own, labeled <span className="font-mono text-foreground">{raceFilter(label)}</span>. The race page shows them side by side.</p>
         <Field label="Task" required error={asked && taskMissing ? "Say what every lane does: the task they all run." : undefined}>
-          <Textarea rows={4} value={task} readOnly={startedAny} onChange={(e) => setTask(e.target.value)} placeholder="Fix the failing test in the parser, and say what was wrong." />
+          <Textarea rows={4} value={task} readOnly={fixed} onChange={(e) => setTask(e.target.value)} placeholder="Fix the failing test in the parser, and say what was wrong." />
         </Field>
         <Field label="Spend cap per lane (USD)" className="max-w-xs" error={asked && capWrong ? "A cap above $0 for each lane." : undefined}>
-          <Input type="number" inputMode="decimal" min="0" step="0.01" value={cap} readOnly={startedAny} onChange={(e) => setCap(e.target.value)} />
+          <Input type="number" inputMode="decimal" min="0" step="0.01" value={cap} readOnly={fixed} onChange={(e) => setCap(e.target.value)} />
         </Field>
         <div className="grid gap-4 md:grid-cols-2">
           {lanes.map((lane, i) => {

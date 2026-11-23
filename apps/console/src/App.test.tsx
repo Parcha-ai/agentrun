@@ -141,6 +141,36 @@ describe("App, Mission Control when the stats can't be read", () => {
   });
 });
 
+describe("App, the race form when the capabilities can't be read", () => {
+  it("says so with Try again, not Loading for ever, and Try again reads them and shows the form", async () => {
+    let fail = true;
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "http://serve.test").pathname;
+      if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (path === "/v2/capabilities") return fail
+        ? json(503, { error: { code: "unavailable", message: "The server is starting.", retryable: true } })
+        : json(200, { models: { source: "providers", ready: true }, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-sonnet-5-5", models: ["anthropic/claude-sonnet-5-5"] }], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    });
+    location.hash = "#/races/new";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const until = async (text: string) => {
+      const end = Date.now() + 4000;
+      while (!host.textContent?.includes(text) && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    };
+    await until("could not be read");
+    expect(host.textContent).toContain("The server's harnesses could not be read");
+    fail = false;
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Try again")!.click(); });
+    await until("Start the race");
+    expect(host.textContent).toContain("Start the race");
+  });
+});
+
 describe("App, Mission Control after a failed read", () => {
   it("Try again reads the stats and the latest runs again, and shows them", async () => {
     let statsCalls = 0;

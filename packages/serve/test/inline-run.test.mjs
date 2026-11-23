@@ -108,6 +108,25 @@ test("a different definition under a version already run is 409 external_body_co
   assert.equal((await api("GET", "/runs?limit=100")).body.runs.length, runs, "no run started");
 });
 
+// The console's race lane (apps/console/src/lib/race.ts laneStart, whose test pins this same body): its harness and
+// model are a harness this server offers, on its default model, as the start form picks them.
+test("a race lane's start, as the console's race form sends it, is taken and runs", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t);
+  const offered = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.available && h.default_model);
+  assert.ok(offered, "a harness this server runs");
+  const lane = { harness: offered.id, model: offered.default_model };
+  const started = await api("POST", "/runs", {
+    external: { source: "console", kind: "race", id: "race-20261123-1004-1f2e-1", version: `${lane.harness} ${lane.model}` },
+    definition: { name: "Race 20261123-1004-1f2e, lane 1", instructions: "Do the task you are given.", harness: lane.harness, model: lane.model },
+    input: { content: "Reply with the word ready." },
+    max_cost_usd: 1,
+    labels: { race: "20261123-1004-1f2e", lane: "1", harness: lane.harness, model: lane.model },
+  });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  assert.deepEqual(started.body.labels, { race: "20261123-1004-1f2e", lane: "1", harness: lane.harness, model: lane.model });
+  await follow(api, started.body.run_id, ["completed"]);
+});
+
 test("an inline definition is refused in POST /agents' own words, and the external reference and run fields are checked", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { runner: false });
   const fields = (answer) => answer.body.error?.fields?.map(({ field, reason, message }) => ({ field, reason, message }));

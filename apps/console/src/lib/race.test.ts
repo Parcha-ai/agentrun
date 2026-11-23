@@ -112,7 +112,9 @@ describe("starting a race: one inline run per lane", () => {
     const body = laneStart("bench-1", 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, "Fix the failing test", 1.5);
     expect(body).toEqual({
       external: { source: "console", kind: "race", id: "race-bench-1-2", version: "codex openai/gpt-6.1-sol" },
-      definition: { name: "Race bench-1, lane 2", harness: "codex", model: "openai/gpt-6.1-sol" },
+      // POST /v2/runs takes a definition with instructions or a workflow (packages/serve's inline-run test sends this
+      // same body to a server).
+      definition: { name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "codex", model: "openai/gpt-6.1-sol" },
       input: { content: "Fix the failing test" },
       max_cost_usd: 1.5,
       labels: { race: "bench-1", lane: "2", harness: "codex", model: "openai/gpt-6.1-sol" },

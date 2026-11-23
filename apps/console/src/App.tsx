@@ -351,6 +351,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [where, setWhere] = useState(() => route());
   const [caps, setCaps] = useState<Capabilities | null>(null);
+  const [capsFailed, setCapsFailed] = useState(false);
   // The triggers' names and kinds, for the chip on a run a trigger started: read where the server has triggers, again on
   // each page change (a trigger made or renamed shows by its name on its runs).
   const scheduling = caps?.features?.triggers?.routes === true;
@@ -453,7 +454,8 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   // Whether the poll's timer below has a capabilities read still answering: it starts no other until that one ends.
   const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
-  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
+  // `capsFailed`: the newest read failed (a page that needs them says so, with Try again, rather than loading for ever).
+  const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
   // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
@@ -807,7 +809,9 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
         // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
-        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} go={go} /> : <RunSkeleton />)
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} go={go} />
+          : capsFailed ? <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" onClick={() => void readCaps()}>Try again</Button>}>The server's harnesses could not be read, so there is nothing to pick a lane from yet.</Banner></div>
+          : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />
         : <RunsList observations={!where.runsOf && !where.archived && !where.status ? observations : undefined} runs={runs} agentName={agentName} agentId={where.runsOf} error={error} onRetry={() => setRunsTry((n) => n + 1)} onOpen={(id) => go(`#/runs/${encodeURIComponent(id)}`)} loadingMore={more}

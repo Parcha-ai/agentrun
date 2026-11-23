@@ -54,16 +54,19 @@ export async function readRace(v2: Pick<Client, "listRuns">, label: string): Pro
 
 /** A race starts with at least this many lanes. */
 export const MIN_LANES = 2;
+/** Every lane's instructions: the task itself is the run's input, the same on every lane. */
+const LANE_INSTRUCTIONS = "Do the task you are given.";
 /** What one lane runs on. */
 export type LaneChoice = { harness: string; model: string };
 
 /** The inline run (POST /v2/runs) lane `n` of race `label` starts: an agent of its own (external `race-<label>-<n>`),
  *  one revision per harness and model (the external version), so a lane changed after a refusal is a new revision, never
- *  a conflict with the one refused. Every lane gets the race's task and cap, and the labels the race view reads. */
+ *  a conflict with the one refused. Every lane gets the race's task (its input) and cap, the same short instructions (a
+ *  definition needs instructions or a workflow), and the labels the race view reads. */
 export function laneStart(label: string, n: number, lane: LaneChoice, task: string, maxCostUsd: number): RunCreateInline {
   return {
     external: { source: "console", kind: "race", id: `race-${label}-${n}`, version: `${lane.harness} ${lane.model}` },
-    definition: { name: `Race ${label}, lane ${n}`, harness: lane.harness, model: lane.model },
+    definition: { name: `Race ${label}, lane ${n}`, instructions: LANE_INSTRUCTIONS, harness: lane.harness, model: lane.model },
     input: { content: task },
     max_cost_usd: maxCostUsd,
     labels: { [RACE_KEY]: label, [LANE_KEY]: String(n), harness: lane.harness, model: lane.model },

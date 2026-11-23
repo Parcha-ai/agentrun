@@ -101,6 +101,32 @@ describe("RaceStart", () => {
     expect(sent.map((s) => s.lane)).toEqual(["1", "2"]);
   });
 
+  it("the task and cap hold still while the lanes are starting, so a lane started again later runs the same task", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const { host } = mount(async (one) => { await held; return started(one); });
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    expect(host.querySelector("textarea")!.readOnly, "the task, while its requests are out").toBe(true);
+    expect(host.querySelector<HTMLInputElement>('input[type="number"]')!.readOnly, "the cap, while its requests are out").toBe(true);
+    release();
+    await settle();
+  });
+
+  it("a form left while its lanes start never moves the page it was left for", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const { host, sent, went } = mount(async (one) => { await held; return started(one); });
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    act(() => root!.unmount());
+    root = undefined;
+    release();
+    await settle();
+    expect(sent).toHaveLength(2);
+    expect(went, "no go after the form is gone").toEqual([]);
+  });
+
   it("asks for the task before it starts anything, and adds lanes up to four", async () => {
     const { host, sent } = mount(started);
     await act(async () => { button(host, "Start the race")!.click(); });
