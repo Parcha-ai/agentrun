@@ -1253,6 +1253,7 @@ export type Features = {
   computers?: {
     kinds: Array<"none" | "sandbox" | "desktop" | "phone" | "browser">;
   };
+  claude_login?: boolean;
   tool_keys?: {
     routes: boolean;
     at_rest: "sealed";
