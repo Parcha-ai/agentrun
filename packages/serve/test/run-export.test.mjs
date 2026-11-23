@@ -249,9 +249,17 @@ test("fails closed on its read-back: a cut pass that leaves a known format or a 
 });
 
 test("a workflow run's graph is carried, every string in it cut", async () => {
-  const graph = { run: { status: "completed" }, nodes: [{ id: "n1", label: `Ask ${PLANTED.email}`, items: [{ label: `key ${PLANTED.sk}` }] }] };
+  const graph = {
+    read_at: "2026-11-23T11:00:00.000Z",
+    run: { id: "run_golden", agent: "agent_golden", revision: "rev_golden", status: "completed", paused: false, startedAt: "2026-11-23T10:00:00.000Z", endedAt: "2026-11-23T10:05:00.000Z" },
+    nodes: [{ id: "n1", label: `Ask ${PLANTED.email}`, items: [{ label: `key ${PLANTED.sk}` }] }],
+  };
   const { doc, body } = await build({ graph, view: { ...viewOf(), kind: "workflow" } });
   assert.equal(doc.agent.kind, "workflow");
+  // The read's own time is dropped (it changes each read, and two exports are byte-identical), and the run's ids, as the
+  // run allowlist drops them: what the page reads of graph.run is its status, pause and times.
+  assert.ok(!("read_at" in doc.graph));
+  assert.deepEqual(doc.graph.run, { status: "completed", paused: false, startedAt: "2026-11-23T10:00:00.000Z", endedAt: "2026-11-23T10:05:00.000Z" });
   assert.equal(doc.graph.nodes[0].id, "n1");
   assert.match(doc.graph.nodes[0].label, /^Ask \[redacted:email\]$/);
   assert.ok(doc.cuts.some((cut) => cut.at === "/graph/nodes/0/items/0/label" && cut.kind === "format"));

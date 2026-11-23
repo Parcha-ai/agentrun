@@ -17,6 +17,7 @@ import { packageSha256 } from "./agent-package.js";
 import { ApiError } from "./errors.js";
 import { SHARE_RUN_FIELDS } from "./scrub-command.js";
 import { type Cut, SCRUB_RULES, scrub, type ScrubOptions, type ScrubResult } from "./secret-cut.js";
+import { WITHHELD_SIGN_IN } from "./run-view.js";
 import { stable } from "./validate.js";
 
 export { SHARE_RUN_FIELDS };
@@ -106,6 +107,21 @@ function runOf(view: Readonly<Record<string, unknown>>): Record<string, unknown>
   return run;
 }
 
+/** The fields of the graph's `run` a share carries: its status, pause and times. Its id, agent and revision are dropped,
+ *  as the run allowlist drops them. */
+const GRAPH_RUN_FIELDS = ["status", "paused", "startedAt", "endedAt"] as const;
+
+/** A workflow run's graph as its route serves it, but for its `read_at` (the read's own time: it would make two exports
+ *  of one run differ) and its run's ids. */
+function graphOf(graph: Readonly<Record<string, unknown>> | null): Record<string, unknown> | null {
+  if (!graph) return null;
+  const { read_at: _readAt, run, ...rest } = graph;
+  if (run === null || typeof run !== "object") return rest;
+  const kept: Record<string, unknown> = {};
+  for (const field of GRAPH_RUN_FIELDS) if (Object.hasOwn(run, field)) kept[field] = (run as Record<string, unknown>)[field];
+  return { ...rest, run: kept };
+}
+
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 /** `bytes` as text when they are UTF-8 with no NUL byte (a text file), else undefined. */
 function textOf(bytes: Uint8Array): string | undefined {
@@ -160,7 +176,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     agent: { name: input.agent.name, kind },
     run: runOf(input.view),
     rows: input.rows,
-    graph: input.graph ?? null,
+    graph: graphOf(input.graph),
     files: carried.map((file) => ({ path: file.path, content: file.content })),
     omitted,
   };
@@ -260,4 +276,40 @@ async function readBack(body: string, held: readonly string[], restored: boolean
     throw new ExportFailed("its read-back threw");
   }
   if (found.some((cut) => !cut.restorable || !restored)) throw new ExportFailed("its read-back found a value the cut pass left");
+}
+
+/** What the export reads of a run, each through the function that serves it (the switch wires the server's own). */
+export interface ExportReads {
+  /** The run as GET /runs/{id} serves it, or undefined for no such run. */
+  view(): Promise<Readonly<Record<string, unknown>> | undefined>;
+  /** Whether the run is withheld: this server can't read back the sign-in it was handed. */
+  withheld(): Promise<boolean>;
+  /** Its Timeline rows as served. */
+  rows(): Promise<readonly unknown[]>;
+  /** A workflow run's graph as served. */
+  graph(): Promise<Readonly<Record<string, unknown>>>;
+  /** Its files as listed, each readable, and whether the list was cut at its cap. */
+  files(): Promise<{ files: readonly ExportFile[]; truncated: boolean }>;
+  /** Agent `agentId`'s name. */
+  agentName(agentId: string): Promise<string | undefined>;
+  /** The run's cut set (run-cut.ts runCutValues). */
+  cut(): Promise<{ values: string[] } | "unreadable">;
+}
+
+/** Run `runId`'s bundle, gathered: its view, rows, graph (a workflow's) and files, then its cut set, read last (the cut
+ *  only grows, so the last read holds every value an earlier read cut by). 409 run_not_final while it is not settled, 403
+ *  while it is withheld (before anything else of it is read, and again if its cut can't be read at the end). */
+export async function runExport(runId: string, reads: ExportReads, options: Pick<ExportInput, "restore" | "version" | "scrub" | "caps">): Promise<{ body: string; sha256: string }> {
+  const view = await reads.view();
+  if (!view) throw new ApiError("not_found", `There is no run ${runId}.`);
+  // Settled: terminal, its end in the store, and nothing more of it in flight (its view's poll_after_ms is 0).
+  if (view.poll_after_ms !== 0) throw new ApiError("run_not_final", `The run ${runId} has not ended: a run exports once it has.`);
+  if (await reads.withheld()) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  const rows = await reads.rows();
+  const graph = view.kind === "workflow" ? await reads.graph() : null;
+  const { files, truncated } = await reads.files();
+  const name = (typeof view.agent_id === "string" ? await reads.agentName(view.agent_id) : undefined) ?? "";
+  const cut = await reads.cut();
+  if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  return exportBundle({ runId, agent: { name }, view, rows, graph, files, filesTruncated: truncated, held: cut.values, ...options });
 }
