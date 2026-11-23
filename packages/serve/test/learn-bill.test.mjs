@@ -14,6 +14,7 @@ import { storeOn } from "./store-helpers.mjs";
 
 const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { forgetRunCopies, PROMOTIONS_KEPT, recordPromotion } = await import("../dist/learn/promote.js");
 
 const A = "a".repeat(16);
 const B = "b".repeat(16);
@@ -213,9 +214,12 @@ const kept = ({ job, look, digest, error, capped = false, workflow }) => ({
  *  - `capped`: run-03's compile spent its $0.20 on a draft the checks refused, then the cap refused its next attempt, so
  *    its round kept the spend and no draft;
  *  - `recompiled`: run-09 after them, an agent run at $1.07 whose session recompiled the workflow into revision R (the job
- *    $1.00, the compile turn $0.07), which no record names: its check has not started. */
+ *    $1.00, the compile turn $0.07), which no record names: its check has not started;
+ *  - `fresh`: run-10 after them, an agent run at $1.05 whose session recompiled the workflow into revision D (the job
+ *    $1.00, the compile turn $0.05). */
 const R = "f".repeat(16);
-async function splitStore(t, { replay = 0.3, records, capped = false, recompiled = false } = {}) {
+const D = "d".repeat(16);
+async function splitStore(t, { replay = 0.3, records, capped = false, recompiled = false, fresh = false } = {}) {
   const clock = { now: Date.parse(at(0)) };
   const { store } = await storeOn(t, { clock });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
@@ -235,6 +239,7 @@ async function splitStore(t, { replay = 0.3, records, capped = false, recompiled
   for (const id of ["run-04", "run-05", "run-06", "run-07"]) await end(id, 0.1, served);
   await end("run-08", 3, { path: "agent" });
   if (recompiled) await end("run-09", 1.07, { path: "agent" }, { round: kept({ job: 1, look: 0.07, digest: R }) });
+  if (fresh) await end("run-10", 1.05, { path: "agent" }, { round: kept({ job: 1, look: 0.05, digest: D }) });
   const bar ={ compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = { workflow: "answer", digest: C, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"] } };
   await store.settings.put("learning.promotions.agent-1", { v: 1, items: records ?? [promote] });
@@ -322,6 +327,84 @@ test("a recompile's revision whose check has not started is a `drafted` row carr
   // Across both reads: the same compile, the same booked total and the same rest, each once.
   assert.deepEqual([sumOf(checking.revisions, "compile_usd"), micro(checking.booked_usd), micro(checking.unattributed_usd), unnamed(checking)], [sumOf(drafted.revisions, "compile_usd"), micro(drafted.booked_usd), micro(drafted.unattributed_usd), unnamed(drafted)]);
   assert.equal(sumOf(checking.revisions, "compile_usd"), micro(0.37), "C's $0.30 and R's $0.07");
+});
+
+/** The split store with R and D compiled (run-09 at m12, run-10 at m13), its feed made full and then trimmed by one write
+ *  (recordPromotion): C's promote, `champions` other workflows' promotes (each its workflow's champion: the trim keeps
+ *  it), with `replaying` workflow w-r's check of C at work since m6+30s (the trim keeps it while it replays), R's check stopped with nothing to check it on (runner/promotion.ts stopUnchecked's record: n 0, stopped, no
+ *  replay ran it) at m12+30s, another workflow's holds at m12+40s (the newest naming run-08 in a disagreement), then the
+ *  write's own hold at m12+50s. The trim drops R's stop. */
+const trimBar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
+const after = (minute, seconds) => new Date(Date.parse(at(minute)) + seconds * 1000).toISOString();
+const otherHold = (when, extra = {}) => ({ workflow: "other", digest: "0".repeat(16), at: when, decided: "hold", reason: "its draft failed its checks", ...extra });
+const replayingRecord = { workflow: "w-r", digest: C, at: after(6, 30), decided: "replaying", reason: "its check is replaying", check: trimBar, runs: ["replay-w"], inputs: ["run-08"], replay_id: "rp-w" };
+async function trimmedStore(t, { champions = 0, replaying = false } = {}) {
+  const store = await splitStore(t, { recompiled: true, fresh: true });
+  const key = "learning.promotions.agent-1";
+  const { items: [promote] } = await store.settings.get(key);
+  const stop = { workflow: "answer", digest: R, at: after(12, 30), decided: "hold", reason: "nothing to check it on: the agent has no completed run of its own to check it against. It is not promoted, and it stops", check: { ...trimBar, n: 0, agreed: 0, alone: 0, of: [], stopped: true } };
+  const others = Array.from({ length: champions }, (_, i) => ({ workflow: `w-${i}`, digest: C, at: after(6, i + 1), decided: "promote", reason: "checked: promoted", check: { ...trimBar, n: 2, agreed: 2, alone: 2, of: [] } }));
+  const holds = PROMOTIONS_KEPT - 2 - champions - (replaying ? 1 : 0);
+  const named = { check: { ...trimBar, n: 1, agreed: 0, alone: 0, of: ["run-08"], disagreements: [{ run: "run-08", input: "Go.", agent: "its answer" }] } };
+  const fillers = Array.from({ length: holds }, (_, i) => otherHold(after(12, 40), i === holds - 1 ? named : {}));
+  await store.settings.put(key, { v: 1, items: [promote, ...others, ...(replaying ? [replayingRecord] : []), stop, ...fillers] });
+  assert.ok((await recordPromotion(store.settings, "agent-1", otherHold(after(12, 50)), () => true)).won);
+  const feed = await store.settings.get(key);
+  assert.equal(feed.items.length, PROMOTIONS_KEPT);
+  assert.ok(feed.items.some((one) => one.digest === C && one.workflow === "answer"), "C's promote, its workflow's champion, is kept");
+  assert.ok(!feed.items.some((one) => one.digest === R), "the trim dropped R's stop");
+  return { store, key, stop, feed };
+}
+const answerRows = (bill) => bill.revisions.filter((one) => one.workflow === "answer").map((one) => [one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]);
+const unnamedMicro = (bill) => Math.round(bill.unattributed_usd * 1e6) - bill.revisions.reduce((total, one) => total + Math.round(one.unattributed_usd * 1e6), 0);
+
+test("dropped_at (a): a revision whose zero-input stop the trim dropped is never `drafted`: its compile stays the unnamed rest", async (t) => {
+  const { store } = await trimmedStore(t);
+  const bill = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.ok(!answerRows(bill).some(([digest]) => digest === R), `no R row: ${JSON.stringify(answerRows(bill))}`);
+  assert.equal(unnamedMicro(bill), 270_000, "the rest no row names: run-03's failed compile ($0.20) and R's compile turn ($0.07)");
+  await v2Of(store, bill);
+});
+
+test("dropped_at (b): a draft compiled after the trim's newest drop is `drafted`, its compile on its own row", async (t) => {
+  const { store } = await trimmedStore(t);
+  const bill = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.deepEqual(answerRows(bill).filter(([digest]) => digest !== R), [
+    [C, 0.3, 0.6, 0.9, 3, 4, 0.9, 0, "serving"],
+    [D, 0.05, 0, 0.05, 3, 0, 0, 0.05, "drafted"],
+  ]);
+  await v2Of(store, bill);
+});
+
+test("dropped_at (c): with more than RECENT_KEPT records the trim protects, a stop newer than the 100th-newest record kept is dropped, and its revision is still never `drafted`", async (t) => {
+  const { store, stop, feed } = await trimmedStore(t, { champions: 120 });
+  assert.ok(Date.parse(stop.at) > Date.parse(feed.items[feed.items.length - PROMOTIONS_KEPT / 2].at), "the stop is newer than the oldest of the newest 100 records kept: a newest-100 bound would call R drafted");
+  const bill = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.deepEqual(answerRows(bill).map(([digest, , , , , , , , state]) => [digest, state]), [[C, "serving"], [D, "drafted"]], "no R row");
+  assert.equal(unnamedMicro(bill), 270_000);
+  await v2Of(store, bill);
+});
+
+test("dropped_at (d): it is the newest drop ever, and every later write of the feed keeps it: one that trims nothing, one whose trim drops only older records, and the unread-skip write", async (t) => {
+  const { store, key, stop } = await trimmedStore(t, { replaying: true });
+  const droppedAt = async () => (await store.settings.get(key)).dropped_at;
+  assert.equal(await droppedAt(), stop.at, "the newest `at` the trim dropped");
+  // A write that trims nothing: a purge blanks run-08's disagreement (forgetRunCopies).
+  await forgetRunCopies(store.settings, "agent-1", "run-08");
+  const blanked = (await store.settings.get(key)).items.at(-2);
+  assert.deepEqual(blanked.check.disagreements, [{ run: "run-08", input: "", agent: null }], "the purge wrote");
+  assert.equal(await droppedAt(), stop.at, "a write that trims nothing keeps it");
+  // w-r's check settles (held): its replaying record, kept while it replayed, is the oldest one the trim may drop now,
+  // older than the drop before.
+  const { runs: _runs, inputs: _inputs, replay_id: _id, ...check } = replayingRecord;
+  assert.ok((await recordPromotion(store.settings, "agent-1", { ...check, at: after(12, 52), decided: "hold", reason: "checked: held" }, () => true)).won);
+  assert.ok(!(await store.settings.get(key)).items.some((one) => one.at === replayingRecord.at), "the trim dropped w-r's replaying record");
+  assert.equal(await droppedAt(), stop.at, "the newest drop ever, never the newest of this trim");
+  // The purge gate could not read a commit: the write trims nothing (Refused.unread).
+  const unread = async () => Object.assign(() => false, { unread: true });
+  assert.ok((await recordPromotion(store.settings, "agent-1", otherHold(after(12, 55)), () => true, unread)).won);
+  assert.equal((await store.settings.get(key)).items.length, PROMOTIONS_KEPT + 1, "the unread-skip write trimmed nothing");
+  assert.equal(await droppedAt(), stop.at, "the unread-skip write keeps it");
 });
 
 test("A8: a served run whose revision's check cost is unknown reports learning_usd and all_in_usd null, never $0; the ledger's remainder is unknown too", async (t) => {
