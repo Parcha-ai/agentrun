@@ -1,8 +1,11 @@
 // Claude Code: ~/.claude/projects/<cwd slug>/<session id>.jsonl, its subagents' in <session id>/subagents/ (children).
 import { lstat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
+import { addRecord, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
+import { packed, packInto } from "../record-key.js";
 import { argsOf, effortOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
 import type { Answer, SessionOf, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
@@ -10,6 +13,8 @@ import { normalizeUsage } from "../usage.js";
 type Own = {
   /** This file's requests by key (keyOf), each a turn its later lines join. */
   keyed: Map<string, Answer>;
+  /** A totals read's instead: each request's index in its counts, by its key packed (packInto). */
+  indexes?: RecordIndex;
   /** The calls of requests that were copies, whose results are copies too. */
   copied: Set<string>;
   /** Its titles (titleRecord), and its records' uuids, for the summaries' leaves. */
@@ -42,16 +47,19 @@ const keyOf = (message: Record<string, unknown>, value: Record<string, unknown>)
   return id && request ? `${id}:${request}` : id;
 };
 
+const PACKED = packed();
+
 /** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
 function record(value: Record<string, unknown>, at: number, { state, seen, keep, add }: ReadContext<Own>): boolean | void {
-  const { session, names, own } = state;
+  const { session, names, own, counts } = state;
   // Claude Code names a session's file for its id (<id>.jsonl): the file's own, whatever a record in it says. A resumed
   // session's file can open with records copied from the session it resumed, each still naming that one.
   if (!session.id) session.id = basename(session.file, ".jsonl");
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
-  if (TITLES.has(value.type as string)) return titleRecord(value, session, own.titles);
-  if (str(value.uuid)) own.titles.uuids.add(value.uuid as string);
+  // A totals read keeps no title, nor the uuids a summary's is checked against.
+  if (TITLES.has(value.type as string)) return counts ? undefined : titleRecord(value, session, own.titles);
+  if (str(value.uuid) && !counts) own.titles.uuids.add(value.uuid as string);
   if (value.type === "cost-state") {
     // The last one is the session's: unknown when the CLI could not price a model it used.
     session.costUsd = typeof value.totalCostUSD === "number" && Number.isFinite(value.totalCostUSD) && value.totalCostUSD >= 0 && value.hasUnknownModelCost !== true ? value.totalCostUSD : undefined;
@@ -83,7 +91,8 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
         name: String(b.name ?? ""),
         arguments: keep ? argsOf(b.input) : {},
       }));
-    for (const call of calls) names.set(call.id, call.name);
+    // A tool's name is for its result's turn: none is kept without turns.
+    if (keep) for (const call of calls) names.set(call.id, call.name);
     // The CLI's own turns (model <synthetic>): one marked an API error is a request that failed; any other ("No response
     // requested.") is no request, kept as the CLI's note.
     const failed = value.isApiErrorMessage === true;
@@ -97,6 +106,27 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     // stream's start): the last line's usage is the request's.
     const key = keyOf(message, value);
     const usage = normalizeUsage("anthropic", message.usage);
+    if (counts) {
+      // A totals read: the request's model and usage alone, its later lines' usage over it, as below.
+      const indexes = (own.indexes ??= recordIndex(64));
+      const at = key ? packInto(key, PACKED) : undefined;
+      const index = at ? ownerOf(indexes, at) : -1;
+      if (index !== -1) {
+        if (usage) setUsage(counts, index, usage);
+        return;
+      }
+      if (key && (seen.has(`m:${key}`) || (str(message.id) && seen.has(`l:${message.id}`)))) {
+        for (const call of calls) own.copied.add(call.id);
+        return false;
+      }
+      if (!key && !text && calls.length === 0) return;
+      const added = addRequest(counts, session.model, usage);
+      if (at) {
+        addRecord(indexes, at, added);
+        seen.add(`m:${key}`);
+      }
+      return;
+    }
     const held = key ? own.keyed.get(key) : undefined;
     if (held) {
       if (keep) held.text = [held.text, text].filter(Boolean).join("\n");

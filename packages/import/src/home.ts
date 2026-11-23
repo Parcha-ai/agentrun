@@ -7,6 +7,7 @@ import { type CalculateCost, type Catalog, builtinCatalog, type Priced, priceReq
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
+import { HAS_LONG, HAS_REASONING, HAS_USAGE, USAGE_FIELDS } from "./counts.js";
 import { addAll, addRecord, dropOwner, isRecordIndex, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -38,9 +39,10 @@ export type SessionTotals = {
 
 /** What parseHome keeps between passes, when handed one: each locator's cursor (its reader's own), the records each
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
- *  second pass reads only what was written since. It holds no session text (its reads are turns: false: counts, ids and
- *  paths alone), so it can be kept with v8.serialize. Its contents are the package's; `read` is the last pass's bytes. A
- *  source's part kept by an earlier version of another shape is set aside, and that source read again from its start. */
+ *  second pass reads only what was written since. It holds no session text (its reads are turns: false and totals: counts,
+ *  ids and paths alone, each request as its model and usage), so it can be kept with v8.serialize. Its contents are the
+ *  package's; `read` is the last pass's bytes. A source's part kept by an earlier version of another shape is set aside,
+ *  and that source read again from its start. */
 export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
 
 /** One source's part of a HomeState. */
@@ -102,17 +104,30 @@ type Compact = {
   has: Uint8Array;
 };
 
-const USAGE_FIELDS = 6;
-const HAS_USAGE = 1;
-const HAS_LONG = 2;
-const HAS_REASONING = 4;
-
 /** Each model string once, by index: a request names its model as an index into it. */
 type Models = { names: string[]; index: Map<string, number> };
 
 /** `read` as a total takes it (Compact), each request's model the one totalsOf prices it at. */
 function compact(read: SessionRead, models: Models): Compact {
   const { id, child, parent, users, copies, costUsd, model } = read.session;
+  const { counts } = read;
+  if (counts) {
+    // A totals read's requests, as read: each one's model mapped to the pass's (its own, else the session's).
+    const intern = (name: string | undefined): number => {
+      if (name === undefined) return -1;
+      let at = models.index.get(name);
+      if (at === undefined) models.index.set(name, (at = models.names.push(name) - 1));
+      return at;
+    };
+    const names = counts.models.map(intern);
+    const fallback = intern(model);
+    return {
+      session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) },
+      models: counts.model.slice(0, counts.n).map((at) => (at === -1 ? fallback : names[at]!)),
+      usage: counts.usage.slice(0, counts.n * USAGE_FIELDS),
+      has: counts.has.slice(0, counts.n),
+    };
+  }
   const n = read.requests.length;
   const out: Compact = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n) };
   for (let i = 0; i < n; i += 1) {
@@ -229,7 +244,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return this;
         },
       } as Set<string>;
-      const result = await reader.read(locator, cursor, { turns: false, seen }).catch((error: unknown) => void unread.push({ locator, error }));
+      const result = await reader.read(locator, cursor, { turns: false, totals: true, seen }).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass
         // would hold none of them: the next pass reads it from its start. A locator that found them already read (a
@@ -250,7 +265,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       return result.sessions;
     };
     const tops: Part[] = [];
-    // Each locator's sessions packed as soon as they are read: only one locator's requests are ever held whole.
+    // Each locator's sessions packed as soon as they are read. A totals read gives each request's counts alone, and its
+    // cursor, kept in a state between passes, holds those too: no request is held as an object, by a pass or a state. A
+    // reader with no totals read gives its requests whole: only one locator's are held so at a time.
     for (const { locator } of listed) for (const session of await read(locator)) tops.push({ locator: session.locator, read: compact(session, models) });
     const children: (Part & { of: Locator })[] = [];
     for (const { locator, of } of childList) for (const session of await read(locator)) children.push({ locator: session.locator, read: compact(session, models), of });
