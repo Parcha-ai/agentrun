@@ -50,7 +50,9 @@ async function runScript(cwd: string, args: readonly string[], stdin?: Buffer): 
 
 /** The script runs as the leader of its own process group, so its deadline, a cut and its exit each kill the group
  *  whole: a git the script started (a gc, a fast-import, a read-tree) never outlives it. Once the script exited, its
- *  pipes get PIPE_GRACE_MS to close before they are closed here, so nothing a stuck git holds open keeps the call. */
+ *  pipes get PIPE_GRACE_MS to close: the answer is handed back only when they closed on their own (all of it read);
+ *  pipes still held past the grace are closed here and the call fails, so nothing holding them keeps the call and no
+ *  answer cut short is ever taken for a whole one. */
 function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
     const timeoutMs = localStoreHooks.timeoutMs ?? SCRIPT_TIMEOUT_MS;
@@ -59,8 +61,10 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let size = 0;
+    let errSize = 0;
     let cut = false;
     let timedOut = false;
+    let held = false;
     let exit: { code: number | null } | undefined;
     let settled = false;
     let grace: NodeJS.Timeout | undefined;
@@ -71,6 +75,11 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
     const timer = setTimeout(() => {
       timedOut = true;
       killGroup();
+      // Exited already, its output still going (a holder that writes on): the deadline ends the call.
+      if (exit === undefined) return;
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish();
     }, timeoutMs);
     const finish = (): void => {
       if (settled || exit === undefined) return;
@@ -80,6 +89,7 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
       const stderr = Buffer.concat(err).toString("utf8");
       if (cut) return reject(new FolderUnreadable(false, `the learning script's ${args[0]} said more than this server reads`));
       if (timedOut) return reject(new Error(`the learning script's ${args[0]} did not finish in ${timeoutMs / 1000} s: ${stderr.trim().slice(0, 500)}`));
+      if (held) return reject(new Error(`the learning script's ${args[0]} exited, but its output stayed open past ${PIPE_GRACE_MS / 1000} s: a process it started still holds it, so what was read is not its whole answer`));
       if (exit.code === null) return reject(new Error(`the learning script's ${args[0]} did not finish: ${stderr.trim().slice(0, 500)}`));
       resolve({ code: exit.code, stdout: Buffer.concat(out), stderr });
     };
@@ -90,7 +100,10 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
         killGroup();
       } else if (!cut) out.push(chunk);
     });
-    child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => {
+      errSize += chunk.length;
+      err.push(chunk);
+    });
     child.stdin.on("error", () => undefined);
     child.on("error", (error) => {
       if (settled) return;
@@ -102,11 +115,19 @@ function spawnScript(cwd: string, args: readonly string[], stdin?: Buffer): Prom
     child.on("exit", (code) => {
       exit = { code };
       killGroup();
-      grace = setTimeout(() => {
+      // Past the grace, the event loop's reads go on while each pass brings more (a loop busy past the grace runs its
+      // timers before it reads what waits in the pipes): output read to its end closes on its own ('close' follows).
+      // A pass that brings neither bytes nor the end finds the output held by a process the group kill never reached,
+      // and the call fails, never handing back what it read so far.
+      const pass = (seen: number): void => {
+        if (settled || (child.stdout.readableEnded && child.stderr.readableEnded)) return;
+        if (!cut && size + errSize !== seen) return void setImmediate(() => pass(size + errSize));
+        held = true;
         child.stdout.destroy();
         child.stderr.destroy();
         finish();
-      }, PIPE_GRACE_MS);
+      };
+      grace = setTimeout(() => setImmediate(() => pass(-1)), PIPE_GRACE_MS);
     });
     child.on("close", finish);
     child.stdin.end(stdin ?? Buffer.alloc(0));
