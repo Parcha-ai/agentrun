@@ -247,7 +247,9 @@ async function viewHits(rules: readonly ScrubRule[], view: View, offset: number,
       if (!Number.isInteger(hit.start) || !Number.isInteger(hit.end) || hit.start < 0 || hit.end > view.text.length || hit.end < hit.start) throw new Error(`scrub: rule ${rule.id} gave a span outside the text`);
       if (hit.end === hit.start) continue;
       if (rule.kind === "label") {
-        const slot = { name: hit.name, bare: hit.quoted !== true && !QUOTES.includes(view.source.charAt(hit.start - 1) || " "), after: view.text.slice(hit.end, hit.end + 8), code: hit.code, typed: hit.typed };
+        // What follows the value is read on its own line or in its own string only (ruling LIV, XLVI's bound): a JSON
+        // string's end and its object's `}` or `,` after it are no code's evidence for the value.
+        const slot = { name: hit.name, bare: hit.quoted !== true && !QUOTES.includes(view.source.charAt(hit.start - 1) || " "), after: view.text.slice(hit.end, Math.min(hit.end + 8, ctx.lines?.end(hit.end) ?? view.text.length)), code: hit.code, typed: hit.typed };
         if (isPlaceholder(view.text.slice(hit.start, hit.end), slot)) continue;
       }
       const [start, end] = inputSpan(view, hit.start, hit.end);

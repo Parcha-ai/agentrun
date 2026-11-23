@@ -1518,6 +1518,42 @@ test("LIII: a bare name written to the environment or an object's member is a va
   assert.deepEqual(out.cuts.map((cut) => [cut.rule, cut.kind, cut.restorable]), [["secret-assign", "label", true]]);
 });
 
+test("LIV: a slot reads what follows its value on its own line or in its own string; every wrapper cuts as raw does", async () => {
+  // Every code slot kind (XXI/XLV entries, kwargs, member and environment writes, quoted keys, config lines) with a
+  // credential-named bare literal: the cuts in json1, json2 and a tool_result are the raw text's.
+  const slots = [
+    (v) => `os.environ["DB_PASSWORD"] = ${v}`, (v) => `ENV["API_TOKEN"]=${v}`, (v) => `process.env.DB_PASSWORD = ${v}`, (v) => `import.meta.env.VITE_API_TOKEN = ${v}`,
+    (v) => `self.DB_PASSWORD = ${v}`, (v) => `this.apiToken = ${v}`, (v) => `settings.SECRET_KEY = ${v}`, (v) => `self.api_token=${v}`,
+    (v) => `client = Client(api_key=${v}`, (v) => `connect(host="db", password=${v}`, (v) => `conf = { token: ${v}`, (v) => `  apiKey: ${v}`, (v) => `    token=${v}`,
+    (v) => `{"password": ${v}`, (v) => `  "api_key": ${v}`, (v) => `headers = {"X-Api-Key": ${v}`, (v) => `os.environ['DB_PASSWORD'] = ${v}`, (v) => `cfg = {'token': ${v}`, (v) => `ENV["DB_PASSWORD"] = ${v}`,
+    (v) => `API_KEY=${v}`, (v) => `api_key=${v}`, (v) => `password: ${v}`, (v) => `export DB_PASSWORD=${v}`, (v) => `password = ${v}`, (v) => `DB_PASSWORD = ${v}`,
+    (v) => `f(token=${v})`, (v) => `{token: ${v}}`, (v) => `token=${v},`, (v) => `Client(api_key=${v}, timeout=3)`, (v) => `x = { password: ${v} }`,
+  ];
+  const wrappers = [
+    (s) => JSON.stringify({ type: "text", text: s }),
+    (s) => JSON.stringify({ type: "progress", data: JSON.stringify({ type: "text", text: s }) }),
+    (s) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01", content: s }] } }),
+  ];
+  const cutsOf = async (text, value) => (await scrub(text, { mode: "count" })).cuts.map((cut) => `${cut.rule}:${text.slice(cut.start, cut.end).includes(value.slice(0, 6))}`).sort().join(",");
+  const differ = [];
+  for (const slot of slots) {
+    for (const v of ["Zq8RtYw2Lp4", "sunshine", "Zq8!Rt#Yw2Lp"]) {
+      const want = await cutsOf(slot(v), v);
+      for (const wrap of wrappers) if ((await cutsOf(wrap(slot(v)), v)) !== want) differ.push(wrap(slot(v)));
+    }
+  }
+  assert.deepEqual(differ, []);
+  // The engine's bound itself: a label rule that finds `K["NAME"] = value` only where the subscript's quotes are real
+  // (so only in the view that decodes the string, whose own quotes it blanked) gives no code flag; the string's end
+  // and the `}`, `,` or `)` after it must not read as an entry's end, so the value is cut in every wrapper as raw.
+  const subscript = { id: "secret-assign", kind: "label", restorable: true, find: (text) => [...text.matchAll(/K\["PASS"\] = ([A-Za-z0-9]{1,64})/dg)].map((m) => ({ start: m.indices[1][0], end: m.indices[1][1], name: "PASS" })) };
+  const line = `K["PASS"] = Zq8RtYw2Lp4`;
+  for (const text of [line, JSON.stringify({ text: line }), JSON.stringify([line, "x"]), JSON.stringify({ data: JSON.stringify({ text: line }) }), JSON.stringify({ content: [{ type: "tool_result", content: line }] })]) {
+    const out = await scrubWith([subscript], text, { mode: "count" });
+    assert.equal(out.cuts.length, 1, text);
+  }
+});
+
 test("LII: npmrc's auth keys open after every line lead the line-anchored rules read", async () => {
   const v = "Zq8RtYw2Lp4Kx9Vb3Nm";
   const leads = {
