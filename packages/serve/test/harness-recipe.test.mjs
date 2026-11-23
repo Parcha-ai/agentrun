@@ -1380,8 +1380,14 @@ test("a trigger's message never runs in a session its claim started on its owner
   // A failed assertion never leaves the held request open.
   t.after(() => go());
   // The person's first turn holds at the vendor until `go`: the run's session stays open on the sign-in meanwhile.
+  // `reached` settles the moment the vendor hears it, so the test waits on that request, never on a clock.
+  let arrived;
+  const reached = new Promise((resolve) => (arrived = resolve));
   const step = async (body) => {
-    if (JSON.stringify(body.messages ?? []).includes("Hold the answer")) await held;
+    if (JSON.stringify(body.messages ?? []).includes("Hold the answer")) {
+      arrived();
+      await held;
+    }
     return checkStep(body);
   };
   const { data, file, origin } = await installed(t, (o) => signingIn(o), step);
@@ -1391,10 +1397,8 @@ test("a trigger's message never runs in a session its claim started on its owner
   const { owner } = await asOwnerAndToken(server);
   assert.equal((await server.api("POST", "/agents", agent("held", { harness: "model-agent", model: "model-agent/default" }))).status, 201);
   const run = (await server.api("POST", "/agents/held/runs", { input: { content: "Hold the answer until told." }, max_cost_usd: 1 })).body;
-  for (const end = Date.now() + 60_000; !origin.messages().some((r) => JSON.stringify(r.body).includes("Hold the answer")); ) {
-    assert.ok(Date.now() < end, "the person's turn reached the vendor");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+  // The person's turn reached the vendor (the test's timeout bounds the wait).
+  await reached;
   assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === TOKEN), "the person's turn on the owner's sign-in");
 
   // Its harness's key saved now: a trigger's message to the run is no longer refused where it is made.
