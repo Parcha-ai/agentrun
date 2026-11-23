@@ -21,16 +21,28 @@ export interface ClaudeAgentLogin {
    *  home. Their own CLI, run with no folder variable, keeps the account in `<home>/.claude.json` and, on macOS, its
    *  tokens in the Keychain item with no suffix; the variables below reach that same login (signInEnv, loginEnv). */
   home?: string;
+  /** Set only for a person's own login whose CLI keeps its credentials apart from `dir`, because the server's env sets
+   *  `CLAUDE_SECURESTORAGE_CONFIG_DIR`: the folder it names, absolute (set and empty, `<home>/.claude`, the CLI's rule). */
+  secure?: string;
+  /** With `secure`: the variable was set and empty, which on macOS names the Keychain item with no suffix, so it goes to
+   *  the CLI empty there too. */
+  unsuffixed?: boolean;
 }
+
+/** `login.secure` as the CLI's variable on `platform` (undefined when it is not set apart): empty on macOS where the
+ *  person's own was set and empty. */
+const secureVar = (login: ClaudeAgentLogin, platform: NodeJS.Platform): string | undefined => (login.secure === undefined ? undefined : login.unsuffixed && platform === "darwin" ? "" : login.secure);
 
 /** The variables that point a session's CLI at `login`: never its config dir (`CLAUDE_CONFIG_DIR`), which the Agent SDK
  *  copies a credentials file out of when it resumes a session, so the credentials dir (`CLAUDE_SECURESTORAGE_CONFIG_DIR`)
  *  is always set. On macOS the CLI names its Keychain item from that dir (`-<sha256 of it>` after the name) unless it is
  *  set and empty; unset, it would hash the session's own config dir. So a login on the CLI's default folder (`home`) gets
  *  an empty one on macOS (the item with no suffix, the person's own CLI's), and its folder elsewhere, where the CLI keeps
- *  `.credentials.json` in that dir. `platform`: the one the CLI runs on, this host's. */
+ *  `.credentials.json` in that dir. A login whose credentials dir is set apart (`secure`) gets that one, as the person's
+ *  own CLI with it does. `platform`: the one the CLI runs on, this host's. */
 export function loginEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = process.platform): Record<string, string> {
-  return { CLAUDE_SECURESTORAGE_CONFIG_DIR: login.home !== undefined && platform === "darwin" ? "" : login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
+  const secure = secureVar(login, platform) ?? (login.home !== undefined && platform === "darwin" ? "" : login.dir);
+  return { CLAUDE_SECURESTORAGE_CONFIG_DIR: secure, ANTHROPIC_CONFIG_DIR: login.profiles };
 }
 
 /** The variables of the CLI's own sign-in at `login` and of its status check there. The line a person runs
@@ -43,10 +55,14 @@ export function loginEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = pr
  *  - Anywhere else: the login's folder as both the config dir and the credentials dir. `auth login` writes the account it
  *    signed in to its config dir's `.claude.json` and `auth status` reads it from there. For a folder the person's own
  *    CLI uses through `CLAUDE_CONFIG_DIR`, the credentials dir set to that folder is where that CLI keeps its tokens too
- *    (Linux: the same file; macOS: the same item, hashed from the same folder). */
-export function signInEnv(login: ClaudeAgentLogin): Record<string, string> {
-  if (login.home !== undefined) return { HOME: login.home, ANTHROPIC_CONFIG_DIR: login.profiles };
-  return { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
+ *    (Linux: the same file; macOS: the same item, hashed from the same folder).
+ *  - A credentials dir set apart (`secure`, from the server's `CLAUDE_SECURESTORAGE_CONFIG_DIR`) is the credentials dir
+ *    in either case, as for the person's own CLI with that variable (secureVar: empty on macOS when theirs is empty).
+ *  `platform`: the one the CLI runs on, this host's. */
+export function signInEnv(login: ClaudeAgentLogin, platform: NodeJS.Platform = process.platform): Record<string, string> {
+  const secure = secureVar(login, platform);
+  if (login.home !== undefined) return { HOME: login.home, ...(secure !== undefined ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: secure } : {}), ANTHROPIC_CONFIG_DIR: login.profiles };
+  return { CLAUDE_CONFIG_DIR: login.dir, CLAUDE_SECURESTORAGE_CONFIG_DIR: secure ?? login.dir, ANTHROPIC_CONFIG_DIR: login.profiles };
 }
 
 /** The CLI's folder variables: where it keeps its config (the account) and its credentials. */
@@ -57,9 +73,9 @@ const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as 
  *  cleared in a subshell, `(unset ...; ...)`, since a terminal that exports it would sign in there; the terminal keeps
  *  its own. The line stays the shell's own command, never `env`'s: env reads any word holding '=' as a variable (a CLI
  *  under /srv/a=b would never start) and skips the shell's aliases and functions, where a `claude` alias is often the
- *  CLI's local install. sh, bash and zsh all read this line the same way. */
-export const loginCommand = (login: ClaudeAgentLogin, cli = "claude"): string => {
-  const env = signInEnv(login);
+ *  CLI's local install. sh, bash and zsh all read this line the same way. `platform`: as signInEnv's. */
+export const loginCommand = (login: ClaudeAgentLogin, cli = "claude", platform: NodeJS.Platform = process.platform): string => {
+  const env = signInEnv(login, platform);
   const cleared = FOLDER_VARS.filter((name) => !(name in env));
   const run = [
     ...Object.entries(env).filter(([name]) => name !== "HOME").map(([name, value]) => `${name}=${shellWord(value)}`),

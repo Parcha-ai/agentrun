@@ -58,23 +58,31 @@ type Setting = { v: 1; place: LoginPlace; host: string; only_me: true };
  *  config dir is `CLAUDE_CONFIG_DIR` when set, else `~/.claude`, and its credentials are kept there too unless
  *  `CLAUDE_SECURESTORAGE_CONFIG_DIR` says otherwise. Read from the server's env, so a Claude Code started with another
  *  `CLAUDE_CONFIG_DIR` is found only when AgentRun was started with it as well. A relative one is not taken: the CLI would
- *  read it against a working directory this server does not share. `source` says which rule gave the folder. */
-export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" } {
-  if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR" };
+ *  read it against a working directory this server does not share. `source` says which rule gave the folder.
+ *  `credentials`: the server's `CLAUDE_SECURESTORAGE_CONFIG_DIR` when it sets one the CLI takes as it is (an absolute
+ *  path, or empty: `~/.claude`, and on macOS the Keychain item with no suffix), where the CLI keeps the tokens apart
+ *  from the folder; a relative one is not taken, as above. */
+export function machineFolder(env: Readonly<Record<string, string | undefined>> = process.env): { folder: string; source: "CLAUDE_CONFIG_DIR" | "default"; credentials?: string } {
+  const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  const credentials = secure === "" || (secure && isAbsolute(secure)) ? { credentials: secure } : {};
+  if (env.CLAUDE_CONFIG_DIR && isAbsolute(env.CLAUDE_CONFIG_DIR)) return { folder: env.CLAUDE_CONFIG_DIR, source: "CLAUDE_CONFIG_DIR", ...credentials };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
-  return { folder: join(home, ".claude"), source: "default" };
+  return { folder: join(home, ".claude"), source: "default", ...credentials };
 }
 
 /** The directories of a login at `place`: AgentRun's in `data`, or this machine's (machineFolder, and the Anthropic
  *  profiles where the CLI looks for them: `ANTHROPIC_CONFIG_DIR`, else `$XDG_CONFIG_HOME/anthropic`, else
  *  `~/.config/anthropic`). This machine's on the CLI's default folder carries the person's home too, so the harness
- *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). */
+ *  points the CLI at it as their own CLI runs, with no folder variable (the harness's signInEnv and loginEnv). This
+ *  machine's with a credentials dir in the server's env (machineFolder's `credentials`) carries it as `secure`, absolute
+ *  (empty: `~/.claude`, `unsuffixed`), so the CLI keeps the tokens where the person's own CLI with it does. */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env): ClaudeAgentLogin {
   if (place === "agentrun") return { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic") };
   const home = env.HOME && isAbsolute(env.HOME) ? env.HOME : homedir();
   const config = env.XDG_CONFIG_HOME && isAbsolute(env.XDG_CONFIG_HOME) ? env.XDG_CONFIG_HOME : join(home, ".config");
-  const { folder, source } = machineFolder(env);
-  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}) };
+  const { folder, source, credentials } = machineFolder(env);
+  const secure = credentials === undefined ? {} : credentials === "" ? { secure: join(home, ".claude"), unsuffixed: true } : { secure: credentials };
+  return { dir: folder, profiles: env.ANTHROPIC_CONFIG_DIR && isAbsolute(env.ANTHROPIC_CONFIG_DIR) ? env.ANTHROPIC_CONFIG_DIR : join(config, "anthropic"), ...(source === "default" ? { home } : {}), ...secure };
 }
 
 /** The setting as saved, or undefined when the mode is not on (or the row is not one this reads). */
@@ -160,8 +168,9 @@ export type ClaudeLoginView = {
   account?: { method?: string; email?: string; organization?: string; plan?: string };
   /** The folder whose login the CLI is asked about: the login's directory at `place`. */
   folder: string;
-  /** This machine's own Claude Code login as this server finds it (machineFolder). */
-  machine: { folder: string; source: "CLAUDE_CONFIG_DIR" | "default" };
+  /** This machine's own Claude Code login as this server finds it (machineFolder), with `credentials` where the server's
+   *  env sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` (empty included). */
+  machine: { folder: string; source: "CLAUDE_CONFIG_DIR" | "default"; credentials?: string };
   /** The CLI's sign-in this server started, while this server runs (claude-sign-in.ts). */
   sign_in?: SignInView;
 };

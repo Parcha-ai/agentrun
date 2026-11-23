@@ -4962,9 +4962,13 @@ class GetClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class GetClaudeLoginResponseMachine(TypedDict):
+class _GetClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class GetClaudeLoginResponseMachine(_GetClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _GetClaudeLoginResponseSignInRequired(TypedDict):
@@ -6316,9 +6320,13 @@ class StartClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class StartClaudeLoginResponseMachine(TypedDict):
+class _StartClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class StartClaudeLoginResponseMachine(_StartClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _StartClaudeLoginResponseSignInRequired(TypedDict):
@@ -6459,9 +6467,13 @@ class TurnOffClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class TurnOffClaudeLoginResponseMachine(TypedDict):
+class _TurnOffClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOffClaudeLoginResponseMachine(_TurnOffClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _TurnOffClaudeLoginResponseSignInRequired(TypedDict):
@@ -6507,9 +6519,13 @@ class TurnOnClaudeLoginResponseAccount(TypedDict, total=False):
     plan: str
 
 
-class TurnOnClaudeLoginResponseMachine(TypedDict):
+class _TurnOnClaudeLoginResponseMachineRequired(TypedDict):
     folder: str
     source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class TurnOnClaudeLoginResponseMachine(_TurnOnClaudeLoginResponseMachineRequired, total=False):
+    credentials: str
 
 
 class _TurnOnClaudeLoginResponseSignInRequired(TypedDict):

@@ -20,6 +20,12 @@ export function placeWords(place: ClaudeLoginView["place"], v: LoginView): strin
 export const checksFolder = (folder: string): string => `AgentRun asks the CLI about the login in ${folder}.`;
 /** Said of this machine's login where the server's environment names no CLAUDE_CONFIG_DIR. */
 export const MACHINE_DEFAULT_FOLDER = "That is Claude Code's default folder. If your Claude Code keeps its login in another one (it runs with CLAUDE_CONFIG_DIR set), start AgentRun with CLAUDE_CONFIG_DIR set to that folder as well.";
+/** Said of this machine's login where the server's environment sets CLAUDE_SECURESTORAGE_CONFIG_DIR (`credentials`, the
+ *  view's `machine.credentials`): the CLI keeps the tokens there, apart from the folder. */
+export const machineCredentials = (credentials: string): string =>
+  credentials
+    ? `Its credentials are read from ${credentials}, as CLAUDE_SECURESTORAGE_CONFIG_DIR in the server's environment says.`
+    : "Its credentials are read where CLAUDE_SECURESTORAGE_CONFIG_DIR set empty in the server's environment puts them: ~/.claude, and on macOS the Keychain item with no suffix.";
 
 /** "10 minutes", "30 seconds": a sign-in's limit in words. */
 export function limitWords(ms: number): string {

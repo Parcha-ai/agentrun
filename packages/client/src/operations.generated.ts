@@ -3199,6 +3199,7 @@ export type GetClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4012,6 +4013,7 @@ export type StartClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4120,6 +4122,7 @@ export type TurnOffClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4153,6 +4156,7 @@ export type TurnOnClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
