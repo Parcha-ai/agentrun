@@ -712,7 +712,8 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
 });
 
 /** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
- *  and passes the rest on, each answer as `edit(req, body)` makes it when given one (the body a Buffer). Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
+ *  and passes the rest on, each answer as `edit(req, body)` makes it when given one (the body a Buffer, or a promise of
+ *  one: one that never settles is a server that stalls). Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
  *  this proxy's, so it runs first at the test's end) is answered 502, never left as an unhandled rejection that fails
  *  the test after its assertions passed. */
 async function refusing(t, baseUrl, refuses, edit = (_req, body) => body) {
@@ -724,7 +725,7 @@ async function refusing(t, baseUrl, refuses, edit = (_req, body) => body) {
       const body = Buffer.concat(chunks);
       const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
       const passed = Buffer.from(await answer.arrayBuffer());
-      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(edit(req, passed));
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(await edit(req, passed));
     } catch (error) {
       if (res.headersSent) return void res.destroy();
       res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_gateway", message: `the test proxy's pass-on failed: ${error.message}` } }));
@@ -804,6 +805,23 @@ test("a run a runner holds is waited for while its view still reads queued (its 
   // Waited to the run's own bound, never given up on as queued after 1 s.
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
   assert.match(one.error, /^the run took longer than 30 s \(state working when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
+});
+
+test("a claim read that stalls holds neither the eval's stop nor the run's deadline: it is given up on and asked again, and the deadline ends the wait", { timeout: 120_000 }, async (t) => {
+  // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
+  // asks, as a server that took the request and stalled would.
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
+  let cancelled = false;
+  const stalled = (req, body) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelled = true;
+    return req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url) && !cancelled ? new Promise(() => {}) : body;
+  };
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, () => false, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 5_000 });
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 5 s \(state \w+ when the wait gave up\) and was cancelled$/);
   assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
