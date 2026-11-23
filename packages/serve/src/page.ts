@@ -37,6 +37,16 @@ const CONSOLE_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Addresses the console had before it took "/", and the old page's setup and sign-in, which the printed setup link
  *  still names: each sends the browser to "/", which keeps the link's #code. */
 const MOVED = new Set(["/console", "/console/", "/setup", "/sign-in"]);
+/** The share preview's addresses (the console's second entry, share.html): the page at /share/<run>, and the console's
+ *  assets under /share/assets/, where the page's relative URLs land. */
+const SHARE = "/share/";
+/** A run's id as the share page's address names it: one segment, never a dot segment, a trailing slash allowed. */
+const SHARE_RUN = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\/?$/;
+/** The share page's answer to a browser without this server's session: a fixed page under the CSP, never share.html. */
+const SIGN_IN_FIRST = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><title>Sign in first · AgentRun</title></head>
+<body><main><h1>Sign in to this server first</h1><p>A share preview shows what a run's share would publish, and only this server's owner may read it. Sign in at <a href="/">the console</a>, or open the link this server printed when it started, then open this page again.</p></main></body></html>
+`;
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const same = (given: string, expected: string) => timingSafeEqual(digest(given), digest(expected));
@@ -127,9 +137,10 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
   send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
 }
 
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): Promise<void> {
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
   const dir = server.console ?? CONSOLE_DIR;
+  if (raw.startsWith(SHARE)) return share(req, res, raw, dir, server, held);
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
   // Without accounts, the printed link's launch code gives this browser a console session (ConsoleSessions). The token
@@ -146,6 +157,20 @@ async function answer(req: IncomingMessage, res: ServerResponse, raw: string, se
   return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
 }
 
+/** The share preview (share.html) at /share/<run>, the owner's alone: a browser without this server's session (`held`:
+ *  the owner's signed-in session with accounts, the printed link's without) gets SIGN_IN_FIRST, a 401. The page reads the
+ *  run's export with that session (GET /v2/runs/<run>/export) and nothing else. Its assets are the console's, public. */
+async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, server: PageServer, held: boolean): Promise<void> {
+  const rest = raw.slice(SHARE.length);
+  if (rest.startsWith("assets/")) return file(req, res, raw, dir, rest);
+  if (!SHARE_RUN.test(rest)) return refuse(req, res, new ApiError("not_found", `no page ${raw}: a share preview is /share/<run id>`));
+  if (!held) {
+    server.authFailed?.("/share", "no_session");
+    return send(req, res, 401, HTML, SIGN_IN_FIRST);
+  }
+  return file(req, res, raw, dir, "share.html");
+}
+
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
  *  JSON body), never under an accounts-off console session. */
 const ownerSessions = new WeakSet<IncomingMessage>();
@@ -160,7 +185,8 @@ const consoleSessions = new WeakSet<IncomingMessage>();
 export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
 
 /**
- * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/"), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
+ * Answers the console's paths ("/" and its /assets/*, the addresses that moved to "/", and the share preview under
+ * /share/), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
  * own origin and its body is application/json, or the request is a PUT or POST to a route that takes bytes, with any
  * content type.
@@ -179,10 +205,10 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     }
     return false;
   }
-  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw)) return false;
+  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw) && !raw.startsWith(SHARE)) return false;
   // Every page answer (the console, its assets, its redirects) at an https public address: HSTS.
   for (const [name, value] of Object.entries(hstsHeaders(server.publicUrl))) res.setHeader(name, value);
-  answer(req, res, raw, server).catch(() => {
+  answer(req, res, raw, server, held).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();
   });
