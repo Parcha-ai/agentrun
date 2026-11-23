@@ -790,6 +790,12 @@ The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
 
+### `agentrun local list-running-computers`
+
+Every run still going that has a computer.
+
+Route: `GET /computers/running`.
+
 ### `agentrun local list-suggestions`
 
 Suggested agents: each repository's scan and the agents it suggests.
@@ -850,8 +856,8 @@ Sign in to a server, with a device code when it offers one, else a token read fr
 
 Route: `GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin`.
 
-- `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address lacks it; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
-- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one
+- `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
+- `--base-url URL` (string, this CLI's own): the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one
 
 ## logout
 

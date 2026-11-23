@@ -1199,6 +1199,13 @@ const RUN_COMPUTER = {
   description: "The run's computer, its agent's `computer` setting: absent for a run with none.",
   "x-agentrun-serve": "computer/1",
 };
+const RUNNING_COMPUTERS = closed({
+  runs: {
+    type: "array",
+    items: ref("schemas/Run"),
+    description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
+  },
+});
 /** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
@@ -2463,6 +2470,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...COMPUTER_MARK,
     },
   },
+  "/computers/running": {
+    get: {
+      operationId: "listRunningComputers", tags: ["local"], summary: "Every run still going that has a computer",
+      description: "Each run that is queued, working, paused or waiting on its person and whose agent has a computer (a sandbox, a desktop, a phone or a browser), as GET /runs/{run_id} answers it: its `computer` says the kind and provider, `starting`, `ready` or `taken_over`, and a held run's hold. The runs list carries no computer, so this is the one read of the computers up across runs and agents. It costs a run read for each such run and nothing for a run with no computer. An agent's own computer kept between runs is on the agent's read (`own_computer`), and a paired computer on GET /computers (`paired`); neither is a run here.",
+      responses: { "200": json(RUNNING_COMPUTERS, "The runs still going that have a computer, newest first."), ...errors(401, 429, 500) },
+      ...COMPUTER_MARK,
+    },
+  },
   "/computers/{provider}/keys": {
     put: {
       operationId: "saveComputerKeys", tags: ["local"], summary: "Save a computer provider's keys, sealed",
@@ -2873,7 +2888,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-server-names": {
     get: {
       operationId: "listMcpServerNames", tags: ["local"], summary: "The names of the MCP servers saved here, and nothing else of them",
-      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), which serves no other settings route: a host that builds runs from saved servers reads it to hold back a job whose server isn't saved here, before its launch is refused for it.",
+      description: "Each saved server's name once, sorted: no URL, auth type, header, token, tool or Composio record. Served with the server's token, also on an API-only server (`AGENTRUN_API_ONLY=1`), which serves no other settings route.",
       responses: { "200": json({ type: "object", additionalProperties: false, required: ["names"], properties: { names: { type: "array", items: { type: "string" } } } }, "The saved servers' names."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "mcpservernames/1",
     },

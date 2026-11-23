@@ -11,7 +11,7 @@
 // and its report.
 import { carriedFields, carriedProblem, schemaCheck } from "./answer-json.js";
 import { transcriptOf } from "./import.js";
-import type { Session } from "./import-sources.js";
+import type { Session } from "@parcha/agentrun-import";
 import { launchBody } from "./run-launch.js";
 import { uuidv7 } from "./ids.js";
 import type { Store } from "./store/index.js";

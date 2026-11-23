@@ -2416,6 +2416,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-running-computers"
+    ],
+    "operationId": "listRunningComputers",
+    "method": "GET",
+    "path": "/computers/running",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Every run still going that has a computer"
+  },
+  {
+    "command": [
+      "local",
       "list-suggestions"
     ],
     "operationId": "listSuggestions",
