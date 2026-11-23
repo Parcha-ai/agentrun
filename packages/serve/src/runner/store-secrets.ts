@@ -32,15 +32,28 @@ export type StoreSecretsStore = Pick<Store, "sealedSecrets">;
 const JSON_SECRETS = ["access_token", "refresh_token", "id_token", "client_secret", "verifier"];
 
 /** The authorization schemes whose header value is the scheme's word then its credential (`Bearer <token>`), in any case.
- *  A header value of two words under no scheme here (a client's name, `Acme Integration`) is not split: a word of it is
- *  no credential, and listed alone it would be cut from every run and refused in every learned draft. */
+ *  Their second word is listed alone whatever its shape. */
 const CREDENTIAL_SCHEMES = new Set(["bearer", "basic", "token", "digest", "apikey", "key"]);
 
+/** Whether the second word of a two-word header value in a scheme CREDENTIAL_SCHEMES doesn't name (Okta's `SSWS`,
+ *  Discord's `Bot`, `OAuth`, `Splunk`, `Klaviyo-API-Key`) is shaped like a credential: it has a digit, or is 20
+ *  characters or more, or is base64 at MIN_SECRET or more with its punctuation (`+`, `/`, `=`) or with both cases past
+ *  its first letter, or is hex at MIN_SECRET or more. A client's name (`Acme Integration`, `Acme integration-service`)
+ *  is none of these and is not split: a word of it is no credential, and listed alone it would be cut from every run
+ *  and refused in every learned draft. */
+function credentialShaped(word: string): boolean {
+  if (/\d/.test(word) || word.length >= 20) return true;
+  if (word.length < MIN_SECRET) return false;
+  if (/^[0-9a-f]+$/i.test(word)) return true;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(word)) return false;
+  return /[+/=]/.test(word) || (/[a-z]/.test(word.slice(1)) && /[A-Z]/.test(word.slice(1)));
+}
+
 /** The secret strings of an opened JSON value: each header's value, and its credential alone where it is one of
- *  CREDENTIAL_SCHEMES' (`Bearer <token>`, `Basic <credential>`, `Token <key>`: a value with a space is never listed
- *  whole, server-secrets.ts); a Basic credential's `user:password`, its password, and its user when the password is too
- *  short to be the secret (a key sent as the user, `-u KEY:`); and every string under one of JSON_SECRETS, wherever
- *  nested. */
+ *  CREDENTIAL_SCHEMES' or credentialShaped (`Bearer <token>`, `Basic <credential>`, `SSWS <token>`: a value with a
+ *  space is never listed whole, server-secrets.ts); a Basic credential's `user:password`, its password, and its user
+ *  when the password is too short to be the secret (a key sent as the user, `-u KEY:`); and every string under one of
+ *  JSON_SECRETS, wherever nested. */
 function jsonSecrets(text: string): string[] {
   let value: unknown;
   try {
@@ -62,7 +75,7 @@ function jsonSecrets(text: string): string[] {
       if (typeof header !== "string") continue;
       out.push(header);
       const scheme = /^([A-Za-z][\w.-]*)\s+(\S+)\s*$/.exec(header);
-      if (!scheme || !CREDENTIAL_SCHEMES.has(scheme[1]!.toLowerCase())) continue;
+      if (!scheme || !(CREDENTIAL_SCHEMES.has(scheme[1]!.toLowerCase()) || credentialShaped(scheme[2]!))) continue;
       out.push(scheme[2]!);
       if (scheme[1]!.toLowerCase() !== "basic") continue;
       const pair = Buffer.from(scheme[2]!, "base64").toString("utf8");

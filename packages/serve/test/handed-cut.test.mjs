@@ -80,3 +80,32 @@ test("a Basic credential with its key as the user, or with no user, has the key 
   assert.equal(named.includes("Integration"), false, "a client's name is no scheme: no word of it is listed");
   assert.equal(cutHanded("the Acme Integration client", named), "the Acme Integration client");
 });
+
+// A header in a scheme the list doesn't name (Okta's `SSWS`, Discord's `Bot`, `OAuth`, `Splunk`, `GenieKey`,
+// `Zoho-oauthtoken`, `Klaviyo-API-Key`, `Api-Key`) still has its credential listed alone when that word is shaped like
+// one, so a run that prints the token bare is cut. Each value below trips exactly one shape: a digit, 20 characters or
+// more, base64 punctuation, mixed case past the first letter, or hex letters at MIN_SECRET or more. A client's name
+// trips none and is never split.
+test("a header in an unlisted scheme has its credential listed alone when the word is shaped like one; a client's name is not split", () => {
+  const shaped = [
+    ["SSWS", "00notasecret", "a digit"],
+    ["Bot", "notasecretdiscordbottoken", "20 characters or more"],
+    ["OAuth", "notsecret+ab/=", "base64 punctuation"],
+    ["Splunk", "notASecretTok", "mixed case past the first letter"],
+    ["GenieKey", "deadbeefcafe", "hex letters at MIN_SECRET or more"],
+    ["Zoho-oauthtoken", "1000.notasecret", "a hyphenated scheme, with a digit"],
+    ["Klaviyo-API-Key", "pk_notasecret01", "a hyphenated scheme, with a digit"],
+    ["Api-Key", "notasecretapikeyvalue", "a hyphenated scheme, 20 characters or more"],
+  ];
+  for (const [scheme, token, why] of shaped) {
+    const values = handedSecretValues({ mcp: { files: { headers: { "x-auth": `${scheme} ${token}` }, origin: ORIGIN } } });
+    assert.ok(values.includes(token), `${scheme}: ${why}`);
+    assert.equal(cutHanded(`printed ${token} bare`, values), "printed [redacted] bare", `${scheme}: ${why}`);
+  }
+  for (const name of ["Acme Integration", "Acme integration-service", "Partner Program"]) {
+    const values = handedSecretValues({ mcp: { files: { headers: { "x-client": name }, origin: ORIGIN } } });
+    const word = name.split(" ")[1];
+    assert.equal(values.includes(word), false, `${name}: a client's name, no word of it listed`);
+    assert.equal(cutHanded(`the ${name} client`, values), `the ${name} client`);
+  }
+});
