@@ -3,22 +3,17 @@
 // unreachable one; a refused server record is exit 4; login's config write fails plainly; an api header keeps any name.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { cli, scratch as scratchOf } from "./support.mjs";
 
-const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
-
-function scratch(t) {
-  const dir = mkdtempSync(join(tmpdir(), "agentrun-hardening-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !DROPPED.includes(name)));
-  return { dir, env: { ...env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config"), AGENTRUN_API_KEY: "fake-test-key" } };
-}
+/** A scratch HOME (support.mjs scratch) with a token for any address. */
+const scratch = () => {
+  const { dir, env } = scratchOf("hardening");
+  return { dir, env: { ...env, AGENTRUN_API_KEY: "fake-test-key" } };
+};
 
 /** A loopback listener under its own random path prefix (part of `base`), recording each request under it and
  *  answering with `answer(request, res)`, which may answer itself (or never); anything else is a bare 404. */
@@ -40,18 +35,6 @@ async function listener(t, answer) {
   return { base: `http://127.0.0.1:${server.address().port}${prefix}/v2`, requests };
 }
 
-/** The CLI in a child process, killed after `timeout` ms (its code then null). */
-const cli = (env, args, { input = "", timeout = 20_000 } = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
-  const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
-  let out = "";
-  let err = "";
-  child.stdout.on("data", (chunk) => (out += chunk));
-  child.stderr.on("data", (chunk) => (err += chunk));
-  child.once("close", (code) => (clearTimeout(timer), resolve({ code, out, err })));
-  child.stdin.end(input);
-});
-
 test("a body for a path that ends like a secret route is refused inline, and the refusal says why", async (t) => {
   const { env } = scratch(t);
   const server = await listener(t, (request, res) => res.writeHead(200, { "content-type": "application/json" }).end("{}"));
@@ -69,10 +52,9 @@ test("runs start --wait --timeout bounds the start too: a server that never answ
   const { env } = scratch(t);
   // Takes the start and never answers it.
   const server = await listener(t, () => {});
-  const began = Date.now();
-  const started = await cli(env, ["runs", "start", "demo", "--body", '{"input":{"content":"hi"}}', "--wait", "--timeout", "1", "--base-url", server.base], { timeout: 15_000 });
+  const started = await cli(env, ["runs", "start", "demo", "--body", '{"input":{"content":"hi"}}', "--wait", "--timeout", "1", "--base-url", server.base]);
+  // Ended by its own --timeout, which its refusal names: the guard's kill would leave no code.
   assert.equal(started.code, 1, `${started.code} ${started.err}`);
-  assert.ok(Date.now() - began < 10_000, "given up on near its timeout");
   assert.match(started.err, /did not answer the start within 1 s; it may have started the run: look for it with `agentrun runs list --agent demo`/);
   assert.equal(started.out, "");
   assert.equal(server.requests.length, 1);

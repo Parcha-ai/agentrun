@@ -119,7 +119,7 @@ test("an apply on a server that can't set up a composio trigger yet (no public U
   // Its plan says so first, in the same words, asking Composio nothing.
   const plan = await api("POST", "/templates/issues/apply", { parameters: {}, dry_run: true });
   assert.equal(plan.status, 200, JSON.stringify(plan.body));
-  assert.deepEqual(plan.body.plan.triggers.map((one) => [one.kind, one.action]), [["composio", "skip"]]);
+  assert.deepEqual(plan.body.plan.triggers.map((one) => [one.kind, one.action, one.code]), [["composio", "skip", "not_set_up_here"]]);
   assert.match(plan.body.plan.triggers[0].reason, /public URL/);
   const applied = await api("POST", "/templates/issues/apply", { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
