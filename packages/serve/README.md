@@ -438,7 +438,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
-| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one loopback origin (http on `127.0.0.1` or `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there |
+| `AGENTRUN_MCP_TOKEN_ORIGINS` | The exact origins an [API-only](#api-only) server's token may save a `per_run` MCP server at: `https://host[:port]` entries, plus one loopback origin (http on `127.0.0.1` or `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | none | Where the token's saved servers may be reached is the operator's, never the token's: each run's start checks it again, and each runner checks its own at each claim, so set the same list there. It holds only servers the token saved on the API-only server: one the token saved while the server served the full API is not checked against it (see [API-only](#api-only)) |
 
 On a server the installer runs as a service, `agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` saves the two yes-or-no switches in the service and restarts it; `--env KEY=` takes
@@ -3381,19 +3381,31 @@ serves these routes alone:
     origin (scheme, host and port) must be exactly one listed in `AGENTRUN_MCP_TOKEN_ORIGINS`, the operator's
     comma-separated list of `https://host[:port]` origins, plus at most one loopback origin (http on `127.0.0.1` or
     `[::1]`, with its port) that counts only with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. An entry with a path, query,
-    fragment, user or wildcard stops the start, in words. Unset, nothing is listed, and every such save is refused.
+    fragment, user or wildcard stops the start, in words that name the entry by its place in the list, never by its
+    text. Unset, nothing is listed, and every such save is refused.
     An address at any other origin (a lookalike host, another port, a path or query that names a listed one) is
     `422 not_an_option` under `url`, and the refusal names no listed origin. The save's `toolkit` is recorded, so a
     template's need for that toolkit maps onto the server at an apply, and the token may delete the server. The server
     checks the origin again at each run's start, against its own list, and the runner at each run's claim, against its
     own `AGENTRUN_MCP_TOKEN_ORIGINS` (set it on every runner too): a server whose origin is no longer listed is refused
-    by its name (`409 agent_not_runnable` at the start, before any run is made), and nothing is sent;
+    by its name (`409 agent_not_runnable` at the start, before any run is made, for an agentic agent and a workflow
+    alike), and nothing is sent. `GET /capabilities` says whether the variable is set (`switches`), and never lists its
+    origins to the token. The list holds only the servers the token saved here, on the API-only server, at a listed
+    origin. A server the token saved while this server served the full API, where the token's save is held to no list,
+    and one it saved at a listed origin and then saved again on the full API, are not checked against the list once the
+    server is API-only again: review or delete those before you switch it to API-only;
   - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
     One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
     nothing is sent to Composio. An owner's save over a server the token saved makes it the owner's once it lands (one
     refused with `412` leaves it the token's), as does the owner's sign-in on it, and one that lands while the token's
-    is under way wins: the token's is `412`. An `auth_config_id` the token names that another saved server made stays
-    that server's: its delete still removes it at Composio, or leaves it to a server that still uses it.
+    is under way wins: the token's is `412`. The token's Composio save never uses an auth config a server the owner
+    saved uses: an `auth_config_id` naming one is `403`, and so is the save when the toolkit's own auth config, as
+    Composio answers it, is that one, before anything is made at Composio. An `auth_config_id` naming one that another
+    server the token saved made is used, and that server's record still says it made it, so only its delete removes the
+    auth config at Composio, or, while this server still uses it, hands it to this one, whose delete then removes it.
+    Over a server the token saved, whose address only its origin shows, the owner's sign-in, save and preview take its
+    full URL: one that sends back the shown address is `422` under `url`, and nothing is sent, so the owner's credential
+    goes only to an address the owner named.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
