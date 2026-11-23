@@ -613,7 +613,7 @@ jobs:
     # The import CLI (packages/import, agentrun-import) compiled with Bun into one file that needs neither Node nor Bun (scripts/build-binary.mjs),
     # for Agent Wrapped's numbers in the terminal: built on each runner for its own platform, run there on a made-up home
     # (scripts/build-binary.test.mjs, the same lines Node prints running the CLI's tsc build), and kept as an artifact. Node stays the runtime: not in
-    # verify's needs nor a required check. It runs when a change reaches packages/import (the entry and the readers it compiles), the build and its helper,
+    # verify's needs nor a required check. It runs when a change reaches packages/import (the entry and the readers it compiles), the lockfile or the shared tsconfig it installs and builds with, the build and its helper,
     # the Bun pin or this file: a Mac's minutes cost ten of Linux's.
     name: binary (${{ matrix.target }})
     strategy:
@@ -650,7 +650,7 @@ jobs:
           if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
             echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: built"; exit 0
           fi
-          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/import/ scripts/build-binary.mjs scripts/build-binary.test.mjs scripts/is-main.mjs .bun-version .github/workflows/ci.yml)
+          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/import/ package-lock.json tsconfig.base.json scripts/build-binary.mjs scripts/build-binary.test.mjs scripts/is-main.mjs .bun-version .github/workflows/ci.yml)
           echo "${changed:-no path the binary is built from changed}"
           if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@v4
