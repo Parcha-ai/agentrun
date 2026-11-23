@@ -94,8 +94,8 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
 
 /** Whether a read from `cursor` of the open file goes on from it: the same source and kind of read, the same file (device
  *  and inode), no shorter, and the bytes before its offset as they were. Else it reads the file from its start. */
-async function goesOn(source: string, keep: boolean, cursor: FileCursor | undefined, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
-  return cursor !== undefined && cursor.source === source && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+async function goesOn(source: string, keep: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor.source === source && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
 }
 
 /** Whether `source`'s line reader would go on from `cursor` in `file` now (a turns: `keep` read), as it decides when it
@@ -123,7 +123,8 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
-    const resumed = await goesOn(source, keep, cursor, handle, stats);
+    // The cursor's presence checked here, so `resumed` narrows it where its state and offset are read.
+    const resumed = cursor !== undefined && (await goesOn(source, keep, cursor, handle, stats));
     const state = (
       resumed
         ? structuredClone(cursor.state)
