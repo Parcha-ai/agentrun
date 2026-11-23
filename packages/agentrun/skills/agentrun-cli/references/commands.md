@@ -790,6 +790,12 @@ The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
 
+### `agentrun local list-running-computers`
+
+Every run still going that has a computer.
+
+Route: `GET /computers/running`.
+
 ### `agentrun local list-suggestions`
 
 Suggested agents: each repository's scan and the agents it suggests.
