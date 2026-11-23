@@ -2,7 +2,7 @@
 // whole line read. A file truncated or replaced since is read again from its start; a last line with no newline yet is
 // left for the next read; and a line appended later that repeats a request already read still sets its usage.
 import assert from "node:assert/strict";
-import { appendFile, rename, truncate, writeFile } from "node:fs/promises";
+import { appendFile, rename, truncate, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
@@ -117,4 +117,64 @@ test("parseHome with a state: a second pass reads only what was appended and agr
   assert.deepEqual(after, (await parseHome(home, { sources: ["claude-code"] }))[0]);
   assert.equal(after.tokens.output, 30);
   assert.equal(after.calls, 1);
+});
+
+// A resumed session's file opens with copies of the session it resumed; the copies count in the first file in the import's
+// order (by project folder, oldest written first). A pass with a state must come out as a fresh pass would, whatever
+// changed that order since the last one.
+const ORIGINAL = "00000000-0000-4000-8000-0000000000a1";
+const RESUMED = "00000000-0000-4000-8000-0000000000b2";
+const shared = [claudeUser({ uuid: "u1", text: "Fixture prompt.", i: 0, session: ORIGINAL }), claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(100, 5), i: 1, session: ORIGINAL })];
+const restamped = shared.map((record) => ({ ...record, sessionId: RESUMED }));
+const own = (session, n, i) => [claudeUser({ uuid: `${session}-u${n}`, text: "More.", i, session }), claudeAnswer({ uuid: `${session}-a${n}`, msg: `${session}-msg_${n}`, req: `${session}-req_${n}`, usage: anthropicUsage(7, 3), i: i + 1, session })];
+const setTime = (file, seconds) => utimes(file, seconds, seconds);
+const scan = (home, state) => parseHome(home, { sources: ["claude-code"], catalog: false, ...(state ? { state } : {}) });
+
+test("parseHome with a state: an append that moves the original after its resumed copy gives the fresh pass's totals", async (t) => {
+  const home = await tempHome(t);
+  const original = await writeJsonl(claudeFile(home, ORIGINAL), shared);
+  const resumed = await writeJsonl(claudeFile(home, RESUMED), [...restamped, ...own(RESUMED, 1, 10)]);
+  await setTime(original, 1_000);
+  await setTime(resumed, 2_000);
+  const state = {};
+  await scan(home, state);
+  await appendFile(original, jsonl(own(ORIGINAL, 1, 20)));
+  await setTime(original, 3_000);
+  const again = await scan(home, state);
+  const fresh = await scan(home);
+  assert.equal(fresh.find(({ id }) => id === RESUMED).calls, 2, "fresh: the copy is first now, and keeps the shared request");
+  assert.deepEqual(again, fresh);
+});
+
+test("parseHome with a state: a new file that comes before a known one holding the same records gives the fresh pass's totals", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(claudeFile(home, ORIGINAL, "-work-b"), shared);
+  const state = {};
+  await scan(home, state);
+  // A session moved to a folder that sorts first, its copy carried on there.
+  await writeJsonl(claudeFile(home, RESUMED, "-work-a"), [...restamped, ...own(RESUMED, 1, 10)]);
+  const again = await scan(home, state);
+  const fresh = await scan(home);
+  assert.equal(fresh.length, 1, "fresh: the original's records are all the new file's");
+  assert.deepEqual(again, fresh);
+});
+
+test("parseHome with a state: a change of order among files that share no record reads only the new bytes", async (t) => {
+  const home = await tempHome(t);
+  const UNRELATED = "00000000-0000-4000-8000-0000000000c3";
+  const original = await writeJsonl(claudeFile(home, ORIGINAL), shared);
+  const resumed = await writeJsonl(claudeFile(home, RESUMED), [...restamped, ...own(RESUMED, 1, 10)]);
+  const unrelated = await writeJsonl(claudeFile(home, UNRELATED), own(UNRELATED, 1, 0));
+  await setTime(original, 1_000);
+  await setTime(unrelated, 1_500);
+  await setTime(resumed, 2_000);
+  const state = {};
+  await scan(home, state);
+  // The unrelated file moves after the copy; the original stays before it.
+  const more = jsonl(own(UNRELATED, 2, 20));
+  await appendFile(unrelated, more);
+  await setTime(unrelated, 3_000);
+  const again = await scan(home, state);
+  assert.equal(state.read, Buffer.byteLength(more));
+  assert.deepEqual(again, await scan(home));
 });

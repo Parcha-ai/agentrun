@@ -112,7 +112,8 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     }
     if (!key && !text && calls.length === 0) return;
     const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    const turn: Answer = { role: "assistant", text, calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
+    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
+    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
     if (key) {
       own.keyed.set(key, turn);
       seen.add(`m:${key}`);
