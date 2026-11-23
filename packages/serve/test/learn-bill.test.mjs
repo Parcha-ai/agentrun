@@ -407,6 +407,16 @@ test("dropped_at (d): it is the newest drop ever, and every later write of the f
   assert.equal(await droppedAt(), stop.at, "the unread-skip write keeps it");
 });
 
+test("dropped_at (e): one that is no time drafts nothing: what was dropped, and when, is unknown", async (t) => {
+  const store = await splitStore(t, { recompiled: true, fresh: true });
+  const key = "learning.promotions.agent-1";
+  await store.settings.put(key, { ...(await store.settings.get(key)), dropped_at: "not a time" });
+  const bill = (await agentCostOverStore(store, "agent-1")).bill;
+  assert.deepEqual(answerRows(bill).map(([digest, , , , , , , , state]) => [digest, state]), [[C, "serving"]], "neither R nor D is drafted");
+  assert.equal(unnamedMicro(bill), 320_000, "run-03's failed compile, R's and D's compile turns");
+  await v2Of(store, bill);
+});
+
 test("A8: a served run whose revision's check cost is unknown reports learning_usd and all_in_usd null, never $0; the ledger's remainder is unknown too", async (t) => {
   const store = await splitStore(t, { replay: null });
   const cost = await agentCostOverStore(store, "agent-1");
