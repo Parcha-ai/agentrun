@@ -566,6 +566,12 @@ store's file, and the new server refuses to start on a data directory that holds
 
 Nothing converts an earlier volume.
 
+## Troubleshooting
+
+- `docker compose up` sits at "Creating" and `docker events` shows no create: dockerd itself is stuck (often disk or IO
+  pressure). Restart Docker (`sudo systemctl restart docker`, or Restart in Docker Desktop) and run it again; the data
+  volume is untouched.
+
 ## The walks
 
 `walk/` holds two walks of this stack on a faux model (`walk/faux-steps.mjs`: no model key, no network). Each starts its

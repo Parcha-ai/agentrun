@@ -1,3 +1,4 @@
+import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { sourceService, SOURCE_BODY_BYTES } from "./source-sync/service.js";
@@ -139,7 +140,7 @@ import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
 import { runLines } from "./usage-lines.js";
-import { type BoxOffer, boxesByDefault, boxesLog, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
+import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
 import { hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
@@ -437,6 +438,9 @@ export type ServeOptions = {
   /** Under `faux`: a file read as this server's /proc/self/mountinfo (box-paths.ts), a container's in a test; absent (and
    *  no FAUX_MOUNTINFO_ENV), a faux server is on a host. */
   fauxMountinfo?: string;
+  /** For tests: whether Docker's start probe takes this server to be in a container (place-offers.ts containerReason),
+   *  in place of its own marks; a faux server's is a host's. */
+  probeContainer?: ContainerFacts;
   /** For tests: the wait before each read again of the Docker host's addresses after the start's failed
    *  (docker-host-addresses.ts retryHostAddresses), in place of the backoff's timer. */
   hostReadWait?: Wait;
@@ -1586,10 +1590,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
+  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
+   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
   const planNow = async () => {
     const was = plan.state;
     if ((await plan.load()).state !== was) await keysChanged();
+    else await plan.changeAgain();
   };
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
    *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
@@ -1610,7 +1616,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
   const fauxDocker = Boolean(options.faux) && options.fauxDocker === true;
-  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker });
+  // A faux server's probe is on a host, as its Docker paths are below, so a test reads the same words in a container;
+  // `probeContainer` sets it for a test of a real one.
+  const found = await placeOffers(env, { keyOf: keyReader(store, seal.key, env), fauxDocker, ...(options.probeContainer ? { container: options.probeContainer } : options.faux ? { container: { inside: false } } : {}) });
   const docker = found.some((offer) => offer.id === "docker" && offer.available);
   // Under --faux, the mountinfo a test gives (fauxMountinfo, or FAUX_MOUNTINFO_ENV in the process's own environment, which
   // `env` leaves out: a server under test in a container names its own /proc/self/mountinfo there); with none, a faux
@@ -3953,16 +3961,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const fixed = HANDED_FIXED.filter((field) => body[field] !== undefined);
       if (fixed.length) throw invalid(fixed.map((field) => ({ field, reason: "not_allowed", message: `A run for a trigger firing starts on its trigger's target, on the agent's current revision and holding no computer: send it without ${field}.` })));
       const { trigger_firing: given, ...rest } = body;
-      const firing = await triggers.handedStart(given, agentId);
-      if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
-      const secrets = await handed();
-      const seal = startSeal(secrets);
-      // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
-      const cut = cutHanded(rest, handedSecretValues(secrets));
-      const run = await targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
-      // A host that answered its hook first, or whose hook timed out, started this run after: the firing is started with it now.
-      await triggers.handedRan(firing.trigger.id, firing.key, run.run_id);
-      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}` } };
+      // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
+      const run = await triggers.handedStart(given, agentId, async (firing) => {
+        const secrets = await handed();
+        const seal = startSeal(secrets);
+        // What the server writes of the start (its input, which the run's title is read from) is cut of what it hands.
+        const cut = cutHanded(rest, handedSecretValues(secrets));
+        return targets.start(firing.target, cut.input, firing.trigger, firing.from, firing.title, firing.previous, { body: cut, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      });
+      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
@@ -4172,14 +4179,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
     const after = integerParam(url.searchParams.get("after"), "after", Number.MAX_SAFE_INTEGER);
     const waitMs = integerParam(url.searchParams.get("wait_ms"), "wait_ms", MAX_WAIT_MS);
-    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's).
-    const asked = url.searchParams.get("limit");
-    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= PAGE_ROWS)) throw new ApiError("bad_request", `limit is an integer from 1 to ${PAGE_ROWS}`);
-    const limit = asked === null ? PAGE_ROWS : Number(asked);
-    // `calls=whole`: each call's arguments and its output's head too (tool_input, tool_result_text), for a grader.
+    // `calls=whole`: each call's arguments and its output too, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), for a grader.
     const shape = url.searchParams.get("calls");
     if (shape !== null && shape !== "whole") throw new ApiError("bad_request", "calls is whole, or absent");
     const calls = shape === "whole";
+    // This server's own: a page of at most `limit` rows, for a client that reads a little at a time (the MCP tool's). A
+    // calls=whole page holds at most CALLS_PAGE_ROWS, as each row's result may be CALL_RESULT_CHARS long.
+    const most = calls ? CALLS_PAGE_ROWS : PAGE_ROWS;
+    const asked = url.searchParams.get("limit");
+    if (asked !== null && !(/^\d+$/.test(asked) && Number(asked) >= 1 && Number(asked) <= most)) throw new ApiError("bad_request", `limit is an integer from 1 to ${most}${calls ? " with calls=whole" : ""}`);
+    const limit = asked === null ? most : Number(asked);
     // The run's page from the store (runTimelines): run_id/status/state/reset/rows/drop/next_after/unchanged/has_more/final/
     // cost, byte-identical to the old live page. TODO(learning-row freshness): a learning row approved or retired since the
     // journal wrote it reads its journal state here (store-view owns the fresh learning view); folded in with learning-1.
@@ -4594,7 +4603,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
       return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
     }
-    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
+    if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
     // verdict over the request the page just marked, never a signed-in user it doesn't have.
     if (found.name === "getAuthSession") return send(res, 200, { accounts: false, ...secretsWritableFields(secretWriterFacts(req, { accounts: false, loopbackBound: isLoopback(host) })) });
