@@ -27,6 +27,8 @@ const P24 = ["Zq8VbN3xLmT6pR2w", "Yk9HsD4fGj7Ac5Ue"];
 const login = (user, password) => [user, password].join(":");
 const SIZE = 256 * 1024;
 const fill = (unit, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
+/** Characters that render as nothing, by code point: a zero-width space, a soft hyphen, a byte order mark. */
+const [ZWSP, SHY, BOM] = [0x200b, 0xad, 0xfeff].map((code) => String.fromCharCode(code));
 /** A made-up PEM-like key: `count` body lines of 64 characters (turns of the base64 of "fake-body-not-a-real-key", each
  *  numbered), its armor built in pieces. */
 const fakePem = (count) => {
@@ -434,7 +436,7 @@ const CASES = [
   // A character that renders as nothing (a default-ignorable code point: a zero-width space, a soft hyphen) between a
   // held value's characters hides it from no view: the views drop it, as they drop whitespace. A text that holds such
   // characters and no held value shows as it came.
-  ...[["a zero-width space", "​"], ["a soft hyphen", "­"]].map(([what, mark]) => ({
+  ...[["a zero-width space", ZWSP], ["a soft hyphen", SHY]].map(([what, mark]) => ({
     name: `a held value with ${what} between each of its characters withholds the text`,
     text: `v=${[...CUT_KEY].join(mark)} ok`,
     values: [CUT_KEY],
@@ -442,7 +444,7 @@ const CASES = [
     exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])),
   })),
   (() => {
-    const text = "co­op­er­a­tion, a​zero​width​join, and ﻿a byte order mark stay as they came";
+    const text = `co${SHY}op${SHY}er${SHY}a${SHY}tion, a${ZWSP}zero${ZWSP}width${ZWSP}join, and ${BOM}a byte order mark stay as they came`;
     return {
       name: "a text with characters that render as nothing and no held value shows as it came (control)",
       text,
