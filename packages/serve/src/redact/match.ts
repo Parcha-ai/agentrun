@@ -707,6 +707,17 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
   return false;
 }
 
+/** planCut's first step: every form, hex, folded identifier and shape of `text` as it came, and `held`, merged. */
+export function cutSpans(text: string, needles: Needles, shapes: readonly Shape[], held: readonly (readonly [number, number])[] = []): Span[] {
+  const lower = lowered(text);
+  const found: Span[] = held.map(([start, end]): Span => [start, end]);
+  for (const form of needles.forms) places(text, form, found);
+  for (const hex of needles.hexes) places(lower(), hex, found);
+  for (const shape of shapes) found.push(...spansOf(text, lower, shape));
+  if (needles.folds.length) foldSpans(text, needles.folds, found);
+  return merged(found);
+}
+
 /** Where `text` is cut of `needles` and of each of `shapes`, and the text so cut; or "whole" when it must be withheld
  *  whole. `held`: spans cut in place beside the finds. The order is fixed:
  *  1. every form, hex, folded identifier and shape is found in the text as it came, and the spans merged;
@@ -716,13 +727,7 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
  *  4. what is left is read again, for a value or a shape the cut made (a value whose rest the cut joined, a shape whose
  *     guard the cut removed), and withholds the text if it holds one. */
 export function planCut(text: string, needles: Needles, shapes: readonly Shape[], held: readonly (readonly [number, number])[] = []): { spans: Span[]; out: string } | "whole" {
-  const lower = lowered(text);
-  const found: Span[] = held.map(([start, end]): Span => [start, end]);
-  for (const form of needles.forms) places(text, form, found);
-  for (const hex of needles.hexes) places(lower(), hex, found);
-  for (const shape of shapes) found.push(...spansOf(text, lower, shape));
-  if (needles.folds.length) foldSpans(text, needles.folds, found);
-  const spans = merged(found);
+  const spans = cutSpans(text, needles, shapes, held);
   if (holds(text, needles, { cuts: spans })) return "whole";
   const out = spans.length ? cutAt(text, spans) : text;
   if (spans.length && (holds(out, needles) || shapeKinds(out, shapes).length > 0)) return "whole";

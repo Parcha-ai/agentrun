@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span } from "../redact/match.js";
+import { cutSpans, holds, MONEY_SHAPES, type Needles, planCut, SECRET_SHAPES, type Shape, shapeKinds, type Span } from "../redact/match.js";
 
 /** Whether `text` ends in a `Bearer` scheme and the blanks after it: the one place a shape is read across whitespace
  *  (the scheme, then its token), so a reader that cuts a text at whitespace must not cut there (key-refusal.ts
@@ -45,16 +45,19 @@ export function redactLearned(text: string, values: readonly string[], max = PRI
 
 /** redactSecrets, and where it cut: the spans of `text` cut in place and the text so cut, or "whole" where redactSecrets
  *  answers "[redacted]". A reader that redacts a text in pieces (key-refusal.ts) reads the pieces as they came for a
- *  value split across them (heldOutside), each piece's cuts covering it. */
+ *  value split across them (valueLeft), each piece's cuts covering it. */
 export function cutSecrets(text: string, values: readonly string[], max = PRINT_MAX): { spans: Span[]; out: string } | "whole" {
   if (Buffer.byteLength(text) > max) return "whole";
   return planCut(text, derivedOf(values), SECRET_SHAPES);
 }
 
-/** Whether `text` holds one of `values` in a form valueMatcher finds, any character of which is outside `cuts` (merged
- *  spans of `text`, in order): what a reader that cut `text` there would still show of it. */
-export function heldOutside(text: string, values: readonly string[], cuts: readonly Span[]): boolean {
-  return holds(text, derivedOf(values), { cuts });
+/** Whether `text` holds one of `values` in a form valueMatcher finds, a character of which no cut covers: what
+ *  a reader that cut `text` there would still show of it. The cuts are `cuts` (merged spans of `text`, in order: where a
+ *  reader that cut it in pieces cut each), or else those redactSecrets makes of `text` whole (its values' forms, hexes
+ *  and folded identifiers, and the secret shapes, found as they stand). */
+export function valueLeft(text: string, values: readonly string[], cuts?: readonly Span[]): boolean {
+  const needles = derivedOf(values);
+  return holds(text, needles, { cuts: cuts ?? cutSpans(text, needles, SECRET_SHAPES) });
 }
 
 /** redactSecrets over `shapes`, each found in place (redact/match.ts planCut). */
