@@ -102,6 +102,11 @@ then picks up again after the restart.
 One Fly Machine with a volume, from [`fly/fly.toml`](fly/fly.toml), set up by one command. Fly gives the Machine no
 Docker, so its agents get file tools and `web_fetch` but no shell, as on Render and Railway. It needs no model key.
 
+This setup has not yet run on a real Fly account. It follows Fly's docs and flyctl's source, and its tests run the
+script against a stand-in `fly`. What only a real deploy will show is the volume's owner. A forum answer from Fly
+says a new volume is given to the image's user (uid 1000 here), and the docs don't say. If it is not, the server
+stops before it starts, and `fly logs` has one line: `/data is not writable by uid 1000 ...`.
+
 At Fly's prices on 2026-11-23, in its cheapest regions (`iad` and `ewr`), the Machine (`shared-cpu-1x`, 1 GB) costs
 $6.70 a month and the 10 GB volume $1.50, so $8.20 a month ([pricing](https://docs.fly.io/about/pricing)). The app's
 shared IPv4 address and its IPv6 address are free, and so is the first 10 GB of volume snapshots. Fly needs a card on
@@ -119,8 +124,10 @@ In order, it:
 1. Makes the app (`fly apps create`), unless you have it already.
 2. Makes `AGENTRUN_TOKEN` (`openssl rand -hex 32`) and `AGENTRUN_SEAL_KEY` (`openssl rand -base64 32`) and stages them
    as Fly secrets, with `AGENTRUN_PUBLIC_URL=https://<app name>.fly.dev/`. It hands them to `fly secrets import` on its
-   input, so neither is printed, written to a file or put on a command line. It makes each one only when Fly has none.
-   Fly never shows a secret's value again, so only Fly holds the seal key.
+   input, so neither is printed, written to a file or put on a command line. It makes each one only when Fly has none,
+   by the names `fly secrets list --json` gives. When that list fails, or comes back in a form it can't read, it stops
+   and makes none: a second seal key would leave what the first one sealed unreadable. Fly never shows a secret's value
+   again, so only Fly holds the seal key.
 3. Deploys `fly.toml` with `fly deploy --ha=false`: one Machine, never stopped, so a scheduled agent keeps running. The
    first deploy makes its 10 GB volume at `/data`. Fly reaches the server on port 7340 and checks `GET /v2/health`.
 4. Prints the address and the setup link from the Machine's log.
@@ -130,8 +137,9 @@ Open `https://<app name>.fly.dev/` and paste the setup code. To read it again la
 `curl -sS -X POST https://<app name>.fly.dev/v2/setup/code` prints a new one there. Set your password, then Continue
 with ChatGPT or add a model key in the console.
 
-Run the script again, with the same region, to upgrade to the release `fly.toml` pins. It keeps the app, the secrets
-and the volume. Each deploy replaces the one Machine in place (`fly.toml` pins the rolling strategy). Keep the app to
+Run the script again to upgrade to the release `fly.toml` pins. It keeps the app, the secrets and the volume, and
+deploys in the volume's region (from `fly volumes list --json`). Naming another region stops it, since a Machine there
+would start on a new, empty volume. Each deploy replaces the one Machine in place (`fly.toml` pins the rolling strategy). Keep the app to
 one Machine, because the store is SQLite on its one volume: `fly scale count 2` would start a second server on a new,
 empty volume ([scaling](https://docs.fly.io/launch/scale-count)). Fly warns that one Machine with one volume can lose
 data. It snapshots every volume daily and keeps each snapshot 5 days

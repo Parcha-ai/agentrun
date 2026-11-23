@@ -73,20 +73,50 @@ test("fly.toml holds no secret: the token and the seal key are Fly secrets", () 
   assert.equal(fly.env.AGENTRUN_RUN_USER, "same", "as on Render and Railway");
 });
 
-// A stand-in for flyctl: it keeps the app, the secrets' names and what it was given in $FAKE, outside the script's
-// directories, so the test can see the values the script made.
-const FAKE_FLY = `#!/bin/sh
-printf '%s\\n' "$*" >> "$FAKE/argv.log"
+// A stand-in for flyctl: it keeps the app, the secrets' names, the volume's region and what it was given (its arguments,
+// its environment, the secrets imported) in $FAKE, outside the script's directories, so the test can see the values the
+// script made. `--json` answers in flyctl's shapes: `secrets list` an array of {name, digest, status}
+// (internal/command/secrets/list.go), `volumes list` an array of fly-go's Volume ({id, name, state, region, ...}).
+// FAKE_LIST: `fails` (an empty list on stdout, but exit 1: only the exit status says it failed), `stderr` (the names on stderr, nothing on stdout, exit 0) or `table` (a table on stdout).
+const FAKE_FLY = String.raw`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE/argv.log"
+env >> "$FAKE/env.log"
 case $1 in
   status) [ -f "$FAKE/app" ]; exit ;;
   apps) [ "$2" = create ] && : > "$FAKE/app"; exit 0 ;;
+  volumes)
+    if [ -f "$FAKE/volume" ]; then
+      printf '[\n  {\n    "id": "vol_1",\n    "name": "agentrun_data",\n    "state": "created",\n    "size_gb": 10,\n    "region": "%s",\n    "attached_machine_id": "m_1"\n  }\n]\n' "$(cat "$FAKE/volume")"
+    else
+      printf '[]\n'
+    fi
+    exit 0 ;;
   secrets)
     case $2 in
-      list) printf 'NAME\\tDIGEST\\tDATE\\n'; [ ! -f "$FAKE/names" ] || sed 's/$/\\tdeadbeef\\t1m ago/' "$FAKE/names" ;;
-      import) while IFS= read -r line; do printf '%s\\n' "$line" >> "$FAKE/imported"; printf '%s\\n' "\${line%%=*}" >> "$FAKE/names"; done ;;
+      list)
+        mode=$FAKE_LIST
+        case $mode in
+          fails) printf '[]\n'; echo "Error: failed to list secrets" >&2; exit 1 ;;
+          stderr) [ ! -f "$FAKE/names" ] || cat "$FAKE/names" >&2; exit 0 ;;
+          table) printf 'NAME\tDIGEST\n'; [ ! -f "$FAKE/names" ] || sed 's/$/\tdeadbeef/' "$FAKE/names"; exit 0 ;;
+        esac
+        printf '['
+        sep=
+        if [ -f "$FAKE/names" ]; then
+          while IFS= read -r n; do printf '%s\n  {\n    "name": "%s",\n    "digest": "deadbeef",\n    "status": "Deployed"\n  }' "$sep" "$n"; sep=,; done < "$FAKE/names"
+        fi
+        printf '\n]\n' ;;
+      import) while IFS= read -r line; do printf '%s\n' "$line" >> "$FAKE/imported"; printf '%s\n' "$line" | sed 's/=.*//' >> "$FAKE/names"; done ;;
     esac
     exit 0 ;;
-  logs) printf '%s\\n' 'app[1] iad [info] agentrun-serve: Set up this server: https://my-agents.fly.dev/setup#code=FAKECODE' ;;
+  deploy)
+    prev=
+    for arg in "$@"; do
+      [ "$prev" != --primary-region ] || [ -f "$FAKE/volume" ] || printf '%s' "$arg" > "$FAKE/volume"
+      prev=$arg
+    done
+    exit 0 ;;
+  logs) printf '%s\n' 'app[1] iad [info] agentrun-serve: Set up this server: https://my-agents.fly.dev/setup#code=FAKECODE' ;;
 esac
 exit 0
 `;
@@ -100,13 +130,19 @@ async function stage(t) {
   for (const d of [fake, bin, home]) await mkdir(d);
   await writeFile(join(bin, "fly"), FAKE_FLY);
   await chmod(join(bin, "fly"), 0o755);
-  const launch = (...args) =>
-    promisify(execFile)("sh", [LAUNCH, ...args], {
+  const launch = (args, { env = {}, shell = [] } = {}) =>
+    promisify(execFile)("sh", [...shell, LAUNCH, ...args], {
       cwd: home,
-      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home, TMPDIR: home, FAKE: fake },
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home, TMPDIR: home, FAKE: fake, ...env },
     });
-  return { fake, home, launch };
+  const argv = async () => (await readFile(join(fake, "argv.log"), "utf8")).trim().split("\n");
+  const imported = async () =>
+    Object.fromEntries((await readFile(join(fake, "imported"), "utf8")).trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  return { fake, home, launch, argv, imported };
 }
+
+const made = (lines) => lines.filter((l) => /^(apps|secrets import|deploy)/.test(l));
+const deployIn = (region) => `deploy -a my-agents -c ${FLY_TOML} --primary-region ${region} --ha=false --yes`;
 
 async function filesUnder(dir) {
   const out = [];
@@ -115,34 +151,30 @@ async function filesUnder(dir) {
 }
 
 test("launch.sh makes the token and the seal key once, from openssl, gives them to Fly on stdin, and shows or writes them nowhere", async (t) => {
-  const { fake, home, launch } = await stage(t);
-  const first = await launch("my-agents");
-  const imported = Object.fromEntries(
-    (await readFile(join(fake, "imported"), "utf8")).trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
-  );
-  assert.deepEqual(Object.keys(imported).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"]);
-  assert.match(imported.AGENTRUN_TOKEN, /^[0-9a-f]{64}$/, "openssl rand -hex 32");
-  assert.equal(tokenProblem(imported.AGENTRUN_TOKEN), undefined);
-  assert.equal(sealKeyOf(imported.AGENTRUN_SEAL_KEY)?.length, 32, "openssl rand -base64 32");
-  assert.equal(imported.AGENTRUN_PUBLIC_URL, "https://my-agents.fly.dev/");
+  const { fake, home, launch, argv, imported } = await stage(t);
+  // Lowercase variables of the same names in the caller's environment, and a shell tracing every command: neither may
+  // carry a value out (an exported `seal` would take the key into fly's environment; `sh -x` would print the printf).
+  const first = await launch(["my-agents"], { env: { token: "from-caller", seal: "from-caller", url: "from-caller" }, shell: ["-x"] });
+  const values = await imported();
+  assert.deepEqual(Object.keys(values).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"]);
+  assert.match(values.AGENTRUN_TOKEN, /^[0-9a-f]{64}$/, "openssl rand -hex 32");
+  assert.equal(tokenProblem(values.AGENTRUN_TOKEN), undefined);
+  assert.equal(sealKeyOf(values.AGENTRUN_SEAL_KEY)?.length, 32, "openssl rand -base64 32");
+  assert.equal(values.AGENTRUN_PUBLIC_URL, "https://my-agents.fly.dev/");
 
-  const argv = (await readFile(join(fake, "argv.log"), "utf8")).trim().split("\n");
-  assert.deepEqual(argv.filter((l) => /^(apps|secrets import|deploy)/.test(l)), [
-    "apps create my-agents",
-    "secrets import --stage -a my-agents",
-    `deploy -a my-agents -c ${FLY_TOML} --primary-region iad --ha=false --yes`,
-  ]);
+  const calls = await argv();
+  assert.deepEqual(made(calls), ["apps create my-agents", "secrets import --stage -a my-agents", deployIn("iad")]);
+  assert.ok(calls.includes("secrets list -a my-agents --json"), "the names from flyctl's JSON, never its table");
   assert.match(first.stdout, /Set up this server: https:\/\/my-agents\.fly\.dev\/setup#code=FAKECODE/);
 
-  const again = await launch("my-agents", "iad");
-  const argv2 = (await readFile(join(fake, "argv.log"), "utf8")).trim().split("\n").slice(argv.length);
-  assert.deepEqual(argv2.filter((l) => /^(apps|secrets import|deploy)/.test(l)), [
-    `deploy -a my-agents -c ${FLY_TOML} --primary-region iad --ha=false --yes`,
-  ], "a second run makes no app and no secret: the seal key is kept, so what it sealed still opens");
+  const again = await launch(["my-agents", "iad"]);
+  const calls2 = (await argv()).slice(calls.length);
+  assert.deepEqual(made(calls2), [deployIn("iad")], "a second run makes no app and no secret: the seal key is kept, so what it sealed still opens");
 
-  const secrets = [imported.AGENTRUN_TOKEN, imported.AGENTRUN_SEAL_KEY];
-  for (const out of [first.stdout, first.stderr, again.stdout, again.stderr, argv.join("\n"), argv2.join("\n")]) {
-    for (const s of secrets) assert.ok(!out.includes(s), "never printed, never on a command line");
+  const secrets = [values.AGENTRUN_TOKEN, values.AGENTRUN_SEAL_KEY];
+  const env = await readFile(join(fake, "env.log"), "utf8");
+  for (const out of [first.stdout, first.stderr, again.stdout, again.stderr, calls.join("\n"), calls2.join("\n"), env]) {
+    for (const s of secrets) assert.ok(!out.includes(s), "never printed or traced, never on a command line, never in fly's environment");
   }
   const files = [...(await filesUnder(home)), ...(await filesUnder(fileURLToPath(new URL("deploy/fly/", ROOT))))];
   for (const f of files) {
@@ -151,10 +183,39 @@ test("launch.sh makes the token and the seal key once, from openssl, gives them 
   }
 });
 
+test("launch.sh never makes a seal key over one Fly has: a list that fails, or names it can't read, stop it before any import", async (t) => {
+  for (const mode of ["fails", "stderr", "table"]) {
+    const { fake, launch, argv, imported } = await stage(t);
+    await launch(["my-agents"]);
+    const before = await imported();
+    const calls = (await argv()).length;
+    await assert.rejects(launch(["my-agents"], { env: { FAKE_LIST: mode } }), /secrets/, mode);
+    assert.deepEqual(await imported(), before, `${mode}: nothing imported, so the seal key Fly holds is still the one`);
+    assert.deepEqual(made((await argv()).slice(calls)), [], `${mode}: no import and no deploy`);
+    // A first run whose list can't be read makes nothing either.
+    const fresh = await stage(t);
+    await assert.rejects(fresh.launch(["my-agents"], { env: { FAKE_LIST: mode } }), /secrets/, mode);
+    await assert.rejects(readFile(join(fresh.fake, "imported")), { code: "ENOENT" }, mode);
+  }
+});
+
+test("a run with no region deploys where the volume is; one naming another region is refused, so no volume is left behind", async (t) => {
+  const { launch, argv } = await stage(t);
+  await launch(["my-agents", "fra"]);
+  assert.deepEqual(made(await argv()).at(-1), deployIn("fra"));
+  await launch(["my-agents"]);
+  assert.deepEqual(made(await argv()).at(-1), deployIn("fra"), "the volume's region, not iad");
+  const calls = (await argv()).length;
+  await assert.rejects(launch(["my-agents", "iad"]), /fra/);
+  assert.deepEqual(made((await argv()).slice(calls)), [], "no deploy");
+  // The volume the script looks for is the one fly.toml mounts.
+  assert.match(await readFile(LAUNCH, "utf8"), new RegExp(`"name":"${[fly.mounts].flat()[0].source}"`));
+});
+
 test("launch.sh refuses an app name Fly would not take, before it calls fly", async (t) => {
   const { fake, launch } = await stage(t);
-  await assert.rejects(launch("My Agents"), /app name/);
-  await assert.rejects(launch(), /app name/);
+  await assert.rejects(launch(["My Agents"]), /app name/);
+  await assert.rejects(launch([]), /app name/);
   await assert.rejects(readFile(join(fake, "argv.log")), { code: "ENOENT" });
 });
 
@@ -195,4 +256,10 @@ test("the README's Fly section runs launch.sh and says what it costs and when th
   assert.match(flySection, /\$\d+(\.\d\d)? a month/);
   assert.match(flySection, /20\d\d-\d\d-\d\d/);
   assert.match(flySection, /no shell/);
+  // Until a deploy on a real account shows it works, the section says so, and names the line a volume the server can't
+  // write would print (start.sh's, for the image's user).
+  assert.match(flySection, /has not yet run on a real Fly account/);
+  assert.match(flySection, /`\/data is not writable by uid 1000 \.\.\.`/);
+  assert.match(await read("packages/serve/docker/start.sh"), /say "\$data is not writable by uid \$\(id -u\)/);
+  assert.match(await read("packages/serve/docker/Dockerfile"), /^RUN groupadd --gid 1000 node && useradd --uid 1000 /m);
 });

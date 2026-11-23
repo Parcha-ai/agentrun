@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -242,4 +242,31 @@ test("server-and-runner refuses options with no --data or no --port, exit 2, sta
     assert.match(run.seen.err, why);
   }
   assert.equal(lines(at.log).length, 0, "nothing started");
+});
+
+// A volume the host mounts as root's (Fly, a compose file's bind mount) would otherwise fail deep in the store's setup.
+test("a --data directory this user can't write stops server-and-runner in one line naming it, its owner and this uid, before anything starts", { skip: process.getuid?.() === 0 && "root writes anywhere" }, async (t) => {
+  const at = await scratch(t);
+  const data = join(at.script, "..", "..", "data");
+  await mkdir(data, { mode: 0o555 });
+  await chmod(data, 0o555); // empty, so scratch's cleanup removes it even if the test stops before the chmod back
+  const uid = process.getuid();
+  for (const args of [["--data", data, "--port", "7340"], [`--data=${data}`, "--port", "7340", "--no-runner"]]) {
+    // A server that started anyway would end at once and take the script with it, so a miss fails here, not in a hang.
+    const run = start(at, ["server-and-runner", ...args], { env: { STUB_SERVER_EXIT: "0", STUB_HEALTH: "never" } });
+    const { code } = await run.exited;
+    assert.equal(code, 1, run.seen.err);
+    const said = run.seen.err.trim().split("\n");
+    assert.equal(said.length, 1, run.seen.err);
+    assert.match(said[0], new RegExp(`^agentrun-serve: ${data} is not writable by uid ${uid}\\b.*owned by uid ${uid} with mode 555\\b`));
+  }
+  assert.equal(lines(at.log).length, 0, "nothing started");
+
+  // Writable, or not made yet (the server makes it), it starts as before.
+  await chmod(data, 0o755);
+  for (const dir of [data, join(data, "not-yet")]) {
+    const run = start(at, ["server-and-runner", "--data", dir, "--port", "7340", "--no-runner"], { env: { STUB_SERVER_EXIT: "0" } });
+    assert.equal((await run.exited).code, 0, run.seen.err);
+  }
+  assert.equal(lines(at.log).filter((line) => line.event === "up").length, 2);
 });
