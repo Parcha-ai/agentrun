@@ -62,6 +62,9 @@ export const GRADER_CAP_USD = 0.5;
  *  size, the middle of the longest results (or arguments) first, then the middle calls (fitCalls). The rubric, the task
  *  and the answer are never cut: they are what the grader judges, so a prompt can pass the cap by what they hold alone,
  *  and then the calls are cut to a note that says so. */
+/** Rows a calls=whole timeline page asks for: each row's result may be CALL_RESULT_CHARS long. */
+const CALLS_PAGE_ROWS = 100;
+
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
@@ -941,7 +944,8 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
       signal.throwIfAborted();
     }
     // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole`));
+    // CALLS_PAGE_ROWS rows a page: a page of long results stays near 12 MB at most, not 500 rows of them.
+    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole&limit=${CALLS_PAGE_ROWS}`));
     if (page.reset) view.clear();
     for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
     for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
