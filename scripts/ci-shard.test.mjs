@@ -2,9 +2,9 @@
 // that never exits is killed at the shard's limit with everything it started, the shard failing with a line that names it.
 // A suite that fails says how: its exit status, or the signal that ended it.
 // A script of a shape ci-shard does not know fails the shard before anything runs. A cancel that reaches ci-shard stops its
-// suite the same way the limit does.
+// suite the same way the limit does. On a pull request (CI_AFFECTED_BASE) an affected pool runs only what the changes reach.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -163,7 +163,7 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   // once its handler is in place.
   const root = repo('stubborn', {
     'test/stubborn.test.mjs': `
-      import { spawn } from 'node:child_process';
+      import { execFileSync, spawn } from 'node:child_process';
       import test from 'node:test';
       test('starts a process that ignores SIGTERM, and waits', () => new Promise(() => {
         spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); const fs = require('node:fs'); const file = process.env.CI_SHARD_TEST_PID_FILE; fs.writeFileSync(file + '.tmp', String(process.pid)); fs.renameSync(file + '.tmp', file); setInterval(() => {}, 1000)"], { stdio: 'ignore' });
@@ -183,4 +183,49 @@ test('a cancel that reaches ci-shard stops its suite as the limit does: SIGTERM 
   assert.ok(await ended(pid), `the suite's process ${pid}, which ignores SIGTERM, is still running 5 s after ci-shard exited`);
   assert.ok(seconds >= 9 && seconds < 25, `${seconds} s: SIGTERM, the 10 s grace, then SIGKILL`);
   assert.doesNotMatch(run.output(), /::group::npm exec -c/, 'the suites after it were not started');
+});
+
+test("on a pull request an affected pool's shards run only the tests the changes since CI_AFFECTED_BASE reach, a shard left with none passing; a shared root runs every test", { timeout: 90_000 }, async (t) => {
+  const root = join(scratch, 'affected');
+  write(join(root, 'package.json'), { name: 'affected', private: true, workspaces: ['packages/*'], scripts: { 'test:release': "node --test 'release/*.test.mjs'" } });
+  write(join(root, 'scripts/ci-shards.json'), { rootSuites: ['test:release'], pools: { any: { shards: 2, affected: true } } });
+  write(join(root, 'release/ok.test.mjs'), "import test from 'node:test'; test('release', () => {});");
+  write(join(root, 'packages/p/package.json'), { name: 'p', scripts: { test: "node --test 'test/*.test.mjs'" } });
+  write(join(root, 'packages/p/src/one.mjs'), 'export const one = 1;\n');
+  write(join(root, 'packages/p/test/one.test.mjs'), "import test from 'node:test'; import { one } from '../src/one.mjs'; test('one', () => {});");
+  write(join(root, 'packages/p/test/two.test.mjs'), "import test from 'node:test'; test('two', () => {});");
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  // A pull request's checkout: the merge of its branch into the base, whose first parent is the base.
+  const merge = (path, text) => {
+    git('switch', '-q', '-c', `topic-${path.replaceAll('/', '-')}`);
+    write(join(root, path), text);
+    git('add', '-A');
+    git('commit', '-q', '-m', `change ${path}`);
+    git('switch', '-q', 'main');
+    git('merge', '-q', '--no-ff', '-m', `merge ${path}`, `topic-${path.replaceAll('/', '-')}`);
+  };
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'base');
+  merge('packages/p/src/one.mjs', 'export const one = 2;\n');
+  const env = { CI_AFFECTED_BASE: 'HEAD^1' };
+  const first = await shard(t, root, 'any-1', env);
+  assert.equal(first.status, 0, first.output);
+  assert.match(first.output, /^ {2}packages\/p\/src\/one\.mjs: 1 by import$/m, first.output);
+  assert.match(first.output, /^ci-shard: the any pool runs the 1 test file or suite these changes reach, not every one; the merge queue runs every test$/m, first.output);
+  assert.match(first.output, /^::group::npm exec -w p -c "node --test --test-timeout=\d+ test\/one\.test\.mjs"$/m, first.output);
+  assert.equal([...first.output.matchAll(/^::group::npm /gm)].length, 1, first.output);
+  const second = await shard(t, root, 'any-2', env);
+  assert.equal(second.status, 0, second.output);
+  assert.match(second.output, /^ci-shard: any-2 has nothing to run: the plan gave it none of the tests these changes reach$/m, second.output);
+  assert.doesNotMatch(second.output, /::group::npm /, second.output);
+  // A shared root: every test, shared between the two shards as on main.
+  merge('.github/workflows/ci.yml', 'on: push\n');
+  const full = [await shard(t, root, 'any-1', env), await shard(t, root, 'any-2', env)];
+  for (const run of full) {
+    assert.equal(run.status, 0, run.output);
+    assert.match(run.output, /^ci-shard: every test runs: \.github\/workflows\/ci\.yml is a shared root, which any suite may read$/m, run.output);
+  }
+  const ran = full.flatMap((run) => [...run.output.matchAll(/^::group::(.*)$/gm)].map((m) => m[1])).join('\n');
+  for (const file of ['test/one.test.mjs', 'test/two.test.mjs', 'release/ok.test.mjs']) assert.ok(ran.includes(file), `${file} ran: ${ran}`);
 });
