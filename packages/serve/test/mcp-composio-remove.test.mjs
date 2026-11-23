@@ -3,7 +3,8 @@
 // that lands on another credential than the one the request was allowed against (412) answers nothing to send; a preset
 // whose key does not open is answered `unusable`, not as no preset at all; a server that is no preset answers nothing.
 // The token's removal lands only while the row is still the token's, checked in the removal's own statement: an owner's
-// save landing between any read and that statement keeps the row, and nothing is answered to send to Composio.
+// save landing between any read and that statement keeps the row, and nothing is answered to send to Composio. A save
+// writes its row and its record in its server's turn, so the token's mark never lands on a row the owner saved between.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -54,7 +55,7 @@ test("a removal that lands answers the handle of the row it removed, not one rea
   assert.deepEqual(removed, { composio: { id: "srv_old", key: COMPOSIO_KEY } });
 });
 
-test("the token's removal checks again that the row is the token's: one the owner saved over after the gate's check is refused (412) and stays; the token's own goes", async (t) => {
+test("the token's removal lands only on a row that is still the token's: one the owner saved over after the gate's check is refused (412) and stays; the token's own goes", async (t) => {
   const { store, registry } = await servers(t);
   const row = await plain(store);
   const tokens = storedSource({ source: "url", toolkit: null }, row, false, true);
@@ -121,6 +122,49 @@ test("a Composio server the token saved, its key read from COMPOSIO_API_KEY: the
   assert.equal(answered, undefined, "nothing answered to send to Composio");
   assert.equal((await store.mcp.server("hn"))?.instructions, "The owner's.", "the owner's server stays");
   assert.ok(await store.settings.get(composioMadeKey("hn")), "and what it stands on at Composio is still recorded");
+});
+
+test("a save writes its row and its record in its server's turn: the owner's save made between the token's row and the token's mark waits for both, so the mark never lands on the owner's row and the token never removes it", async (t) => {
+  const { store, registry } = await servers(t);
+  registry.loopback = true;
+  const [fake, owners] = [await startFakeMcp(), await startFakeMcp({ name: "owners-mcp" })];
+  t.after(() => Promise.all([fake.close(), owners.close()]));
+  // Once armed: the owner's save asking for the name's turn, or the owner's row written, whichever comes first.
+  let armed = false;
+  let asked;
+  const askedTurn = new Promise((resolve) => (asked = resolve));
+  let wrote;
+  const ownerWrote = new Promise((resolve) => (wrote = resolve));
+  const turn = registry.nameTurn;
+  registry.nameTurn = function (name, work) {
+    if (armed) asked();
+    return turn.call(this, name, work);
+  };
+  const putIf = store.mcp.putIfCredential;
+  store.mcp.putIfCredential = async function (row, expected, tokens) {
+    const written = await putIf.call(this, row, expected, tokens);
+    if (armed && !tokens) wrote();
+    return written;
+  };
+  // The seam: the token's mark, right after the token's row is written. The owner's save starts there and the mark waits
+  // for it to reach the name's turn (or, with no turn, to write its row).
+  let owner;
+  const put = store.settings.put;
+  store.settings.put = async function (key, value) {
+    if (key === mcpSourceKey("hn") && value?.by === "token" && !owner) {
+      armed = true;
+      owner = registry.save("hn", { url: owners.url });
+      await Promise.race([askedTurn, ownerWrote]);
+    }
+    return put.call(this, key, value);
+  };
+  await registry.save("hn", { url: fake.url }, undefined, undefined, undefined, undefined, undefined, undefined, true);
+  assert.ok(owner, "the owner's save started between the token's row and its mark");
+  assert.equal((await owner)?.name, "hn");
+  const row = await store.mcp.server("hn");
+  assert.equal(row?.url, owners.url, "the owner's save stands");
+  await assert.rejects(registry.remove("hn", credentialMark(row), true), (error) => error.code === "precondition_failed", "the token's mark is not on the owner's row");
+  assert.equal((await store.mcp.server("hn"))?.url, owners.url);
 });
 
 test("a preset whose key does not open here is `unusable`, and a server that is no preset answers nothing", async (t) => {
