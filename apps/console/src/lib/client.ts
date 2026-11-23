@@ -50,15 +50,16 @@ export type ImportState = { state: "running" } | { state: "done"; agents: number
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
-/** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
- *  the others. */
-export type RunsFilter = { status?: RunStatus; archived?: boolean };
+/** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
+ *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (label) q.set("label", label);
   return `?${q}`;
 };
 
