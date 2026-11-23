@@ -45,21 +45,32 @@ function piecesOf(values) {
 test("over 4,000 random texts of held values' forms and shapes' pieces, redactSecrets and redactLearned cut as before, or withhold a text that holds a value part of which a cut covered", (t) => {
   const next = random(20261123);
   let withheld = 0;
+  let shown = 0;
   for (let i = 0; i < 4013; i++) {
     const values = valuesOf(next);
     const pieces = piecesOf(values);
     const text = Array.from({ length: 2 + Math.floor(next() * 24) }, () => pick(next, pieces)).join("");
-    for (const [now, then] of [[redactSecrets, before.redactSecrets], [redactLearned, before.redactLearned]]) {
+    for (const [now, then, shapesOf] of [[redactSecrets, before.redactSecrets, before.secretShapes], [redactLearned, before.redactLearned, before.learnedSecretShapes]]) {
       const got = now(text, values, 1 << 20);
       const was = then(text, values, 1 << 20);
       if (got === was) continue;
-      assert.ok(got === "[redacted]" && before.valueMatcher(values)(text), `${now.name}(${JSON.stringify(text)}, ${JSON.stringify(values)}): ${JSON.stringify(got)}, before ${JSON.stringify(was)}`);
-      withheld++;
+      const said = `${now.name}(${JSON.stringify(text)}, ${JSON.stringify(values)}): ${JSON.stringify(got)}, before ${JSON.stringify(was)}`;
+      if (got === "[redacted]") {
+        assert.ok(before.valueMatcher(values)(text), said);
+        withheld++;
+      } else {
+        // The old redactor also read its shapes in the text cut of everything but the folded identifiers: a held value
+        // cut beside an identifier could make a shape of it there (a key ending in a letter, then "sk-" and the
+        // identifier's hex), and the text was withheld though the identifier is cut too. What the new one shows passes
+        // the old redactor's own checks.
+        assert.ok(was === "[redacted]" && !before.valueMatcher(values)(got) && shapesOf(got).length === 0, said);
+        shown++;
+      }
     }
     assert.equal(valueMatcher(values)(text), before.valueMatcher(values)(text), JSON.stringify(text));
     assert.equal(valueMatcher(values, { fold: false })(text), before.valueMatcher(values, { fold: false })(text), JSON.stringify(text));
   }
-  t.diagnostic(`withheld where the old redactor showed part of a held value: ${withheld}`);
+  t.diagnostic(`withheld where the old redactor showed part of a held value: ${withheld}; shown, cut, where it withheld for a shape its partial cut made: ${shown}`);
 });
 
 test("over 4,000 random texts of the shapes' pieces, the kinds of secret and bank shapes found are the old ones", () => {
