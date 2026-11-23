@@ -1,4 +1,4 @@
-import { ClientError } from "./client";
+import { ClientError } from "./clientError";
 import type { Permission, SecretMeta } from "./v2";
 
 /** A tool as a remote MCP server lists it (`tools/list`, through the server's preview). */
