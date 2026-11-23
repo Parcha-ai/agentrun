@@ -186,7 +186,7 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: a template's schedule trigger, wh
   for (const said of [/PARALLEL_API_KEY/, /AGENTRUN_RUN_KEYS=1/, /keys/, /AGENTRUN_LAUNCH_HOOK_URL/]) assert.match(words, said);
 });
 
-test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trigger the agent already has on, by its name, says that one is kept and still fires, and how to turn it off; one kept off is not said", { timeout: 60_000 }, async (t) => {
+test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trigger the agent already has on, by its name, says that one is kept and still fires, each firing refused 409 and starting no run, and how to turn it off; one kept off is not said", { timeout: 60_000 }, async (t) => {
   const dir = await scratch(t);
   const { api, store } = await setup(t, { templates: searcherTemplate(dir, MORNING), runKeys: true, runner: false });
   const applied = await api("POST", "/templates/searcher/apply", {});
@@ -205,7 +205,10 @@ test("AGENTRUN_RUN_KEYS=1 with no launch hook: an update apply that skips a trig
     assert.equal(planned.body.plan.triggers[0].reason, words, "the plan says it in the apply's words");
     if (enabled) {
       assert.ok(words.startsWith(`${made} `), words);
-      for (const said of [/trg_morning/, /still fires/, /PATCH \/v2\/triggers\/trg_morning/, /"enabled": false/]) assert.match(words.slice(made.length), said);
+      for (const said of [/trg_morning/, /still fires, and each firing is refused 409 until you turn it off/, /PATCH \/v2\/triggers\/trg_morning/, /"enabled": false/]) assert.match(words.slice(made.length), said);
+      // What the warning says of it: it fires, its firing is refused for the key it can't bring, and no run starts.
+      const fired = await api("POST", "/triggers/trg_morning/fire", {}, { "idempotency-key": "kept-fires" });
+      assert.deepEqual([fired.status, fired.body.status, fired.body.error?.code, fired.body.run_id], [202, "failed", "agent_not_runnable", null], JSON.stringify(fired.body));
     } else assert.equal(words, made, "a trigger kept off is not said");
     assert.deepEqual((await store.triggers.list(agent)).map((row) => [row.id, row.enabled]), [["trg_morning", enabled]], "left as it was");
     await store.triggers.remove("trg_morning");
