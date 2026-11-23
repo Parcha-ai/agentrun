@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { feed, posts } from "./feed-support.mjs";
-import { scratch, serve, withEnv } from "./support.mjs";
+import { follow, scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 
 const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
@@ -163,6 +163,26 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
   const gone = await send(server, "GET", `/v2/agents/${agent}`);
   assert.deepEqual([gone.status, gone.body.error?.code], [410, "purged"], JSON.stringify(gone.body));
+});
+
+test("an API-only server purges one ended run of an agent its deploy made, with the token, as it may purge the whole agent: the agent kept", { timeout: 120_000 }, async (t) => {
+  const server = await deployServer(t, { apiOnly: true, runner: true });
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  const started = await send(server, "POST", `/v2/agents/${agent}/runs`, { body: { input: { content: "Today's note." } } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const run = started.body.run_id;
+  await follow(server.api, run, ["completed"]);
+
+  const deleted = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  const read = await send(server, "GET", `/v2/runs/${run}`);
+  assert.deepEqual([read.status, read.body.error?.code, read.body.error?.details?.run_id], [410, "purged", run], JSON.stringify(read.body));
+  assert.deepEqual(await runsOf(server, agent), [], "no run of the agent is listed");
+  const kept = await send(server, "GET", `/v2/agents/${agent}`);
+  assert.deepEqual([kept.status, kept.body.agent_id], [200, agent], "the agent is kept");
+  assert.equal((await server.store.agents.get(agent)).archivedAt, null, "and not archived");
 });
 
 test("on an API-only server a template's schedule is never armed on the triggers' own clock, so its time passing starts no run; the whole server arms it", { timeout: 60_000 }, async (t) => {

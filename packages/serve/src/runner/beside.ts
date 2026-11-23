@@ -36,7 +36,7 @@ export function besideStopping(server: { runs: number; boundMs: number }, held: 
  *  a remote provider's create takes, so a machine that dials the server lands in this process's hub. Returns the runner
  *  and a close() that stops both and closes its store. `loopsTold`: `loops` was given (besideRunnerOptions), so on uid
  *  isolation a number past the helper's slots is refused rather than cut. */
-export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
+export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs, env, janitor, ownProcesses, hub, dial, mcpLoopback, mcpOwn, ollamaHost, evalFakes, harnessInstall, onLine, onRunEnded }: { loops?: number; loopsTold?: boolean; drainMs?: number; env?: NodeJS.ProcessEnv; ollamaHost?: string; janitor?: boolean; ownProcesses?: boolean; hub?: import("@parcha/agentrun-computer").AttachHub; dial?: import("@parcha/agentrun-computer").HostedDial; mcpLoopback?: boolean; mcpOwn?: readonly string[]; evalFakes?: (agentId: string) => import("./adapter-run-spec.js").EvalFakes | undefined; harnessInstall?: import("../harness-install.js").HarnessInstaller; onLine?: (line: string) => void; onRunEnded?: (status: string) => void } = {}): Promise<{ runner: Awaited<ReturnType<typeof import("./runner.js")["startRunner"]>>; close: () => Promise<void> }> {
   const { runnerName, startRunner } = await import("./runner.js");
   const { dispatchRunner } = await import("./harness-loops.js");
   const { routeOf } = await import("./model-route.js");
@@ -60,7 +60,10 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // a --faux server reaches the faux gateway and its computers. The run's claim-time computer is composed once, the one way
   // (main.ts runnerComputers, a desktop's or a phone's live view with it), from that same environment; a Docker computer's
   // mounts by where this process's Docker has the data directory (box-paths.ts), read once.
+  // `ollamaHost`: the Ollama the server beside it asks (Serve.ollamaHost), the default address on one owner's own machine
+  // that names none, so its runs ask the same one; a runner in its own process asks the one its environment names alone.
   const runs = env ?? runEnv(process.env);
+  if (ollamaHost && !runs.OLLAMA_HOST?.trim()) runs.OLLAMA_HOST = ollamaHost;
   const { dockerPathsForRuns } = await import("../box-paths.js");
   const { hostAddressesOnce } = await import("../docker-host-addresses.js");
   const { PROVIDERS } = await import("@parcha/agentrun-computer");
@@ -158,7 +161,7 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const serve = await startServe(options);
   // Each run a process of its own, as a user of its own where the image's helper can switch, as the CLI's start runs
   // them (cli.ts): the isolation the server's capabilities say (runIsolationOf over the same helper) is the runner's.
-  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ollamaHost: serve.ollamaHost, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });
