@@ -58,7 +58,7 @@ export async function exportRemoteHistory(
   const sourceEnv=options.env??process.env;
   const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
   for(const {locator,stats:listed} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
-    const file=locator.file,stats=(await fileStats(file))??listed;
+    const file=locator.file,stats=await fileStats(file,listed);
     if(stats.size>MAX_SESSION_BYTES){skip('Source session project could not be checked: file exceeds the metadata limit.');continue;}
     // Stop once a complete metadata record names its project. An opening prompt may itself be over 128 KiB;
     // the probe is bounded by the same byte limit as a remotely importable session, without scanning its secrets.
@@ -315,9 +315,12 @@ type FileStats = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">;
 /** A session file's stat, with its SQLite write-ahead log's (`<file>-wal`) where it has one: a database being written
  *  appends to its log, its own size and mtime unchanged until a checkpoint, so the size is the two's sum and the last
  *  write the later of the two; the rest is the file's own. What every live check, size cap and saved stamp here goes by,
- *  so each sees a write to the log. null: the file is gone. */
-async function fileStats(file: string): Promise<FileStats | null> {
-  const [own, wal] = await Promise.all([stat(file), stat(`${file}-wal`)].map((stats) => stats.catch(() => null)));
+ *  so each sees a write to the log. `listed`: the file's stat as its listing took it, not taken again (only the log's
+ *  is), so a listing's checks and stamps go by the one stat it made of each file. null: the file is gone. */
+function fileStats(file: string, listed: FileStats): Promise<FileStats>;
+function fileStats(file: string): Promise<FileStats | null>;
+async function fileStats(file: string, listed?: FileStats): Promise<FileStats | null> {
+  const [own, wal] = await Promise.all([listed ?? stat(file).catch(() => null), stat(`${file}-wal`).catch(() => null)]);
   if (!own) return null;
   return { dev: own.dev, ino: own.ino, ctimeMs: own.ctimeMs, size: own.size + (wal?.size ?? 0), mtimeMs: Math.max(own.mtimeMs, wal?.mtimeMs ?? 0) };
 }
@@ -467,7 +470,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   for (const source of sources) {
     for (const { locator, stats: listed } of await inOrder(await sessionLocators(home, source), source)) {
       const { file } = locator;
-      const stats = (await fileStats(file)) ?? listed;
+      const stats = await fileStats(file, listed);
       if (signal?.aborted) {
         stopped = true;
         break;
