@@ -11,7 +11,7 @@ import { extname, join, sep } from "node:path";
 import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
 import { ApiError } from "./errors.js";
-import { hostRefusedPage, movedPage } from "./host-check.js";
+import { hostPort, hostRefusedPage, movedPage } from "./host-check.js";
 
 // img-src names Google's favicon service and the four hosts it redirects to: the console's Keys page shows a provider's
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
@@ -69,16 +69,19 @@ export class ConsoleSessions {
     return this.ids.has(digest(value).toString("hex"));
   }
 }
-/** One name per port: cookies are kept per host, not per port, and another server on this machine has another token. */
-const cookieName = (req: IncomingMessage) => `agentrun-${req.socket.localPort}`;
+/** One name per port the browser opened: cookies are kept per host, not per port, and another server on this machine has
+ *  another token. The port is the Host header's, the browser's: a server in a container sees its own port on its socket
+ *  (7340, published at 7350), and so does another beside it. A Host with no port keeps the socket's. */
+const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.socket.localPort;
+const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
 export const cookiesOf = (req: IncomingMessage, name: string) =>
   String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
 export const overHttps = (req: IncomingMessage) => String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase() === "https";
 export const ownOrigin = (req: IncomingMessage) => `${overHttps(req) ? "https" : "http"}://${String(req.headers.host ?? "").toLowerCase()}`;
 export const isJson = (req: IncomingMessage) => String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase() === "application/json";
 
-/** The owner's session cookie: `__Host-` on https, so no other host or path can set it; else one per port. */
-export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Host-agentrun-session" : `agentrun-${req.socket.localPort}-session`);
+/** The owner's session cookie: `__Host-` on https, so no other host or path can set it; else one per port the browser opened. */
+export const ownerCookieName = (req: IncomingMessage) => (overHttps(req) ? "__Host-agentrun-session" : `agentrun-${browserPort(req)}-session`);
 /** A Set-Cookie line for the owner's session: `value`, or an empty one that ends it (`maxAgeS` 0). */
 export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number) =>
   `${ownerCookieName(req)}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAgeS}${overHttps(req) ? "; Secure" : ""}`;

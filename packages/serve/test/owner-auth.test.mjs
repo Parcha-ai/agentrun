@@ -669,3 +669,24 @@ test("a sign-in from a new address when the limit's table is full goes through, 
   assert.equal(full.status, 200, full.text);
   assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
 });
+
+// Two servers on one machine, the second in Docker with its 7340 published at 7350: cookies are kept per host, not per
+// port, and inside its container that server's socket is on 7340 too. The session cookie is named for the port the
+// browser opened (the Host header's), so a sign-in at one never signs the person out of the other.
+test("the session cookie is named for the port the browser opened, not the server's socket: a published 7350 is not 7340", async (t) => {
+  const server = await owned(t);
+  const at = (port) => ({ ...json, host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
+  const published = await signIn(server, PASSWORD, at(7350));
+  assert.equal(published.status, 200, published.text);
+  assert.match(published.headers["set-cookie"][0], /^agentrun-7350-session=/);
+  const cookie = cookieOf(published);
+  const read = (port, held) => call(server.port, { path: "/v2/agents", headers: { host: `127.0.0.1:${port}`, cookie: held } });
+  assert.equal((await read(7350, cookie)).status, 200, "the cookie it set signs it in at that port");
+  assert.equal((await read(7340, cookie.replace("agentrun-7350-session=", "agentrun-7340-session="))).status, 200, "a session is the server's own, whatever its name");
+  assert.equal((await read(7340, cookie)).status, 401, "another port's cookie is not this one's");
+  const direct = await signIn(server, PASSWORD);
+  assert.match(direct.headers["set-cookie"][0], new RegExp(`^agentrun-${server.port}-session=`), "opened at the server's own port: that port");
+  const bare = await signIn(server, PASSWORD, { ...json, host: "localhost", origin: "http://localhost" });
+  assert.equal(bare.status, 200, bare.text);
+  assert.match(bare.headers["set-cookie"][0], new RegExp(`^agentrun-${server.port}-session=`), "a Host with no port keeps the socket's");
+});

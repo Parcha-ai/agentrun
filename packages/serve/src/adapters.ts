@@ -82,6 +82,45 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
   return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags.map((flag) => ` ${flag}`).join("")}`;
 }
 
+/** The first of `base`, `base-2`, `base-3`… that is not there. */
+const freeName = (base: string, exists: (path: string) => boolean): string => {
+  let name = base;
+  for (let n = 2; exists(name); n++) name = `${base}-${n}`;
+  return name;
+};
+
+/**
+ * A start `npx @parcha/agentrun` made (NPX_PACKAGE_ENV) that a data directory refused because an earlier version wrote it
+ * (store.ts StoreFromEarlierVersion, or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
+ * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
+ * folder alone is not a new AgentRun. One way is this version on a new, empty folder: the same command with --data. The
+ * other is the old folder moved aside whole, so the same command starts this version where it was, and the earlier
+ * version still opens what it holds. Nothing is deleted either way. Any other error, or a start the launcher did not
+ * make, is undefined: the refusal's own words stand.
+ */
+export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.ProcessEnv = {}, exists: (path: string) => boolean = existsSync): string | undefined {
+  const refused = error as { name?: unknown; message?: unknown; found?: unknown; known?: unknown } | undefined;
+  const earlier = refused?.name === "StoreFromEarlierVersion" || (refused?.name === "SchemaVersionUnknown" && typeof refused.found === "number" && typeof refused.known === "number" && refused.found < refused.known);
+  const door = env[NPX_PACKAGE_ENV];
+  if (!earlier || typeof refused?.message !== "string" || door === undefined || !/^@parcha\/agentrun@\d[\w.+-]*$/.test(door)) return undefined;
+  const dir = resolve(data);
+  const yes = env.npm_config_yes === "true" ? "-y " : "";
+  const port = env[STARTED_PORT_ENV];
+  const flags = `${port && /^\d{1,5}$/.test(port) ? ` --port ${port}` : ""}${env[STARTED_OPEN_ENV] === "0" ? " --no-open" : ""}`;
+  const command = `npx ${yes}${door}`;
+  const fresh = freeName(`${dir}-new`, exists);
+  const aside = freeName(`${dir}-earlier`, exists);
+  const installed = exists(join(dir, "bin", "agentrun")) ? " Its bin/agentrun (the earlier installer's command) moves with it: run the installer again for this version's." : "";
+  return [
+    refused.message.split("\n")[0],
+    `To start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
+    `  (every later agentrun command then takes the same --data: without it, they open ${dir})`,
+    `Or keep all of it where the earlier version still opens it: mv ${shellWord(dir)} ${shellWord(aside)}, then ${command}${flags} starts this version in ${dir}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
+    // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
+    `Either way, nothing is deleted.${refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : ""}`,
+  ].join("\n");
+}
+
 /** The port the server was started on when `--port` named one, and whether `--open` was given (1 or 0): set by its CLI
  *  for itself and its runs (startedWith), read by npxLine, so a hint keeps them. */
 export const STARTED_PORT_ENV = "AGENTRUN_SERVE_PORT";
