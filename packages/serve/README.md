@@ -1560,32 +1560,45 @@ saved earlier is dropped when the server starts, and claude-agent runs on the mo
 
 ### On this machine's Ollama
 
-Start Ollama (`ollama serve`, or its app) and the server lists its models itself, with no key, no gateway and no
-restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
+Start Ollama (`ollama serve`, or its app) beside your own server and it lists Ollama's models itself, with no key, no
+gateway and no restart: `GET /api/tags` for the tags, `POST /api/show` for each one's capabilities and trained context. Each chat model
 is `ollama/<tag>` in `harnesses[].models` and `harnesses[].free_models` for pi, and the console names it
 `<tag> · local (Ollama)`, on a run's page too (from the run's `tokens` usage line, `provider` `ollama` and `model` the
 tag), so a run on the default says which model it ran on. An embedding model is left out. A model pulled or an Ollama started after the server shows in capabilities
 within half a minute (the listing is kept that long, and asked again behind the next answer). A down or stuck Ollama
-lists no models and slows nothing: the listing has 2 seconds in all, and follows no redirect.
+lists no models and slows nothing: the listing has 2 seconds in all, follows no redirect, and keeps the models shown
+before its deadline. A run never waits on the listing: one on `ollama/<tag>` asks that model's `/api/show` alone (10
+seconds), and a run on any other model, a key's default included, never asks Ollama.
 
-- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434. A host alone, or `host:port`, with no
+- Where: `OLLAMA_HOST`, read as the ollama CLI reads it. Unset, 127.0.0.1:11434, but only on one owner's own server
+  on their own machine, the one `--harness-sign-in` starts on: it listens on loopback with no public address, keeps the
+  SQLite store, runs its runs beside it as its own user, and takes one owner and one API token. On any other server
+  (shared, `--no-runner`, Postgres, API-only, more than one token), whatever answers on that machine's 11434 is no model
+  of the people who start runs there, so unset means no Ollama: name it in `OLLAMA_HOST`. A host alone, or `host:port`, with no
   scheme is plain http, port 11434 when none is given; `http://` and `https://` take their own default ports. `0.0.0.0`
   and `::`, where `ollama serve` listens on every address, mean this machine (127.0.0.1 and `[::1]`). A path is kept.
   Plain http goes only to this machine (loopback); another machine takes `https://`. A refused `OLLAMA_HOST` lists no
-  models. `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
-- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the model's trained context up to
-  65,536 tokens (65,536 where `/api/show` names none). The model's context window here is the same number, so pi
-  compacts before Ollama would cut the prompt.
+  models, and the server's log says why once, at its start (`event=ollama_host_refused`, never the value: a user or
+  password in it stays unsaid). `agentrun service install --env OLLAMA_HOST=<host:port>` gives it to the service.
+- Context: each request is Ollama's own `/api/chat`, streamed, with `options.num_ctx` the least of 65,536, the model's
+  trained context (where `/api/show` names one) and `OLLAMA_CONTEXT_LENGTH` (where the server's environment sets it to a
+  whole number above 0, as a person short of memory does for Ollama itself). The model's context window here is the same
+  number, so pi compacts before Ollama would cut the prompt.
 - Thinking: a model whose capabilities include `thinking` has its reasoning split out by Ollama. For any other, an
   answer that opens with `<think>` has that part as thinking up to `</think>`, the split Ollama makes for a thinking
   model, so the tags never reach the answer.
 - Tools: a model whose capabilities include `tools` takes them natively. Any other takes them as text: the tools are
   described in its prompt, and a call written in its answer comes back as a real call.
-- Cost: $0, booked as a known cost. Its requests never count toward the [limit on free
-  requests](#a-limit-on-free-requests): there is no shared quota behind them.
+- Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
+  requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
+  with its other free requests, so a run on Ollama that keeps calling tools still stops there.
 - Harness: pi alone. claude-agent, codex and opencode never list them.
+- Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
+  `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi runs on the first model Ollama
-  lists that calls tools. Any key wins. A model without tools is pickable, never the default.
+  lists that calls tools. Any key wins. A model without tools is pickable, never the default. Ollama lists the model
+  pulled last first, so pulling one can change that default, and a saved agent that names no model follows it. Name the
+  model (`ollama/<tag>`) to pin it.
 
 `inkling-2-mini` (Ollama 0.40.17 or later) is the model to try first. Under `--faux` or `AGENT_MODEL_BASE_URL`, Ollama
 is never asked.
@@ -4714,6 +4727,9 @@ workflow's agent nodes. Every such request of the run counts, its own model's, i
 compaction, a title), and one a crash cut, which is booked at $0, a known cost; a paid request, a paid tool call and a
 workflow's decision never count, and are never refused by it. The count is read from the run's booking records at each
 request, so a restart or a claim moved to another runner keeps it.
+
+An agent's own `max_requests` is a lower limit of the same kind, in the same words. It counts everything the server's
+limit counts and a local model's requests (Ollama's) too: the only limit a run on Ollama meets besides its turns.
 
 ### A run paused at its cap
 

@@ -10,9 +10,12 @@ import { test } from "node:test";
 import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
 import { agent, follow, journalOf, serve, withEnv } from "./support.mjs";
 
-const { hostModel, providerModels } = await import("../dist/model.js");
+const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { listOllama, ollamaAsking, ollamaBase, ollamaClock, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+
+// The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
+delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
 
 const PLAIN = "synth-plain:1b";
 const TOOLS = "synth-tools:2b";
@@ -59,6 +62,56 @@ test("under the model gateway or the faux model, providerModels never asks Ollam
   assert.deepEqual(ollama.got.show, []);
 });
 
+test("a listing whose deadline passes while one /api/show is pending keeps the models shown before it", async (t) => {
+  const ollama = await fakeOllama(t, { hangOn: (route, body) => route === "show" && body?.model === TOOLS });
+  const listed = await listOllama({ OLLAMA_HOST: ollama.host }, { timeoutMs: 300 });
+  assert.deepEqual(listed.map((model) => model.name), [PLAIN, "synth-embed:1b"], "the hung one left out, the others kept");
+});
+
+test("a run pinned to an Ollama model resolves it with its /api/show alone: a hung /api/tags is never waited on", async (t) => {
+  const ollama = await fakeOllama(t, { hangOn: (route) => route === "tags" });
+  const env = { OLLAMA_HOST: ollama.host };
+  const route = await routeOf(`ollama/${TOOLS}`, env);
+  assert.equal(route.like?.contextWindow, 65_536);
+  const pinned = await runModels(env, { pinned: { provider: "ollama", modelId: TOOLS } });
+  assert.equal(pinned.models.getModel("ollama", TOOLS)?.contextWindow, 65_536);
+  assert.equal(ollama.got.tags, 0, "the listing never asked");
+  assert.ok(ollama.got.show.length > 0 && ollama.got.show.every((name) => name === TOOLS), JSON.stringify(ollama.got.show));
+});
+
+test("a start on another provider's model never asks Ollama: an OpenRouter key, the host default or a named model, with an Ollama that never answers", async (t) => {
+  const ollama = await fakeOllama(t, { hang: true });
+  const env = { OLLAMA_HOST: ollama.host, OPENROUTER_API_KEY: `not-a-secret-${"keyed-start"}` };
+  const chosen = await chooseModel(env, undefined, "default", "pi");
+  assert.equal(chosen.model?.provider, "openrouter", JSON.stringify(chosen));
+  await runModels(env, undefined);
+  await runModels(env, "openrouter/openai/gpt-6.1-sol");
+  assert.equal(ollama.got.tags, 0, "no listing started, so none awaited");
+  assert.deepEqual(ollama.got.show, []);
+});
+
+test("the suites' switch, AGENTRUN_SERVE_FAUX_NO_OLLAMA in the process's own environment, turns every Ollama off whatever env a caller passes", async (t) => {
+  const ollama = await fakeOllama(t);
+  process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+  t.after(() => delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA);
+  const env = { OLLAMA_HOST: ollama.host };
+  assert.deepEqual(await listOllama(env), []);
+  assert.deepEqual((await providerModels(env)).getModels("ollama"), []);
+  assert.equal((await runModels(env, `ollama/${TOOLS}`).catch((error) => error)) instanceof Error, true, "a run on it finds no model");
+  assert.equal(ollama.got.tags, 0);
+  assert.deepEqual(ollama.got.show, []);
+});
+
+test("an Ollama cloud model (remote_model and remote_host, run on ollama.com) is never listed, so never local and never the default, even newest and with tools", async (t) => {
+  const cloud = { name: "synth-cloud:20b-cloud", remote_model: "synth-cloud:20b", remote_host: "https://ollama.com", capabilities: ["completion", "tools", "thinking"], family: "synthcloud" };
+  const ollama = await fakeOllama(t, { models: [cloud, ...SYNTH_MODELS] });
+  const env = { OLLAMA_HOST: ollama.host };
+  const models = await providerModels(env);
+  assert.deepEqual(models.getModels("ollama").map((model) => model.id), [PLAIN, TOOLS], "the cloud model left out");
+  assert.equal(hostModel(env, "default", "pi"), `ollama/${TOOLS}`, "the default is the first local model with tools");
+  assert.ok(!ollama.got.show.includes(cloud.name), "its tag alone says it is a cloud model: no /api/show for it");
+});
+
 test("an Ollama that takes the request and never answers lists nothing once its timeout passes, and that answer is kept for its address", async (t) => {
   const ollama = await fakeOllama(t, { hang: true });
   const env = { OLLAMA_HOST: ollama.host };
@@ -83,6 +136,21 @@ test("a model trained on more than 64k runs at 64k: every /api/chat request carr
   assert.equal(side.stopReason, "stop", side.errorMessage);
   assert.equal(ollama.got.chat.length, 3, "two route turns and one side request");
   for (const body of ollama.got.chat) assert.equal(body.options?.num_ctx, 65_536, JSON.stringify(body.options));
+});
+
+test("OLLAMA_CONTEXT_LENGTH, set to a whole number above 0, caps num_ctx and the window below 64k and the trained context; any other value is ignored", async (t) => {
+  const ollama = await fakeOllama(t, { reply: () => ({ text: "Fine." }) });
+  const capped = { OLLAMA_HOST: ollama.host, OLLAMA_CONTEXT_LENGTH: "32768" };
+  const route = await routeOf(`ollama/${TOOLS}`, capped);
+  assert.equal(route.like?.contextWindow, 32_768, "the user's own context length, below 64k and the trained 131072");
+  await eventsOf(route);
+  assert.equal(ollama.got.chat.at(-1).options?.num_ctx, 32_768);
+  const models = await providerModels(capped);
+  assert.equal(models.getModel("ollama", TOOLS).contextWindow, 32_768);
+  assert.equal((await providerModels({ ...capped, OLLAMA_CONTEXT_LENGTH: "50000" })).getModel("ollama", PLAIN).contextWindow, 40_960, "above the trained context: the trained one");
+  for (const ignored of ["0", "-1", "lots", "8192.5", ""]) {
+    assert.equal((await providerModels({ ...capped, OLLAMA_CONTEXT_LENGTH: ignored })).getModel("ollama", TOOLS).contextWindow, 65_536, `${JSON.stringify(ignored)} ignored`);
+  }
 });
 
 test("a model trained on less than 64k runs at its own context, in num_ctx and its window alike", async (t) => {
@@ -164,6 +232,25 @@ test("a run on an Ollama model books $0, and its requests never count toward the
   const requests = journalOf(data, started.body.run_id).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
   assert.equal(requests.length, 4);
   assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the limit");
+});
+
+test("an agent's max_requests stops a run on an Ollama model at that many requests: local skips the server's limit alone, never the agent's", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  // A model that calls a tool on every answer: with no limit the run would loop until its turns ran out.
+  const ollama = await fakeOllama(t, { reply: (_body, n) => ({ calls: [{ name: "lookup", arguments: { n } }], usage: { input: 50, output: 5 } }) });
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api, data } = await serve(t, { faux: undefined });
+  assert.equal((await api("POST", "/agents", agent("capped", { model: `ollama/${TOOLS}`, max_requests: 2 }))).status, 201);
+  const started = await api("POST", "/agents/capped/runs", { input: { content: "Look it up until told to stop." }, max_cost_usd: 1 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.status, "failed", JSON.stringify(view));
+  assert.match(String(view.error?.message ?? view.error), /2-request limit/, JSON.stringify(view.error));
+  assert.equal(ollama.got.chat.length, 2, "the third request was never sent");
+  assert.match(JSON.stringify(ollama.got.chat[0].messages), /2 free-model requests left in this run/, "told to finish, as a run near the server's limit is");
+  const requests = journalOf(data, started.body.run_id).filter((entry) => entry.kind === "runner.request").map((entry) => entry.data);
+  assert.ok(requests.every((request) => request.freeRequest === undefined), "none counted toward the server's limit");
 });
 
 test("a run on the host default books the Ollama model it ran on: its usage line names ollama and the tag, as the run page reads it", { timeout: 120_000 }, async (t) => {
@@ -270,4 +357,87 @@ test("OLLAMA_HOST plain http to another machine is refused, and a refused Ollama
     assert.deepEqual(await listOllama({ OLLAMA_HOST: refused }, { fetch: counting }), [], refused);
     assert.equal(asked, 0, `${refused}: nothing sent`);
   }
+});
+
+/** Sends this process's requests to Ollama's default address (127.0.0.1:11434, localhost or [::1] on that port) to
+ *  `ollama` in its place, so a test of the default never reaches an Ollama on the machine: the URLs so asked, by path. */
+function defaultAddressTo(t, ollama) {
+  const real = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const own = /^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):11434(\/.*)?$/.exec(url);
+    if (!own) return real(input, init);
+    asked.push(own[1] ?? "/");
+    return real(`http://${ollama.host}${own[1] ?? "/"}`, init);
+  };
+  t.after(() => void (globalThis.fetch = real));
+  return asked;
+}
+
+/** What makes a test's server one owner's own (server.ts whyNotOwnMachine) unset, and every model key with them. */
+const OWNER = [...KEYS, "OLLAMA_HOST", "AGENTRUN_RUN_USER", "AGENTRUN_STORE_URL"];
+const ollamaIds = (caps) => caps.harnesses.find((harness) => harness.id === "pi").models.filter((id) => id.startsWith("ollama/"));
+
+test("a shared server (here one with no runner beside it) never asks the default address: with Ollama up there and no OLLAMA_HOST, none is listed", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  const asked = defaultAddressTo(t, ollama);
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps), [], JSON.stringify(caps.models));
+  assert.notEqual(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, undefined, "its runner is told no address either");
+  assert.deepEqual(asked, [], "the default address never asked");
+  assert.equal(ollama.got.tags, 0);
+});
+
+test("a shared server lists the Ollama OLLAMA_HOST names", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false, runnerApart: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps).sort(), [`ollama/${PLAIN}`, `ollama/${TOOLS}`]);
+  assert.equal(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, ollama.host);
+});
+
+test("one owner's own server lists the Ollama at the default address with no OLLAMA_HOST, and tells its runner that address", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const ollama = await fakeOllama(t);
+  const asked = defaultAddressTo(t, ollama);
+  const { api, ollamaHost } = await serve(t, { faux: undefined, runner: false });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(ollamaIds(caps).sort(), [`ollama/${PLAIN}`, `ollama/${TOOLS}`]);
+  assert.equal(caps.models.default, `ollama/${TOOLS}`);
+  assert.equal(ollamaHost, "127.0.0.1:11434");
+  assert.ok(asked.includes("/api/tags"), JSON.stringify(asked));
+});
+
+test("a refused OLLAMA_HOST is said in one log line at the start, never with its user or password", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  const refused = new URL("http://10.0.0.5:11434");
+  refused.username = "synthuser";
+  refused.password = `not-a-secret-${"ollama-host"}`;
+  withEnv(t, { OLLAMA_HOST: refused.href });
+  const lines = [];
+  const { api } = await serve(t, { faux: undefined, runner: false, log: (line) => lines.push(line) });
+  await api("GET", "/capabilities");
+  await api("GET", "/capabilities");
+  const said = lines.filter((line) => line.includes("event=ollama_host_refused"));
+  assert.equal(said.length, 1, lines.join("\n"));
+  assert.match(said[0], /OLLAMA_HOST/);
+  assert.ok(!said[0].includes("synthuser") && !said[0].includes("not-a-secret"), said[0]);
+});
+
+test("a save resolves its tools on the Ollama default its run takes, as capabilities do, even before anything here has listed that Ollama", { timeout: 60_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const { blockersOf } = await import("../dist/runnable.js");
+  // A fresh address: nothing in this process has listed it yet.
+  const ollama = await fakeOllama(t);
+  const env = { OLLAMA_HOST: ollama.host };
+  const blockers = await blockersOf(env, { kind: "agentic", instructions: "Answer.", harness: "pi", tools: ["web_search"] }, { web_search: { provider: "native" } });
+  const search = blockers.find((blocker) => blocker.message.includes("web_search"));
+  assert.match(search?.message ?? "", new RegExp(`no native search for ollama/${TOOLS}`), JSON.stringify(blockers));
 });

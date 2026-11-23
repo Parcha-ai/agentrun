@@ -14,6 +14,10 @@ export const SYNTH_MODELS = Object.freeze([
   { name: "synth-embed:1b", capabilities: ["embedding"], family: "synthembed", context_length: 8_192 },
 ]);
 
+/** A cloud model's fields (Ollama's `-cloud` tags, run on ollama.com): `remote_model` and `remote_host`, in /api/tags
+ *  and /api/show alike, as a model given them names them. */
+const remoteOf = (model) => Object.fromEntries(["remote_model", "remote_host"].filter((key) => model[key] !== undefined).map((key) => [key, model[key]]));
+
 const json = (res, status, value) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
 
 /**
@@ -21,8 +25,10 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
  * answers (an Ollama stuck loading); `reply(body, n)` the answer to the n-th chat (from 1), as
  * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output } }`, or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
+ * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
+ * answered (an Ollama whose listing is stuck, or one model's /api/show).
  */
-export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, got = { tags: 0, show: [], chat: [] } } = {}) {
+export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, got = { tags: 0, show: [], chat: [] } } = {}) {
   return (req, res) => {
     const path = new URL(req.url ?? "/", "http://ollama").pathname;
     const route = req.method === "GET" && path === "/api/tags" ? "tags" : req.method === "POST" && path === "/api/show" ? "show" : req.method === "POST" && path === "/api/chat" ? "chat" : undefined;
@@ -43,15 +49,20 @@ export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "D
         if (route === "tags") got.tags += 1;
         return;
       }
+      if (hangOn(route, body)) {
+        if (route === "tags") got.tags += 1;
+        if (route === "show") got.show.push(body?.model);
+        return;
+      }
       if (route === "tags") {
         got.tags += 1;
-        return json(res, 200, { models: models.map((m) => ({ name: m.name, model: m.name, modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) });
+        return json(res, 200, { models: models.map((m) => ({ name: m.name, model: m.name, ...remoteOf(m), modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) });
       }
       if (route === "show") {
         got.show.push(body?.model);
         const model = models.find((m) => m.name === body?.model);
         if (!model) return json(res, 404, { error: `model '${body?.model}' not found` });
-        return json(res, 200, { details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });
+        return json(res, 200, { ...remoteOf(model), details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });
       }
       got.chat.push(body);
       const answer = reply(body, got.chat.length);

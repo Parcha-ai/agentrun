@@ -1,7 +1,8 @@
 // Ollama as a model provider: the models the Ollama on this machine (or the one OLLAMA_HOST names) has pulled, listed live
 // from its own API, run by pi alone, at $0, on Ollama's native chat API. No key: Ollama has none.
 //   Where: OLLAMA_HOST, Ollama's own variable, read as the ollama CLI reads it (ollamaBase), from the server's environment,
-//     never from a provider's auth context, so it is never a held secret. Plain http only to this machine (provider.ts
+//     never from a provider's auth context, so it is never a held secret. Unset, the server names the default address
+//     itself only on one owner's own machine (ollamaHostOf); unset anywhere else, no Ollama is asked. Plain http only to this machine (provider.ts
 //     gatewayBase, the one base rule); anything else needs https.
 //   Which models: GET /api/tags, then POST /api/show for each, whose `capabilities` say whether it chats (`completion`),
 //     takes tools (`tools`) and thinks (`thinking`), and whose model_info's `<family>.context_length` is the context it was
@@ -90,8 +91,46 @@ export function ollamaAsking(env: NodeJS.ProcessEnv): Promise<readonly OllamaLis
   return base === undefined ? undefined : asking.get(base);
 }
 
-/** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase). */
+/** What marks an Ollama cloud model (a `-cloud` tag): it runs on `remote_host` (ollama.com) as `remote_model`. */
+type Remote = { remote_host?: unknown; remote_model?: unknown };
+/** Whether an /api/tags or /api/show entry is a cloud model's. Its prompts leave this machine, so it is never listed: the
+ *  models here are local, $0 and uncounted, and a cloud model is none of those. */
+const remote = (entry: Remote | null | undefined): boolean => entry?.remote_host !== undefined || entry?.remote_model !== undefined;
+
+/** A test process's switch, read from its own environment (process.env), never from the `env` a caller passes: set, no
+ *  Ollama is asked, whatever address that `env` names or leaves to the default. A test hook's name (model.ts FAUX_PREFIX),
+ *  so a server never hands it on to its runs. The test suites set it (test/support.mjs); a test of Ollama clears it. */
+export const OLLAMA_OFF_ENV = "AGENTRUN_SERVE_FAUX_NO_OLLAMA";
+
+/** Ollama's own default address (ollamaBase of an unset OLLAMA_HOST). */
+export const OLLAMA_DEFAULT_HOST = `127.0.0.1:${OLLAMA_PORT}`;
+
+/**
+ * The OLLAMA_HOST a server asks, and hands the runner beside it: the one its environment sets, else Ollama's default
+ * address on one owner's own server on their own machine (`ownMachine`: server.ts whyNotOwnMachine, the rule
+ * --harness-sign-in starts under), else none. On a shared server, whatever answers on this machine's 11434 is no model of
+ * the people who start runs there, so it is asked only where its operator names it.
+ */
+export function ollamaHostOf(env: NodeJS.ProcessEnv, ownMachine: boolean): string | undefined {
+  const given = env.OLLAMA_HOST?.trim();
+  return given ? given : ownMachine ? OLLAMA_DEFAULT_HOST : undefined;
+}
+
+/** Why the OLLAMA_HOST `env` names is refused (ollamaBase's words, which never hold its value), or undefined. */
+export function ollamaHostRefused(env: NodeJS.ProcessEnv): string | undefined {
+  if (!env.OLLAMA_HOST?.trim()) return undefined;
+  try {
+    ollamaBase(env);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** The base OLLAMA_HOST names, or undefined where it names none (a server names the default where it may: ollamaHostOf),
+ *  is refused (ollamaBase) or the test switch is on (OLLAMA_OFF_ENV). */
 const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
+  if (process.env[OLLAMA_OFF_ENV] || !env.OLLAMA_HOST?.trim()) return undefined;
   try {
     return ollamaBase(env);
   } catch {
@@ -99,43 +138,62 @@ const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
   }
 };
 
+/** A request to the Ollama at `base`, under `signal`, following no redirect: its JSON answer, or a throw. */
+const askerOf = (base: string, send: typeof fetch, signal: AbortSignal) => async (path: string, body?: unknown): Promise<unknown> => {
+  const response = await send(`${base}${path}`, { method: body === undefined ? "GET" : "POST", redirect: "error", signal, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+  if (!response.ok) throw new Error(`${path}: ${response.status}`);
+  return response.json();
+};
+
+/** Model `name` as /api/show reports it (`ask`): its capabilities and trained context. Undefined where it does not answer
+ *  (a refusal, a wrong shape, the deadline) or names a cloud model. */
+async function shownOf(ask: ReturnType<typeof askerOf>, name: string): Promise<OllamaListed | undefined> {
+  try {
+    const show = (await ask("/api/show", { model: name })) as ({ capabilities?: unknown; model_info?: Record<string, unknown> } & Remote) | null;
+    if (remote(show)) return undefined;
+    // An Ollama from before /api/show said capabilities chats, with its tools as text.
+    const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
+    const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];
+    return { name, capabilities, trained: typeof length === "number" && Number.isSafeInteger(length) && length > 0 ? length : undefined };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
  * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
  * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
- * does not answer for is left out. The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ * does not answer for, before the deadline included, is left out and the others kept; so is a cloud model (remote_host or
+ * remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
  */
 export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
   const base = baseOf(env);
   if (base === undefined) return [];
-  const signal = AbortSignal.timeout(timeoutMs);
-  const ask = async (path: string, body?: unknown): Promise<unknown> => {
-    const response = await send(`${base}${path}`, { method: body === undefined ? "GET" : "POST", redirect: "error", signal, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
-    if (!response.ok) throw new Error(`${path}: ${response.status}`);
-    return response.json();
-  };
+  const ask = askerOf(base, send, AbortSignal.timeout(timeoutMs));
   let models: readonly OllamaListed[] = [];
   try {
-    const tags = (await ask("/api/tags")) as { models?: { name?: unknown; model?: unknown }[] } | null;
-    const names = (Array.isArray(tags?.models) ? tags.models : []).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
-    const shown = await Promise.all(names.map(async (name): Promise<OllamaListed | undefined> => {
-      try {
-        const show = (await ask("/api/show", { model: name })) as { capabilities?: unknown; model_info?: Record<string, unknown> } | null;
-        // An Ollama from before /api/show said capabilities chats, with its tools as text.
-        const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
-        const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];
-        return { name, capabilities, trained: typeof length === "number" && Number.isSafeInteger(length) && length > 0 ? length : undefined };
-      } catch {
-        if (signal.aborted) throw signal.reason;
-        return undefined;
-      }
-    }));
-    models = shown.filter((model): model is OllamaListed => model !== undefined);
+    const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
+    const names = (Array.isArray(tags?.models) ? tags.models : []).filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
+    models = (await Promise.all(names.map((name) => shownOf(ask, name)))).filter((model): model is OllamaListed => model !== undefined);
   } catch {
     models = [];
   }
   kept.set(base, { at: now(), models });
   return models;
+}
+
+/** How long a run gives the /api/show of the one Ollama model it names (ollamaShown): longer than a listing's, since the
+ *  run cannot start without it and Ollama may be loading another model. */
+export const OLLAMA_SHOW_TIMEOUT_MS = 10_000;
+
+/** Model `tag` of the Ollama `env` names, for a run that names it (`ollama/<tag>`): from its address's kept listing, else
+ *  its own /api/show within `timeoutMs`, never /api/tags, so a run never waits on a whole listing. Undefined where it is
+ *  not there, does not answer, is a cloud model or OLLAMA_HOST is refused. Nothing kept: the listing is the kept one. */
+export async function ollamaShown(env: NodeJS.ProcessEnv, tag: string, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_SHOW_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<OllamaListed | undefined> {
+  const base = baseOf(env);
+  if (base === undefined) return undefined;
+  return kept.get(base)?.models.find((model) => model.name === tag) ?? shownOf(askerOf(base, send, AbortSignal.timeout(timeoutMs)), tag);
 }
 
 /** The models the Ollama `env` names has: its address's kept listing while fresh; a stale one at once, asked again behind
@@ -164,9 +222,18 @@ export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
  *  A server compares it to see a model pulled, removed or an Ollama started since it made its offers (server.ts). */
 export const ollamaListing = (env: NodeJS.ProcessEnv): string => ollamaKept(env).map((model) => `${model.name}=${model.capabilities.join(",")}@${model.trained ?? ""}`).join(" ");
 
-/** The context a request on `model` asks for, and its window here: its trained context up to OLLAMA_NUM_CTX, which a model
- *  /api/show names none for gets. */
-export const contextOf = (model: Pick<OllamaListed, "trained">): number => Math.min(OLLAMA_NUM_CTX, model.trained ?? OLLAMA_NUM_CTX);
+/** The context a request on `model` asks for, and its window here: its trained context up to OLLAMA_NUM_CTX (which a model
+ *  /api/show names none for gets), and never above the OLLAMA_CONTEXT_LENGTH `env` sets. */
+export const contextOf = (model: Pick<OllamaListed, "trained">, env: NodeJS.ProcessEnv): number => Math.min(OLLAMA_NUM_CTX, model.trained ?? OLLAMA_NUM_CTX, contextLengthOf(env) ?? OLLAMA_NUM_CTX);
+
+/** OLLAMA_CONTEXT_LENGTH, Ollama's own default context, where `env` sets it to a whole number above 0: a person who set it
+ *  lower (for their memory) is never sent more. Any other value, none. */
+const contextLengthOf = (env: NodeJS.ProcessEnv): number | undefined => {
+  const given = env.OLLAMA_CONTEXT_LENGTH?.trim();
+  if (!given || !/^\d+$/.test(given)) return undefined;
+  const length = Number(given);
+  return Number.isSafeInteger(length) && length > 0 ? length : undefined;
+};
 
 /** Whether `model` chats (an embedding model does not). */
 const chats = (model: OllamaListed): boolean => model.capabilities.includes("completion");
@@ -181,9 +248,9 @@ export function ollamaToolsModel(env: NodeJS.ProcessEnv): string | undefined {
 type OllamaModel = Model<typeof OLLAMA_API> & { toolsAs?: ToolsAs };
 
 /** The provider of `listed` (its chat models) at `base`: keyless, $0, each model's window its context (contextOf). */
-export function ollamaProvider(base: string, listed: readonly OllamaListed[]) {
+export function ollamaProvider(base: string, listed: readonly OllamaListed[], env: NodeJS.ProcessEnv) {
   const models: OllamaModel[] = listed.filter(chats).map((model) => {
-    const window = contextOf(model);
+    const window = contextOf(model, env);
     return {
       id: model.name,
       name: `${model.name} (Ollama)`,

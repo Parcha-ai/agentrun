@@ -21,10 +21,12 @@ import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
 import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
-import { ollamaBase, ollamaModels, ollamaProvider, ollamaToolsModel } from "./ollama-provider.js";
+import { OLLAMA_PROVIDER, ollamaBase, ollamaModels, ollamaProvider, ollamaShown, ollamaToolsModel } from "./ollama-provider.js";
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
+/** The Ollama tags among a run's models (`ollama/<tag>`): what providerModels resolves for it, one /api/show each. */
+export const ollamaTagsOf = (refs: Iterable<ModelRef | undefined>): string[] => [...new Set([...refs].flatMap((ref) => (ref?.provider === OLLAMA_PROVIDER ? [ref.modelId] : [])))];
 /** Whether the Ollama here is asked for its models under `env`: not under the faux model or a model gateway, which take
  *  every model. The one rule for listing (withOllamaModels), the host default (localDefault) and the server's refresh. */
 export const asksOllama = (env: NodeJS.ProcessEnv): boolean => !env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL;
@@ -242,9 +244,13 @@ type Choice = { model: ModelRef; namedProvider?: string } | { why: string; host:
 export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier = "default", harness: string = DEFAULT_HARNESS): Promise<Choice> {
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
   if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
-  // The Ollama here listed first, so a host with no key reads its default from it (hostModel's localDefault).
-  if (ref === undefined && asksOllama(env)) await ollamaModels(env);
-  const named = ref ?? hostModel(env, tier, harness);
+  // A host whose own settings name no model reads its default from the Ollama here (hostModel's localDefault), listed
+  // first; one with a key, a default or a plan never waits on that listing.
+  let named = ref ?? hostModel(env, tier, harness);
+  if (named === undefined && asksOllama(env)) {
+    await ollamaModels(env);
+    named = hostModel(env, tier, harness);
+  }
   // In a person's words (a first run from npx sees them): what to add and where. Operator detail is the README's.
   const none = tier === "default" ? "No model yet" : `No model yet for this workflow's ${tier} tier`;
   if (named?.startsWith(`${PLAN_PROVIDER}/`)) return planChoice(env, named.slice(PLAN_PROVIDER.length + 1));
@@ -271,7 +277,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
-  const models = await providerModels(env);
+  const models = await providerModels(env, { ollama: provider === OLLAMA_PROVIDER ? [modelId] : [] });
   const model = models.getModel(provider, modelId);
   if (!model) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   // A gateway ANTHROPIC_BASE_URL names that a key may not go to (gatewayBase): no Anthropic model runs, by its words.
@@ -425,7 +431,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
     // Each provider's key from `env`, which holds this process's secrets, never from process.env (secrets.ts); Anthropic's
     // at ANTHROPIC_BASE_URL when set (providerModels). pi-ai's providers price their own models, but for OpenRouter's
     // routers, whose catalog zeros are no price (routersOf).
-    return { models: withRequestKeys(await providerModels(env), env), model, byTier, unpriced: routersOf(byTier.values()) };
+    return { models: withRequestKeys(await providerModels(env, { ollama: ollamaTagsOf(byTier.values()) }), env), model, byTier, unpriced: routersOf(byTier.values()) };
   }
   const ids = [...new Set([...byTier.values()].map((m) => m.modelId))];
   const models = createModels({ authContext: authContextOf(env) });
@@ -584,7 +590,7 @@ export async function wireModels(entry: HarnessEntry, env: NodeJS.ProcessEnv, re
   const choice = await entry.model(env, ref, true);
   if (!choice) throw new Error(`${entry.id} does not run here.`);
   if ("why" in choice) throw new Error(choice.why);
-  return { models: await providerModels(env), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: routersOf([choice.model as ModelRef]) };
+  return { models: await providerModels(env, { ollama: ollamaTagsOf([choice.model as ModelRef]) }), model: choice.model as ModelRef | undefined, byTier: new Map([["default", choice.model]]), unpriced: routersOf([choice.model as ModelRef]) };
 }
 
 /** The ids of `models` that are OpenRouter's routers (local-models.ts isRouter): pi-ai's catalog lists each at $0, the
@@ -652,11 +658,13 @@ export const anthropicRefusal = (models: { getProvider(id: string): object | und
  *  requests (a hosted search, a learned node) and a grade, and the readiness chooseModel reports. A base gatewayBase
  *  refuses (one a key may not go to) refuses Anthropic's route alone: its provider keeps its models, with no key, so
  *  none of their requests is sent anywhere, and carries the refusal's words (anthropicRefusal), which chooseModel gives
- *  for an Anthropic model; every other provider runs as it does without the setting. Never throws. */
-export async function providerModels(env: NodeJS.ProcessEnv) {
+ *  for an Anthropic model; every other provider runs as it does without the setting. Never throws.
+ *  `ollama`: the Ollama tags a run names (ollamaTagsOf), each resolved alone (withOllamaModels), for a run that never waits
+ *  on a whole listing; without it, the Ollama here's whole listing (a picker's, capabilities'). */
+export async function providerModels(env: NodeJS.ProcessEnv, { ollama }: { ollama?: readonly string[] } = {}) {
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
   // With the prices serve sets over pi-ai's catalog (local-models.ts): OpenRouter's particle-1 at its list price.
-  const models = await withOllamaModels(await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env), env);
+  const models = await withOllamaModels(await withPlanModels(withLocalModels(builtinModels({ authContext: authContextOf(env) })), env), env, ollama);
   if (!env.ANTHROPIC_BASE_URL) return models;
   const [{ createProvider }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const own = models.getProvider("anthropic")!;
@@ -707,11 +715,12 @@ async function withPlanModels<M extends Awaited<ReturnType<typeof withLocalModel
 
 /** `models` with the Ollama `env` names (OLLAMA_HOST, read from `env` itself, never through the auth context: it is no
  *  secret), its chat models listed live (ollama-provider.ts ollamaModels): provider `ollama`, keyless, at $0. None where
- *  it is down, hung or refused, and nothing thrown. None asked under the faux model or a gateway (asksOllama). */
-async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv): Promise<M> {
+ *  it is down, hung or refused, and nothing thrown. None asked under the faux model or a gateway (asksOllama). `tags`:
+ *  those models alone, each from the kept listing or its own /api/show (ollamaShown), never /api/tags; none, nothing asked. */
+async function withOllamaModels<M extends Awaited<ReturnType<typeof withLocalModels>>>(models: M, env: NodeJS.ProcessEnv, tags?: readonly string[]): Promise<M> {
   if (!asksOllama(env)) return models;
-  const listed = await ollamaModels(env);
-  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed) as never);
+  const listed = tags === undefined ? await ollamaModels(env) : (await Promise.all(tags.map((tag) => ollamaShown(env, tag)))).filter((model) => model !== undefined);
+  if (listed.length) models.setProvider(ollamaProvider(ollamaBase(env), listed, env) as never);
   return models;
 }
 

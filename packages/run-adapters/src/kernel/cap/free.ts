@@ -4,7 +4,9 @@
 // else the operator's), its next one is refused for good and the run ends as the dollar cap ends one it can never fit:
 // failed, in the cap's code and these words. A paid request never counts toward it, and is never refused by it; nor is a
 // ChatGPT plan's request (ChatGPT-plan requests don't count), nor a local model's (CapModel.local: free, with no shared
-// quota to burn, so a run on it is limited by its own turns alone).
+// quota to burn). The agent's own limit (definition.max_requests) counts every free request, a local model's included:
+// local requests are counted apart (localRequestsIn) and added to the others there, so a run on a local model that keeps
+// calling tools stops at it.
 import { type BeforeRequest, RUNNER_RECORDS } from "../../runner.js";
 import type { SessionRecord } from "../../types.js";
 import { SPEND_CAP_REACHED } from "./words.js";
@@ -40,8 +42,9 @@ export function freeRequest(request: Parameters<BeforeRequest>[0], modelOf: (id:
   return freeModel(modelOf(request.model, request.route));
 }
 
-/** Whether a free request on `model` counts toward the run's free-model limit: a free model's (freeModel), but a local
- *  one's (CapModel.local) never. The one rule for the limit's count and its wrap-up note. */
+/** Whether a free request on `model` counts toward the server's free-model limit: a free model's (freeModel), but a local
+ *  one's (CapModel.local) never. The one rule for that limit's count and its wrap-up note. The agent's own limit counts a
+ *  local one as well (run-cap.ts). */
 export function limitedFree(model: CapModel | undefined): boolean {
   return freeModel(model) && !model?.local;
 }
@@ -72,6 +75,11 @@ export const freeWrapUpWords = (left: number): string => `${SERVER_NOTE_LABEL}${
 export const freeRequestsIn = (records: readonly SessionRecord[]): number =>
   records.filter((r) => r.kind === RUNNER_RECORDS.request && (r.data as { freeRequest?: unknown } | undefined)?.freeRequest === true).length;
 
+/** The requests on local models that `records` hold (each runner.request marked `localRequest`), counted as
+ *  freeRequestsIn counts the others: the agent's own limit adds them. */
+export const localRequestsIn = (records: readonly SessionRecord[]): number =>
+  records.filter((r) => r.kind === RUNNER_RECORDS.request && (r.data as { localRequest?: unknown } | undefined)?.localRequest === true).length;
+
 /** The words a run ends in once it has made `limit` requests on free models: the dollar cap's code, then why. */
 export const freeCeilingEnd = (limit: number): string => `${SPEND_CAP_REACHED}: Not sent: this run reached its ${limit}-request limit for free models.`;
 
@@ -96,5 +104,11 @@ export function freeModelRequestsOf(env: Record<string, string | undefined>): nu
  *  higher one gets the server's. */
 export function freeRequestLimitOf(env: Record<string, string | undefined>, maxRequests?: unknown): number {
   const server = freeModelRequestsOf(env);
-  return typeof maxRequests === "number" && Number.isSafeInteger(maxRequests) && maxRequests >= 1 ? Math.min(maxRequests, server) : server;
+  const own = maxRequestsOf(maxRequests);
+  return own === undefined ? server : Math.min(own, server);
 }
+
+/** The agent's own limit (definition.max_requests, a whole number above 0), else undefined: the limit a run's requests on
+ *  local models stop at, counted with its other free requests (RunCapOptions.maxRequests). */
+export const maxRequestsOf = (maxRequests: unknown): number | undefined =>
+  typeof maxRequests === "number" && Number.isSafeInteger(maxRequests) && maxRequests >= 1 ? maxRequests : undefined;

@@ -17,10 +17,12 @@ const PAID = { id: "paid-model", api: "openai-completions", price: { input: 1, o
 const PLAN = { id: "gpt-6.1-sol", api: "openai-responses", price: null, outputCeiling: 1000, plan: true };
 /** An OpenRouter router: its catalog writes $0, but it bills the model it routes to, so it is no free model. */
 const ROUTER = { id: "openrouter/auto", api: "openai-completions", price: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1000 };
-const MODELS = new Map([FREE, PAID, PLAN, ROUTER].map((model) => [model.id, model]));
+/** A local model (serve's Ollama): $0, with no quota behind it. */
+const LOCAL = { ...FREE, id: "ollama/synth-tools:2b", local: true };
+const MODELS = new Map([FREE, PAID, PLAN, ROUTER, LOCAL].map((model) => [model.id, model]));
 const LIMIT_WORDS = (n) => `spend_cap_reached: Not sent: this run reached its ${n}-request limit for free models.`;
 
-const runOf = (store, { capUsd, freeRequests } = {}) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => MODELS.get(id), ...(freeRequests === undefined ? {} : { freeRequests }) });
+const runOf = (store, { capUsd, freeRequests, maxRequests } = {}) => cap.runCap({ sessions: store, capUsd: () => capUsd, modelOf: (id) => MODELS.get(id), ...(freeRequests === undefined ? {} : { freeRequests }), ...(maxRequests === undefined ? {} : { maxRequests }) });
 /** A booking of session `key` under the run's one rule, as the adapter loop opens one. */
 const bookingOf = async (store, run, key) => modelPortFor(await store.open(key), { key, label: key, beforeRequest: run.before, stop: (reason, message, code) => Object.assign(new Error(message ?? reason), { reason, code }) });
 /** One request on `model`, answered at `usd`; a refusal is its error. */
@@ -120,4 +122,25 @@ test("a run with no limit given has none", async () => {
   const store = memorySessionStore();
   const main = await bookingOf(store, runOf(store), MAIN);
   for (let i = 0; i < 5; i++) assert.equal(await ask(main, FREE.id), "sent");
+});
+
+test("a local model's requests never meet the server's limit, but the agent's own counts them with the run's other free requests", async () => {
+  const store = memorySessionStore();
+  // The server's limit at 1; the agent's own at 4.
+  const run = runOf(store, { freeRequests: 1, maxRequests: 4 });
+  const main = await bookingOf(store, run, MAIN);
+  assert.equal(await ask(main, LOCAL.id), "sent");
+  assert.equal(await ask(main, LOCAL.id), "sent", "past the server's limit of 1, a local request is sent");
+  assert.equal(await ask(main, FREE.id), "sent", "the first counted free request, at the server's limit");
+  assert.equal((await ask(main, FREE.id))?.message, LIMIT_WORDS(1), "the server's limit counts the free model's alone");
+  assert.equal(await ask(main, LOCAL.id), "sent", "the fourth free request of either kind, at the agent's limit");
+  assert.equal((await ask(main, LOCAL.id))?.message, LIMIT_WORDS(4), "the agent's limit counts local and free requests together");
+  assert.deepEqual((await requestsOf(store, MAIN)).map((r) => [r.freeRequest, r.localRequest]), [[undefined, true], [undefined, true], [true, undefined], [undefined, true]]);
+});
+
+test("with no limit of the agent's own, a local model's requests are never refused by a count", async () => {
+  const store = memorySessionStore();
+  const run = runOf(store, { freeRequests: 1 });
+  const main = await bookingOf(store, run, MAIN);
+  for (let i = 0; i < 5; i++) assert.equal(await ask(main, LOCAL.id), "sent", `local request ${i + 1}`);
 });
