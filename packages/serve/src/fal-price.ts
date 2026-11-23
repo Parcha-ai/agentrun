@@ -87,7 +87,7 @@ function countOf(input: Record<string, unknown>, unit: string): { n: number; fro
 
 /** The endpoints whose input sets the length of the output fal bills, and the one field that does, from fal's OpenAPI
  *  (read 2026-11-23): Kling's and Hailuo's `duration` ("5", "10"), Veo's ("4s", "6s", "8s"), ACE-Step's (seconds),
- *  Stable Audio's `seconds_total`, and ElevenLabs Music's `music_length_ms` or its composition plan's sections. Only
+ *  Stable Audio's `seconds_total`, and ElevenLabs Music's `music_length_ms` or its composition plan's sections (planSeconds). Only
  *  these are read: on another endpoint a length its input names may be a field fal ignores, or none it has, while fal
  *  bills its media or an output no input sets, so a job could name 0.001 s and be billed for minutes. A listed endpoint
  *  whose input names no length is not priced at the model's default either. */
@@ -98,19 +98,28 @@ const NAMED_LENGTH: ReadonlyMap<string, "duration" | "seconds_total" | "music_le
 ]);
 
 /** The length in seconds `input` names in `field` (NAMED_LENGTH): `duration` as "5", "5s" or a number, seconds_total,
- *  or music_length_ms, else a music composition plan's sections. "bad" when it names one that is not above 0. */
-function namedSeconds(input: Record<string, unknown>, field: "duration" | "seconds_total" | "music_length_ms"): { seconds: number; from: string } | "bad" | undefined {
+ *  or music_length_ms; a music job with a composition plan is read by planSeconds. "bad" when it names one that is not
+ *  above 0; `why`, in words, when what it names can't be the length fal bills. */
+function namedSeconds(input: Record<string, unknown>, field: "duration" | "seconds_total" | "music_length_ms"): { seconds: number; from: string } | "bad" | { why: string } | undefined {
+  if (field === "music_length_ms" && input.composition_plan !== undefined && input.composition_plan !== null) return planSeconds(input);
   const given = input[field];
-  if (given !== undefined) {
-    const said = typeof given === "string" && /^\d+(\.\d+)?s?$/.test(given.trim()) ? Number.parseFloat(given) : given;
-    return positive(said) ? { seconds: said / (field === "music_length_ms" ? 1000 : 1), from: field } : "bad";
-  }
-  const sections = field === "music_length_ms" && isObject(input.composition_plan) ? input.composition_plan.sections : undefined;
-  if (Array.isArray(sections) && sections.length) {
-    const each = sections.map((section) => (isObject(section) ? section.duration_ms : undefined));
-    return each.every(positive) ? { seconds: each.reduce((sum, ms) => sum + ms, 0) / 1000, from: "its composition plan's sections" } : "bad";
-  }
-  return undefined;
+  if (given === undefined) return undefined;
+  const said = typeof given === "string" && /^\d+(\.\d+)?s?$/.test(given.trim()) ? Number.parseFloat(given) : given;
+  return positive(said) ? { seconds: said / (field === "music_length_ms" ? 1000 : 1), from: field } : "bad";
+}
+
+/** The length of an ElevenLabs Music job with a composition plan, from fal's OpenAPI (read 2026-11-23): the plan sets the
+ *  song's length, and music_length_ms is "used only in conjunction with prompt", so a job naming both is not read
+ *  (either could be what fal bills). The sections' duration_ms are summed only while the model keeps them:
+ *  respect_sections_durations true, or left out (its default is true); false lets the model change them. */
+function planSeconds(input: Record<string, unknown>): { seconds: number; from: string } | "bad" | { why: string } | undefined {
+  if (input.music_length_ms !== undefined) return { why: "names both music_length_ms and a composition_plan: a plan sets the song's length and music_length_ms goes only with a prompt (fal's OpenAPI), so send one of them" };
+  const keep = input.respect_sections_durations;
+  if (keep !== undefined && keep !== true) return { why: `has a composition_plan with respect_sections_durations ${JSON.stringify(keep)}, so the model may change its sections' lengths: they are read only when it is true or left out (fal's OpenAPI default is true)` };
+  const sections = isObject(input.composition_plan) ? input.composition_plan.sections : undefined;
+  if (!Array.isArray(sections) || !sections.length) return undefined;
+  const each = sections.map((section) => (isObject(section) ? section.duration_ms : undefined));
+  return each.every(positive) ? { seconds: each.reduce((sum, ms) => sum + ms, 0) / 1000, from: "its composition plan's sections" } : "bad";
 }
 
 /** The endpoints fal bills per minute of media whose length the input's media bound (fal's model pages, read 2026-11-21):
@@ -225,6 +234,7 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
     if (!field) return { unknown: `${bills}, and no input of this endpoint is known to set the length fal bills, so a length it names is not read` };
     const named = namedSeconds(input, field);
     if (named === "bad") return { unknown: `${bills}, and the length this job's input names is not a number above 0` };
+    if (named && "why" in named) return { unknown: `${bills}, and this job's input ${named.why}` };
     return named ? { units: named.seconds / per, from: named.from } : { unknown: `${bills}, and this job's input names no length (its ${field === "music_length_ms" ? "music_length_ms or composition_plan" : field})` };
   }
   return { unknown: `${bills}, a unit this server can't count` };

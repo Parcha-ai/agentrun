@@ -326,6 +326,19 @@ test("only an endpoint fal bills by the length of the media it is given is price
   assert.deepEqual(await open.turns(), [null], "booked as an unknown charge");
 });
 
+test("a music job naming a 10 s length beside a 10 min composition plan is refused unsent under a cap; the plan alone is held at its sections", async (t) => {
+  const plan = { positive_global_styles: [], negative_global_styles: [], sections: Array.from({ length: 5 }, () => ({ duration_ms: 120_000 })) };
+  const capped = await setup(t, { capUsd: 100 });
+  const refused = await capped.call("run_model", { endpoint_id: "fal-ai/elevenlabs/music", input: { music_length_ms: 10_000, composition_plan: plan } });
+  assert.equal(textOf(refused), "mcp:fal/run_model was not sent: fal bills fal-ai/elevenlabs/music per minute, and this job's input names both music_length_ms and a composition_plan: a plan sets the song's length and music_length_ms goes only with a prompt (fal's OpenAPI), so send one of them, so a run with a spend cap can't send it. Nothing was sent.");
+  const loose = await capped.call("run_model", { endpoint_id: "fal-ai/elevenlabs/music", input: { composition_plan: plan, respect_sections_durations: false } });
+  assert.match(textOf(loose), /^mcp:fal\/run_model was not sent: .* respect_sections_durations false, so the model may change its sections' lengths/);
+  assert.equal(capped.received("run_model"), 0, "never sent under a cap");
+  const held = await setup(t, { capUsd: 100, run: (args) => reply(args, { status: "processing" }) });
+  await held.call("submit_job", { endpoint_id: "fal-ai/elevenlabs/music", input: { composition_plan: plan } });
+  near(held.admits[0].holdUsd, 6, "10 minutes at $0.60 a minute");
+});
+
 // A talking head (veed/fabric-1.0, fal-ai/bytedance/omnihuman/v1.5) makes a video as long as the voice it is given: fal
 // bills it per second of that video, in whole seconds. Its hold is that voice's length, read from the audio at its
 // audio_url alone (never its image, never a length its input states), https only, on fal's own media (fal.media), and
