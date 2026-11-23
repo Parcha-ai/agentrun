@@ -121,6 +121,41 @@ test("agentrun export refuses a --out not named as the package, writes nothing a
   assert.equal(validated.code, 0, validated.err);
 });
 
+test("agentrun export of an agent with no max_cost_usd whose trigger has its own $1 cap writes a package that validates; a trigger with no cap of its own blocks it, named", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const { data, api } = await serve(t, dir, env);
+  const cli = cliOf(env, data);
+  const made = await api("POST", "/agents", { definition: { id: "digest", name: "Digest", instructions: "Write the digest.", tools: ["read"], skills: [], learning: false } });
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const morning = await api("POST", "/triggers", { name: "morning", source: { kind: "schedule", cron: "0 9 * * *" }, target: { kind: "start_run", agent_id: "digest", input: { content: "Write the morning digest." }, max_cost_usd: 1 } });
+  assert.equal(morning.status, 201, JSON.stringify(morning.body));
+  const out = join(dir, "digest");
+  const exported = cli(["export", "digest", "--out", out]);
+  assert.equal(exported.code, 0, exported.err);
+  assert.deepEqual(JSON.parse(exported.out).blocked, []);
+  const validated = cli(["template", "validate", out]);
+  assert.equal(validated.code, 0, validated.err);
+  const { readPackage } = await import(TEMPLATES);
+  const pkg = readPackage(out);
+  assert.equal(pkg.budget, undefined);
+  assert.deepEqual(pkg.triggers.map((trigger) => [trigger.name, trigger.target.max_cost_usd]), [["morning", 1]]);
+
+  // A second trigger capped only by the agent's default, which is then cleared: that trigger blocks the export, named.
+  const { version: _, ...definition } = (await api("GET", "/agents/digest")).body.definition;
+  assert.equal((await api("PUT", "/agents/digest/definition", { definition: { ...definition, max_cost_usd: 0.5 } })).status, 200);
+  const evening = await api("POST", "/triggers", { name: "evening", source: { kind: "schedule", cron: "0 18 * * *" }, target: { kind: "start_run", agent_id: "digest", input: { content: "Write the evening digest." } } });
+  assert.equal(evening.status, 201, JSON.stringify(evening.body));
+  const { version: __, ...capped } = (await api("GET", "/agents/digest")).body.definition;
+  assert.equal((await api("PUT", "/agents/digest/definition", { definition: { ...capped, max_cost_usd: 0 } })).status, 200);
+  const again = join(dir, "again", "digest");
+  const refused = cli(["export", "digest", "--out", again]);
+  assert.equal(refused.code, 2, `${refused.err}${refused.out}`);
+  assert.deepEqual(JSON.parse(refused.out).blocked.map((note) => [note.kind, note.name]), [["trigger", "evening"]]);
+  assert.match(refused.err, /trigger evening: .*max_cost_usd/);
+  assert.ok(!refused.err.includes("morning"), refused.err);
+  assert.equal(existsSync(again), false, "nothing written");
+});
+
 test("agentrun export writes nothing and exits 2 when the report blocks the export, or the server does not export the agent", { timeout: 120_000 }, async (t) => {
   const { dir, env } = scratch();
   const { data, api } = await serve(t, dir, env);

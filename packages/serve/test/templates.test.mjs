@@ -121,7 +121,7 @@ test("the validator refuses a malformed package, naming each problem", async (t)
   await refused(({ edit }) => edit("version: 0.4.0", "version: 2"), /version is 2, a number: .*never as definition\.version, which is the agent's revision number/);
   await refused(({ edit }) => edit("learning: false", "learning: false\ndefinition: { version: 2 }"), /no field definition/);
   await refused(({ edit }) => edit("name: code-review", "name: review-code"), /name is the folder's name/);
-  await refused(({ edit }) => edit(/^budget: .*\n/m, ""), /budget is required when the package has triggers/);
+  await refused(({ edit }) => edit(/^budget: .*\n/m, ""), /triggers\[0\] \(pull-requests\) has no max_cost_usd of its own, and the package has no budget/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run }"), /triggers\[0\] has no name/);
   await refused(({ edit }) => edit(OWN_TRIGGERS, "triggers:\n  - name: mine\n    source: { kind: schedule, cron: \"0 9 * * *\" }\n    target: { kind: start_run, agent_id: other }"), /target is a start_run with no agent_id/);
   await refused(({ edit }) => edit("${parameters.repo} with", "${parameters.repository} with"), /\$\{parameters\.repository\} names no parameter/);
