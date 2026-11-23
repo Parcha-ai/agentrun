@@ -66,6 +66,9 @@ export type Reader<S extends string = string, C = unknown> = {
   /** The locator's own size and last write, when it is not its file's (a session in a database of many): what a caller's
    *  size caps and liveness go by. null: the session is not there. Without it, the file's (locatorSize). */
   stat?: (locator: Locator) => Promise<LocatorSize | null>;
+  /** The session the locator's ran under, from a bounded head of its file, never the rest (Codex's first line): what ties
+   *  a subagent a caller will not read (over its cap) to its run. None: no parent named there. */
+  parentOf?: (locator: Locator) => Promise<string | undefined>;
   /** Subagents' sessions that name no parent themselves, each with the session it ran under (`of`). */
   children?: (home: string, env?: Env) => Promise<{ locator: Locator; of: Locator }[]>;
 };

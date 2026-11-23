@@ -81,7 +81,8 @@ type Reader<S extends string, C> = {
   read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
-  stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number } | null>;
+  stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number; parent?: string } | null>;
+  parentOf?(locator: Locator): Promise<string | undefined>;
 };
 ```
 
@@ -102,6 +103,10 @@ session count nothing. A database session's `stat` is the bytes of its messages'
 `time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
-`locatorSize`), `locatorSize(locator, source)` and `childrenOf(home, source)` are what serve's import reads through. The
+`locatorSize`), `locatorSize(locator, source)`, `locatorParent(locator, source)` and `childrenOf(home, source)` are what
+serve's import reads through. `locatorParent` names the session a subagent ran under without reading the subagent: the
+`parent` its reader's `stat` gives (an OpenCode row's), else its reader's `parentOf`. Codex's reads a rollout's first
+line, `session_meta`, and never more than 256 KiB of it. serve uses it to tie a subagent over the cap to its run, which
+it then holds back. The
 mirror rule is one export for both callers: `mirroredIn(counted)` over the `sessionKey(source, id)` of the sessions
 counted, and `ownRequests(requests, cost, mirrored)` for a session's own requests and cost.

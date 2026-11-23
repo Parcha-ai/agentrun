@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -447,7 +447,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const childIds = new Map<string, string>();
   const tie = async (locator: Locator, source: Source, size: LocatorSize): Promise<void> => {
     const listed = size.bytes > MAX_SESSION_BYTES ? undefined : await readSession(locator, source, { turns: false }).catch(() => undefined);
-    const parent = listed ? (listed.child ? listed.parent : undefined) : size.parent;
+    // One over the cap is not read: its parent is what its reader tells without reading it (an OpenCode row's, a Codex
+    // rollout's first line).
+    const parent = listed ? (listed.child ? listed.parent : undefined) : (size.parent ?? (await locatorParent(locator, source)));
     if (parent) child(`${source}:${await idOf(parent, scan)}`, locator);
   };
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];

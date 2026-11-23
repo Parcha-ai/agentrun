@@ -2549,3 +2549,24 @@ test("a run waits while any subagent of it is still being written, whatever its 
   await runImport(store, plan, options(h));
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(5)], "the runs with no live subagent");
 });
+
+test("a Codex thread whose child thread is over the cap is left out as large, said, the child tied to it by its first line alone", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const run = codexSession(h.at, project, 1);
+  // Its session_meta line, then a hole to past the cap, which no read may touch.
+  const thread = codexSession(h.at, project, 2, { subagent: true, parent: sessionId(1) });
+  truncateSync(thread, MAX_SESSION_BYTES + 1);
+  const hourAgo = new Date(Date.now() - 60 * 60_000);
+  utimesSync(thread, hourAgo, hourAgo);
+  codexSession(h.at, project, 3, { prompt: "Run the linter." });
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what, s.session ?? null]), [["large", thread, null], ["large", run, `codex:${sessionId(1)}`]]);
+  assert.match(plan.skipped[1].why, /subagent/);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session), [sessionId(3)], "no run of it without its child's usage");
+});

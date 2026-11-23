@@ -36,6 +36,14 @@ export async function locatorSize(locator: Locator, source: string, readers?: Re
   return stats && { bytes: stats.size, mtimeMs: stats.mtimeMs };
 }
 
+/** The session the one at `locator` ran under, as its reader tells it without reading the session (locatorSize's
+ *  `parent`, else the reader's bounded head read, parentOf): what ties a subagent too large to read to its run. */
+export async function locatorParent(locator: Locator, source: string, readers?: Readers): Promise<string | undefined> {
+  const reader = readerOf(source, readers);
+  const size = reader.stat ? await locatorSize(locator, source, readers) : null;
+  return size?.parent ?? (await reader.parentOf?.(locator).catch(() => undefined));
+}
+
 /** The locators of `source`, each with its file's stats and its own size (locatorSize; one gone since it was listed is
  *  passed over), in the import's order: the reader's (Claude Code's by project folder, oldest written first: the first
  *  file holding a copied record keeps it), else as they were listed. */
