@@ -1,5 +1,6 @@
 // What requests cost at a catalog's list prices: pi-ai's catalog and its calculateCost, the pricing serve's import
-// estimates a session with when the source wrote no cost of its own. pi-ai is an optional peer: without it, no price.
+// estimates a session with when the source wrote no cost of its own. pi-ai is a dependency, loaded on the first price asked
+// for: where it is missing (a bundle built without it), no price.
 import type { Usage } from "./types.js";
 
 export type ModelCost = { input: number; output: number; cacheRead: number; cacheWrite: number; tiers?: unknown };

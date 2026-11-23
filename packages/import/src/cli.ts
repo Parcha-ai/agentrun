@@ -9,7 +9,7 @@
 // its source, key and error code (never its path), and the exit is 1.
 //
 // pi-ai is imported here, statically: the prices are part of the answer, so a bundle (bun build --compile) carries it,
-// and a run without it fails at startup instead of printing lines that price nothing. The library keeps it optional.
+// and a run without it fails at startup instead of printing lines that price nothing. The library loads it only to price.
 import { parseArgs } from "node:util";
 import { calculateCost } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";

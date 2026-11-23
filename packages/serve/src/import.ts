@@ -709,6 +709,9 @@ async function seenIn(store: ImportStore | undefined, agentId: string): Promise<
     for (const entry of (await journalEntries(store.readJournal(run.id), ctx)) as unknown as EntryLike[]) {
       const id = (entry.model?.[0] as { responseId?: unknown } | undefined)?.responseId;
       if (typeof id === "string" && id) seen("claude-code").add(`m:${id}`);
+      // A run imported before a request's key held its request id (message id:request id) keeps the bare message id:
+      // the reader matches it against a request's message id alone.
+      if (typeof id === "string" && id && !id.includes(":")) seen("claude-code").add(`l:${id}`);
       const uuids = (entry.data as { record_uuids?: unknown } | undefined)?.record_uuids;
       if (Array.isArray(uuids)) for (const uuid of uuids) if (typeof uuid === "string") seen("claude-code").add(`u:${uuid}`);
     }
