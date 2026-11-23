@@ -8,7 +8,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { HAS_LONG, HAS_REASONING, HAS_USAGE, USAGE_FIELDS } from "./counts.js";
-import { addAll, addRecord, dropOwner, isRecordIndex, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
+import { addAll, addRecord, dropOwner, locatorNumber, ownerOf, type RecordIndex, recordIndex } from "./record-index.js";
 import { packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
@@ -41,9 +41,12 @@ export type SessionTotals = {
  *  source has read with the locator that read each first, and which locators found a record another read first, so a
  *  second pass reads only what was written since. It holds no session text (its reads are turns: false and totals: counts,
  *  ids and paths alone, each request as its model and usage), so it can be kept with v8.serialize. Its contents are the
- *  package's; `read` is the last pass's bytes. A source's part kept by an earlier version of another shape is set aside,
- *  and that source read again from its start. */
-export type HomeState = { read?: number; sources?: Partial<Record<string, SourceState>> };
+ *  package's; `read` is the last pass's bytes, `version` the shape's. A state of another version (or of none, an earlier
+ *  one's) is set aside, and every source read again from its start. */
+export type HomeState = { version?: number; read?: number; sources?: Partial<Record<string, SourceState>> };
+
+/** The shape of the HomeState this version keeps: a state of any other is set aside. */
+const STATE_VERSION = 1;
 
 /** One source's part of a HomeState. */
 type SourceState = {
@@ -181,7 +184,13 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   const priceWith = () => (catalog === false ? Promise.resolve(undefined) : catalog ? Promise.resolve(catalog) : (prices ??= builtinCatalog()));
   const out: SessionTotals[] = [];
   const failed: ReadFailure[] = [];
-  if (state) state.read = 0;
+  if (state) {
+    if (state.version !== STATE_VERSION) {
+      state.version = STATE_VERSION;
+      state.sources = {};
+    }
+    state.read = 0;
+  }
   for (const source of sources) {
     const models: Models = { names: [], index: new Map() };
     const { tops, children, unread } = await readSource(home, source, readers, env, state, models);
@@ -209,9 +218,9 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   const outOfOrder = (kept: SourceState) => [...kept.copied].some(([key, owners]) => [...owners].some((owner) => place.get(owner)! > place.get(key)!));
   for (let pass = 0; ; pass += 1) {
     let kept = state ? (state.sources ??= {})[source] : undefined;
-    // A source's state of another shape (an earlier version's, its records in a Map) is set aside like one whose files
-    // changed: the source is read from its start and its state rebuilt.
-    if (kept && (!isRecordIndex(kept.owners) || [...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
+    // A source's state whose files changed so (a locator gone, a copy now before its record's) is set aside: the source is
+    // read from its start and its state rebuilt.
+    if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
     if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: recordIndex(), copied: new Map() };
     const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;

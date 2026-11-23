@@ -113,7 +113,7 @@ test("parseHome with a state: a file read before that fails gives up its records
   assert.deepEqual(again, before);
 });
 
-test("parseHome with a state kept by an earlier version, its records in a Map: the state is set aside and rebuilt, the pass a fresh one", async (t) => {
+test("parseHome with a state kept by an earlier version (none named, its records in a Map), or of another version: the state is set aside and rebuilt, the pass a fresh one", async (t) => {
   const home = await tempHome(t);
   await writeJsonl(claudeFile(home, "00000000-0000-4000-8000-00000000000c"), [
     claudeUser({ uuid: "3f1e2d3c-4b5a-4697-8877-665544332211", text: "First.", i: 0 }),
@@ -127,8 +127,16 @@ test("parseHome with a state kept by an earlier version, its records in a Map: t
   const kept = state.sources["claude-code"];
   const [locator] = [...kept.cursors.keys()];
   kept.owners = new Map([["u:3f1e2d3c-4b5a-4697-8877-665544332211", locator], ["m:msg_01C:req_011C", locator]]);
-  const old = deserialize(serialize(state));
+  const { version, ...unversioned } = state;
+  assert.equal(typeof version, "number");
+  const old = deserialize(serialize(unversioned));
   assert.deepEqual(await scan(old), fresh);
   assert.ok(!(old.sources["claude-code"].owners instanceof Map), "the source's state rebuilt");
+  assert.equal(old.version, version);
   assert.deepEqual(await scan(old), fresh, "and the next pass goes on from the rebuilt state");
+  // Another version's, whatever it holds: set aside the same.
+  const other = deserialize(serialize({ ...state, version: version + 1 }));
+  assert.deepEqual(await scan(other), fresh);
+  assert.ok(!(other.sources["claude-code"].owners instanceof Map), "the source's state rebuilt");
+  assert.equal(other.version, version);
 });
