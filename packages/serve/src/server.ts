@@ -16,7 +16,7 @@ import { ObservationLearning } from "./observation/learning.js";
 import { cliLearningOf } from "./store/agent-body.js";
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
-import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
+import { SDK_MAX_OPEN_MS, SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
 import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
@@ -186,6 +186,8 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { SCOUT_TEMPLATE, Suggestions } from "./suggestions.js";
+import type { UsageEventName } from "./telemetry.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
@@ -201,7 +203,7 @@ import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -287,6 +289,9 @@ export type ServeOptions = {
   /** On Postgres: told when this server's owner lock is lost for good (another server took the schema, or the lock could
    *  not be taken back): every store call is refused from then. The CLI exits 1 on it, so the platform restarts the server. */
   onStoreLost?: (error: Error) => void;
+  /** Told when someone uses a feature the anonymous counts name (telemetry.ts UsageEventName: a suggestions scan, a
+   *  discard, a suggested agent created). The CLI hands it the counts' `used`; it hears the event's name and nothing else. */
+  onUsage?: (event: UsageEventName) => void;
   /** The owner, signed in with a password (owner.ts): the page asks for it, and the token stays for scripts and the CLI. */
   accounts?: boolean;
   /** With accounts: the first visit sets the password with no setup code (a server with no public address). Honored only
@@ -560,6 +565,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
    *  never reach this server, as its own reads never do. */
   own: readonly string[];
+  /** With --faux-github: the fake GitHub's API and its repository's site, for a test's own runner alone
+   *  (test/support.mjs): the runner's GitHub API has one way in, a test runner's option, so neither the CLI's runner nor
+   *  any setting is ever pointed at it. */
+  fauxGitHub?: { api: string; web?: string };
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number };
   /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
@@ -759,7 +768,6 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
-  // The saved servers' names alone, for a host that builds runs from them (served API-only too: api-only.ts).
   { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
@@ -806,6 +814,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
@@ -816,6 +825,14 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
   { method: "GET", pattern: /^\/integrations\/github\/callback$/, name: "gitHubCallback" },
   { method: "GET", pattern: /^\/integrations\/github\/installed$/, name: "gitHubInstalled" },
+  { method: "GET", pattern: /^\/integrations\/github\/repositories$/, name: "listGitHubRepositories" },
+  // Suggested agents (suggestions.ts): what the agent-scout template finds in a repository, and what a person decides.
+  { method: "GET", pattern: /^\/suggestions$/, name: "listSuggestions" },
+  { method: "POST", pattern: /^\/suggestions\/scans$/, name: "scanForSuggestions" },
+  { method: "GET", pattern: /^\/suggestions\/([^/]+)$/, name: "getSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/discard$/, name: "discardSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/restore$/, name: "restoreSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/create$/, name: "createSuggestedAgent" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -1083,6 +1100,8 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  URL kept sealed, never shown. */
       slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
+      /** A backend SDK run's start (sdk/runs.ts): the fields it takes, and the most seconds it stays open. */
+      sdk_runs: { started_at: true, title: true, labels: true, max_open_s: SDK_MAX_OPEN_MS / 1000 },
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
     regions: [{ id: "local", jurisdiction: null, state: "live" }],
@@ -2190,13 +2209,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
   const was = options.faux && options.fauxGitHub ? github.view() : undefined;
   if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
-  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  // Its repository as a bare git repository beside the data, so a run's checkout of it (agent-scout's) stays on this machine.
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub({ webDir: join(data, "faux-github-web") }) : undefined;
   if (fauxGitHub) {
     stops.push(() => fauxGitHub.close());
     if (was) await github.remove();
     await github.save(fauxGitHub.app);
     await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
-    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories, api_url: fauxGitHub.url })}\n`, { mode: 0o600 });
   }
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
@@ -2214,6 +2234,39 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return "token" in minted ? { api, hosts, token: minted.token } : { api, hosts, anonymous: "unusable" in minted ? minted.unusable : minted.failed };
     },
   };
+  // Suggested agents (suggestions.ts): scans run the bundled agent-scout, applied once and reused (one apply at a time
+  // on this server); a create pushes through the App's token for the one repository, then applies the package it pushed
+  // as an imported template, so the agent here is made from the very files the pull request adds.
+  let scouting: Promise<string> | undefined;
+  const suggestions = new Suggestions({
+    settings: store.settings,
+    github: { view: () => github.view(), settingsUrl: () => github.settingsUrl(), get api() { return githubConnect.api; }, repoInstallation: (repo, signal) => githubConnect.repoInstallation(repo, signal), tokenWith: (installation, repo, permissions, signal) => githubConnect.tokenWith(installation, repo, permissions, signal), revokeToken: (token) => githubConnect.revokeToken(token) },
+    scoutAgent: () => (scouting ??= (async () => {
+      const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
+      if (mine) return mine.agent.id;
+      const pkg = registry.get(SCOUT_TEMPLATE);
+      if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
+      return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
+    })().finally(() => { scouting = undefined; })),
+    startScan: async (agentId, content) => (await startRunOf(await needRunnableAgent(agentId), { input: { content } })).id,
+    readRun: async (runId) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!view) return undefined;
+      const result = isObject(view.result) ? view.result : undefined;
+      const error = isObject(view.error) && typeof view.error.message === "string" ? view.error.message : typeof result?.output_error === "string" ? `Its answer did not meet the scout's schema: ${result.output_error}` : undefined;
+      return { status: String(view.status), ...(result && result.output != null ? { output: result.output } : {}), ...(error ? { error } : {}), ...(typeof view.ended_at === "string" ? { endedAt: Date.parse(view.ended_at) } : {}) };
+    },
+    // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
+    // trigger, so the apply makes the agent as its last write.
+    cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
+    agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
+    makeAgent: async (id, origin, files) => {
+      const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
+      return { agentId: made.applied.agent_id, warnings: made.applied.warnings };
+    },
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+    ...(options.onUsage ? { used: options.onUsage } : {}),
+  });
   // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
   // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
   // is a server secret while it may be in use.
@@ -5503,7 +5556,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
-      // Names only: no URL, auth type, header, tool or Composio record, so a token that may not read the list may read this.
+      // Names only: what the API-only profile serves in place of the list.
       case "listMcpServerNames":
         return send(res, 200, { names: (await listMcpServers(store)).map((row) => row.name).sort() });
       case "getMcpServer":
@@ -5590,6 +5643,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Always a 200: not connected is an answer, never an error a browser logs as one.
         const view = githubConnection();
         return send(res, 200, view ? { connected: true, ...view } : { connected: false });
+      }
+      case "listGitHubRepositories": {
+        // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
+        // installation whose event was missed is listed, not hidden until a restart.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        const listed = await githubConnect.repositories(stopping.signal);
+        if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
+        return send(res, 200, listed, { "cache-control": "no-store" });
+      }
+      case "listSuggestions":
+        // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
+      case "scanForSuggestions": {
+        const scanned = await suggestions.scan(await bodyOf(req));
+        return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
+      }
+      case "getSuggestion":
+        return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });
+      case "discardSuggestion":
+        return send(res, 200, await suggestions.discard(id));
+      case "restoreSuggestion":
+        return send(res, 200, await suggestions.restore(id));
+      case "createSuggestedAgent": {
+        const created = await suggestions.create(id, await bodyOf(req), stopping.signal);
+        return send(res, created.status, created.body);
       }
       case "disconnectGitHub": {
         const view = githubConnection();
@@ -5899,9 +5978,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const done = new AbortController();
         res.once("close", () => done.abort());
         const imported = await importTemplate(importDeps, body, done.signal);
-        const pickView = await computerHere([imported.pkg]);
         const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
-        return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+      }
+      case "getTemplate": {
+        // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
+        // person (or a coding agent) to read before they apply it.
+        const pkg = registry.get(id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);
@@ -6538,6 +6623,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     own: mcpServers.own,
+    ...(fauxGitHub ? { fauxGitHub: { api: fauxGitHub.url, ...(fauxGitHub.web ? { web: fauxGitHub.web } : {}) } } : {}),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),

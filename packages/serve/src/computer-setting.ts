@@ -103,7 +103,7 @@ export const kindSettings = (kind: ComputerKind): string[] =>
   kind === "none" ? [] : Object.entries(OPTIONAL).filter(([, { kinds }]) => kinds === undefined || kinds.includes(kind)).map(([key]) => key);
 
 /** Whether a run of a kind can record its screen on this server (GET /v2/computers' `record`), and why not, in words. */
-export type RecordView = { available: boolean; why?: string };
+export type RecordView = { available: true } | { available: false; why: string };
 
 /** Whether a run of `kind` can record its screen here: the kind takes record (OPTIONAL's record.kinds) and ffmpeg is on
  *  `path` (recorderMissing, the server's PATH now when absent), as a save of record: true is checked. */

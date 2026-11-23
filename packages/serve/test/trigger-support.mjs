@@ -1,6 +1,8 @@
-// The triggers' tests' own: a fake clock for the engine, a schedule's body, and a trigger's settled firings.
+// The triggers' tests' own: a fake clock for the engine, a schedule's body, a trigger's settled firings, and a host's
+// launch hook that the install hands firings to.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { agent } from "./support.mjs";
 
@@ -74,5 +76,55 @@ export async function firings(api, id, n) {
     if (body.firings.length >= n && body.firings.every((f) => f.status !== "due")) return body.firings;
     assert.ok(Date.now() < end, `no ${n} settled firings: ${JSON.stringify(body.firings)}`);
   }
+}
+
+/** The path a launch-hook fake takes firings at. */
+const HOOK_PATH = "/agentrun/firings";
+
+/** A host's launch hook on 127.0.0.1. Only a POST to its path (with any query the hook URL carries, as `?token=…`) is the
+ *  install's: each is kept in `got`, in order (method, headers, raw body, and `sent`, the body read as JSON), and
+ *  answered by `answer(res, sent, n)`, `n` the POSTs so far; by default 202 `{}`. Any other request (another method or
+ *  path, as the GET / a dev tool on the box sends to each new listener) is answered 404, never read or kept, so `got`
+ *  counts the firings handed, which the guards against a paid run handed twice assert. A POST its sender cut short (its
+ *  bound passed mid-body, or the test's end) or whose body is not JSON is answered 400; nothing a request sends throws
+ *  out of the handler. */
+export async function hookServer(t, answer = (res) => res.writeHead(202, { "content-type": "application/json" }).end("{}")) {
+  const got = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST" || new URL(req.url, "http://h").pathname !== HOOK_PATH) {
+      req.resume();
+      res.writeHead(404).end();
+      return;
+    }
+    let sent;
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const kept = { method: req.method, headers: req.headers, body: Buffer.concat(chunks) };
+      got.push(kept);
+      sent = kept.sent = JSON.parse(kept.body.toString("utf8"));
+    } catch {
+      if (!res.headersSent && !res.destroyed) res.writeHead(400).end();
+      return;
+    }
+    // An answer that throws (its server stopped under it) fails its test by what it leaves undone, not here.
+    await Promise.resolve().then(() => answer(res, sent, got.length)).catch(() => {
+      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  }));
+  return { url: `http://127.0.0.1:${server.address().port}${HOOK_PATH}`, got };
+}
+
+/** A port probe at the server behind `url`, as a dev tool on the box sends one to each new listener on 127.0.0.1: GET /,
+ *  no body. Its answer's status. */
+export async function portProbe(url) {
+  const res = await fetch(new URL("/", url));
+  await res.arrayBuffer();
+  return res.status;
 }
 

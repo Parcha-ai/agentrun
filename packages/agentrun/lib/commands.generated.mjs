@@ -2064,6 +2064,37 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "create-suggested-agent"
+    ],
+    "operationId": "createSuggestedAgent",
+    "method": "POST",
+    "path": "/suggestions/{suggestion_id}/create",
+    "pathParams": [
+      "suggestion_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": "The agent's name, in place of the suggestion's."
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": false,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Create a suggested agent: a branch with its package and client, the agent made here, and a pull request"
+  },
+  {
+    "command": [
+      "local",
       "delete-composio-subscription"
     ],
     "operationId": "deleteComposioSubscription",
@@ -2128,6 +2159,28 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "discard-suggestion"
+    ],
+    "operationId": "discardSuggestion",
+    "method": "POST",
+    "path": "/suggestions/{suggestion_id}/discard",
+    "pathParams": [
+      "suggestion_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Discard a suggested agent: it goes away, and later scans leave it out"
+  },
+  {
+    "command": [
+      "local",
       "disconnect-git-hub"
     ],
     "operationId": "disconnectGitHub",
@@ -2184,6 +2237,35 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The model gateway in force: the environment's, the one saved here, or none"
+  },
+  {
+    "command": [
+      "local",
+      "get-suggestion"
+    ],
+    "operationId": "getSuggestion",
+    "method": "GET",
+    "path": "/suggestions/{suggestion_id}",
+    "pathParams": [
+      "suggestion_id"
+    ],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "name",
+        "type": "string",
+        "required": false,
+        "description": "The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it"
   },
   {
     "command": [
@@ -2294,6 +2376,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-git-hub-repositories"
+    ],
+    "operationId": "listGitHubRepositories",
+    "method": "GET",
+    "path": "/integrations/github/repositories",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The repositories this server's GitHub App is installed on"
+  },
+  {
+    "command": [
+      "local",
       "list-mcp-server-names"
     ],
     "operationId": "listMcpServerNames",
@@ -2310,6 +2412,45 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The names of the MCP servers saved here, and nothing else of them"
+  },
+  {
+    "command": [
+      "local",
+      "list-suggestions"
+    ],
+    "operationId": "listSuggestions",
+    "method": "GET",
+    "path": "/suggestions",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "repo",
+        "type": "string",
+        "required": false,
+        "description": "owner/name: one repository's alone."
+      },
+      {
+        "name": "status",
+        "type": "string",
+        "enum": [
+          "open",
+          "created",
+          "discarded",
+          "all"
+        ],
+        "required": false,
+        "description": ""
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Suggested agents: each repository's scan and the agents it suggests"
   },
   {
     "command": [
@@ -2338,6 +2479,28 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "restore-suggestion"
+    ],
+    "operationId": "restoreSuggestion",
+    "method": "POST",
+    "path": "/suggestions/{suggestion_id}/restore",
+    "pathParams": [
+      "suggestion_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Bring a discarded suggestion back (an undo)"
+  },
+  {
+    "command": [
+      "local",
       "rotate-composio-secret"
     ],
     "operationId": "rotateComposioSecret",
@@ -2356,6 +2519,35 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Rotate the Composio project's webhook subscription's secret, and keep the new one"
+  },
+  {
+    "command": [
+      "local",
+      "scan-for-suggestions"
+    ],
+    "operationId": "scanForSuggestions",
+    "method": "POST",
+    "path": "/suggestions/scans",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "repo",
+        "type": "string",
+        "required": true,
+        "description": "owner/name, or its https://github.com URL."
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Scan a repository for places its app needs an agent"
   },
   {
     "command": [
@@ -3825,6 +4017,18 @@ export const COMMANDS = [
         "description": ""
       },
       {
+        "name": "started_at",
+        "type": "string",
+        "required": false,
+        "description": "When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request."
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": false,
+        "description": "The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input."
+      },
+      {
         "name": "platform",
         "type": "string",
         "required": false,
@@ -4130,6 +4334,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Remove an imported template package"
+  },
+  {
+    "command": [
+      "template",
+      "get"
+    ],
+    "operationId": "getTemplate",
+    "method": "GET",
+    "path": "/templates/{template}",
+    "pathParams": [
+      "template"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent"
   },
   {
     "command": [

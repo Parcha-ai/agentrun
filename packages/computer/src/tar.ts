@@ -16,7 +16,7 @@ export interface TarEntry {
 }
 
 /** The latest mtime a ustar header holds: 11 octal digits of seconds. */
-export const MAX_TAR_MTIME = 8 ** 11 - 1;
+const MAX_TAR_MTIME = 8 ** 11 - 1;
 
 const BLOCK = 512;
 const END = Buffer.alloc(2 * BLOCK);

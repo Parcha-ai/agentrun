@@ -3,6 +3,8 @@
 
 /** AgentRun cloud's address, which `--to cloud` names unless AGENTRUN_CLOUD_URL names another. */
 export const CLOUD_URL = "https://api.agentrun.ai";
+/** AgentRun cloud's console, where cloud's device sign-in page is. */
+export const CLOUD_CONSOLE = "https://console.agentrun.ai";
 
 /** The API base a `--to` names, ending /v2: `cloud` is AGENTRUN_CLOUD_URL, else CLOUD_URL; an address whose path does
  *  not end /v2 gets it appended. The caller checks the result as every base URL is checked (cli.mjs baseOf), so a query,

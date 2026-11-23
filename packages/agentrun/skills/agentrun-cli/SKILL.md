@@ -144,7 +144,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun harness-keys`: list
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: corrections, cost, get, log, read, replay, reset, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-mcp-server-names, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, create-suggested-agent, delete-composio-subscription, delete-computer, delete-workspace-archil, discard-suggestion, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-suggestion, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, list-git-hub-repositories, list-mcp-server-names, list-suggestions, receive-hook-composio, restore-suggestion, rotate-composio-secret, scan-for-suggestions, test-computer, test-workspace-archil
 - `agentrun login`: Sign in to a server, with a device code when it offers one, else a token read from stdin, and keep the token with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
@@ -159,7 +159,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run
 - `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
-- `agentrun template`: apply, delete, eval, import, install, list, validate
+- `agentrun template`: apply, delete, eval, get, import, install, list, validate
 - `agentrun tool-keys`: list
 - `agentrun tool-settings`: get, save
 - `agentrun triggers`: create, delete, fire, firings, get, list, update

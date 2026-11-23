@@ -22,7 +22,7 @@
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
 // the next claim of the same run.
 import { randomUUID } from "node:crypto";
-import { GITHUB_WEB, type GithubPull, githubPullOf } from "../github.js";
+import { GITHUB_WEB, type GithubPull, githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { COMMAND_MAX_MS } from "../workspace/archil-exec.js";
 import { shellEnv } from "../workspace/hands.js";
@@ -31,8 +31,10 @@ import { githubAppAccess } from "./github-app.js";
 import type { GithubAppMint } from "./mcp-github.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
 
-/** What an agent's revision keeps of its definition's `checkout` (validate.ts CHECKOUTS; `none` keeps nothing). */
-export type Checkout = "pull_request";
+/** What an agent's revision keeps of its definition's `checkout` (validate.ts CHECKOUTS; `none` keeps nothing):
+ *  `pull_request`, the pull request the run's GitHub event names; `repository`, the head of the default branch of the
+ *  repository the run names (repoCheckout below). */
+export type Checkout = "pull_request" | "repository";
 
 /** The folder, in the run's own, the checkout lands in. */
 export const CHECKOUT_DIR = "repo";
@@ -207,7 +209,8 @@ function checkoutNote(pull: GithubPull, mergeBase: string | undefined): string {
 
 /** The checkout a claim's spec makes (the pi and the CLI spec alike) for its launch: the server's GitHub App opened as the
  *  MCP step opens it (github-app.ts, its payload tag read only for a github trigger's run), its secrets held by the run's redactor `redact`, its removal by the spec's holds (`held`) from the
- *  moment the fetch starts, and `signal` (the claim's, a person's stop included) ending the fetch. */
+ *  moment the fetch starts, and `signal` (the claim's, a person's stop included) ending the fetch. `kind` is the revision's
+ *  checkout: the pull request the run's event names, or the repository the run names (repoCheckout). */
 export async function prCheckoutForClaim(
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "githubApi" | "githubWeb">,
   workspace: Workspace,
@@ -215,8 +218,108 @@ export async function prCheckoutForClaim(
   redact: { hold(values: readonly string[]): void },
   signal?: AbortSignal,
   held?: (part: { end(): Promise<void> }) => void,
+  kind: Checkout = "pull_request",
 ): Promise<PrCheckout> {
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const access = await githubAppAccess(deps.store, deps.sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold: (values) => redact.hold(values), ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
-  return prCheckout({ workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) });
+  const common = { workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets: readonly string[]) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) };
+  if (kind === "repository") return repoCheckout({ ...common, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  return prCheckout(common);
 }
+
+/** The file in the checkout's .git that lists its files, one path a line (git ls-tree), so an agent with `read` and no
+ *  shell can still find what to open. */
+export const FILE_LIST = "agentrun-files";
+
+/** The exec's script for a repository's checkout: $1 the remote's URL (no credential), $2 the folder, $3 the URL prefix
+ *  the header is for, $4 this claim's checkout id. Its stdin's first line is an Authorization header, or empty. It fetches
+ *  the remote's HEAD (its default branch) one commit deep, and checks it out detached (ref repo/head). Its exit codes name
+ *  the step that failed (10 the folder, 11 the fetch, 12 the checkout); on success it lists the files in
+ *  .git/${FILE_LIST} and prints the commit, how many files there are and the default branch's name (empty when the
+ *  remote did not say). */
+const REPO_SCRIPT = `set -u
+url=$1 dir=$2 scope=$3 claim=$4
+IFS= read -r auth || true
+export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+if [ -n "\${auth:-}" ]; then export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$scope.extraheader" GIT_CONFIG_VALUE_0="$auth"; fi
+auth=
+rm -rf "\${dir:?}"
+git init -q "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && git remote add origin "$url" || exit 10
+branch=$(git ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" { sub("^refs/heads/", "", $2); print $2; exit }')
+git -c maintenance.auto=false -c gc.auto=0 fetch -q --no-tags --no-recurse-submodules --depth=1 origin HEAD || exit 11
+git update-ref refs/repo/head FETCH_HEAD || exit 12
+git -c advice.detachedHead=false checkout -q --detach FETCH_HEAD || exit 12
+git ls-tree -r --name-only HEAD > .git/${FILE_LIST} || exit 12
+printf '%s %s %s\\n' "$(git rev-parse HEAD)" "$(wc -l < .git/${FILE_LIST} | tr -d ' ')" "$branch"
+`;
+
+/** What a repository's checkout reads of the run, beside a pull request's options: `repo`, the launch's (the start body's,
+ *  checked against the agent's binding), else the first https://github.com/<owner>/<repo> the run's first message names
+ *  (github.ts githubTargetOf: its owner's words, or a github trigger's payload tag). */
+export type RepoCheckoutOptions = PrCheckoutOptions & { readonly repo?: string };
+
+/** The repository the run names, checked out in the run's folder at the head of its default branch, one commit deep: the
+ *  server's own fetch, with the App's token for that one repository and `contents: read` alone (or none: anonymous, which
+ *  a public repository answers), revoked once the fetch is done, never kept. Never throws for a checkout that could not be
+ *  made: the run is told why. */
+export async function repoCheckout(options: RepoCheckoutOptions): Promise<PrCheckout> {
+  const { workspace } = options;
+  const named = options.repo !== undefined ? { repo: options.repo } : githubTargetOf(isObject(options.input) ? options.input.content : options.input, { payload: options.fromGitHub === true });
+  const [owner, name, extra] = (named?.repo ?? "").split("/");
+  if (!named || !owner || !name || extra !== undefined || !REPO_OWNER.test(owner) || !REPO_NAME_PART.test(name) || name === "." || name === "..") return noCheckout("No checkout was made: this run names no GitHub repository (https://github.com/<owner>/<repo> in its first message), so there is no repo/ folder.");
+  const repo = `${owner}/${name}`;
+  const web = (options.web ?? GITHUB_WEB).replace(/\/+$/, "");
+
+  let token: string | undefined;
+  let anonymous = "";
+  if (options.mint) {
+    try {
+      const got = await options.mint({ repo, ...("installation" in named && named.installation !== undefined ? { installation: named.installation } : {}) }, { contents: "read" });
+      if (got.ok) token = got.token;
+      else anonymous = got.reason === "not_installed" ? `the GitHub App is not installed on ${repo}` : got.message;
+    } catch (error) {
+      anonymous = `GitHub did not make a token (${(error as Error)?.message ?? error})`;
+    }
+  } else anonymous = "this server has no GitHub App";
+  const header = token ? `Authorization: Basic ${Buffer.from(`x-access-token:${token}`, "utf8").toString("base64")}` : "";
+  const secrets = token ? [token, header, header.slice("Authorization: Basic ".length)] : [];
+  if (secrets.length) options.hold?.(secrets);
+
+  const claim = randomUUID();
+  const removal = async (): Promise<void> => {
+    const result = await workspace.exec(["sh", "-c", `[ "$(cat "\${1:?}/.git/${OWNER_FILE}" 2>/dev/null)" = "$2" ] || exit 0; rm -rf -- "\${1:?}"`, "sh", CHECKOUT_DIR, claim], { env: shellEnv(), timeoutMs: CHECKOUT_MS });
+    if (result.code !== 0) throw new Error(`the run's ${CHECKOUT_DIR}/ checkout could not be removed (exit ${result.code ?? result.signal}): ${tail(result.stderr, secrets)}`);
+  };
+  const failed = async (why: string): Promise<PrCheckout> => {
+    await removal().catch(() => {});
+    return noCheckout(`The repository ${repo} could not be checked out (${why}), so there is no ${CHECKOUT_DIR}/ folder: read it through the GitHub tools if you have them, else say that you could not read it.`);
+  };
+
+  options.held?.({ end: removal });
+  let result;
+  try {
+    result = await workspace.exec(
+      ["sh", "-c", REPO_SCRIPT, "sh", `${web}/${repo}.git`, CHECKOUT_DIR, `${web}/`, claim],
+      { env: shellEnv(), stdin: Buffer.from(`${header}\n`, "utf8"), timeoutMs: options.timeoutMs ?? CHECKOUT_MS, ...(options.signal ? { signal: options.signal } : {}) },
+    );
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    return failed(`the fetch could not run: ${tail(String((error as Error)?.message ?? error), secrets)}`);
+  } finally {
+    if (token && options.revoke) await options.revoke(token).catch(() => {});
+  }
+  if (result.timedOut) return failed(`the fetch took more than ${Math.round((options.timeoutMs ?? CHECKOUT_MS) / 1000)} s`);
+  if (result.code !== 0) {
+    const step = result.code === 10 ? "its folder could not be made" : result.code === 11 ? `${web}/${repo} did not give its default branch${token ? "" : `, fetched with no token: ${anonymous}`}` : result.code === 12 ? "its head could not be checked out" : `git ended with ${result.code ?? result.signal}`;
+    const said = tail(result.stderr, secrets);
+    return failed(said ? `${step}: ${said}` : step);
+  }
+  const [sha = "", count = "", branch = ""] = Buffer.from(result.stdout).toString("utf8").trim().split(/\s+/);
+  const at = /^[0-9a-f]{40}$/.test(sha) ? sha : "its head";
+  const named_ = /^[A-Za-z0-9._\/-]{1,255}$/.test(branch) ? ` ${branch}` : "";
+  const files = /^\d{1,9}$/.test(count) ? `Its ${count} ${count === "1" ? "file is" : "files are"} listed in ${CHECKOUT_DIR}/.git/${FILE_LIST}, one path a line. ` : "";
+  return { note: `The repository ${repo} is checked out in ${CHECKOUT_DIR}/ at the head of its default branch${named_}, commit ${at} (ref repo/head), by the server before this run began. ${files}It is a shallow clone (that one commit, no history), and no credential is kept in it.`, end: removal };
+}
+
+const REPO_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
+const REPO_NAME_PART = /^[A-Za-z0-9._-]{1,100}$/;

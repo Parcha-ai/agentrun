@@ -679,6 +679,16 @@ A code that pairs a person's own computer with this server.
 
 Route: `POST /computers/pairings`.
 
+### `agentrun local create-suggested-agent SUGGESTION_ID`
+
+Create a suggested agent: a branch with its package and client, the agent made here, and a pull request.
+
+Route: `POST /suggestions/{suggestion_id}/create`.
+
+- `--name STRING` (string): The agent's name, in place of the suggestion's.
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun local delete-composio-subscription NAME`
 
 Delete the Composio project's webhook subscription, once no trigger uses it.
@@ -697,6 +707,12 @@ Turn Mode 2 off: run folders on this server's own disk.
 
 Route: `DELETE /workspace/archil`.
 
+### `agentrun local discard-suggestion SUGGESTION_ID`
+
+Discard a suggested agent: it goes away, and later scans leave it out.
+
+Route: `POST /suggestions/{suggestion_id}/discard`.
+
 ### `agentrun local disconnect-git-hub`
 
 Disconnect GitHub: the App's credentials gone from this server, and every github trigger off.
@@ -714,6 +730,14 @@ Route: `GET /integrations/github`.
 The model gateway in force: the environment's, the one saved here, or none.
 
 Route: `GET /settings/model-gateway`.
+
+### `agentrun local get-suggestion SUGGESTION_ID`
+
+One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.
+
+Route: `GET /suggestions/{suggestion_id}`.
+
+- `--name STRING` (string): The agent's name a create would be sent (`POST .../create` `name`): `files` are rendered with it, as the create pushes them. 422 when it is not 3 to 60 characters.
 
 ### `agentrun local get-workspace-archil`
 
@@ -745,11 +769,26 @@ Settings → Computers: the kinds of computer this server offers, each provider 
 
 Route: `GET /computers`.
 
+### `agentrun local list-git-hub-repositories`
+
+The repositories this server's GitHub App is installed on.
+
+Route: `GET /integrations/github/repositories`.
+
 ### `agentrun local list-mcp-server-names`
 
 The names of the MCP servers saved here, and nothing else of them.
 
 Route: `GET /settings/mcp-server-names`.
+
+### `agentrun local list-suggestions`
+
+Suggested agents: each repository's scan and the agents it suggests.
+
+Route: `GET /suggestions`.
+
+- `--repo STRING` (string): owner/name: one repository's alone.
+- `--status open|created|discarded|all` (string, one of these)
 
 ### `agentrun local receive-hook-composio HOOK`
 
@@ -760,11 +799,27 @@ Route: `POST /hooks/composio/{hook}`.
 - `--body JSON|@FILE|-` (`*/*`, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of `*/*`; any other than JSON is sent as given.
 
+### `agentrun local restore-suggestion SUGGESTION_ID`
+
+Bring a discarded suggestion back (an undo).
+
+Route: `POST /suggestions/{suggestion_id}/restore`.
+
 ### `agentrun local rotate-composio-secret NAME`
 
 Rotate the Composio project's webhook subscription's secret, and keep the new one.
 
 Route: `POST /settings/mcp-servers/{name}/composio/rotate-secret`.
+
+### `agentrun local scan-for-suggestions`
+
+Scan a repository for places its app needs an agent.
+
+Route: `POST /suggestions/scans`.
+
+- `--repo STRING` (string, required): owner/name, or its https://github.com URL.
+- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun local test-computer PROVIDER`
 
@@ -787,7 +842,7 @@ Sign in to a server, with a device code when it offers one, else a token read fr
 Route: `GET /capabilities, then its device sign-in; else GET /agents?limit=1, to check a token from stdin`.
 
 - `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address lacks it; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
-- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL); the token from stdin
+- `--base-url URL` (string, this CLI's own): the server's API, ending /v2 (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one
 
 ## logout
 
@@ -1187,6 +1242,8 @@ Route: `POST /agents/{agent_id}/sdk-runs`.
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--started-at STRING` (string): When the backend began the task, as an RFC 3339 date-time: the run's created_at. At most 60 seconds ahead of the server's clock and at most 7 days behind it. Absent: now. The evidence deadline is still counted from this request.
+- `--title STRING` (string): The run's title, trimmed and with whitespace collapsed. Absent: the first 80 characters of input.
 - `--platform STRING` (string): External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
@@ -1376,6 +1433,12 @@ Route: none, it runs on this machine.
 - `--grader-model PROVIDER/MODEL` (string, this CLI's own): the model of the llm graders (default: the server's)
 - `--report FILE` (string, this CLI's own): the whole report, as JSON (a summary goes to stdout either way)
 - `--faux MODULE` (string, this CLI's own): answer every model request from MODULE's default export: no key, no network
+
+### `agentrun template get TEMPLATE`
+
+One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent.
+
+Route: `GET /templates/{template}`.
 
 ### `agentrun template import`
 
