@@ -610,6 +610,30 @@ test("a promotion write whose gate answered before a purge of a run that wrote t
   assert.deepEqual({ length: capped.length, champion: championOf(capped, "answer", (one) => one.commit?.startsWith("w") === true)?.digest ?? null }, { length: PROMOTIONS_KEPT, champion: null }, "with CHAMPIONS_KEPT purged champions in a row the trim keeps none before them, and none serves");
 });
 
+// The champions before never crowd out a decision: enough workflows with CHAMPIONS_KEPT champions each to fill the
+// bound, and a check decides a hold for a revision never promoted. The write says it won, so its hold must be there
+// (dropped, the next claim finds no decision and pays for the same check again), and still there after the next write.
+test("champions kept before the newest never crowd out a decision just written: the hold stays past the next write", async () => {
+  const { CHAMPIONS_KEPT, championOf, PROMOTIONS_KEPT, promotionOf, promotionsKey, recordPromotion } = await import("../dist/learn/promote.js");
+  const rec = (workflow, digest, decided) => ({ workflow, digest, at: "t", decided, reason: "r", commit: `${workflow}-${digest}` });
+  const workflows = Array.from({ length: Math.ceil(PROMOTIONS_KEPT / CHAMPIONS_KEPT) }, (_, w) => `w${w}`);
+  let saved = JSON.stringify({ v: 1, items: workflows.flatMap((w) => Array.from({ length: CHAMPIONS_KEPT }, (_, d) => rec(w, `d${d}`, "promote"))) });
+  const settings = {
+    get: async (name) => (name === promotionsKey("crowd") ? JSON.parse(saved) : undefined),
+    putIfAbsent: async () => JSON.parse(saved),
+    replaceIf: async (_, was, value) => (saved === JSON.stringify(was) ? ((saved = JSON.stringify(value)), true) : false),
+  };
+  const none = async () => () => false;
+  const first = await recordPromotion(settings, "crowd", rec("fresh", "n1", "hold"), (was) => was === undefined, none);
+  const second = await recordPromotion(settings, "crowd", rec("fresh", "n2", "hold"), (was) => was === undefined, none);
+  const items = JSON.parse(saved).items;
+  assert.deepEqual(
+    { won: [first.won, second.won], n1: promotionOf(items, "fresh", "n1")?.decided ?? null, n2: promotionOf(items, "fresh", "n2")?.decided ?? null, champions: workflows.every((w) => championOf(items, w)?.digest === `d${CHAMPIONS_KEPT - 1}`) },
+    { won: [true, true], n1: "hold", n2: "hold", champions: true },
+    "both holds are kept and every workflow's champion still serves",
+  );
+});
+
 /** Agent `agentId` (learning on, no runner here) with one ended run, `<agentId>-served`, that its learned workflow
  *  `answer` served first: its id. */
 const servedRunOf = async (api, store, agentId) => {

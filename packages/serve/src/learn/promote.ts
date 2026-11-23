@@ -24,6 +24,9 @@ export const PROMOTIONS_KEPT = 200;
  *  one included (trimPromotions): a purge that lands inside one write's ask-to-write window and refuses fewer than this
  *  many champions in a row still leaves one before them that serves. */
 export const CHAMPIONS_KEPT = 5;
+/** How many of the newest records the promotions trim keeps ahead of the champions before (CHAMPIONS_KEPT): those only
+ *  take the room the newest leave, so they never crowd out a decision a check just landed. */
+const RECENT_KEPT = PROMOTIONS_KEPT / 2;
 
 /** The most characters a grade's words (`label`) may hold, and the most of them and of an answer a compile ask shows. */
 export const LABEL_MAX = 4_000;
@@ -549,15 +552,18 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
 /** The newest records, at most PROMOTIONS_KEPT, in order, with each workflow's champion (championOf) the same after as
  *  before, whatever was dropped: championOf reads the digest promoted last and its newest record, so the trim keeps both
  *  (a held last revision is never trimmed into handing the champion back), read over every record and again past those
- *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and again
- *  past each champion before it, CHAMPIONS_KEPT in all from that one (a purge landing after the gate answered refuses
- *  every champion its run wrote, two or more in a row: the newest one before them still serves), and a replaying
- *  revision's newest record (what its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer
- *  revision would start a second check while its runs run, and its verdict would never land). The rest is the newest
- *  records. */
+ *  `refused` names (the purge gate's: a champion its readers skip, so the earlier one they serve is kept), and a
+ *  replaying revision's newest record (what its settle, its runs' claims and the one-check-at-a-time rule read: dropped,
+ *  a newer revision would start a second check while its runs run, and its verdict would never land). Then the newest
+ *  RECENT_KEPT records (the newest one, the record a write just landed, always: its write said it won, so its decision
+ *  is there for the next claim). Then, in the room those leave, the champions before the one `refused` leaves, nearest
+ *  first, CHAMPIONS_KEPT in all from that one (a purge landing after the gate answered refuses every champion its run
+ *  wrote, two or more in a row: the newest one before them still serves). The rest is the newest records. */
 export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NONE_REFUSED): PromotionRecord[] {
   if (items.length <= PROMOTIONS_KEPT) return [...items];
   const keep = new Set<number>();
+  // The champions before, by how far back: [0] is each workflow's nearest one, so the room goes to those first.
+  const before: number[][] = [];
   for (const workflow of new Set(items.map((one) => one.workflow))) {
     for (const one of replayingOf(items, workflow, null)) keep.add(items.lastIndexOf(one));
     const passes: Refused[] = [NONE_REFUSED, refused];
@@ -566,19 +572,26 @@ export function trimPromotions(items: readonly PromotionRecord[], refused: Refus
       const own = (one: PromotionRecord) => one.workflow === workflow && !skip(one);
       const last = items.findLast((one) => own(one) && one.decided === "promote")?.digest;
       if (last === undefined) continue;
-      keep.add(items.findLastIndex((one) => own(one) && one.digest === last && one.decided === "promote"));
-      keep.add(items.findLastIndex((one) => own(one) && one.digest === last));
+      const found = [items.findLastIndex((one) => own(one) && one.digest === last && one.decided === "promote"), items.findLastIndex((one) => own(one) && one.digest === last)];
+      if (pass < 2) for (const i of found) keep.add(i);
+      else (before[pass - 2] ??= []).push(...found);
       // The champions before the one `refused` leaves: a purge that lands between the write's ask of the gate and its
       // write refuses each one its run wrote, and the guard (the records read) never sees it, so its readers serve the
-      // newest one before them. Past CHAMPIONS_KEPT it fails closed: none serves, never a purged run's text.
+      // newest one before them. Past CHAMPIONS_KEPT, or past the room, it fails closed: none serves, never a purged
+      // run's text.
       if (pass >= 1 && pass < CHAMPIONS_KEPT) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
     }
   }
-  for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {
-    if (keep.has(i)) continue;
-    keep.add(i);
-    room -= 1;
-  }
+  const newest = (count: number) => {
+    for (let i = items.length - 1; i >= 0 && count > 0; i--) {
+      if (keep.has(i)) continue;
+      keep.add(i);
+      count -= 1;
+    }
+  };
+  newest(Math.max(keep.has(items.length - 1) ? 0 : 1, Math.min(RECENT_KEPT, PROMOTIONS_KEPT - keep.size)));
+  for (const i of before.flat()) if (keep.size < PROMOTIONS_KEPT) keep.add(i);
+  newest(PROMOTIONS_KEPT - keep.size);
   return items.filter((_, i) => keep.has(i));
 }
 
