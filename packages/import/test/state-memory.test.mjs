@@ -121,3 +121,78 @@ test("passes with a state across appends (a request's lines split between them),
   await pass("a failed read", { readers: { ...READERS, codex: failing } });
   await pass("after the failed read");
 });
+
+// Every place a pass can stop in a file: after each line, and halfway through each (a line still being written, which
+// the cursor leaves for the next pass). Each request's state a reader carries to the next pass is between some two of
+// these: a Claude Code request's lines apart, a Codex request's reasoning and its call, a call and its result, a token
+// count and the one repeating it, a usage record and its repeat, a call's result and the next call.
+const ts = (i) => new Date(Date.UTC(2026, 0, 1) + i * 1000).toISOString();
+const item = (i, payload) => ({ type: "response_item", timestamp: ts(i), payload });
+const tokenCount = (i, last, total) => ({ type: "event_msg", timestamp: ts(i), payload: { type: "token_count", info: { last_token_usage: last, total_token_usage: total } } });
+const usageRecord = (i, id, usage) => ({ type: "token_usage_record", timestamp: ts(i), payload: { response_id: id, usage } });
+const PIECEWISE = [
+  [
+    "claude-code",
+    claudeFile,
+    [
+      claudeUser({ uuid: "u1", text: "Go.", i: 0 }),
+      claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 1), i: 1, block: { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } } }),
+      { ...claudeUser({ uuid: "u2", text: "", i: 2 }), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] } },
+      claudeAnswer({ uuid: "a2", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 30, 5, 2, 1), i: 3 }),
+      claudeAnswer({ uuid: "a3", msg: "msg_2", req: "req_2", usage: anthropicUsage(4, 2), i: 4 }),
+      claudeAnswer({ uuid: "a3", msg: "msg_2", req: "req_2", usage: anthropicUsage(4, 2), i: 4 }),
+      claudeAnswer({ uuid: "a4", msg: "msg_2", req: "req_2", usage: anthropicUsage(4, 9), i: 5 }),
+    ],
+  ],
+  [
+    "codex",
+    codexFile,
+    [
+      codexMeta("thread-pieces"),
+      codexContext(1),
+      codexUser("Go.", 2),
+      item(3, { type: "reasoning", summary: [] }),
+      item(4, { type: "function_call", name: "shell", arguments: "{}", call_id: "call_1" }),
+      item(5, { type: "function_call_output", call_id: "call_1", output: "ok" }),
+      // A call after the first call's result and before any token count: a pass ending between them
+      // resumes with the open request's calls.
+      item(5, { type: "function_call", name: "shell", arguments: "{}", call_id: "call_2" }),
+      item(5, { type: "function_call_output", call_id: "call_2", output: "ok" }),
+      tokenCount(6, openaiUsage(100, 50, 10, 2), openaiUsage(100, 50, 10, 2)),
+      tokenCount(7, openaiUsage(100, 50, 10, 2), openaiUsage(100, 50, 10, 2)),
+      item(8, { type: "reasoning", summary: [] }),
+      item(9, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] }),
+      tokenCount(10, openaiUsage(200, 100, 20), openaiUsage(300, 150, 30, 2)),
+    ],
+  ],
+  [
+    "codex",
+    (home) => codexFile(home, "rollout-2026-01-01T00-00-01-records.jsonl"),
+    [
+      codexMeta("thread-records"),
+      codexContext(1),
+      codexUser("Go.", 2),
+      item(3, { type: "function_call", name: "shell", arguments: "{}", call_id: "call_1" }),
+      usageRecord(4, "resp_1", openaiUsage(100, 50, 10)),
+      usageRecord(5, "resp_1", openaiUsage(100, 50, 10)),
+      item(6, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done." }] }),
+      usageRecord(7, "resp_2", openaiUsage(200, 100, 20)),
+    ],
+  ],
+  ["pi", piFile, [piMeta(), piUser("Go.", 1), piAnswer({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, 2), piUser("More.", 3), piAnswer({ input: 20, output: 7, cacheRead: 1, cacheWrite: 0 }, 4)]],
+];
+for (const [source, file, records] of PIECEWISE) {
+  test(`${source}: a pass after each line, and halfway through each, gives a fresh pass's totals (${records[0].payload?.id ?? records.length + " lines"})`, async (t) => {
+    const home = await tempHome(t);
+    const path = await write(file(home), []);
+    const state = {};
+    for (const [n, line] of records.map((record) => JSON.stringify(record) + "\n").entries()) {
+      const half = Buffer.from(line).subarray(0, line.length >> 1);
+      for (const piece of [half, Buffer.from(line).subarray(half.length)]) {
+        await appendFile(path, piece);
+        const fresh = await parseHome(home, { sources: [source], catalog: false });
+        assert.deepEqual(await parseHome(home, { sources: [source], catalog: false, state }), fresh, `line ${n + 1}, ${piece === half ? "half" : "whole"}`);
+      }
+    }
+  });
+}
