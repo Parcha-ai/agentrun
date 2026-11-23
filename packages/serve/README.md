@@ -3362,11 +3362,19 @@ serves these routes alone:
   is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
   package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
-  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
-  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
+  them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
+  API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
+  (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
+  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`). A trigger whose firings failed 5 times in
+  a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
+  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
+  trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
@@ -3401,7 +3409,7 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the

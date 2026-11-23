@@ -3,10 +3,11 @@
 // with the server's token. Without the launch hook the apply makes no trigger of any kind: each is skipped and said (a
 // schedule too, which would start runs on the server's own clock and model key, outside the backend's), and its dry run
 // plans each as skipped, in the same words. With the hook it makes the schedule and feed triggers, since each firing goes
-// to the backend, which starts the run through the API on its own keys and budget; their unarchive turns them on again,
-// as no trigger route is served to. A webhook, GitHub, Composio or email trigger is never made here. Making a trigger,
-// reading or changing one, the hooks and the settings stay refused. Off by default: the whole server's apply makes every
-// trigger, as before.
+// to the backend, which starts the run through the API on its own keys and budget; their unarchive turns them on again.
+// A webhook, GitHub, Composio or email trigger is never made here. The token reads the triggers and turns one on or off
+// (PATCH with `enabled` alone, on only with the hook), so one auto-paused is turned on again; making, deleting or firing
+// a trigger, the hooks and the settings stay refused. Off by default: the whole server's apply makes every trigger, as
+// before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -16,7 +17,7 @@ import { feed, posts } from "./feed-support.mjs";
 import { scratch, serve, withEnv } from "./support.mjs";
 import { fakeClock, hookServer, until } from "./trigger-support.mjs";
 
-const { apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
+const { apiOnlyTriggerEdit, apiOnlyTriggerSkipped } = await import("../dist/api-only.js");
 const { NOT_SET_UP } = await import("../dist/runnable.js");
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mintSecret, verify } = await import("../dist/standard-webhooks.js");
@@ -86,6 +87,15 @@ const SKIPPED = [
   ["triggers.2", "not_an_option", notHere("new-mail", "email")],
 ];
 
+/** The trigger routes an API-only server does not serve, for `agent` and a trigger id `trigger`: [what, method, path, body]. */
+const TRIGGER_WRITES_REFUSED = (agent, trigger) => [
+  ["a trigger made", "POST", "/v2/triggers", { name: "extra", agent_id: agent, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", input: { content: "Hi" } } }],
+  ["a trigger's delete", "DELETE", `/v2/triggers/${trigger}`],
+  ["a trigger's fire", "POST", `/v2/triggers/${trigger}/fire`, {}],
+  ["a trigger's secret rotated", "POST", `/v2/triggers/${trigger}/secret`],
+  ["a Composio server's triggers", "GET", "/v2/settings/mcp-servers/composio/composio/triggers"],
+];
+
 /** The runs of `agent` on `server`, through its API. */
 const runsOf = async (server, agent) => {
   const listed = await send(server, "GET", `/v2/runs?agent=${agent}`);
@@ -129,15 +139,11 @@ test("an API-only server applies a template, reads its agent and revisions, move
   assert.deepEqual([moved.body.revision, moved.body.definition.instructions], [first, "Write a short note about tides."], "the first revision is current");
   assert.equal((await send(server, "GET", `/v2/agents/${agent}`)).body.revision, first, "and reads so");
 
-  // Everything else of agents, triggers, hooks and settings stays the profile's 404.
+  // Everything else of agents, triggers, hooks and settings stays the profile's 404 (a trigger's reads and its turn on
+  // or off are served: the test of an auto-paused trigger below).
   const trigger = "trg_0123456789abcdef01234567";
   for (const [what, method, path, body] of [
-    ["a trigger made", "POST", "/v2/triggers", { name: "extra", agent_id: agent, source: { kind: "schedule", every_s: 3600 }, target: { kind: "start_run", input: { content: "Hi" } } }],
-    ["the triggers list", "GET", "/v2/triggers"],
-    ["a trigger's read", "GET", `/v2/triggers/${trigger}`],
-    ["a trigger's change", "PATCH", `/v2/triggers/${trigger}`, { enabled: false }],
-    ["a trigger's fire", "POST", `/v2/triggers/${trigger}/fire`, {}],
-    ["a trigger's firings", "GET", `/v2/triggers/${trigger}/firings`],
+    ...TRIGGER_WRITES_REFUSED(agent, trigger),
     ["a webhook hook", "POST", `/v2/hooks/${trigger}`, {}],
     ["a settings read", "GET", "/v2/settings/tools"],
     ["a settings write", "PUT", "/v2/settings/tools", { web_search: "parallel" }],
@@ -240,7 +246,7 @@ test("an API-only redeploy leaves each trigger of the package the agent has alre
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => [row.id, row.enabled, row.source.urls ?? null]).sort(), [["trg_morning", false, null], ["trg_status", false, ["https://status.example.com/feed.xml"]]], "both left as they were");
 });
 
-test("an API-only redeploy that skips a trigger the agent has on says it is kept and still fires, and that the agent's archive turns it off", { timeout: 60_000 }, async (t) => {
+test("an API-only redeploy that skips a trigger the agent has on says it is kept and still fires, and how to turn it off", { timeout: 60_000 }, async (t) => {
   const server = await deployServer(t, { apiOnly: true });
   const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
@@ -249,7 +255,7 @@ test("an API-only redeploy that skips a trigger the agent has on says it is kept
   const redeployed = await send(server, "POST", "/v2/templates/deployed/apply", { body: { agent_id: agent, parameters: { topic: "tides" } } });
   assert.equal(redeployed.status, 200, JSON.stringify(redeployed.body));
   const [[field, , words]] = skippedOf(redeployed.body);
-  assert.deepEqual([field, words], ["triggers.0", `${needsHook("morning", "schedule")} The agent's trigger trg_morning of that name is kept as it was, and still fires: archiving the agent turns it off.`]);
+  assert.deepEqual([field, words], ["triggers.0", `${needsHook("morning", "schedule")} The agent's trigger trg_morning of that name is kept as it was, and still fires: PATCH /v2/triggers/trg_morning with {"enabled": false} turns it off.`]);
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => [row.id, row.enabled]), [["trg_morning", true]], "left as it was");
 });
 
@@ -368,7 +374,7 @@ test("an API-only server with the launch hook makes a feed whose urls are given;
   assert.deepEqual(skippedOf(empty.body).map(([field, reason, message]) => [field, reason, /no feed|status_feeds/.test(message)]), [["triggers.1", "not_set_up_here", true]], JSON.stringify(empty.body.warnings));
 });
 
-test("an API-only server with the launch hook unarchives an agent: the schedule its archive turned off is on again, as no trigger route is served to turn it on", { timeout: 60_000 }, async (t) => {
+test("an API-only server with the launch hook unarchives an agent: the schedule its archive turned off is on again", { timeout: 60_000 }, async (t) => {
   // The triggers' own clock: no time of the schedule comes due on the wall clock while the test runs, and the one it
   // drives is settled before the test ends, so the teardown never closes the hook under a firing.
   const clock = fakeClock("2026-06-01T08:00:00Z");
@@ -432,4 +438,88 @@ test("an API-only server without the hook turns no trigger on at an unarchive: o
   assert.equal(back.status, 200, JSON.stringify(back.body));
   assert.deepEqual(back.body.triggers_off, [{ id: "trg_morning", name: "morning" }], JSON.stringify(back.body));
   assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.enabled), [false]);
+});
+
+/** `id` on `server` left as the engine leaves a trigger whose firings failed FAILURES_TO_PAUSE times in a row. */
+const autoPaused = (server, id, at) => server.store.triggers.update(id, { enabled: false, nextAt: null, failuresInARow: 5, disabled: { at, reason: "auto_paused" } });
+
+test("an API-only server with the launch hook turns an auto-paused schedule on again with its token (PATCH /v2/triggers/{id} {enabled: true}), and its next time goes to the backend", { timeout: 60_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  const [made] = await server.store.triggers.list(agent);
+  await autoPaused(server, made.id, "2026-06-01T07:00:00Z");
+
+  // The backend sees it off, and why, through the routes served here.
+  const listed = await send(server, "GET", "/v2/triggers");
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual(listed.body.triggers.map((one) => [one.id, one.enabled, one.disabled?.reason]), [[made.id, false, "auto_paused"]]);
+  const read = await send(server, "GET", `/v2/triggers/${made.id}`);
+  assert.deepEqual([read.status, read.body.failures_in_a_row, read.body.disabled?.reason], [200, 5, "auto_paused"], JSON.stringify(read.body));
+  assert.deepEqual([(await send(server, "GET", `/v2/triggers/${made.id}/firings`)).status], [200], "its firings, to read why");
+
+  // Without the token: refused, and it stays off.
+  for (const [method, path, body] of [["GET", "/v2/triggers"], ["GET", `/v2/triggers/${made.id}`], ["GET", `/v2/triggers/${made.id}/firings`], ["PATCH", `/v2/triggers/${made.id}`, { enabled: true }]]) {
+    const answer = await send(server, method, path, { token: false, ...(body ? { body } : {}) });
+    assert.deepEqual([answer.status, answer.body.error?.code], [401, "unauthenticated"], `${method} ${path} without the token`);
+  }
+  assert.equal((await server.store.triggers.get(made.id)).enabled, false, "still off");
+
+  // Only `enabled`: any other field, alone or beside it, is refused and changes nothing.
+  for (const body of [{ name: "evening" }, { enabled: true, source: { kind: "schedule", cron: "0 18 * * *", timezone: "UTC" } }, { enabled: true, target: { kind: "start_run", agent_id: agent, input: { content: "Other." } } }, { max_active_runs: 2 }]) {
+    const refused = await send(server, "PATCH", `/v2/triggers/${made.id}`, { body });
+    assert.equal(refused.status, 422, JSON.stringify(refused.body));
+    const fields = refused.body.error.fields.map((one) => [one.field, one.reason]);
+    assert.deepEqual(fields, Object.keys(body).filter((key) => key !== "enabled").map((key) => [key, "not_allowed"]), JSON.stringify(refused.body));
+  }
+  const kept = await server.store.triggers.get(made.id);
+  assert.deepEqual([kept.name, kept.enabled, kept.source.cron], ["morning", false, "0 9 * * *"], "nothing changed");
+
+  // On again with the token: the streak behind it, its next time set.
+  const on = await send(server, "PATCH", `/v2/triggers/${made.id}`, { body: { enabled: true } });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.deepEqual([on.body.enabled, on.body.disabled, on.body.failures_in_a_row, on.body.next_at], [true, null, 0, "2026-06-01T09:00:00.000Z"], JSON.stringify(on.body));
+
+  clock.to("2026-06-01T09:00:00Z");
+  const [{ sent }] = await until(() => hook.got.length && hook.got, 20_000, "the schedule's firing never reached the backend");
+  await until(async () => (await server.store.triggers.firing(made.id, sent.firing_id))?.status === "sent", 20_000, "the firing was never recorded sent");
+  assert.deepEqual([sent.trigger_id, sent.fired_at], [made.id, "2026-06-01T09:00:00Z"]);
+
+  // Off again by the same route; the trigger writes it does not serve stay the profile's 404.
+  const off = await send(server, "PATCH", `/v2/triggers/${made.id}`, { body: { enabled: false } });
+  assert.deepEqual([off.status, off.body.enabled], [200, false], JSON.stringify(off.body));
+  for (const [what, method, path, body] of TRIGGER_WRITES_REFUSED(agent, made.id)) refusedHere(await send(server, method, path, body === undefined ? {} : { body }), path, what);
+  assert.deepEqual((await server.store.triggers.list(agent)).map((row) => row.id), [made.id], "none made or deleted");
+});
+
+test("an API-only server without the launch hook turns no trigger on through PATCH, as its unarchive turns none on; it turns one off", { timeout: 60_000 }, async (t) => {
+  const server = await deployServer(t, { apiOnly: true }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  // A schedule the agent has from before (made while the server was the whole server), on and then auto-paused.
+  await server.store.triggers.create({ id: "trg_morning", agentId: agent, name: "morning", enabled: true, source: { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }, target: { kind: "start_run", agent_id: agent, input: { content: "Answer." } }, nextAt: Date.parse("2026-06-02T09:00:00Z"), catchupWindowS: 0, templateId: applied.body.template });
+  const off = await send(server, "PATCH", "/v2/triggers/trg_morning", { body: { enabled: false } });
+  assert.deepEqual([off.status, off.body.enabled], [200, false], JSON.stringify(off.body));
+  await autoPaused(server, "trg_morning", "2026-06-01T07:00:00Z");
+  const refused = await send(server, "PATCH", "/v2/triggers/trg_morning", { body: { enabled: true } });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const [issue] = refused.body.error.fields;
+  assert.deepEqual([issue.field, issue.reason], ["enabled", NOT_SET_UP], JSON.stringify(issue));
+  assert.match(issue.message, /no launch hook/);
+  assert.equal((await server.store.triggers.get("trg_morning")).enabled, false, "still off: on, it would start runs on this server's keys");
+});
+
+test("an API-only PATCH of a trigger: `enabled` alone; off always; on only for a source the apply makes with the hook, every source kind checked", () => {
+  const reasons = (kind, hooked, body = { enabled: true }) => apiOnlyTriggerEdit(body, kind, hooked).map((one) => `${one.field}:${one.reason}`);
+  for (const kind of SOURCE_KINDS) {
+    const makes = kind === "schedule" || kind === "feed";
+    assert.deepEqual(reasons(kind, true), makes ? [] : ["enabled:not_an_option"], `${kind}, hooked`);
+    assert.deepEqual(reasons(kind, false), [makes ? `enabled:${NOT_SET_UP}` : "enabled:not_an_option"], `${kind}, no hook`);
+    assert.deepEqual([reasons(kind, false, { enabled: false }), reasons(kind, true, { enabled: false })], [[], []], `${kind} turned off`);
+  }
+  assert.deepEqual(reasons("schedule", true, { enabled: true, name: "x", catchup_window_s: 0 }), ["name:not_allowed", "catchup_window_s:not_allowed"]);
 });
