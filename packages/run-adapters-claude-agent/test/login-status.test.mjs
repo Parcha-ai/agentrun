@@ -231,7 +231,7 @@ test("while the CLI runs, the status check's folder and its config dir are the s
   assert.deepEqual(seen.modes, { check: 0o700, config: 0o700, copy: 0o600 }, `modes ${JSON.stringify(seen.modes)}`);
 });
 
-const FAKE_KEY = 'sk-ant-test-fake';
+const FAKE_KEY = 'test-fake-api-key';
 const FAKE_TOKEN = 'fake-token-for-a-test';
 
 test("the status check's copy of the account file holds no secret: not the API key an older CLI signed in with (primaryApiKey), the variables the CLI exports on start (env), or the MCP servers whose env and headers hold tokens (mcpServers, the user's and each project's); every other field is kept", async () => {
@@ -276,7 +276,7 @@ test("the status check's copy of the account file holds no secret: not the API k
 });
 
 test("an account file that doesn't parse as a JSON object is copied as nothing, as if it were missing, so nothing in it reaches the copy; the person's file keeps its bytes", async () => {
-  for (const body of [`{"primaryApiKey": "${FAKE_KEY}", "numStartups": `, '[]', 'null', `"${FAKE_KEY}"`]) {
+  for (const body of [`{"primaryApiKey": ${JSON.stringify(FAKE_KEY)}, "numStartups": `, '[]', 'null', JSON.stringify(FAKE_KEY)]) {
     const { home, login } = defaultLogin();
     const file = join(home, '.claude.json');
     writeFileSync(file, body, { mode: 0o600 });
