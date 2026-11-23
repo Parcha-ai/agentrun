@@ -113,3 +113,15 @@ describe("RaceStart", () => {
     expect(button(host, "Add a lane")).toBeUndefined();
   });
 });
+
+describe("the way to the form", () => {
+  it("the Runs list's toolbar links to #/races/new, as New race", async () => {
+    const { RunsList } = await import("./RunsList");
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunsList, { runs: [], agentName: (id: string) => id, onOpen: () => {} })));
+    const link = host.querySelector<HTMLAnchorElement>('header a[href="#/races/new"]');
+    expect(link?.textContent).toBe("New race");
+  });
+});
