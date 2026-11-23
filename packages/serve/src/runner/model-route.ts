@@ -473,8 +473,21 @@ type StreamBlock = { type: string; text?: string; thinking?: string; signature?:
 
 /** One Messages answer whole, from the events of its stream (`sse`): the message_start's message, each block joined from
  *  its deltas (a tool call's input parsed from its pieces), the last message_delta's stop and usage over the start's. An
- *  error event answers as Messages writes an error, at 500, with its words. */
+ *  error event answers as Messages writes an error, at 500, with its words; so does a stream a part of which is not JSON. */
 function wholeOf(sse: string): Response {
+  try {
+    return wholeRead(sse);
+  } catch {
+    // A part that does not read (a data line not JSON, a tool call's input cut short) is said as an error event is.
+    return messagesError("The model's answer could not be read whole: a part of it is not JSON.");
+  }
+}
+
+/** A Messages error answer: 500, `words` its message. */
+const messagesError = (words: string): Response => Response.json({ type: "error", error: { type: "api_error", message: words } }, { status: 500 });
+
+/** wholeOf's reading, which throws on a part that is not JSON. */
+function wholeRead(sse: string): Response {
   let message: Record<string, unknown> = {};
   const blocks: StreamBlock[] = [];
   const pieces = new Map<number, string>();
@@ -491,7 +504,7 @@ function wholeOf(sse: string): Response {
       } catch {
         // Its words alone (sendWords), not JSON.
       }
-      return Response.json({ type: "error", error: { type: "api_error", message: words } }, { status: 500 });
+      return messagesError(words);
     }
     const event = JSON.parse(data) as { index?: number; message?: Record<string, unknown>; content_block?: StreamBlock; delta?: Record<string, unknown>; usage?: Record<string, unknown> };
     const at = event.index ?? -1;

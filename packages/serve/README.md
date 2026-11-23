@@ -1615,8 +1615,8 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
   Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
   `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
-  asking the model, an answer it asks for unstreamed comes back whole, and every model id it sends (Claude Code's small
-  model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
+  asking the model, an answer it asks for unstreamed comes back whole (or as a 500 error with words when part of the
+  stream doesn't read), and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
   OpenAI's Responses, never list them.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
