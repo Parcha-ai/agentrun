@@ -1,11 +1,14 @@
 // Only the owner's signed-in session drops or replaces a secret; the API token, which a run's process, an agent's MCP client
 // or a script may hold, never does. Through the server, on the one gate in its dispatch (secret-writes.ts):
 // - a save that would drop a saved MCP server's credential (auth none over a bearer) is refused to the token, and the
-//   credential stays; the owner's session drops it;
-// - a token's save let through against no credential never lands over one the owner saved while it listed (412);
+//   credential stays; the owner's session drops it; the token saves over no server it did not save, keeping its credential
+//   or not;
+// - a token's save let through over its own server never lands over the owner's save made while it listed, a credential or
+//   none (412); and an owner's save refused (412) leaves the server the token's, its row and its record as they were;
 // - removing an MCP server that holds a credential is refused to the token, and the server stays; the console removes it,
-//   its request made as the page makes it (the session's cookie, same origin, JSON, no token); one with none is the
-//   token's to remove;
+//   its request made as the page makes it (the session's cookie, same origin, JSON, no token); the token removes only a
+//   server the token saved with none, and one the owner saved stays the owner's (mcp-composio-remove.test.mjs: even one the
+//   owner saves over after the token's delete was let through);
 // - a sign-in's start is refused to the token, with no state cookie handed back;
 // - every operation on a secret's route (MCP servers, GitHub, sign-ins, tool keys, computers, the workspace, a trigger's
 //   secret) is in the one gate's registry, or said on purpose to write none, with why;
@@ -17,6 +20,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { call, clientOwnerSession, serve as serveOf, withEnv } from "./support.mjs";
 
 const { openapiDocument } = await import("../dist/openapi.js");
+const { mcpSourceKey } = await import("../dist/mcp-sources.js");
 const gate = await import("../dist/secret-writes.js");
 // The planes register their operations as their modules load: the server's own imports, as a started server has them.
 await import("../dist/server.js");
@@ -52,16 +56,16 @@ test("a save that would drop a saved MCP server's credential is the owner's alon
   assert.equal(dropped.status, 403, dropped.text);
   assert.ok(String(dropped.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
   assert.equal((await savedAuth(page))?.auth?.type, "bearer", "the bearer is still saved");
-  // A save that keeps it (the same auth type, no value) is still the token's to make.
+  // A save that keeps it (the same auth type, no value) is refused too: the token saves over no server it did not save.
   const keep = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer" } });
-  assert.equal(keep.status, 200, keep.text);
+  assert.equal(keep.status, 403, keep.text);
   // The owner's session drops it.
   const drop = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   assert.equal(drop.status, 200, drop.text);
   assert.equal((await savedAuth(page))?.auth?.type, "none");
 });
 
-test("a token's save let through against no credential never lands over one the owner saved while it listed: it is refused 412, and the owner's credential stays", async (t) => {
+test("a token's save let through over its own server with no credential never lands over one the owner saved while it listed: it is refused 412, and the owner's credential stays", async (t) => {
   const server = await serve(t);
   // Once `holding`, a listing with no Authorization (the token's save of auth none) waits until released.
   let holding = false;
@@ -74,8 +78,9 @@ test("a token's save let through against no credential never lands over one the 
   t.after(() => (release(), fake.close()));
   const page = await asPage(server);
   const token = asToken(server);
-  // Saved with no credential: a token's save with none is no secret write, so the gate lets it through.
-  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url })).status, 200);
+  // Saved by the token with no credential: a token's save with none over a server the token saved is no secret write, so
+  // the gate lets it through.
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url })).status, 200);
   holding = true;
   const late = token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   await blocked;
@@ -92,6 +97,80 @@ test("a token's save let through against no credential never lands over one the 
   const refreshed = await token("POST", "/settings/mcp-servers/fake/refresh");
   assert.equal(refreshed.status, 200, refreshed.text);
   assert.ok(seen.includes(`Bearer ${TOKEN}`), "the bearer is what a refresh lists with");
+});
+
+test("a token's save let through over its own server never lands over the owner's save made while it listed, even one with no credential: it is refused 412, and the server stays where the owner saved it", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the token's listing (no Authorization, at `fake`) waits until released; the owner's is at `owners`.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (reached(), await released); } });
+  const owners = await startFakeMcp();
+  t.after(() => (release(), fake.close(), owners.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url })).status, 200);
+  holding = true;
+  const late = token("PUT", "/settings/mcp-servers/fake", { url: fake.url });
+  await blocked;
+  // The owner saves the server elsewhere, with no credential either: its credential's mark is the token's row's, so only the
+  // token's mark, dropped by the owner's save and compared in the token's write, tells the two apart.
+  const saved = await page("PUT", "/settings/mcp-servers/fake", { url: owners.url, auth: { type: "none" } });
+  assert.equal(saved.status, 200, saved.text);
+  release();
+  const refused = await late;
+  assert.equal(refused.status, 412, refused.text);
+  assert.equal(refused.json?.error?.code, "precondition_failed");
+  // A read shows the address cut to its origin (shownUrl): the two fakes are told apart by their ports.
+  const savedAt = async () => new URL(String((await savedAuth(page))?.url).replace("…", "")).origin;
+  assert.equal(await savedAt(), new URL(owners.url).origin, "the owner's save stands");
+  // And it stays the owner's: the token neither saves over it nor removes it.
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url })).status, 403);
+  assert.equal((await token("DELETE", "/settings/mcp-servers/fake")).status, 403);
+  assert.equal(await savedAt(), new URL(owners.url).origin);
+});
+
+test("an owner's save refused because the token changed its own server while the owner's listed (412) leaves it the token's: its record still says so, and the token's next save over it and its delete go through", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the owner's listing (at `owners`) waits until released, once; the token's lists at `fake`, never held.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp();
+  const owners = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  t.after(() => (release(), fake.close(), owners.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const marked = await server.store.settings.get(mcpSourceKey("fake"));
+  assert.equal(marked?.by, "token", "the token's save marks its record");
+  holding = true;
+  const owner = page("PUT", "/settings/mcp-servers/fake", { url: owners.url, auth: { type: "none" } });
+  await blocked;
+  // While the owner's save lists, the token changes its own server (auth none to per_run): the owner's write, let through
+  // against auth none, then finds another credential and writes nothing.
+  const moved = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "per_run" } });
+  assert.equal(moved.status, 200, moved.text);
+  const tokens = await server.store.settings.get(mcpSourceKey("fake"));
+  assert.equal(tokens?.by, "token");
+  release();
+  const refused = await owner;
+  assert.equal(refused.status, 412, refused.text);
+  assert.equal(refused.json?.error?.code, "precondition_failed");
+  // Nothing of the owner's save landed: the row is the token's per_run one, and its record still carries the token's mark.
+  const row = await server.store.mcp.server("fake");
+  assert.equal(row?.auth, "per_run");
+  assert.equal(row?.url, fake.url);
+  assert.deepEqual(await server.store.settings.get(mcpSourceKey("fake")), tokens, "the record is as the token's save wrote it");
+  const again = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
+  assert.equal(again.status, 200, `the token saves over its own server still: ${again.text}`);
+  const removed = await token("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(removed.status, 204, removed.text);
 });
 
 test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
@@ -112,15 +191,43 @@ test("removing an MCP server that holds a credential is the owner's alone: the t
   assert.equal(await savedAuth(page), undefined, "removed");
 });
 
-test("a server saved with no credential is the token's to remove (an eval's fake): it drops no secret", async (t) => {
+test("a server the token saved with no credential is the token's to remove (an eval's fake); one the owner saved with none stays the owner's: 403, and it stays", async (t) => {
   const server = await serve(t);
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const page = await asPage(server);
-  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
-  const removed = await asToken(server)("DELETE", "/settings/mcp-servers/fake");
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const removed = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(removed.status, 204, removed.text);
   assert.equal(await savedAuth(page), undefined, "removed");
+  // The owner's, with no credential either: the token deletes only what the token saved.
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const refused = await token("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(refused.status, 403, refused.text);
+  assert.ok(String(refused.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.ok(await savedAuth(page), "still saved");
+  // A token's save over it (no credential) is refused as its delete is: the token saves over no server it did not save.
+  const over = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
+  assert.equal(over.status, 403, over.text);
+  assert.ok(String(over.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
+  assert.equal((await token("DELETE", "/settings/mcp-servers/fake")).status, 403, "still the owner's");
+  const ownersRemove = await page("DELETE", "/settings/mcp-servers/fake");
+  assert.ok(ownersRemove.status >= 200 && ownersRemove.status < 300, ownersRemove.text);
+  assert.equal(await savedAuth(page), undefined, "removed");
+});
+
+test("the owner's save over a server the token saved makes it the owner's: the token's delete is then 403, and it stays", async (t) => {
+  const server = await serve(t);
+  const fake = await startFakeMcp();
+  t.after(() => fake.close());
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  const refused = await token("DELETE", "/settings/mcp-servers/fake");
+  assert.equal(refused.status, 403, refused.text);
+  assert.ok(await savedAuth(page), "still saved");
 });
 
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
@@ -132,7 +239,7 @@ test("a sign-in's start is the owner's alone: the token is refused, and gets no 
 
 test("every operation on a secret's route is in the one gate's registry, or said on purpose to write none, with why: an unregistered one is named", () => {
   const doc = openapiDocument(() => undefined);
-  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/, /^\/settings\/slack(\/|$)/, /^\/settings\/model-gateway(\/|$)/];
+  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/settings\/harness-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/, /^\/settings\/slack(\/|$)/, /^\/settings\/model-gateway(\/|$)/];
   const unregistered = [];
   const noReason = [];
   for (const [path, item] of Object.entries(doc.paths)) {

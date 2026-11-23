@@ -1,7 +1,7 @@
 // The lines an import ends with: how many sessions it found and from where, how many agents they make, and what they
 // used, from every session found, those imported before included. A number with no data behind it reads unknown.
 import type { RunMetrics } from "./timeline/index.js";
-import { SOURCE_NAMES, SOURCES, type Source } from "./import-sources.js";
+import { SOURCE_NAMES, SOURCES, type Source } from "@parcha/agentrun-import";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
  *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose

@@ -37,8 +37,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** run-1, a pi run of one request (it answers "done"), on a runner whose spec is the server's own with
  *  `over` laid on it (`over(spec)`). While it runs, every view of it is read, as fast as the store gives them; returns its
- *  row once it rests, those views, its journal's entries and the list's row. */
-async function endedRun(t, over = (spec) => spec) {
+ *  row once it rests, those views, its journal's entries and the list's row. `on`: another model, its route and the
+ *  server's env (a plan's). */
+async function endedRun(t, over = (spec) => spec, on = undefined) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-end-cost-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -50,15 +51,15 @@ async function endedRun(t, over = (spec) => spec) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say done.", tools: [] } });
-  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: MODEL } } });
-  const route = {
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Say done." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: on?.provider ?? "anthropic", modelId: on?.route.model ?? MODEL } } });
+  const route = on?.route ?? {
     model: MODEL, provider: { api: "anthropic-messages", origin: "https://api.anthropic.com", credential: () => KEY },
     fetch: scriptedOrigin([{ say: "done" }]),
     price: () => REQUEST_USD,
     cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 64_000,
   };
   const deps = {
-    env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route,
+    env: on?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 3), routeOf: async () => route,
     computerForClaim: async () => ({ release: async () => {} }),
   };
   runner = startRunner({
@@ -114,11 +115,14 @@ test("the final request's booking, written later than the end's settle bound, la
   for (const one of ended) assert.equal(one.cost?.usd, REQUEST_USD, `every view of the ended run carries its final cost: ${JSON.stringify(one)}`);
 });
 
-test("a booking slower than the end's bound on its write: the end goes on and says so, and the view, the list and the stored cost read it unknown alike", { timeout: 120_000 }, async (t) => {
+/** endedRun (`on` as it takes it) with its one request's booking held until the end is durable, past the end's bound on
+ *  its write (bookingWriteMs 300), whatever a busy scheduler takes; then the late booking's attempt settled before it
+ *  returns: no elapsed-time guess stands in for either event. The end goes on with the request booked by its record
+ *  alone. Returns the store, the run's row, how many bookings were held, its journal's entries in commit order, its view
+ *  and list row read after, and what the runner warned. */
+async function bookedPastTheEnd(t, on = undefined) {
   const warned = [];
   t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
-  // Hold the booking until the end is durable, regardless of how long a busy scheduler takes. Then wait for the
-  // actual late booking attempt to settle before reading again: no elapsed-time guess stands in for either event.
   const held = Promise.withResolvers();
   const settled = Promise.withResolvers();
   let bookings = 0;
@@ -141,17 +145,22 @@ test("a booking slower than the end's bound on its write: the end goes on and sa
           },
         }),
       },
-    }));
+    }), on);
   } finally {
     held.resolve();
     if (bookings > 0) await settled.promise;
   }
   const { server, row } = ended;
-  assert.equal(bookings, 1, "the final request's booking was held until the end");
   const entries = await inCommitOrder(server, row);
-  assert.equal(entries.filter((entry) => entry.kind === "runner.turn").length, 0, "the late booking is fenced, never committed after the end");
   const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
   const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
+  return { row, bookings, entries, view, listed, warned };
+}
+
+test("a booking slower than the end's bound on its write: the end goes on and says so, and the view, the list and the stored cost read it unknown alike", { timeout: 120_000 }, async (t) => {
+  const { row, bookings, entries, view, listed, warned } = await bookedPastTheEnd(t);
+  assert.equal(bookings, 1, "the final request's booking was held until the end");
+  assert.equal(entries.filter((entry) => entry.kind === "runner.turn").length, 0, "the late booking is fenced, never committed after the end");
   assert.equal(row.state, "ended");
   assert.equal(row.costUsd, null, "unknown, never a figure that leaves the request out");
   assert.equal(listed.costUsd ?? null, null, "the list says no figure");
@@ -258,27 +267,39 @@ test("a request its runner was lost in, before any answer or usage, is booked at
   assert.match(usage.summary, /at most \$/, "and says it in words");
 });
 
+const PLAN_MODEL = "gpt-6.1-sol";
+/** A server signed in to the ChatGPT plan (its reader: a token, never a network sign-in). */
+const planEnv = () => withPlan({}, { state: "signed_in", models: [PLAN_MODEL], token: async () => KEY, refused: async () => {}, watch: () => {} });
+/** The plan's route as its sign-in resolves it (provider.ts billing "plan"), given here with no sign-in: its Responses
+ *  wire, its requests billed to the plan, never priced. Its model requests wait on `hang` (none: they answer at once). */
+const planRoute = (hang = async () => undefined) => ({
+  model: PLAN_MODEL, named: `chatgpt/${PLAN_MODEL}`, provider: { api: "openai-responses", origin: "https://api.openai.com", credential: () => KEY, auth: "bearer", plan: true },
+  fetch: async (url) => (new URL(String(url)).pathname.endsWith("/responses") ? ((await hang()) ?? responsesAnswer({ input_tokens: 120, output_tokens: 12, total_tokens: 132 })) : new Response("not served", { status: 404 })),
+  price: () => null, unpriced: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 128_000,
+  like: { reasoning: true, contextWindow: 400_000, maxTokens: 128_000, input: ["text"], developerRole: true },
+});
+
 test("a ChatGPT plan request its runner was lost in, before any answer, is booked cut at $0, the plan's: the run's cost is a known $0 on the view, the list and the stored cost, never unknown", { timeout: 120_000 }, async (t) => {
-  const PLAN_MODEL = "gpt-6.1-sol";
-  const { row, entries, first, view, listed } = await lostMidRequest(t, {
-    // The plan's route as its sign-in resolves it (provider.ts billing "plan"), given here with no sign-in: its Responses
-    // wire, its requests billed to the plan, never priced.
-    model: PLAN_MODEL, provider: "openai",
-    // A server signed in to the plan (its reader: a token, never a network sign-in).
-    env: () => withPlan({}, { state: "signed_in", models: [PLAN_MODEL], token: async () => KEY, refused: async () => {}, watch: () => {} }),
-    routeOf: (hang) => ({
-      model: PLAN_MODEL, named: `chatgpt/${PLAN_MODEL}`, provider: { api: "openai-responses", origin: "https://api.openai.com", credential: () => KEY, auth: "bearer", plan: true },
-      fetch: async (url) => (new URL(String(url)).pathname.endsWith("/responses") ? ((await hang()) ?? responsesAnswer({ input_tokens: 120, output_tokens: 12, total_tokens: 132 })) : new Response("not served", { status: 404 })),
-      price: () => null, unpriced: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 128_000,
-      like: { reasoning: true, contextWindow: 400_000, maxTokens: 128_000, input: ["text"], developerRole: true },
-    }),
-  });
+  const { row, entries, first, view, listed } = await lostMidRequest(t, { model: PLAN_MODEL, provider: "openai", env: planEnv, routeOf: planRoute });
   const records = JSON.stringify(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data]));
   assert.deepEqual({ stored: row.costUsd, listed: listed.costUsd ?? null, view: view.cost.usd, unpriced: view.cost.unpriced, upper_bound: view.cost.upper_bound }, { stored: 0, listed: 0, view: 0, unpriced: undefined, upper_bound: undefined }, `the stored cost, the list and the view read a known $0, never unknown: ${JSON.stringify(view.cost)} ${records}`);
   assert.deepEqual([row.costAtMostUsd, listed.costAtMostUsd], [null, undefined], "a cost the plan paid is exact, never stored as a bound");
   assert.equal(first("runner.request")[0]?.plan, true, `its record says it is the plan's: ${records}`);
   assert.deepEqual(first("runner.turn"), [{ usd: null, cut: true, turn: 1, bookedUsd: 0, rule: "cut", billing: "plan" }], "booked once, cut, at $0, the plan's");
   assert.equal(view.cost.plan?.requests, 2, `what it used on the plan counts both requests, the cut one too: ${JSON.stringify(view.cost)}`);
+});
+
+// The end waits for its requests' bookings only so long (adapter-loop.ts bookingsSettled): past the bound it is written
+// with a request booked by its runner.request alone. One on the plan is $0 however it ends, so the end stores $0 for it,
+// never the unknown a priced request with no booking leaves.
+test("a ChatGPT plan request whose booking is slower than the end's bound: the end stores a known $0, and the view and the list read it", { timeout: 120_000 }, async (t) => {
+  const { row, bookings, entries, view, listed } = await bookedPastTheEnd(t, { provider: "openai", route: planRoute(), env: planEnv() });
+  const records = JSON.stringify(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data]));
+  assert.equal(bookings, 1, "the request's booking was held until the end");
+  assert.deepEqual(entries.filter((e) => /^runner\./.test(e.kind)).map((e) => [e.kind, e.data?.plan]), [["runner.request", true]], `the end read the plan's request with no runner.turn: ${records}`);
+  assert.equal(row.state, "ended");
+  assert.deepEqual({ stored: row.costUsd, atMost: row.costAtMostUsd, listed: listed.costUsd ?? null, view: view.cost.usd, unpriced: view.cost.unpriced }, { stored: 0, atMost: null, listed: 0, view: 0, unpriced: undefined }, `a known $0, never unknown: ${JSON.stringify(view.cost)} ${records}`);
+  assert.equal(view.cost.plan?.requests, 1, `the plan's request: ${JSON.stringify(view.cost)}`);
 });
 
 test("the end's metrics read past its bound: the cost, read apart from them, is still stored", { timeout: 120_000 }, async (t) => {

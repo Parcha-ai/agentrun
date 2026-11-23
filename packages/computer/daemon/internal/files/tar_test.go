@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -239,5 +240,30 @@ func TestAFileGetsItsHeadersMtime(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(filepath.Join(root, "there")); string(data) != "new" {
 		t.Fatalf("there holds %q", data)
+	}
+}
+
+// Under umask 077 (init's on the exec path), a directory only an entry's path names is made 0755, and one the archive
+// names gets its header's mode: neither takes the umask, so a synced folder records no mode no one gave.
+func TestADirectoryMadeForAnEntryIs0755WhateverTheUmask(t *testing.T) {
+	root, _ := dirs(t)
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	n, err := extractTar(bytes.NewReader(archive(t,
+		header{name: "named/", flag: tar.TypeDir, mode: 0o750},
+		header{name: "named/a", flag: tar.TypeReg, body: "a"},
+		header{name: "unnamed/deep/b", flag: tar.TypeReg, body: "b"},
+	)), root)
+	if err != nil || n != 3 {
+		t.Fatalf("extract: %d %v", n, err)
+	}
+	for name, want := range map[string]os.FileMode{"named": 0o750, "unnamed": 0o755, "unnamed/deep": 0o755, "named/a": 0o644, "unnamed/deep/b": 0o644} {
+		info, err := os.Stat(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("%s is %o, want %o", name, info.Mode().Perm(), want)
+		}
 	}
 }
