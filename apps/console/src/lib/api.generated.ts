@@ -513,7 +513,7 @@ export interface components {
       repick?: boolean;
       repick_max_chars?: number;
     };
-    checkout?: "pull_request" | "none";
+    checkout?: "pull_request" | "repository" | "none";
     max_requests?: number;
   };
   Effort: "low" | "medium" | "high";
@@ -537,7 +537,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused";
   ExternalRef: {
     source: string;
     kind: string;
@@ -1733,6 +1733,7 @@ export interface operations {
   connectGitHub: {
     body: {
       org?: string;
+      contents?: "read" | "write";
     };
     answer: {
       action: string;
@@ -1824,6 +1825,73 @@ export interface operations {
     answer: {
       url: string;
       expires_at: string;
+    };
+  };
+  createSuggestedAgent: {
+    body: {
+      name?: string;
+    };
+    answer: {
+      id: string;
+      repo: string;
+      key: string;
+      status: "open" | "created" | "discarded";
+      title: string;
+      summary: string;
+      why: string;
+      impact: "high" | "medium" | "low";
+      evidence: {
+        path: string;
+        line: number;
+        quote: string;
+        url: string;
+      }[];
+      agent: {
+        name: string;
+        description: string;
+        inputs: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean";
+          description: string;
+          required: boolean;
+        }[];
+        output: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean" | "string_list";
+          description: string;
+          enum?: string[];
+        }[];
+        tools: ("web_search" | "web_fetch")[];
+        tier: "fast" | "balanced" | "strong";
+        instructions?: string;
+      };
+      integration: {
+        language: "typescript" | "javascript" | "python" | "other";
+        path: string;
+        call_site: {
+          path: string;
+          line: number;
+          note: string;
+          url: string;
+        };
+      };
+      scan: {
+        run_id: string;
+        commit: string | null;
+        at: string;
+      };
+      decided_at: string | null;
+      created: null | {
+        agent_id: string;
+        template_id: string;
+        branch: string | null;
+        pull_request: null | {
+          number: number;
+          url: string;
+        };
+        pull_error: string | null;
+      };
+      warnings: Record<string, unknown>[];
     };
   };
   createTrigger: {
@@ -2259,6 +2327,70 @@ export interface operations {
       region?: string;
       s3Url?: string;
       image?: string;
+    };
+  };
+  discardSuggestion: {
+    body: never;
+    answer: {
+      id: string;
+      repo: string;
+      key: string;
+      status: "open" | "created" | "discarded";
+      title: string;
+      summary: string;
+      why: string;
+      impact: "high" | "medium" | "low";
+      evidence: {
+        path: string;
+        line: number;
+        quote: string;
+        url: string;
+      }[];
+      agent: {
+        name: string;
+        description: string;
+        inputs: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean";
+          description: string;
+          required: boolean;
+        }[];
+        output: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean" | "string_list";
+          description: string;
+          enum?: string[];
+        }[];
+        tools: ("web_search" | "web_fetch")[];
+        tier: "fast" | "balanced" | "strong";
+        instructions?: string;
+      };
+      integration: {
+        language: "typescript" | "javascript" | "python" | "other";
+        path: string;
+        call_site: {
+          path: string;
+          line: number;
+          note: string;
+          url: string;
+        };
+      };
+      scan: {
+        run_id: string;
+        commit: string | null;
+        at: string;
+      };
+      decided_at: string | null;
+      created: null | {
+        agent_id: string;
+        template_id: string;
+        branch: string | null;
+        pull_request: null | {
+          number: number;
+          url: string;
+        };
+        pull_error: string | null;
+      };
     };
   };
   disconnectGitHub: {
@@ -3539,6 +3671,84 @@ export interface operations {
       };
     };
   };
+  getSuggestion: {
+    body: never;
+    answer: {
+      id: string;
+      repo: string;
+      key: string;
+      status: "open" | "created" | "discarded";
+      title: string;
+      summary: string;
+      why: string;
+      impact: "high" | "medium" | "low";
+      evidence: {
+        path: string;
+        line: number;
+        quote: string;
+        url: string;
+      }[];
+      agent: {
+        name: string;
+        description: string;
+        inputs: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean";
+          description: string;
+          required: boolean;
+        }[];
+        output: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean" | "string_list";
+          description: string;
+          enum?: string[];
+        }[];
+        tools: ("web_search" | "web_fetch")[];
+        tier: "fast" | "balanced" | "strong";
+        instructions?: string;
+      };
+      integration: {
+        language: "typescript" | "javascript" | "python" | "other";
+        path: string;
+        call_site: {
+          path: string;
+          line: number;
+          note: string;
+          url: string;
+        };
+      };
+      scan: {
+        run_id: string;
+        commit: string | null;
+        at: string;
+      };
+      decided_at: string | null;
+      created: null | {
+        agent_id: string;
+        template_id: string;
+        branch: string | null;
+        pull_request: null | {
+          number: number;
+          url: string;
+        };
+        pull_error: string | null;
+      };
+      files: {
+        path: string;
+        content: string;
+      }[];
+      problems: string[];
+      github: {
+        ready: boolean;
+        reason: null | "not_connected" | "not_installed" | "github_failed" | "permission_missing";
+        message: string | null;
+        missing: string[];
+        install_url: string | null;
+        permissions_url: string | null;
+        installation_url: string | null;
+      };
+    };
+  };
   getTemplate: {
     body: never;
     answer: {
@@ -3581,7 +3791,7 @@ export interface operations {
         } | null;
         effort: string | null;
         tools: string[] | null;
-        checkout: "pull_request" | null;
+        checkout: "pull_request" | "repository" | null;
         tool_policy: {
           bash: "read-only";
         } | null;
@@ -4085,7 +4295,7 @@ export interface operations {
         } | null;
         effort: string | null;
         tools: string[] | null;
-        checkout: "pull_request" | null;
+        checkout: "pull_request" | "repository" | null;
         tool_policy: {
           bash: "read-only";
         } | null;
@@ -4325,6 +4535,24 @@ export interface operations {
     answer: {
       files: components["File"][];
       next_cursor: string | null;
+    };
+  };
+  listGitHubRepositories: {
+    body: never;
+    answer: {
+      repositories: {
+        full_name: string;
+        private: boolean;
+        account: string;
+        installation: number;
+        default_branch?: string;
+        description?: string;
+      }[];
+      truncated: boolean;
+      unread: {
+        account: string;
+        why: string;
+      }[];
     };
   };
   listHomeFiles: {
@@ -4714,6 +4942,101 @@ export interface operations {
       }[];
     };
   };
+  listSuggestions: {
+    body: never;
+    answer: {
+      github: {
+        connected: boolean;
+        app: string | null;
+        installations: {
+          account: string;
+        }[];
+        install_url: string | null;
+      };
+      repositories: {
+        repo: string;
+        scan: {
+          run_id: string;
+          agent_id: string;
+          started_at: string;
+          status: "running" | "waiting" | "completed" | "failed" | "cancelled";
+          ended_at: string | null;
+          app: string | null;
+          commit: string | null;
+          found: number | null;
+          dropped: string[];
+          already_decided: number;
+          error: string | null;
+        };
+        counts: {
+          open: number;
+          created: number;
+          discarded: number;
+        };
+      }[];
+      suggestions: {
+        id: string;
+        repo: string;
+        key: string;
+        status: "open" | "created" | "discarded";
+        title: string;
+        summary: string;
+        why: string;
+        impact: "high" | "medium" | "low";
+        evidence: {
+          path: string;
+          line: number;
+          quote: string;
+          url: string;
+        }[];
+        agent: {
+          name: string;
+          description: string;
+          inputs: {
+            name: string;
+            type: "string" | "number" | "integer" | "boolean";
+            description: string;
+            required: boolean;
+          }[];
+          output: {
+            name: string;
+            type: "string" | "number" | "integer" | "boolean" | "string_list";
+            description: string;
+            enum?: string[];
+          }[];
+          tools: ("web_search" | "web_fetch")[];
+          tier: "fast" | "balanced" | "strong";
+          instructions?: string;
+        };
+        integration: {
+          language: "typescript" | "javascript" | "python" | "other";
+          path: string;
+          call_site: {
+            path: string;
+            line: number;
+            note: string;
+            url: string;
+          };
+        };
+        scan: {
+          run_id: string;
+          commit: string | null;
+          at: string;
+        };
+        decided_at: string | null;
+        created: null | {
+          agent_id: string;
+          template_id: string;
+          branch: string | null;
+          pull_request: null | {
+            number: number;
+            url: string;
+          };
+          pull_error: string | null;
+        };
+      }[];
+    };
+  };
   listTemplates: {
     body: never;
     answer: {
@@ -4756,7 +5079,7 @@ export interface operations {
         } | null;
         effort: string | null;
         tools: string[] | null;
-        checkout: "pull_request" | null;
+        checkout: "pull_request" | "repository" | null;
         tool_policy: {
           bash: "read-only";
         } | null;
@@ -5716,6 +6039,70 @@ export interface operations {
     body: Record<string, never>;
     answer: never;
   };
+  restoreSuggestion: {
+    body: never;
+    answer: {
+      id: string;
+      repo: string;
+      key: string;
+      status: "open" | "created" | "discarded";
+      title: string;
+      summary: string;
+      why: string;
+      impact: "high" | "medium" | "low";
+      evidence: {
+        path: string;
+        line: number;
+        quote: string;
+        url: string;
+      }[];
+      agent: {
+        name: string;
+        description: string;
+        inputs: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean";
+          description: string;
+          required: boolean;
+        }[];
+        output: {
+          name: string;
+          type: "string" | "number" | "integer" | "boolean" | "string_list";
+          description: string;
+          enum?: string[];
+        }[];
+        tools: ("web_search" | "web_fetch")[];
+        tier: "fast" | "balanced" | "strong";
+        instructions?: string;
+      };
+      integration: {
+        language: "typescript" | "javascript" | "python" | "other";
+        path: string;
+        call_site: {
+          path: string;
+          line: number;
+          note: string;
+          url: string;
+        };
+      };
+      scan: {
+        run_id: string;
+        commit: string | null;
+        at: string;
+      };
+      decided_at: string | null;
+      created: null | {
+        agent_id: string;
+        template_id: string;
+        branch: string | null;
+        pull_request: null | {
+          number: number;
+          url: string;
+        };
+        pull_error: string | null;
+      };
+    };
+  };
   resumeRun: {
     body: never;
     answer: {
@@ -6145,6 +6532,18 @@ export interface operations {
       } | null;
       updated_at: string;
       note: string;
+    };
+  };
+  scanForSuggestions: {
+    body: {
+      repo: string;
+    };
+    answer: {
+      repo: string;
+      run_id: string;
+      agent_id: string;
+      status: "running";
+      already_running: boolean;
     };
   };
   sdkRunEvents: {

@@ -220,8 +220,9 @@ export type Package = {
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
   /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
-   *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
-  checkout?: "pull_request";
+   *  runner/pr-checkout.ts): the pull request the run's GitHub event names, or the default branch of the repository the
+   *  run names. */
+  checkout?: "pull_request" | "repository";
   /** The setup an apply takes (manifest `parameters`), compiled as `inputs` are (fieldsSchema): a closed object schema,
    *  with no properties when the package names none. */
   parameters: Json;
@@ -751,7 +752,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     else if (!issues.length) needs = [...(f.needs as string[])];
   }
   // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
-  if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
+  // Or the head of the default branch of the repository the run names.
+  if (f.checkout !== undefined && f.checkout !== "pull_request" && f.checkout !== "repository") bad(MANIFEST, "checkout is pull_request or repository: the server checks out, in repo/ before the first turn, the pull request the run's GitHub event names (at its head), or the head of the default branch of the repository the run names");
   // The setup an apply takes, in the inputs' grammar, by the same compiler; none, a schema of no fields.
   const parameters = fieldsSchema(f.parameters, "parameters", (message) => bad(MANIFEST, message)) ?? { type: "object", additionalProperties: false, properties: {} };
   const fields = fieldsOf(parameters);
@@ -969,7 +971,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" || f.checkout === "repository" ? { checkout: f.checkout } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, ...(ruleNames.length ? { rules: ruleNames.sort() } : {}), evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -1059,11 +1061,12 @@ function modelView(model: Package["model"]) {
   return { ...rest, ...(choices ? { choices: choices.map(({ id, label, model: ref, harness, warning, note, secrets }) => ({ id, label, model: ref, harness, warning: warning ?? null, note: note ?? null, secrets })) } : {}) };
 }
 
-/** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
- *  skill file by path (a rule and the answer's schema beside each SKILL.md among them), so a person reads what a third
- *  party's package would tell their agent before it is installed. */
-export function packageDetail(p: Package) {
-  return { ...packageView(p), instructions: p.instructions, skill_files: { ...p.skills } };
+/** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
+ *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
+ *  it is applied. */
+export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
+  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps

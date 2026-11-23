@@ -2,8 +2,9 @@
 // cut, for what the importer writes (a transcript can hold a key a tool printed or was given). The import adds the keys
 // secretlint finds in what it reads (`secretsIn`): keys of a known format, whoever's they are.
 import { lintSource } from "@secretlint/core";
+// The recommended preset's rules, built into core since secretlint v14 (the preset's own package is deprecated).
+import { recommendedRules as recommended } from "@secretlint/core/builtin";
 import { secretLintProfiler } from "@secretlint/profiler";
-import { rules as recommended } from "@secretlint/secretlint-rule-preset-recommend";
 
 // No performance marks: the profiler would leave about 14 a call in the process's global buffer.
 secretLintProfiler.setEnabled(false);

@@ -6,6 +6,6 @@
   },
   "pools": {
     "lean": { "shards": 2, "suites": ["@parcha/agentrun-dsl", "@parcha/agentrun-jev", "test:examples", "test:workflows"] },
-    "any": { "shards": 7 }
+    "any": { "shards": 11 }
   }
 }
