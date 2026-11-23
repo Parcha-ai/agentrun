@@ -3329,7 +3329,8 @@ serves these routes alone:
   the backend whose inline runs made it;
 - the [purge of a run](#purging-a-run-or-an-agent-made-here) (`DELETE /runs/{id}`) of such an agent, for that
   backend: it erases one user's runs where deleting the agent, which every user's runs share, would take them all. A
-  run of an agent made here is refused, as every address not listed here is;
+  run of an agent made here (a deploy's, below) is purged the same way, since the token may archive and delete that
+  whole agent, every run of it purged;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
@@ -3860,7 +3861,7 @@ stays in every total.
   server; a Mode 2 agent's folder on an Archil disk keeps the run's text until a learning reset or the agent's purge.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`. An [API-only](#api-only) server purges a run of
-  an agent another system owns alone; a run of an agent made here is its profile's `404` there.
+  any agent with its token, as it deletes or purges the whole agent.
 
 An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
