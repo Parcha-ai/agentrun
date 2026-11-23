@@ -54,15 +54,18 @@ export function startAgent(options: AgentProcessOptions): AgentProcess {
   const quiet = options.stderr === "none";
   const errTo = quiet ? "ignore" : "pipe";
   const child = spawn(run.command, run.args, { cwd: options.cwd, env: childEnv(options.from ?? process.env, options.env), detached: true, stdio: ["pipe", "pipe", errTo] });
-  // What it printed, raw, its last STDERR_TAIL characters: a key split across chunks is whole here and cut whole, and a
-  // piece of one the trim left at the head goes with the head edge (stderrTail). `cut`: whether its start was dropped.
+  // What it printed, raw, its last `keep` characters: a key split across chunks is whole here and cut whole, and a piece
+  // of one the trim left at the head goes with the head edge (stderrTail). `cut`: whether its start was dropped.
   const keys = keysToCut(options.keys ?? []);
+  // The longest key's length kept beyond the tail: a key longer than the tail, cut short by the agent's end, is still its
+  // start here, which the tail edge drops; trimmed to the tail alone, it would leave a piece from inside it.
+  const keep = STDERR_TAIL + (keys[0]?.length ?? 0);
   let raw = "";
   let cut = false;
   const take = (text: string) => {
     raw += text;
-    if (raw.length > STDERR_TAIL) {
-      raw = raw.slice(-STDERR_TAIL);
+    if (raw.length > keep) {
+      raw = raw.slice(-keep);
       cut = true;
     }
   };

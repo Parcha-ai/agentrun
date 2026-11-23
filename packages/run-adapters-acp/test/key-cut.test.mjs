@@ -69,13 +69,25 @@ test("the stderr a live agent keeps, read while it is still writing its key, hol
 });
 
 test("a cut tail starting 20 characters before a long key's end, a short key being that end, holds no piece of the long key", async (t) => {
-  // The process keeps 8 KiB; what follows the long key fills all of that but its last 20. Two more whole long keys in it
-  // each shrink by their cut, so the tail's last 8 KiB still reaches back to its head.
-  const kept = 8192;
+  // The process keeps 8 KiB and the longest key's length; what follows the long key fills all of that but its last 20.
+  // Two more whole long keys in it each shrink by their cut, so the tail's last 8 KiB still reaches back to its head.
+  const kept = 8192 + LONG.length;
   const rest = `\n${LONG} ${LONG}\n${'noise '.repeat(Math.ceil(kept / 6))}`.slice(0, kept - 20 - 3) + 'END';
   const agent = agentSaying(t, `vendor: refused ${LONG}${rest}`, [LONG.slice(-8), LONG], false);
   const tail = await until(() => (agent.stderrTail().endsWith('END') ? agent.stderrTail() : undefined), 'its stderr to arrive');
   assert.equal(piecesLeft(tail, LONG), 0, `the cut tail holds ${piecesLeft(tail, LONG)} pieces of the long key`);
+});
+
+test("an agent that dies writing a key longer than the 8 KiB it keeps leaves no piece of it in the tail", async (t) => {
+  // A fake 9000-character key, no 8 characters of it repeated: the agent writes its first 8500 and exits. A tail trimmed to
+  // 8 KiB alone would hold an inside piece, neither the key's start nor its end, which no edge cut finds.
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let seed = 7;
+  const huge = `fake-${Array.from({ length: 8995 }, () => alphabet[((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) >>> 16) % 62]).join('')}`;
+  const agent = agentSaying(t, `vendor: refused ${huge.slice(0, 8500)}`, [huge], false);
+  await agent.exited;
+  const tail = await until(() => (agent.ended() ? agent.stderrTail() : undefined), 'its end');
+  assert.equal(piecesLeft(tail, huge), 0, `the tail holds ${piecesLeft(tail, huge)} pieces of the key`);
 });
 
 test('two keys that overlap in the text are cut with no piece of either left', () => {
