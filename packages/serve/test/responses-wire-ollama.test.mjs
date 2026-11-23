@@ -4,15 +4,25 @@
 // reasoning through the run's redactor. A tool call comes back as a function_call item; an answer cut at its output
 // limit ends response.incomplete with its usage, which codex's and opencode's proxy policies book (and codex's reads as
 // a cut, so the harness ends the turn rather than asking again); a replayed turn's call and output reach Ollama as its
-// own tool call and tool message. A custom tool or a stored item is refused, never dropped. All against a fake Ollama on
-// loopback (fixtures/fake-ollama.mjs); no real Ollama is asked.
+// own tool call and tool message. A custom tool or a stored item is refused, never dropped. The wire decides (wires.ts
+// TRANSLATED): codex, opencode and any harness on Responses get the route's origin and fetch, no key, $0 and local, under
+// the route's trust rules; codex offers no live web search there. All against a fake Ollama on loopback
+// (fixtures/fake-ollama.mjs); no real Ollama is asked.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { codexPolicy } from "@parcha/agentrun-harness-codex";
-import { fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { closedPort, fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { harnessData, scratch, withEnv } from "./support.mjs";
 
 const { routeOf } = await import("../dist/runner/model-route.js");
+const adapters = await import("../dist/adapters.js");
+const { modelOn, providerFor } = await import("../dist/provider.js");
+const { harnessOf } = await import("../dist/harness-table.js");
+const { routed, WIRES } = await import("../dist/wires.js");
+const { cliCapModel } = await import("../dist/runner/cli-run-spec.js");
+const { ollamaHostOf } = await import("../dist/ollama-provider.js");
+const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { responsesFetch } = await import("../dist/runner/responses-fetch.js");
 const { openCodePolicy } = await import("../dist/harness-opencode/host/policy.js");
 
@@ -41,6 +51,19 @@ async function answerOf(fetcher, body) {
 }
 
 const ofType = (events, type) => events.filter((event) => event.type === type);
+
+const RESPONSES = "openai-responses";
+/** Every model key the default could come from, and the settings that would put another model first: none of them set. */
+const KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY", "AGENTRUN_FREE_MODEL_REQUESTS"];
+const ollamaRef = (tag) => ({ provider: "ollama", modelId: tag });
+const NO_CATALOG = { getModel: () => undefined };
+
+/** An env with no key, the fake Ollama its OLLAMA_HOST, and a data directory of its own. */
+async function onOllama(t, options = {}) {
+  withEnv(t, {}, KEYS);
+  const ollama = await fakeOllama(t, options);
+  return { ollama, env: { OLLAMA_HOST: ollama.host, AGENTRUN_SERVE_DATA: await scratch(t) } };
+}
 
 test("a tool call comes back as a function_call item, streamed, then response.completed with the usage; the request carries num_ctx and the tools", async (t) => {
   const ollama = await fakeOllama(t, { reply: () => ({ calls: [{ name: "read", arguments: { path: "a.ts" } }], usage: { input: 40, output: 7 } }) });
@@ -191,4 +214,81 @@ test("side requests land on the routed model: codex's and opencode's policies se
     assert.equal(events.at(-1).type, "response.completed");
   }
   assert.deepEqual(ollama.got.chat.map((sent) => sent.model), [TOOLS, TOOLS, TOOLS], "every request reached Ollama on the routed model");
+});
+
+test("the wire decides: codex and opencode on Responses get an Ollama model's provider as the route's origin with no key, its tag the model, priced at its own entry; no other provider is routed, nor a plan's harness", async (t) => {
+  const { env } = await onOllama(t);
+  assert.equal(routed(RESPONSES, ollamaRef(TOOLS)), true);
+  assert.equal(routed("plan", ollamaRef(TOOLS)), false, "a harness on its own plan: no route of ours");
+  for (const provider of ["openai", "openrouter", "anthropic"]) assert.equal(routed(RESPONSES, { provider }), false, provider);
+  assert.ok(RESPONSES in WIRES);
+  // Any harness on the wire alike, built in or not: the harness's id is never asked.
+  for (const id of ["codex", "opencode", "a-module-on-responses"]) {
+    const provider = providerFor(RESPONSES, env, ollamaRef(TOOLS), id);
+    assert.equal(provider.origin, ROUTE_ORIGIN, id);
+    assert.equal(provider.modelId, TOOLS, id);
+    assert.deepEqual(provider.priceModel, ollamaRef(TOOLS), id);
+    assert.equal(typeof provider.fetch, "function", `${id}: the route's own fetch`);
+    assert.equal(provider.credential(), "model-route", `${id}: no key`);
+  }
+  // Behind serve's gateway every request is the gateway's: no route of serve's own.
+  const gateway = { ...env, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" };
+  assert.notEqual(providerFor(RESPONSES, gateway, ollamaRef(TOOLS), "codex").origin, ROUTE_ORIGIN);
+});
+
+test("the cap counts an Ollama model's requests on codex and opencode as local, at $0, never toward the free-model limit; OpenAI's model on its key is not local", async (t) => {
+  const { env } = await onOllama(t);
+  for (const id of ["codex", "opencode"]) {
+    assert.ok(harnessOf(env, id).runs(env, `ollama/${TOOLS}`), `${id} runs the tag`);
+    const capped = await cliCapModel(harnessOf(env, id), env, `ollama/${TOOLS}`);
+    assert.equal(capped.local, true, `${id}: ${JSON.stringify(capped)}`);
+  }
+  const keyed = { ...env, OPENAI_API_KEY: "fake-test-key" };
+  assert.notEqual((await cliCapModel(harnessOf(keyed, "codex"), keyed, "openai/gpt-6.1-sol")).local, true);
+});
+
+test("the trust rules are the route's, unchanged on Responses: a shared server with no OLLAMA_HOST asks no Ollama, and an OLLAMA_HOST in plain http off this machine is refused", async (t) => {
+  withEnv(t, {}, KEYS);
+  assert.equal(ollamaHostOf({}, false), undefined, "a shared server never asks the default address");
+  const shared = { AGENTRUN_SERVE_DATA: await scratch(t) };
+  const none = await modelOn(RESPONSES, shared, `ollama/${TOOLS}`, "codex");
+  assert.equal("model" in none, false, JSON.stringify(none));
+  assert.doesNotMatch((await modelOn(RESPONSES, shared, undefined, "codex")).why, /Ollama/, "no Ollama here: its words name a key");
+  const remote = { OLLAMA_HOST: "http://10.20.30.40:11434", AGENTRUN_SERVE_DATA: await scratch(t) };
+  const refused = await modelOn(RESPONSES, remote, `ollama/${TOOLS}`, "opencode");
+  assert.equal("model" in refused, false, JSON.stringify(refused));
+  // With no Ollama answering on the machine's own address, codex is told to start one, as pi is.
+  const down = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
+  assert.match((await modelOn(RESPONSES, down, undefined, "codex")).why, /start Ollama and pull a model with tools/);
+});
+
+test("codex and opencode on an Ollama model: each adapter is handed the route's fetch for its proxies, and codex offers no live web search, which the translation cannot run", { timeout: 60_000 }, async (t) => {
+  const { env } = await onOllama(t);
+  const plane = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "native" }) };
+  const chosen = await modelOn(RESPONSES, env, `ollama/${TOOLS}`, "codex");
+  assert.deepEqual(chosen.model, ollamaRef(TOOLS), JSON.stringify(chosen));
+  const needs = { model: chosen.model, models: NO_CATALOG };
+
+  const codex = await import("@parcha/agentrun-harness-codex");
+  let seen;
+  const loadCodex = async () => ({ ...codex, codexAdapter: (options) => ((seen = options), { id: "codex" }) });
+  const standIn = { [adapters.CODEX_STANDIN_ENV]: JSON.stringify({ command: "true" }) };
+  await adapters.codexOf({ ...env, ...plane, ...standIn, AGENTRUN_SERVE_DATA: await harnessData(t) }, needs, loadCodex);
+  assert.equal(seen.model, TOOLS);
+  assert.equal(seen.provider.origin, ROUTE_ORIGIN);
+  assert.equal(typeof seen.fetch, "function", "codex's proxies forward with the route's fetch");
+  assert.equal(seen.webSearch, undefined, "no live web search on the route");
+  // The same settings on OpenAI's own model do offer it: the check above is the route's, not the settings'.
+  const keyed = { ...env, ...plane, ...standIn, OPENAI_API_KEY: "fake-test-key", AGENTRUN_SERVE_DATA: await harnessData(t) };
+  await adapters.codexOf(keyed, { model: { provider: "openai", modelId: "gpt-6.1-sol" }, models: NO_CATALOG }, loadCodex);
+  assert.equal(seen.webSearch, "live");
+  assert.equal(seen.fetch, undefined);
+
+  const opencode = await import("../dist/harness-opencode/index.js");
+  let opened;
+  const loadOpenCode = async () => ({ ...opencode, openCodeAdapter: (options) => ((opened = options), { id: "opencode" }) });
+  await adapters.opencodeOf({ ...env, [adapters.OPENCODE_STANDIN_ENV]: JSON.stringify({ command: "true" }), AGENTRUN_SERVE_DATA: await harnessData(t) }, needs, loadOpenCode, false);
+  assert.equal(opened.model, TOOLS);
+  assert.equal(opened.provider.origin, ROUTE_ORIGIN);
+  assert.equal(typeof opened.fetch, "function", "opencode's proxies forward with the route's fetch");
 });

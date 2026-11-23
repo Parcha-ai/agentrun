@@ -19,7 +19,7 @@ import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 import { messagesLaunches, messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, harnessData, runDir, scratch, serve, serverLog, withEnv } from "./support.mjs";
 
-const { HarnessUnavailable, modelOn, providerFor } = await import("../dist/provider.js");
+const { modelOn, providerFor } = await import("../dist/provider.js");
 const { harnessOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
 const { routed, WIRES } = await import("../dist/wires.js");
 const { cliCapModel, factsOn } = await import("../dist/runner/cli-run-spec.js");
@@ -58,14 +58,15 @@ async function moduleLaunch(env, tag) {
   return messagesLaunches().at(-1);
 }
 
-test("the rule is data: the route translates an Ollama model onto Anthropic's Messages and onto no other wire; no other provider, nor a name off the object's prototype", () => {
-  assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider: "ollama" })), [MESSAGES]);
+test("the rule is data: the route translates an Ollama model onto Anthropic's Messages and OpenAI's Responses and onto no other wire (a plan's); no other provider, nor a name off the object's prototype", () => {
+  assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider: "ollama" })), [MESSAGES, "openai-responses"]);
+  assert.equal(routed("plan", { provider: "ollama" }), false, "a harness on its own plan");
   for (const provider of ["anthropic", "openai", "openrouter", "particle", "constructor", "toString", "__proto__", ""]) {
     assert.deepEqual(Object.keys(WIRES).filter((wire) => routed(wire, { provider })), [], provider);
   }
 });
 
-test("on every harness of the wire, built-in or a module's, an Ollama model's provider is the route's origin with no key, its tag the model, priced at its own entry; a harness on another wire still refuses it", async (t) => {
+test("on every harness of the wire, built-in or a module's, an Ollama model's provider is the route's origin with no key, its tag the model, priced at its own entry", async (t) => {
   const { env } = await onOllama(t);
   for (const id of ["claude-agent", "goose", MESSAGES_MODULE]) {
     const provider = providerFor(MESSAGES, env, ollamaRef(TOOLS), id);
@@ -75,7 +76,6 @@ test("on every harness of the wire, built-in or a module's, an Ollama model's pr
     assert.equal(typeof provider.fetch, "function", `${id}: the route's own fetch`);
     assert.equal(provider.credential(), "model-route", `${id}: no key`);
   }
-  for (const id of ["codex", "opencode"]) assert.throws(() => providerFor("openai-responses", env, ollamaRef(TOOLS), id), (error) => error instanceof HarnessUnavailable, id);
   // Behind serve's gateway every request is the gateway's: no route of serve's own.
   const gateway = { ...env, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1", AGENT_MODEL: "synth-gateway", AGENT_MODEL_API_KEY: "fake-test-key" };
   assert.notEqual(providerFor(MESSAGES, gateway, ollamaRef(TOOLS), "claude-agent").origin, ROUTE_ORIGIN);
@@ -201,7 +201,7 @@ test("with no key and no Ollama, a harness on the wire says to start Ollama, as 
   const env = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
   const { why } = await modelOn(MESSAGES, env, undefined, "claude-agent");
   assert.match(why, /^No model yet for claude-agent: start Ollama and pull a model with tools, or add an OpenRouter or Anthropic key/, why);
-  assert.doesNotMatch((await modelOn("openai-responses", env, undefined, "codex")).why, /Ollama/, "a harness on a wire the route does not translate onto is not told so");
+  assert.match((await modelOn("openai-responses", env, undefined, "codex")).why, /^No model yet: start Ollama and pull a model with tools, or /, "codex, on Responses, the route's too");
 });
 
 test("a claude-agent run on an Ollama model, on the real Claude CLI through serve: its tool call writes the file, every request reaches /api/chat with num_ctx at the tag, $0, none counted toward a limit of 1, booked as ollama/<tag>", { timeout: 180_000, skip: !existsSync("/usr/bin/setpriv") && "no setpriv here" }, async (t) => {

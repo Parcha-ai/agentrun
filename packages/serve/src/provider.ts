@@ -10,8 +10,8 @@
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 //   any wire the runner's model route translates a model's provider onto (wires.ts routed: an Ollama model of this
-//     machine on Anthropic's Messages): the route's own origin and fetch (runner/model-route.ts routeOf), no key, at the
-//     model's catalog price; for every harness on that wire alike.
+//     machine on Anthropic's Messages or OpenAI's Responses): the route's own origin and fetch (runner/model-route.ts
+//     routeOf), no key, at the model's catalog price; for every harness on that wire alike.
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";

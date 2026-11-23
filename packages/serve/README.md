@@ -1611,12 +1611,18 @@ seconds), and a run on any other model, a key's default included, never asks Oll
 - Cost: $0, booked as a known cost. Its requests never count toward the server's [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them. An agent's own `max_requests` counts them,
   with its other free requests, so a run on Ollama that keeps calling tools still stops there.
-- Harness: pi, and every harness on a wire the route translates. That wire is Anthropic's Messages: claude-agent,
-  Goose, and a harness module on it. Its requests go through the same translation as pi's: the same `/api/chat`,
-  `num_ctx`, tools and cost. A Messages client's token count (`/v1/messages/count_tokens`) is answered there without
-  asking the model, an answer it asks for unstreamed comes back whole, and every model id it sends (Claude Code's small
-  model too) runs the one tag. claude-agent turns its own tool search off on these models. codex and opencode, on
-  OpenAI's Responses, never list them.
+- Harness: pi, and every harness on a wire the route translates. Those wires are Anthropic's Messages (claude-agent,
+  Goose, a harness module on it) and OpenAI's Responses (codex, opencode, a harness module on it). Their requests go
+  through the same translation as pi's: the same `/api/chat`, `num_ctx`, tools and cost. A Messages client's token
+  count (`/v1/messages/count_tokens`) is answered there without asking the model, an answer it asks for unstreamed
+  comes back whole, and every model id it sends (Claude Code's small model too) runs the one tag. claude-agent turns
+  its own tool search off on these models.
+- On OpenAI's Responses, each request is the whole conversation: `store: true` and `previous_response_id` are
+  refused, since nothing is stored here. Function tools only: a custom (freeform) tool such as Codex's `apply_patch`
+  grammar, `local_shell` and `web_search` are refused with words, never dropped, and codex offers no live web search
+  on these models. Replayed reasoning, OpenAI's encrypted reasoning included, is dropped, not refused. An answer cut at
+  its output limit ends `response.incomplete` with its usage, so it is booked and codex ends the turn rather than
+  asking again. Every model id the client sends (a title or compaction request's too) runs the one tag.
 - Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
   `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi and every harness on a wire the

@@ -23,6 +23,7 @@ import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } f
 import { OLLAMA_PROVIDER } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
@@ -463,10 +464,17 @@ export function forMessagesClients(route: typeof fetch): typeof fetch {
 
 /** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
  *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
- *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
- *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). OpenAI's Responses: that same
+ *  fetch under a Responses edge (responsesFetch). provider.ts routedProvider reads it; a wire with no entry has no
+ *  translation, whatever TRANSLATED says. */
 export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
   "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+  // OpenAI's Responses: the same Messages fetch under a Responses edge (responses-fetch.ts), a model that reasons asked its
+  // effort by name as on Messages.
+  "openai-responses": async (model: string, env: NodeJS.ProcessEnv) => {
+    const route = await routeOf(model, env);
+    return responsesFetch(route.fetch!, { reasons: route.like?.reasoning === true });
+  },
 });
 
 type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
