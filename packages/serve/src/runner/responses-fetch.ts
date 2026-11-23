@@ -225,7 +225,7 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
     const answer = await messages(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), ...(init.signal ? { signal: init.signal } : {}) });
     if (!answer.ok || !answer.body) {
       const text = await answer.text().catch(() => "");
-      return new Response(JSON.stringify({ error: { message: text || `the model's request failed (${answer.status})`, type: "server_error", param: null, code: null } }), { status: answer.status >= 400 ? answer.status : 502, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ error: { message: text || `the model's request failed (${answer.status})`, type: "server_error", param: null, code: null } }), { status: answer.status >= 400 ? answer.status : 500, headers: { "content-type": "application/json" } });
     }
     const response: Json = {
       id: idOf("resp"),
@@ -251,8 +251,10 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
       // The whole answer, then its final response as one body.
       await translate(events, response, () => {});
       if (response.status === "failed") {
+        // 500 for a failed answer, as the Messages side answers one asked whole (model-route.ts wholeOf: Anthropic's
+        // api_error is a 500, OpenAI's server_error too); a rate limit 429.
         const error = response.error as Json;
-        return new Response(JSON.stringify({ error: { message: error.message, type: error.code === "rate_limit_exceeded" ? "rate_limit_error" : "server_error", param: null, code: error.code } }), { status: error.code === "rate_limit_exceeded" ? 429 : 502, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ error: { message: error.message, type: error.code === "rate_limit_exceeded" ? "rate_limit_error" : "server_error", param: null, code: error.code } }), { status: error.code === "rate_limit_exceeded" ? 429 : 500, headers: { "content-type": "application/json" } });
       }
       return new Response(JSON.stringify(response), { status: 200, headers: { "content-type": "application/json" } });
     }

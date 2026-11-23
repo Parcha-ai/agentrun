@@ -189,7 +189,7 @@ test("what the route does not take is refused with a 400 naming it, and Ollama i
 
 // The edge reads the route's own Messages stream; a part of it that does not read is a failed response with words of its
 // own, never the part's raw text and never a throw out of the fetch (as PR 1's wholeOf answers a Messages client).
-test("a Messages stream that does not read (a data line not JSON, a body that breaks mid-read) is response.failed with words, or a 502 when asked whole; never its raw text, never a throw", async () => {
+test("a Messages stream that does not read (a data line not JSON, a body that breaks mid-read) is response.failed with words, or a 500 when asked whole (as PR 1's wholeOf answers a Messages client); never its raw text, never a throw", async () => {
   const sse = (...events) => events.map(([event, data]) => `event: ${event}\ndata: ${data}\n\n`).join("");
   const start = ["message_start", JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: TOOLS, content: [], usage: { input_tokens: 3, output_tokens: 0 } } })];
   const notJson = () => new Response(sse(start, ["content_block_start", `{not json ${SECRET}`]), { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -202,7 +202,7 @@ test("a Messages stream that does not read (a data line not JSON, a body that br
     assert.match(events.at(-1).response.error.message, /could not be read/, what);
     assert.doesNotMatch(text, new RegExp(SECRET), `${what}: the part's own text is never said`);
     const whole = await answerOf(fetcher, { ...ASK, stream: false });
-    assert.equal(whole.status, 502, `${what}: ${whole.text}`);
+    assert.equal(whole.status, 500, `${what}: ${whole.text}`);
     assert.match(JSON.parse(whole.text).error.message, /could not be read/, what);
     assert.doesNotMatch(whole.text, new RegExp(SECRET), what);
   }
