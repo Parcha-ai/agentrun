@@ -372,8 +372,11 @@ main left its mark, keeping an import another run's commit makes on main, and a 
 is stale; code.storage deletes an old repository a flip left, or fails retryable). `forgetRunText` answers each old commit's new one (`moved`), and the
 server moves the agent's promotion records' commits by it. A promote record whose commit no longer holds its
 revision's text is refused by every champion reader (`promote.ts` refusedOf, refused too when the read fails), so the
-champion promoted before it serves again; the trim drops nothing while that read fails; a promote recorded later at a
-commit off main, or whose writer is purged, is kept as a hold, and a replay check for one is refused. What it costs the
+champion promoted before it serves again; a hold at such a commit is refused the same way, so no compile revises the
+purged revision; the trim drops nothing while that read fails, and keeps a chain of `CHAMPIONS_KEPT` (5) champions back
+from the one the gate's answer leaves, so a purge landing between a write's ask and its write still leaves the one
+before every champion its run wrote; a promote recorded later at a commit off main, or whose writer is purged, is kept
+as a hold, and a replay check for one is refused. What it costs the
 owner: every commit id changes; on code.storage about 0.3 s a
 commit (the local folder is fast), learning waiting meanwhile; a run in flight merges nothing, as after a reset; every
 other run's history and diffs stay. A run's diff is found by its marker, so it survives the rewrite.

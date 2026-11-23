@@ -20,6 +20,10 @@ import type { ReplayOutcome } from "../runner/workflow-first.js";
 /** How many grades, and how many promotion records, an agent keeps (newest kept). */
 export const GRADES_KEPT = 500;
 export const PROMOTIONS_KEPT = 200;
+/** How many champions of one workflow the trim keeps back from the one the purge gate's answer leaves (trimPromotions): a
+ *  purge landing between a write's ask of the gate and its write refuses every champion its run wrote, so the one before
+ *  them still serves while one run wrote at most this many in a row. Past it the trim fails closed: none serves. */
+export const CHAMPIONS_KEPT = 5;
 
 /** The most characters a grade's words (`label`) may hold, and the most of them and of an answer a compile ask shows. */
 export const LABEL_MAX = 4_000;
@@ -415,7 +419,7 @@ export function championOf(records: readonly PromotionRecord[], workflow: string
   return now?.decided === "promote" ? now : undefined;
 }
 
-/** The promote records whose learning commit no longer holds their revision (refusedOf): a purge's rewrite took the
+/** The promote and hold records whose learning commit no longer holds their revision (refusedOf): a purge's rewrite took the
  *  text out of every tree, or the commit is one the store no longer holds, or it could not be read (fails closed). Every
  *  champion reader skips them (championOf, servingOf, servingStateOf, heldNamesOf), so the revision promoted before one
  *  serves again, whatever the refused one's newest decision. `unread`: a read failed, so the trim drops nothing
@@ -432,18 +436,20 @@ export type HoldsText = (workflow: string, digest: string, commit: string) => Pr
 /** A learned workflow's digest: its workflow.json's sha256, the first 16 hex (what a run serving it records). */
 export const workflowDigestOf = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
-/** The refused promote records of `records` (Refused), for `workflows` (all when absent): each workflow's promote records
- *  that name a commit, newest first, read (`holds`) until one holds its revision. Those after it and the one found are
- *  what championOf reads; older ones are never read (none of them can serve while a newer one does). A promote record
- *  naming no commit (an earlier release's) is never refused and ends the walk. Never throws: a read that fails refuses
- *  its record and marks the answer `unread`. */
+/** The refused records of `records` (Refused), for `workflows` (all when absent): each workflow's promote records that
+ *  name a commit, newest first, read (`holds`) until one holds its revision, and its hold records the same way. Those
+ *  after it and the one found are what championOf reads; older ones are never read (none of them can serve while a newer
+ *  one does). A hold is walked too: a check that lands after its revision's run is purged holds it at a commit that no
+ *  longer holds it, and that hold is no hold a compile revises (heldNamesOf). A record naming no commit (an earlier
+ *  release's, a failed draft's) is never refused and ends its walk. Never throws: a read that fails refuses its record
+ *  and marks the answer `unread`. */
 export async function refusedOf(records: readonly PromotionRecord[], holds: HoldsText, workflows?: readonly string[]): Promise<Refused> {
   const keys = new Set<string>();
   let unread = false;
   const seen = new Map<string, boolean>();
-  for (const workflow of workflows ?? [...new Set(records.map((one) => one.workflow))]) {
+  for (const workflow of workflows ?? [...new Set(records.map((one) => one.workflow))]) for (const decided of ["promote", "hold"] as const) {
     for (const one of [...records].reverse()) {
-      if (one.workflow !== workflow || one.decided !== "promote") continue;
+      if (one.workflow !== workflow || one.decided !== decided) continue;
       if (one.commit === undefined) break;
       const key = refusedKey(one);
       if (!seen.has(key)) {
@@ -631,9 +637,9 @@ export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbs
  *  (a held last revision is never trimmed into handing the champion back), and a replaying revision's newest record (what
  *  its settle, its runs' claims and the one-check-at-a-time rule read: dropped, a newer revision would start a second
  *  check while its runs run, and its verdict would never land). The rest is the newest records. The champion is kept as
- *  read with the refused records skipped (`refused`, refusedOf), as read without, and the one promoted before the one
- *  `refused` leaves (a purge landing after the gate answered refuses that one: the one before still serves); when a
- *  refused read failed (`unread`), nothing is dropped. */
+ *  read with the refused records skipped (`refused`, refusedOf), as read without, and a chain of the ones promoted before
+ *  the one `refused` leaves, CHAMPIONS_KEPT in all (a purge landing after the gate answered refuses those its run wrote:
+ *  the one before them still serves); when a refused read failed (`unread`), nothing is dropped. */
 export function trimPromotions(items: readonly PromotionRecord[], refused: Refused = NOTHING_REFUSED): PromotionRecord[] {
   // A refused read that failed leaves the champion unknown: nothing is dropped until a read tells.
   if (items.length <= PROMOTIONS_KEPT || refused.unread) return [...items];
@@ -650,9 +656,10 @@ export function trimPromotions(items: readonly PromotionRecord[], refused: Refus
       if (last === undefined) continue;
       keep.add(items.findLastIndex((one) => live(one) && one.digest === last && one.decided === "promote"));
       keep.add(items.findLastIndex((one) => live(one) && one.digest === last));
-      // The champion before the one `refused` leaves: a purge that lands between this write's ask of the gate and its
-      // write refuses that one, and the guard (the records read) never sees it, so its readers serve this one (#3458).
-      if (pass === 1) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
+      // The champions before the one `refused` leaves, CHAMPIONS_KEPT in all: a purge that lands between this write's ask
+      // of the gate and its write refuses every one its run wrote, and the guard (the records read) never sees it, so its
+      // readers serve the one before them (#3458).
+      if (pass >= 1 && pass < CHAMPIONS_KEPT) passes.push((one) => skip(one) || (one.workflow === workflow && one.digest === last));
     }
   }
   for (let i = items.length - 1, room = PROMOTIONS_KEPT - keep.size; i >= 0 && room > 0; i--) {

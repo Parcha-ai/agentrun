@@ -106,7 +106,7 @@ export const NOT_SERVED: readonly string[] = ["exportHome", "importHome", "killR
 
 const ref = (name: string) => ({ $ref: `#/components/${name}` });
 const errors = (...codes: number[]) =>
-  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 412: "PreconditionFailed", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
+  Object.fromEntries(codes.map((code) => [String(code), ref(`responses/${{ 400: "BadRequest", 401: "Unauthenticated", 403: "Forbidden", 404: "NotFound", 409: "Conflict", 410: "Gone", 412: "PreconditionFailed", 413: "PayloadTooLarge", 415: "UnsupportedMediaType", 422: "Unprocessable", 429: "RateLimited", 500: "Internal", 501: "Unsupported", 503: "Unavailable" }[code]}`)]));
 const json = (schema: unknown, description: string) => ({ description, content: { "application/json": { schema } } });
 /** GET /health's answer (host.ts Health; listen-first.ts while the server is warming). */
 const HEALTH = {
@@ -1575,7 +1575,7 @@ const ETAG = { ETag: { description: "The file's version on main: its git blob id
 const FILE_TEXT = (description: string, json = false) => ({ description, headers: ETAG, content: { "text/markdown": { schema: { type: "string" } }, ...(json ? { "application/json": { schema: {}, description: "A draft's workflow.json, as it is on main." } } : {}) } });
 const PRECONDITION_REQUIRED = { description: "`precondition_required`: the write names no version it read: If-Match with the file's ETag. If-Match: * is not one.", content: { "application/json": { schema: ref("schemas/Error") } } };
 const IF_MATCH = { name: "If-Match", in: "header", required: false, description: "The file's ETag, as a GET answered it: the write lands only on that version, else 412.", schema: { type: "string" } };
-const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 409, 412, 429, 500), "428": PRECONDITION_REQUIRED };
+const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 409, 410, 412, 429, 500), "428": PRECONDITION_REQUIRED };
 /** Why every learning route of an agent may answer 403: what it learned is cut of the agent's own sign-in pointers, and
  *  withheld when one of them can't be read here. */
 const SIGN_IN_WITHHELD = "Every text is cut of the agent's own browser sign-in pointers too, live or forgotten, and a write holding one is refused as one holding a host secret; when one of them does not open on this server (its seal key changed or is missing, or the sign-in is damaged), every learning route of the agent answers 403 `forbidden`, so nothing is shown over a shorter list.";
@@ -1904,7 +1904,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
     get: {
       operationId: "readLearningFile", tags: ["agents"], summary: "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag",
       description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`. A run's purge (`DELETE /runs/{run_id}`) takes each workflow file it changed last out of the learning's history, so its files are `404`; a workflow.json still on main whose newest change a purged run made is `410 purged` with that run's tombstone, and no other read serves that workflow either: a champion read by its digest reads no commit, a later merge's diff shows the file as added, and no run lays it.",
-      parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
+      parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 410, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/retire": {
@@ -4658,7 +4658,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   (doc.components as Json).responses = {
     ...((doc.components as Json).responses as Record<string, Json>),
     Gone: {
-      description: "`purged`: the run or agent was purged (`DELETE /runs/{run_id}`, `DELETE /agents/{agent_id}`); `details` is its tombstone.",
+      description: "`purged`: the run or agent was purged (`DELETE /runs/{run_id}`, `DELETE /agents/{agent_id}`); `details` is its tombstone. On a learned workflow's file (`readLearningFile`, its approve and restore): the run that wrote its workflow.json was purged, and `details` is that run's tombstone.",
       headers: { "X-Request-Id": ref("headers/RequestId") },
       content: { "application/json": { schema: ref("schemas/Error") } },
       "x-agentrun-serve": "purge/1",
