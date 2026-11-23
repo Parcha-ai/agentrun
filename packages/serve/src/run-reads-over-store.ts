@@ -11,16 +11,19 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
+import { redactSecrets } from "./learn/secrets.js";
+import { underCut } from "./run-cut.js";
 import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
-import { listFiles, sendFile, type FileView } from "./run-files.js";
+import { entryAt, listFiles, RUN_FILE_CUT_MAX, sendFile, type FileView } from "./run-files.js";
+import { typeOf } from "./file-types.js";
 import { readLaunchBody } from "./run-launch.js";
 import { costIsBooked } from "./runner/metrics.js";
 import { runEntries, runTimeline } from "./store-reads/journal.js";
 import type { RunStated } from "./store-view.js";
 import { StoreLaunchMissing, type Store } from "./store/index.js";
 import { isUnavailable, type Plane, recheckPlane, whyUnavailable } from "./tool-plane.js";
-import type { Workspace } from "./workspace/index.js";
+import { isWorkspaceError, type Workspace } from "./workspace/index.js";
 import { RECORDINGS } from "./workspace/paths.js";
 
 /** The most files a list answers with (server.ts FILE_LIST_CAP). */
@@ -70,16 +73,67 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   return { run_id: runId, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP };
 }
 
+/** A type the cut read takes as text: one the table names text, JSON or NDJSON, or one it doesn't know (its bytes are
+ *  then read as UTF-8, and a file that isn't is 415). */
+const cutsAsText = (type: string | undefined): boolean => type === undefined || type.startsWith("text/") || type === "application/json" || type === "application/x-ndjson";
+
 /** One of a run's files, through its Workspace (readRunFile): streamed to `res` as the route streams it, with the route's
  *  path check and its 404 words; a withheld run refuses (403) before anything is streamed. A path under recordings/ is
- *  one of the run's recordings (its recordings folder, beside its Workspace's), never a file the run made. */
+ *  one of the run's recordings (its recordings folder, beside its Workspace's), never a file the run made. With
+ *  `?cut=run`, the file's text under the run's own cut instead (cutRunFile). */
 export async function readRunFile(store: RunReadsStore, runId: string, rawPath: string, req: IncomingMessage, res: ServerResponse, url: URL, deps: RunReadsDeps): Promise<void> {
+  const cut = url.searchParams.get("cut");
+  if (cut !== null && cut !== "run") throw new ApiError("bad_request", `cut must be "run", not ${JSON.stringify(cut)}`);
   if (await deps.withheld(store, runId)) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const rel = checkedPath(decodedPath(rawPath), "the run's own, not a file it wrote");
   const recording = rel.startsWith(`${RECORDINGS}/`) ? rel.slice(RECORDINGS.length + 1) : undefined;
   const workspace = await (recording === undefined ? deps.runWorkspace : deps.recordings)(store, runId);
   if (!workspace) throw new ApiError("not_found", "no such file");
+  if (cut === "run") return cutRunFile(store, runId, workspace, recording ?? rel, req, res, deps);
   return sendFile(req, res, url, workspace, recording ?? rel, "a tool in the run's box");
+}
+
+/** File `rel` of the run's `workspace` as UTF-8 text cut of everything the run's own cut holds (deps.cutValues, the set its
+ *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values and the sign-in
+ *  refs the run was handed), through redactSecrets over the whole text, each value and secret shape replaced by
+ *  "[redacted]" in place, and the text "[redacted]" whole when a value still shows in another form. A long run with no
+ *  whitespace (compact JSON) is never blanked for its length. The cut holds this server's values, not every secret: a
+ *  value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it. The cut is
+ *  read again after the text is cut (underCut), so a value saved meanwhile is cut too. An unreadable cut (the run withheld) is 403; a type that isn't text, or bytes that
+ *  aren't UTF-8 or hold a NUL, 415; a file over RUN_FILE_CUT_MAX, 413. A Range header is not read: the answer is the
+ *  whole file. */
+async function cutRunFile(store: RunReadsStore, runId: string, workspace: Workspace, rel: string, req: IncomingMessage, res: ServerResponse, deps: RunReadsDeps): Promise<void> {
+  const unreadable = () => new ApiError("system_file_forbidden", "This file was created private by a tool in the run's box: this server cannot read it.", { details: { reason: "unreadable" } });
+  const entry = await entryAt(workspace, rel);
+  if (entry?.kind !== "file") throw new ApiError("not_found", "no such file");
+  if (entry.unreadable) throw unreadable();
+  const type = typeOf(rel);
+  if (!cutsAsText(type)) throw new ApiError("unsupported_media_type", `a cut read answers text, and this file is ${type}`);
+  if (entry.size > RUN_FILE_CUT_MAX) throw new ApiError("payload_too_large", `a cut read answers a file of at most ${RUN_FILE_CUT_MAX} bytes, and this one is ${entry.size}`);
+  const bytes = entry.size === 0 ? new Uint8Array(0) : await workspace.read(rel, { offset: 0, length: entry.size }).catch((error: unknown) => {
+    if (isWorkspaceError(error, "REFUSED")) throw unreadable();
+    if (isWorkspaceError(error) && (error.code === "NOT_FOUND" || error.code === "ESCAPE")) throw new ApiError("not_found", "no such file");
+    throw error;
+  });
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ApiError("unsupported_media_type", "a cut read answers UTF-8 text, and this file's bytes are not");
+  }
+  if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
+  const shown = await underCut(() => deps.cutValues(store, runId), async (cut) => (cut === "unreadable" ? undefined : redactSecrets(text, cut.values, Buffer.byteLength(text))));
+  if (shown === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  const body = Buffer.from(shown);
+  res.writeHead(200, {
+    "content-type": "text/plain; charset=utf-8",
+    "content-length": body.length,
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-store",
+    // The mark that this answer is the cut text: a server that doesn't know `cut` serves the raw bytes, without it.
+    "x-agentrun-cut": "run",
+  });
+  res.end(req.method === "HEAD" ? undefined : body);
 }
 
 /** Whether the run's revision grants the browser tool: an agentic revision whose tools name it. */

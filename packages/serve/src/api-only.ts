@@ -12,8 +12,9 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
  *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
- *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it (a run
- *    of an agent made here is refused by the purge's route itself, server.ts deleteRun, in this profile's words);
+ *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it. A run
+ *    of an agent made here is purged too (deleteRun): the token may archive and delete that whole agent below, every
+ *    run of it purged, so one run of it is no more;
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
@@ -25,10 +26,10 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
  *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
- *    agents and revisions that stay, archives and deletes any agent made here, as the whole server's token does, and with
- *    the launch hook its apply makes schedule and feed triggers. A trigger the apply can't make here is skipped, and said
- *    (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was: without the hook, an enabled one
- *    still fires here on this server's keys until the agent is archived;
+ *    agents and revisions that stay, archives and deletes any agent made here and purges any run of one, as the whole
+ *    server's token does, and with the launch hook its apply makes schedule and feed triggers. A trigger the apply can't
+ *    make here is skipped, and said (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was:
+ *    without the hook, an enabled one still fires here on this server's keys until the agent is archived;
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
@@ -43,7 +44,7 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
-  "listComputers", "getWorkspaceArchil",
+  "listComputers", "listRunningComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning", "deleteRun",
   "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",

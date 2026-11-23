@@ -6,8 +6,8 @@
 // their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
-// (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
-// profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
+// (DELETE /runs/{id}) is served wherever the agent's delete is: for a run of an agent its backend made (an inline run's,
+// external) and of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
@@ -212,18 +212,47 @@ test("an API-only server purges a run of an agent its backend made (an inline ru
   assert.deepEqual([missing.status, missing.body.error?.message], [404, "no run run_missing"], "a run it does not have is the route's own 404");
 });
 
-test("an API-only server refuses DELETE of a run of an agent made here with the profile's 404, as before: nothing purged", { timeout: 120_000 }, async (t) => {
+test("an API-only server purges a run of an agent made here, as it may purge the whole agent: 204, every read of it 410 purged, the agent and its other run kept; it takes the token", { timeout: 120_000 }, async (t) => {
   // The agent made on the whole server, then the same data served API-only (its agents' routes are refused there).
   const whole = await serve(t);
   const { run_id: run } = await startRun(whole.api, "here", "What is six times seven.");
   await follow(whole.api, run, ["completed"]);
+  const other = await whole.api("POST", "/agents/here/runs", { input: { content: "What is six times eight." } });
+  assert.equal(other.status, 202, JSON.stringify(other.body));
+  await follow(whole.api, other.body.run_id, ["completed"]);
+  await whole.stop();
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+  const usage = (await send(server, "GET", `/v2/usage?${WINDOW}`)).body;
+
+  const none = await send(server, "DELETE", `/v2/runs/${run}`, { token: false });
+  assert.deepEqual([none.status, none.body.error?.code], [401, "unauthenticated"], JSON.stringify(none.body));
+  assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged without the token");
+
+  const deleted = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.notEqual((await server.store.runs.get(run)).purgedAt, null, "the run is purged");
+  purged(await send(server, "GET", `/v2/runs/${run}`), run, "its read");
+  purged(await send(server, "GET", `/v2/runs/${run}/timeline`), run, "its timeline");
+  assert.equal((await send(server, "DELETE", `/v2/runs/${run}`)).status, 204, "a second DELETE: purged before");
+  assert.deepEqual((await send(server, "GET", `/v2/usage?${WINDOW}`)).body, usage, "what it cost stays in /usage");
+
+  const kept = await send(server, "GET", `/v2/runs/${other.body.run_id}`);
+  assert.deepEqual([kept.status, kept.body.status], [200, "completed"], `its other run: ${JSON.stringify(kept.body)}`);
+  const agent = await server.store.agents.get("here");
+  assert.deepEqual([agent.purgedAt, agent.archivedAt], [null, null], "the agent is neither purged nor archived");
+});
+
+test("an API-only server answers 409 run_not_final to DELETE of a live run of an agent made here, nothing purged", { timeout: 120_000 }, async (t) => {
+  // A run started on the whole server with no runner stays queued; the same data served API-only, no runner either.
+  const whole = await serve(t, { runner: false });
+  const { run_id: run } = await startRun(whole.api, "here-live", "Take your time.");
   await whole.stop();
   const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
 
   const refused = await send(server, "DELETE", `/v2/runs/${run}`);
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message], [404, "not_found", `this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/runs/${run} is not served here`], JSON.stringify(refused.body));
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.runs], [409, "run_not_final", [run]], JSON.stringify(refused.body));
   assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged");
-  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run reads as before");
+  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run is kept");
 });
 
 test("an API-only server's purge of a run of a learning agent (its expert's id `<workspace>:<expert>`) leaves the agent and its other runs alone", { timeout: 180_000 }, async (t) => {

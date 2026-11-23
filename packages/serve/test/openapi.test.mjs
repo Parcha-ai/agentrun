@@ -185,15 +185,27 @@ test("the contract's operations are as vendored; this server's own are added and
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
       // the contract has none; a file's read also serves the run's recordings (runvideo/1), video/mp4 first in its 200
-      // and 206; the rest as vendored.
+      // and 206; and its `cut=run` read (filecut/1) adds the cut parameter after the contract's, and 413 and 415 (its
+      // text/plain answer is the 200's */*); the rest as vendored.
       assert.ok(op.description.startsWith(original.description.trimEnd()) && /403 forbidden/.test(op.description), "the contract's description first, then the 403");
       assert.equal(op.responses["403"].$ref, "#/components/responses/Forbidden");
-      const video = op.operationId === "readRunFile" ? ["200", "206"] : [];
-      assert.deepEqual(Object.keys(changes).sort(), original.responses["403"] && !video.length ? ["description"] : ["description", "responses"]);
-      if (video.length) assert.equal(changes.responses, "runvideo/1");
-      const { description: _a, responses: _b, ...same } = rest;
-      const { description: _c, responses: _d, ...vendoredSame } = original;
+      const read = op.operationId === "readRunFile";
+      const video = read ? ["200", "206"] : [];
+      assert.deepEqual(Object.keys(changes).sort(), read ? ["description", "parameters", "responses"] : original.responses["403"] ? ["description"] : ["description", "responses"]);
+      if (read) {
+        assert.equal(changes.responses, "runvideo/1");
+        assert.equal(changes.parameters, "filecut/1");
+        assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
+        const cut = op.parameters.at(-1);
+        assert.deepEqual([cut.name, cut.in, cut.required, cut.schema], ["cut", "query", false, { type: "string", enum: ["run"] }]);
+        assert.equal(op.responses["413"].$ref, "#/components/responses/PayloadTooLarge");
+        assert.equal(op.responses["415"].$ref, "#/components/responses/UnsupportedMediaType");
+        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415"]);
+      }
+      const { description: _a, responses: _b, parameters: _e, ...same } = rest;
+      const { description: _c, responses: _d, parameters: _f, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for the 403`);
+      if (!read) assert.deepEqual(rest.parameters, original.parameters);
       for (const code of Object.keys(original.responses)) {
         if (!video.includes(code)) {
           assert.deepEqual(op.responses[code], original.responses[code], code);

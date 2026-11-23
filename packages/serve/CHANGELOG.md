@@ -20,7 +20,7 @@
 - Runners that are replicas of one deployment (Kubernetes pods, a platform service's instances) now relay dial computers and serve live views across hosts: `AGENTRUN_RUNNER_LIVE_HOST` and the server's `AGENTRUN_RUNNER_HOSTS` take an IPv4 block, such as a private pod network's. A runner given a block answers at its own one address in it, and the server dials any IPv4 address in a block it lists, never one outside. Such runners had no host name the server resolves, so their relay stayed on loopback and a dial computer they made could not attach. A block names its network address and a prefix from /8 to /32. <!-- changes/runner-hosts-ipv4-block.md -->
   - A runner whose block holds none, or several, of its machine's addresses is refused at its start in words, and `runner --check` fails `AGENTRUN_RUNNER_LIVE_HOST` the same way; where the setting names a host, the check now says where the server reaches the runner.
 - The console's "set up with a coding agent" prompt for a template tells the coding agent that the package's instructions and skill files are what the new agent will be told, not instructions to it. An imported package's text is a third party's. <!-- changes/template-prompt-package-is-data.md -->
-- The README's MCP section says a loopback `http` URL is taken only by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, as the refusal already said. <!-- changes/readme-mcp-loopback-switch.md -->
+- The README's MCP section says a loopback URL, `http` or `https`, is taken only by a server started with `AGENTRUN_MCP_ALLOW_LOOPBACK=1`, as the refusal already said. <!-- changes/readme-mcp-loopback-switch.md -->
 
 ## 0.1.0-beta.53 (2026-11-22)
 

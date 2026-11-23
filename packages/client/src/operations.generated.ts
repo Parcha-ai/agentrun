@@ -616,51 +616,6 @@ export type File = {
   expires_at: Timestamp | null;
 };
 
-export type CancelResult = {
-  run_id: Id;
-  cancel_requested: boolean;
-  already_terminal: boolean;
-  status: RunStatus;
-};
-
-export type RunCreateInline = {
-  external: ExternalRef;
-  definition: DefinitionInput;
-  skills?: SkillFiles;
-  note?: string;
-  input: Record<string, unknown>;
-  file_ids?: Array<Id>;
-  effort?: Effort;
-  max_cost_usd?: number;
-  quote_id?: string;
-  model_key?: string;
-  keys?: Record<string, string>;
-  mcp_auth?: Record<string, {
-    headers: Record<string, string>;
-  } | ComposioRunBinding>;
-  labels?: Record<string, string>;
-  workflow_first?: boolean;
-  learning?: "use";
-  repo?: string;
-  archil_disk?: {
-    disk_id: string;
-  };
-  hold?: boolean;
-  hold_minutes?: number;
-};
-
-export type ExternalRef = {
-  source: string;
-  kind: string;
-  id: string;
-  version: string | number;
-};
-
-export type ComposioRunBinding = {
-  composio_user_id: string;
-  connected_account_id?: string;
-};
-
 export type Run = {
   run_id: Id;
   agent_id: Id;
@@ -871,6 +826,51 @@ export type RunResult = {
   output: unknown;
   final_answer: string | null;
   output_error?: string;
+};
+
+export type CancelResult = {
+  run_id: Id;
+  cancel_requested: boolean;
+  already_terminal: boolean;
+  status: RunStatus;
+};
+
+export type RunCreateInline = {
+  external: ExternalRef;
+  definition: DefinitionInput;
+  skills?: SkillFiles;
+  note?: string;
+  input: Record<string, unknown>;
+  file_ids?: Array<Id>;
+  effort?: Effort;
+  max_cost_usd?: number;
+  quote_id?: string;
+  model_key?: string;
+  keys?: Record<string, string>;
+  mcp_auth?: Record<string, {
+    headers: Record<string, string>;
+  } | ComposioRunBinding>;
+  labels?: Record<string, string>;
+  workflow_first?: boolean;
+  learning?: "use";
+  repo?: string;
+  archil_disk?: {
+    disk_id: string;
+  };
+  hold?: boolean;
+  hold_minutes?: number;
+};
+
+export type ExternalRef = {
+  source: string;
+  kind: string;
+  id: string;
+  version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type RunFileList = {
@@ -3532,6 +3532,11 @@ export type ListMcpServerNamesResponse = {
   names: Array<string>;
 };
 
+/** Every run still going that has a computer (GET /computers/running). */
+export type ListRunningComputersResponse = {
+  runs: Array<Run>;
+};
+
 /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
 export interface ListSuggestionsParams {
   repo?: string;
@@ -4746,6 +4751,7 @@ export type RaiseRunCapResponse = {
 /** One file's raw bytes (GET /runs/{run_id}/files/{path}). */
 export interface ReadRunFileParams {
   download?: 0 | 1;
+  cut?: "run";
   Range?: string;
 }
 
@@ -7124,6 +7130,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7176,7 +7183,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
+  readRunFile: {"method":"GET","path":"/runs/{run_id}/files/{path}","pathParams":["run_id","path"],"multiSegment":["path"],"query":["download","cut"],"headers":["Range"],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
   resumeRun: {"method":"POST","path":"/runs/{run_id}/resume","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRun: {"method":"POST","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startRun: {"method":"POST","path":"/runs/{run_id}/start","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7437,6 +7444,8 @@ export function resources(call: Call) {
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
+      /** Every run still going that has a computer (GET /computers/running). */
+      listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
       /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
       listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
