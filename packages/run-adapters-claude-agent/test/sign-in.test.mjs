@@ -4,11 +4,14 @@
 // A stand-in CLI notes what it was started with beside itself. The harness's new names are read off the module at run
 // time, so a build without them fails on the assertion that needs them, not at the import.
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import * as claude from '@parcha/agentrun-harness-claude';
+import { parentWatchHere } from '@parcha/agentrun-kernel/host';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'agentrun-claude-sign-in-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -93,3 +96,42 @@ test('a sign-in says how it ended: signed in (exit 0), ended without signing in 
   assert.match(missing.message, /ENOENT/);
   assert.equal(claude.CLAUDE_SIGN_IN_MS, 10 * 60_000, 'the limit is 10 minutes unless a caller says otherwise');
 });
+
+// A server that is SIGKILLed (the OOM killer, say) runs no stop and no limit timer, so a sign-in it started must die
+// with it: started under ./host's parent watch (@parcha/agentrun-kernel/host parentWatched), as a session's CLI is. The
+// process table is read from /proc, so this runs on Linux.
+const linux = process.platform === 'linux' && existsSync('/proc/self/stat');
+/** Whether `pid` runs: a zombie (exited, not yet reaped) does not. */
+function running(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
+  } catch {
+    return false;
+  }
+}
+const SERVER = fileURLToPath(new URL('./fixtures/sign-in-host.mjs', import.meta.url));
+
+for (const watch of ['pdeathsig', 'shim']) {
+  const skip = !linux ? 'needs /proc' : watch === 'pdeathsig' && parentWatchHere() !== 'pdeathsig' ? 'no setpriv with --pdeathsig here' : false;
+  test(`a sign-in dies with the server that started it when that server is SIGKILLed (${watch}), long before its limit`, { skip, timeout: 30_000 }, async (t) => {
+    const dir = scratch();
+    const cli = join(dir, 'claude');
+    const pidFile = join(dir, 'pid');
+    // A CLI that waits for a browser no one answers: its own pid noted, then it is `sleep` (the same process).
+    writeFileSync(cli, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 300\n`, { mode: 0o755 });
+    const server = spawn(process.execPath, [SERVER, cli, login().dir, scratch(), watch], { stdio: ['ignore', 'ignore', 'inherit'] });
+    let pid;
+    t.after(() => {
+      for (const p of [server.pid, pid]) if (p && running(p)) try { process.kill(p, 'SIGKILL'); } catch {}
+    });
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8').trim() !== '', "the CLI's sign-in started");
+    pid = Number(readFileSync(pidFile, 'utf8').trim());
+    assert.equal(running(pid), true, 'the sign-in waits');
+    server.kill('SIGKILL');
+    // The watch's bound: the kernel's signal at once (pdeathsig), or the shim's next look, a quarter second apart.
+    const end = Date.now() + 2_000;
+    while (running(pid) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(running(pid), false, `the sign-in's CLI (pid ${pid}) still ran 2 s after its server was SIGKILLed`);
+  });
+}
