@@ -120,14 +120,15 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
   const handle = await open(file, 'r');
-  let id:string|undefined,cwd:string|undefined,child=false;
+  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
+  let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
   const metadataOf = (parts: Buffer[]): void => {
     try {
       const row = JSON.parse(Buffer.concat(parts).toString('utf8'));
       if(!row || typeof row!=='object' || Array.isArray(row))return;
       if(source==='claude-code'){
-        id??=str(row.sessionId);cwd??=str(row.cwd);child ||= row.isSidechain===true;
+        cwd??=str(row.cwd);child ||= row.isSidechain===true;
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
       }else if(row.type==='session_meta'){
