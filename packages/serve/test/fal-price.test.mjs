@@ -96,7 +96,7 @@ test("a job that names no length is billed by its input media only where fal bil
 test("a talking head is billed by the voice at its audio_url alone, https only; Fabric only at the 480p rate get_pricing states", async () => {
   const { unitsBefore } = await load();
   const face = "https://m.example/i.png";
-  const voice = "https://m.example/a.mp3";
+  const voice = "https://v3.fal.media/files/a.mp3";
   assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, resolution: "480p" }), { voice });
   assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice }), { voice });
   assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice, resolution: "720p" }), { voice }, "one rate at any resolution");
@@ -110,7 +110,14 @@ test("a talking head is billed by the voice at its audio_url alone, https only; 
   }
   for (const audio_url of ["http://m.example/a.mp3", "ftp://m.example/a.mp3", "not a url", "", 3, null, undefined]) {
     const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
-    assert.match(units.unknown ?? "", /^fal bills fal-ai\/bytedance\/omnihuman\/v1\.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL$/, String(audio_url));
+    assert.match(units.unknown ?? "", /^fal bills fal-ai\/bytedance\/omnihuman\/v1\.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal\.media/, String(audio_url));
+  }
+  // The voice is read once here and fetched again by fal: only fal's own media, which serves the same file to both, is
+  // priced. A voice anywhere else could play 1 s to this read and 60 s to fal.
+  assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: "https://fal.media/files/a.mp3", resolution: "480p" }), { voice: "https://fal.media/files/a.mp3" });
+  for (const audio_url of ["https://m.example/a.mp3", "https://fal.media.example/a.mp3", "https://notfal.media/a.mp3", "https://v3.fal.media.m.example/a.mp3", "https://storage.googleapis.com/falserverless/a.mp3"]) {
+    const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
+    assert.equal(units.unknown, "fal bills fal-ai/bytedance/omnihuman/v1.5 per second of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times", audio_url);
   }
 });
 

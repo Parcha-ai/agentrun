@@ -114,6 +114,9 @@ const mediaOf = (input: Record<string, unknown>): string[] => [input.audio_url, 
  *  as fal bills them. The length is read from the audio at its audio_url alone (https only, under VOICE_MAX_BYTES), as
  *  long as it plays (media-duration.ts voiceSeconds: an MP3 or a PCM WAV), never from a length its header or its input
  *  states, never from its image.
+ *  The voice is read once here and fetched again by fal, so a host that served this read a short voice and fal a long
+ *  one would pass the cap: only a voice on fal's own media (fal.media and its subdomains, where fal puts what it makes
+ *  and what is uploaded to it, a new URL for each file) is priced. Any other is unpriceable.
  *  Each value is why a job's input can't be priced, or undefined when it can. Fabric's rate depends on its resolution
  *  (fal's page: $0.08 a second at 480p, $0.15 at 720p), get_pricing states the 480p one, and its OpenAPI gives
  *  resolution no default, so only a job that sends "480p" is priced. OmniHuman has one rate. */
@@ -121,8 +124,11 @@ const TALKING_HEADS: ReadonlyMap<string, (input: Record<string, unknown>) => str
   ["veed/fabric-1.0", (input) => (input.resolution === "480p" ? undefined : `fal bills veed/fabric-1.0 per second at the rate get_pricing states only for resolution "480p" (720p costs more), and this job's resolution is ${input.resolution === undefined ? "not set" : JSON.stringify(input.resolution)}`)],
   ["fal-ai/bytedance/omnihuman/v1.5", () => undefined],
 ]);
-/** A talking head's voice: its input's audio_url when that is an https URL. */
-const voiceOf = (input: Record<string, unknown>): string | undefined => (typeof input.audio_url === "string" && URL.parse(input.audio_url)?.protocol === "https:" ? input.audio_url : undefined);
+/** A talking head's voice: its input's audio_url when that is an https URL on fal's own media (TALKING_HEADS). */
+function voiceOf(input: Record<string, unknown>): string | undefined {
+  const url = typeof input.audio_url === "string" ? URL.parse(input.audio_url) : null;
+  return url?.protocol === "https:" && (url.hostname === "fal.media" || url.hostname.endsWith(".fal.media")) ? (input.audio_url as string) : undefined;
+}
 
 /** ffmpeg-api/compose's timeline end in seconds: the last keyframe's end across its tracks (timestamp and duration are
  *  milliseconds, by its OpenAPI). */
@@ -166,7 +172,7 @@ export function unitsBefore(endpoint: string, unit: string, input: unknown): Uni
       const why = head(input);
       if (why) return { unknown: why };
       const voice = voiceOf(input);
-      return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL` };
+      return voice ? { voice } : { unknown: `fal bills ${endpoint} per ${oneOf(unit)} of the video it makes, as long as the voice at its audio_url, and this job's audio_url is not an https URL on fal.media (a voice fal made, or one uploaded to fal): the voice's length is read before the call and fal fetches it again, and only fal's own media is known to serve the same file both times` };
     }
     const named = namedSeconds(input);
     if (named === "bad") return { unknown: `${bills}, and the length this job's input names is not a number above 0` };
