@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
-import { type FileCursor, type LineSource, lineReader, type ReadContext } from "../lines.js";
+import { type FileCursor, type LineSource, lineReader, type ReadContext, resumes } from "../lines.js";
 import { entries, type Reader, rememberUser } from "../reader.js";
 import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
@@ -517,19 +517,21 @@ const spec: LineSource<"codex", Own> = {
 const lines = lineReader(spec);
 
 /** Codex's reader: a read from a rollout's start first finds the parent's history a fork copied in (forkReplay); a read
- *  going on from a cursor has it in the cursor's state. A fork whose copy was still open where the last read ended, and
- *  that has grown since, is read again from its start, as is a rollout the line reader starts over (rewritten in place). */
+ *  going on from a cursor has it in the cursor's state. Whether a read goes on is decided before reading, so each read
+ *  reads the file once: a rollout the line reader would start over (rewritten in place), and a fork whose copy was still
+ *  open where the last read ended and that has grown since, are read from their start with the copy found again. */
 export const codex: Reader<"codex", FileCursor> = {
   ...lines,
   async read(locator, cursor, options) {
     const fresh = async () => {
       const replay = await forkReplay(locator.file, options?.lookups);
-      return replay ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, undefined, options) : undefined;
+      return replay ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay }) }).read(locator, undefined, options) : lines.read(locator, undefined, options);
     };
-    if (!cursor) return (await fresh()) ?? lines.read(locator, undefined, options);
+    if (!cursor || !(await resumes(spec.source, locator.file, cursor, options?.turns ?? true))) return fresh();
     const copyOpen = (cursor.state as { own?: Own }).own?.replay?.open === true;
-    if (copyOpen && (await stat(locator.file)).size > cursor.offset) return (await fresh()) ?? lines.read(locator, undefined, options);
-    const result = await lines.read(locator, cursor, options);
-    return result.resumed ? result : ((await fresh()) ?? result);
+    if (copyOpen && (await stat(locator.file)).size > cursor.offset) return fresh();
+    // Rewritten between the check and this read, the line reader starts over without the copy and says so (resumed
+    // false): the caller reads again from nothing (parseHome), and that read is fresh.
+    return lines.read(locator, cursor, options);
   },
 };

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
-import { appendFile, rm } from "node:fs/promises";
+import { appendFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { parseHome, READERS, readSession } from "../dist/index.js";
 import { at, codexAnswer, codexContext, codexUser, jsonl, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
@@ -176,4 +176,85 @@ test("a parent the walk found that is gone by a later read of the same import is
   // Archived or deleted between the two reads.
   await rm(parent);
   assert.equal(await requests(second), 4, "the parent is gone: the fork's copy is the only count of that history");
+});
+
+// Through parseHome with a state, as the import goes on from its cursors: home.ts shares one `seen` across a source's
+// files and passes, so a fork read again from its start must come out as a fresh pass of the whole home does.
+const totals = (lines) => lines.map(({ id, calls, tokens, cost }) => ({ id, calls, tokens, cost })).sort((a, b) => (a.id < b.id ? -1 : 1));
+const pass = (home, state) => parseHome(home, { sources: ["codex"], catalog: false, ...(state ? { state } : {}) });
+
+test("parseHome with a state: a fork whose copy was still open when the last pass ended, and has grown since, totals as a fresh pass", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), parentLines());
+  const lines = [meta(FORK, 20, { forked_from_id: PARENT }), ...replayed(), ...ownTurn()];
+  const file = await writeJsonl(rollout(home, FORK), lines.slice(0, 5));
+  const state = {};
+  await pass(home, state);
+  await appendFile(file, jsonl(lines.slice(5)));
+  const again = await pass(home, state);
+  assert.deepEqual(totals(again), totals(await pass(home)));
+  assert.equal(totals(again).find((line) => line.id === FORK).calls, 1, "the fork's own request alone");
+});
+
+/** How many times `file` is read from its start (lines.ts streams a read's body through createReadStream) during `run`. */
+async function readsFromStart(t, file, run) {
+  const fs = createRequire(import.meta.url)("node:fs");
+  const stream = t.mock.method(fs, "createReadStream");
+  syncBuiltinESMExports();
+  try {
+    const out = await run();
+    return { out, reads: stream.mock.calls.filter((call) => call.arguments[0] === file && call.arguments[1]?.fd !== undefined && call.arguments[1].start === 0).length };
+  } finally {
+    stream.mock.restore();
+    syncBuiltinESMExports();
+  }
+}
+
+for (const how of ["a new file in its place", "truncated and written again"]) {
+  test(`parseHome with a state: a fork rewritten in place (${how}) totals as a fresh pass, read from its start no more than any rollout`, async (t) => {
+    // Rewritten to the same length, its own request's usage changed: the bytes before the cursor's offset are not
+    // what they were, so the line reader starts over.
+    const ownAgain = openaiUsage(9, 0, 4);
+    const rewritten = (head) => jsonl([head, ...replayed(), ...turn(9, ownAgain, openaiUsage(TOTALS.at(-1).input_tokens + 9, TOTALS.at(-1).cached_input_tokens, TOTALS.at(-1).output_tokens + 4), 30)]);
+    const rewrite = async (file, text) => {
+      if (how === "a new file in its place") {
+        await writeFile(`${file}.new`, text);
+        await rename(`${file}.new`, file);
+      } else await writeFile(file, text);
+    };
+    const scenario = async (head) => {
+      const home = await tempHome(t);
+      await writeJsonl(rollout(home, PARENT), parentLines());
+      const file = await writeJsonl(rollout(home, head.payload.id), [head, ...replayed(), ...ownTurn()]);
+      const state = {};
+      await pass(home, state);
+      const text = rewritten(head);
+      assert.equal(Buffer.byteLength(text), (await stat(file)).size, "the same length");
+      await rewrite(file, text);
+      const { out, reads } = await readsFromStart(t, file, () => pass(home, state));
+      return { again: totals(out), fresh: totals(await pass(home)), reads };
+    };
+    const fork = await scenario(meta(FORK, 20, { forked_from_id: PARENT }));
+    assert.deepEqual(fork.again, fork.fresh);
+    assert.equal(fork.again.find((line) => line.id === FORK).calls, 1, "the fork's own request alone, as rewritten");
+    assert.deepEqual(fork.again.find((line) => line.id === FORK).tokens, { input: 9, output: 4, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 });
+    // A rollout that is no fork, rewritten the same way: what any reader that starts over costs.
+    const plain = await scenario(meta(CHILD.replace(/c$/, "f"), 20));
+    assert.equal(fork.reads, plain.reads, "a fork that starts over is read from its start as often as any rollout that does");
+  });
+}
+
+test("a fork rewritten in place, read from its cursor, starts over with its copy found: as a read of the whole file", async (t) => {
+  const home = await tempHome(t);
+  await writeJsonl(rollout(home, PARENT), parentLines());
+  const head = meta(FORK, 20, { forked_from_id: PARENT });
+  const file = await writeJsonl(rollout(home, FORK), [head, ...replayed(), ...ownTurn()]);
+  const { cursor } = await READERS.codex.read({ file });
+  // A new file in its place: the cursor's inode is gone.
+  await writeFile(`${file}.new`, jsonl([head, ...replayed(), ...ownTurn(), ...turn(10, OWN, openaiUsage(TOTALS.at(-1).input_tokens + 14, TOTALS.at(-1).cached_input_tokens, TOTALS.at(-1).output_tokens + 6), 40)]));
+  await rename(`${file}.new`, file);
+  const next = await READERS.codex.read({ file }, cursor);
+  assert.equal(next.resumed, false);
+  assert.equal(next.sessions[0].requests.length, (await READERS.codex.read({ file })).sessions[0].requests.length);
+  assert.equal(next.sessions[0].requests.length, 2, "the fork's two own requests, the copy left to the parent");
 });

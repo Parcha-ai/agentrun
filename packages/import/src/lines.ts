@@ -92,6 +92,25 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
   return bytes.subarray(0, bytesRead).toString("base64");
 }
 
+/** Whether a read from `cursor` of the open file goes on from it: the same source and kind of read, the same file (device
+ *  and inode), no shorter, and the bytes before its offset as they were. Else it reads the file from its start. */
+async function goesOn(source: string, keep: boolean, cursor: FileCursor | undefined, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor !== undefined && cursor.source === source && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+}
+
+/** Whether `source`'s line reader would go on from `cursor` in `file` now (a turns: `keep` read), as it decides when it
+ *  reads: so a reader built on it can choose how to read before reading. A file it cannot open is no place to go on. */
+export async function resumes(source: string, file: string, cursor: FileCursor | undefined, keep = true): Promise<boolean> {
+  if (cursor === undefined) return false;
+  const handle = await open(file, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    return await goesOn(source, keep, cursor, handle, await handle.stat());
+  } finally {
+    await handle.close();
+  }
+}
+
 /** The records seen, as a source asks: `extra` over `base`, so a line read that is not kept leaves `base` as it was. */
 const overlay = (base: Set<string>): Set<string> => {
   const extra = new Set<string>();
@@ -104,7 +123,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
-    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+    const resumed = await goesOn(source, keep, cursor, handle, stats);
     const state = (
       resumed
         ? structuredClone(cursor.state)
