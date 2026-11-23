@@ -84,7 +84,7 @@ const MONEY_SHAPES: readonly (readonly [string, RegExp])[] = [
 /** The kinds of text in `text` learning never keeps: every secret shape, and a bank's numbers beside their words. */
 export const learnedSecretShapes = (text: string): string[] => [...secretShapes(text), ...MONEY_SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind)];
 
-type Span = [start: number, end: number];
+export type Span = [start: number, end: number];
 
 /** Every place `pattern` matches in `text`, overlapping places included. */
 function spans(text: string, pattern: RegExp): Span[] {
@@ -148,8 +148,20 @@ export const PRINT_MAX = 4096;
  *  part. The folded finds only ever add to that: the whole-text check is first made with them left in (a value split by
  *  a line break is still seen whole, never hidden by its hex part cut alone), and the fold-aware one always after, on
  *  what is left (a folded value split by whitespace or percent-encoded is found there, never handed back). */
-export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX): string {
-  return redactWith(text, values, max, SHAPES, secretShapes);
+export function redactSecrets(text: string, values: readonly string[], max = PRINT_MAX, held: readonly (readonly [number, number])[] = []): string {
+  return redactWith(text, values, max, SHAPES, secretShapes, held);
+}
+
+/** Where redactSecrets cuts `values` in `text`, shapes left out: each span it cuts in place (UTF-16 offsets, overlapping
+ *  ones merged, in order), or "whole" when its whole-text checks over them cut the text whole (a value split by a line
+ *  break, percent encoded, an NFKC variant). What a run's census keeps of a file, never the values (run-census.ts):
+ *  redactSecrets given these spans as `held` cuts the text as it would have with the values among its own. */
+export function heldSpans(text: string, values: readonly string[]): Span[] | "whole" {
+  const { forms, hexes, folds, matchUnfolded, match } = derivedOf(values);
+  const found = [...forms.flatMap((form) => places(text, form)), ...hexes.flatMap((hex) => spans(text, hex))];
+  if (matchUnfolded(cutAt(text, found))) return "whole";
+  const all = [...found, ...folds.flatMap((pattern) => spans(text, pattern))];
+  return match(cutAt(text, all)) ? "whole" : merged(all);
 }
 
 /** `text` as redactSecrets cuts it, and of a bank's numbers beside their words too (MONEY_SHAPES): what learning prints
@@ -160,11 +172,12 @@ export function redactLearned(text: string, values: readonly string[], max = PRI
 }
 
 /** redactSecrets over `shapes`, each found in place, and `shapesOf` read of what is left (a shape still there cuts the
- *  text whole). */
-function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[]): string {
+ *  text whole). `held`: spans cut in place beside the finds (heldSpans, a value no longer at hand). */
+function redactWith(text: string, values: readonly string[], max: number, shapes: readonly (readonly [string, RegExp])[], shapesOf: (text: string) => string[], held: readonly (readonly [number, number])[] = []): string {
   if (Buffer.byteLength(text) > max) return "[redacted]";
   const { forms, hexes, folds: foldPatterns, matchUnfolded, match } = derivedOf(values);
-  const found = [
+  const found: Span[] = [
+    ...held.map(([start, end]): Span => [start, end]),
     ...forms.flatMap((form) => places(text, form)),
     ...hexes.flatMap((hex) => spans(text, hex)),
     ...shapes.flatMap(([, pattern]) => spans(text, pattern)),
@@ -215,16 +228,21 @@ function derivedOf(values: readonly string[]): Derived {
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */
-function cutAt(text: string, found: readonly Span[]): string {
-  const merged: Span[] = [];
+/** `found` in order, each run of overlapping or touching spans as one. */
+function merged(found: readonly Span[]): Span[] {
+  const out: Span[] = [];
   for (const [start, end] of [...found].sort((a, b) => a[0] - b[0])) {
-    const last = merged.at(-1);
+    const last = out.at(-1);
     if (last && start <= last[1]) last[1] = Math.max(last[1], end);
-    else merged.push([start, end]);
+    else out.push([start, end]);
   }
+  return out;
+}
+
+function cutAt(text: string, found: readonly Span[]): string {
   let out = "";
   let from = 0;
-  for (const [start, end] of merged) {
+  for (const [start, end] of merged(found)) {
     out += `${text.slice(from, start)}[redacted]`;
     from = end;
   }

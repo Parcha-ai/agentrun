@@ -12,10 +12,11 @@ import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
 import { redactSecrets } from "./learn/secrets.js";
-import { underCut } from "./run-cut.js";
+import { censusCut } from "./run-census.js";
+import { type RunCut, underCut } from "./run-cut.js";
 import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
-import { entryAt, listFiles, RUN_FILE_CUT_MAX, sendFile, type FileView } from "./run-files.js";
+import { cutsAsText, entryAt, listFiles, RUN_FILE_CUT_MAX, sendFile, type FileView } from "./run-files.js";
 import { typeOf } from "./file-types.js";
 import { readLaunchBody } from "./run-launch.js";
 import { costIsBooked } from "./runner/metrics.js";
@@ -55,7 +56,7 @@ export interface RunReadsDeps {
   withheld(store: RunReadsStore, runId: string): Promise<boolean>;
   /** The run's one cut (run-cut.ts runCutValues): the values everything served of it is cut of, its graph's parts among
    *  them, or `unreadable` when it is withheld. */
-  cutValues(store: RunReadsStore, runId: string): Promise<{ values: string[] } | "unreadable">;
+  cutValues(store: RunReadsStore, runId: string): Promise<RunCut>;
   /** A context for the journal reads (graph, timeline). */
   readonly context: Context;
 }
@@ -73,9 +74,6 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   return { run_id: runId, files: files.slice(0, FILE_LIST_CAP), complete: true, truncated: deep || files.length > FILE_LIST_CAP };
 }
 
-/** A type the cut read takes as text: one the table names text, JSON or NDJSON, or one it doesn't know (its bytes are
- *  then read as UTF-8, and a file that isn't is 415). */
-const cutsAsText = (type: string | undefined): boolean => type === undefined || type.startsWith("text/") || type === "application/json" || type === "application/x-ndjson";
 
 /** One of a run's files, through its Workspace (readRunFile): streamed to `res` as the route streams it, with the route's
  *  path check and its 404 words; a withheld run refuses (403) before anything is streamed. A path under recordings/ is
@@ -93,13 +91,18 @@ export async function readRunFile(store: RunReadsStore, runId: string, rawPath: 
   return sendFile(req, res, url, workspace, recording ?? rel, "a tool in the run's box");
 }
 
+/** Why a cut read of a file of an ended run is withheld (403) when its census can't say where the secrets the run was
+ *  handed sat in it (run-census.ts censusCut). */
+export const WITHHELD_UNCOUNTED = "This run was handed secrets of its own, and its end erased them; this file was not counted at that end as it is now (written or changed since, past the count's limits, or the run ended with no count), so it is not shown cut. Read it raw.";
+
 /** File `rel` of the run's `workspace` as UTF-8 text cut of everything the run's own cut holds (deps.cutValues, the set its
- *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values and the sign-in
- *  refs the run was handed), through redactSecrets over the whole text, each value and secret shape replaced by
- *  "[redacted]" in place, and the text "[redacted]" whole when a value still shows in another form. A long run with no
- *  whitespace (compact JSON) is never blanked for its length. The cut holds this server's values, not every secret: a
- *  value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it. The cut is
- *  read again after the text is cut (underCut), so a value saved meanwhile is cut too. An unreadable cut (the run withheld) is 403; a type that isn't text, or bytes that
+ *  timeline's calls are cut of: the server's keys, the keys a person saved, its secret stores' values, the sign-in refs
+ *  the run was handed, and while its launch holds them what its caller handed it: its own model key, tool keys and MCP
+ *  credentials), through redactSecrets over the whole text, each value and secret shape replaced by "[redacted]" in
+ *  place, and the text "[redacted]" whole when a value still shows in another form. A long run with no whitespace
+ *  (compact JSON) is never blanked for its length. Once an end erased what its caller handed it, the run's census says
+ *  where those sat (run-census.ts censusCut): a file still as counted is cut there too, and any other is withheld (403,
+ *  WITHHELD_UNCOUNTED). The cut is read again after the text is cut (underCut), so a value saved meanwhile is cut too. An unreadable cut (the run withheld) is 403; a type that isn't text, or bytes that
  *  aren't UTF-8 or hold a NUL, 415; a file over RUN_FILE_CUT_MAX, 413. A Range header is not read: the answer is the
  *  whole file. */
 async function cutRunFile(store: RunReadsStore, runId: string, workspace: Workspace, rel: string, req: IncomingMessage, res: ServerResponse, deps: RunReadsDeps): Promise<void> {
@@ -122,9 +125,16 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     throw new ApiError("unsupported_media_type", "a cut read answers UTF-8 text, and this file's bytes are not");
   }
   if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
-  const shown = await underCut(() => deps.cutValues(store, runId), async (cut) => (cut === "unreadable" ? undefined : redactSecrets(text, cut.values, Buffer.byteLength(text))));
-  if (shown === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-  const body = Buffer.from(shown);
+  const shown = await underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
+    if (cut === "unreadable") return { withheld: WITHHELD_SIGN_IN };
+    if (cut.census === undefined) return { text: redactSecrets(text, cut.values, Buffer.byteLength(text)) };
+    // The run's end erased what its caller handed it: where those sat in this file is its census's to say.
+    const held = censusCut(cut.census, rel, bytes, text);
+    if (held === "unreadable") return { withheld: WITHHELD_UNCOUNTED };
+    return { text: held === "whole" ? "[redacted]" : redactSecrets(text, cut.values, Buffer.byteLength(text), held) };
+  });
+  if ("withheld" in shown) throw new ApiError("forbidden", shown.withheld);
+  const body = Buffer.from(shown.text);
   res.writeHead(200, {
     "content-type": "text/plain; charset=utf-8",
     "content-length": body.length,

@@ -64,7 +64,7 @@ function jsonSecrets(text: string): string[] {
  *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, each per-run Composio
  *  binding's user and account (`{"mcp": {"<server>": {"composio": {"user_id", "connected_account_id"}}}}`), the run's
  *  own model key (`{"model": {"key": "..."}}`) and each of its own tool keys (`{"keys": {"<NAME>": "..."}}`). */
-function launchSecrets(text: string): string[] {
+export function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
   let opened: { mcp?: unknown; model?: { key?: unknown }; keys?: unknown } | null;
   try {

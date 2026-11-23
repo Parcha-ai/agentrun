@@ -2103,7 +2103,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
   // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
@@ -2128,14 +2128,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     env,
     runFacts: (_store, runId) => factsOverStore(store, runId, viewDepsFor(ownOriginOf())),
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
-    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
+    cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns, sealKey }, store, runId),
     context: ctx,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
-  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
+  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, sealKey, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
@@ -4782,7 +4782,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const sdk=new SdkRuns(store,data,sdkSecret,()=>[...serverSecrets(),new CliLearningConnections(store,sdkSecret).token(connection)],[],"cli");
       if(found.name==="cliLearningEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
       if(found.name==="completeCliLearningRun"){const result=await sdk.complete(runId,await bodyOf(req));await new CliLearningConnections(store,sdkSecret).recordWindow(connection.connection_id,connection.generation,runId,launch.cli_learning.session_id);return send(res,200,result);}
-      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (["getSdkRun","sdkRunEvents","completeSdkRun"].includes(found.name)) {
       const runId=decodeURIComponent(found.pattern.exec(path)![1]!);
@@ -4790,7 +4790,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await sdk.authenticate(runId,String(req.headers.authorization??"").replace(/^Bearer /,""));
       if(found.name==="sdkRunEvents")return send(res,200,await sdk.events(runId,await bodyOf(req)));
       if(found.name==="completeSdkRun")return send(res,200,await sdk.complete(runId,await bodyOf(req)));
-      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,statuses},store,runId)});
+      return send(res,200,{...await sdk.status(runId),learning:await servedRunLearning({serverSecrets,signIns,sealKey,statuses},store,runId)});
     }
     if (!bearer(req.headers.authorization, req)) {
       authFailed(`/v2${path}`, req.headers.authorization === undefined ? "no_credential" : "wrong_token");
@@ -5469,7 +5469,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's lines from its booking (run-usage.ts), the figures its cost.usd joins: none, with why, while it is at work
         // or where its figure is not its booking's.
         // Names through the run's cut, and a withheld run refused (403), as its trace is.
-        return send(res, 200, await servedRunUsage({ serverSecrets, signIns }, store, id));
+        return send(res, 200, await servedRunUsage({ serverSecrets, signIns, sealKey }, store, id));
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
@@ -5913,7 +5913,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const values = await learningValues(id);
         const read = await agentLoopOverStore(store, id);
         const compiles = await Promise.all(read.compiles.map(async (one) => {
-          const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
+          const cut = await runCutValues({ serverSecrets, signIns, sealKey }, store, one.run_id).catch(() => "unreadable" as const);
           const workflow = one.workflow === null ? null : shown.name(one.workflow);
           if (cut === "unreadable") return { ...one, workflow, attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
           const all = [...values, ...cut.values];
@@ -5998,14 +5998,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The run's learning view over the store (learning-1's runLearningOverStore): its end, the notes it was given and its seed
         // from its launch, what it holds for the owner's OK as the store's run view reads it (on its folder's main), as main.
         // Cut by the run's one cut, and refused for a withheld run (run-learning-served.ts).
-        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, statuses }, store, run.id));
+        return send(res, 200, await servedRunLearning({ serverSecrets, signIns, sealKey, statuses }, store, run.id));
       }
       case "getRunLearningDiff": {
         const run = await needRun(id);
         // The run's learning diff over the store (learning-routes.ts runDiffOverStore): its merge from its agent's learning
         // folder, else its kept proposal's notes against its seed, else no file against the seed its launch names. Cut by the
         // run's one cut, and refused for a withheld run, as its learning is (run-learning-served.ts).
-        return send(res, 200, await servedRunDiff({ serverSecrets, signIns }, store, data, run.id));
+        return send(res, 200, await servedRunDiff({ serverSecrets, signIns, sealKey }, store, data, run.id));
       }
       case "getWebhook":
         return send(res, 200, webhooks.view());

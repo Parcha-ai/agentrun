@@ -22,7 +22,7 @@ import { journalEntries } from "./journal-reader.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { FINAL_STATES, type RunState } from "../store/store.js";
+import { FINAL_STATES, type RunPatch, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
@@ -86,6 +86,9 @@ const PASSES_A_BLOCKED_ROW: ReadonlySet<string> = new Set([...HELD_COMMANDS, COM
 export const END_RETRY_CAP_MS = 300_000;
 /** The tries at that cap before the run ends stopped on its row alone (about an hour of retries in all; endRefused). */
 export const END_RETRY_AT_CAP = 11;
+/** The most a run's end waits for its census (RunnerOptions.census): 60 s, for up to CENSUS_BYTES_MAX (64 MiB) read
+ *  over the run's Workspace (an Archil disk's included). Past it the end goes on without one. */
+export const CENSUS_MS = 60_000;
 
 export interface RunnerOptions {
   store: RunnerStore;
@@ -135,6 +138,12 @@ export interface RunnerOptions {
    *  runs behind it wait too and a heavy run is never passed over for ever by light ones. A run heavier than the whole
    *  budget is claimed when the runner holds nothing, so it never waits for ever. Absent: by count alone (`loops`). */
   memory?: RunnerMemory;
+  /** The census a run's end writes in the place of the secrets its caller handed it, which that end erases
+   *  (run-census.ts; RunPatch.census): made just before each final patch this runner writes, while the run's launch
+   *  still holds them, and undefined for a run that holds none. One not made within CENSUS_MS, or that fails, is left
+   *  out: the end then writes the marker "unscanned", and the run's files are withheld from a cut read after it.
+   *  Absent: no census (every such end writes the marker). */
+  census?: (runId: string) => Promise<RunPatch["census"] | undefined>;
   /** A refused stopped end that withdraws a call (endRefused): the first wait, its cap, and the tries at the cap before
    *  the run ends on its row alone. Defaults END_RETRY_BACKOFF_MS, END_RETRY_CAP_MS, END_RETRY_AT_CAP. */
   endRetryBackoffMs?: number;
@@ -268,6 +277,7 @@ export function startRunner(options: RunnerOptions): Runner {
     endWaitMs = 5_000,
     drainMs = 0,
     memory,
+    census,
     endRetryBackoffMs = END_RETRY_BACKOFF_MS,
     endRetryCapMs = END_RETRY_CAP_MS,
     endRetryAtCap = END_RETRY_AT_CAP,
@@ -356,6 +366,18 @@ export function startRunner(options: RunnerOptions): Runner {
   let unwatchCommands: (() => void) | undefined;
   let polling = false;
 
+  /** Run `runId`'s census for its end (RunnerOptions.census), as a patch's part: none past CENSUS_MS, or when it fails. */
+  const censusFor = async (runId: string): Promise<Pick<RunPatch, "census">> => {
+    if (!census) return {};
+    let stop = () => {};
+    const late = new Promise<undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), CENSUS_MS);
+      stop = () => clearTimeout(timer);
+    });
+    const made = await Promise.race([census(runId).catch(() => undefined), late]).finally(() => stop());
+    return made ? { census: made } : {};
+  };
+
   /** The run's journal with this runner's fence on its one write: after the claim is lost, commit throws ClaimLost. A
    *  commit that lands a final run patch (the loop's own end, which is the run's release) calls `ended` at once: from
    *  then the run is ending, before the loop's teardown, so a renew answered Fenced by that end's epoch is never a lost
@@ -367,6 +389,12 @@ export function startRunner(options: RunnerOptions): Runner {
   const fenced = (journal: Journal, fence: { lost: boolean }, runId: string, ended: () => void): Journal => {
     /** The effect of the final patch staged and not yet landed, as the store keeps it until a commit stores it. */
     let finalEffect: number | undefined;
+    /** That final patch's stage as given to the store, and its census, begun when it was staged: the commit that writes
+     *  its effect stages it again with the census, so the end's commit writes it (refuseLeftovers). */
+    let finalStaged: { readonly staged: { run?: Record<string, unknown> } & Record<string, unknown>; readonly census: Promise<Pick<RunPatch, "census">> } | undefined;
+    /** The commit that carries the final patch, while it waits for its census: a commit asked after it waits for it, so
+     *  the run's commits land in the order they were asked. */
+    let ending: Promise<unknown> | undefined;
     const carriedOut = <T>(given: T): T => {
       const carried = redact.carried(runId);
       return carried ? cutDeep(given, carried, true) : given;
@@ -377,9 +405,13 @@ export function startRunner(options: RunnerOptions): Runner {
         if (typeof value !== "function") return value;
         if (property === "stage") {
           return (staged: { run?: { state?: string }; also?: unknown; effect?: unknown } | undefined, ...rest: unknown[]) => {
-            const result = value.call(target, carriedOut(staged), ...rest);
+            const given = carriedOut(staged);
+            const result = value.call(target, given, ...rest);
             // As the store keeps it: a run patch or rows staged again replace the one staged before.
-            if (staged?.run !== undefined || staged?.also !== undefined) finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
+            if (staged?.run !== undefined || staged?.also !== undefined) {
+              finalEffect = FINAL.has(staged.run?.state ?? "") ? Number(staged.effect) : undefined;
+              finalStaged = finalEffect !== undefined && given ? { staged: given as never, census: censusFor(runId) } : undefined;
+            }
             return result;
           };
         }
@@ -391,7 +423,20 @@ export function startRunner(options: RunnerOptions): Runner {
           const effect = finalEffect;
           const batches = (Array.isArray(args[0]) ? args[0] : [args[0]]) as unknown[];
           const at = effect === undefined ? -1 : batches.findIndex((batch) => (Array.isArray(batch) ? batch : [batch]).some((write) => Number((write as { value?: { id?: unknown } } | undefined)?.value?.id) === effect));
-          return (value.apply(target, [carriedOut(args[0]), ...args.slice(1)]) as Promise<{ stored?: number }>).then((result) => {
+          const before = ending;
+          const carrying = at >= 0 ? finalStaged : undefined;
+          const applied = (async () => {
+            await before?.catch(() => undefined);
+            if (carrying) {
+              const { census: made } = await carrying.census;
+              // Staged again only while it is still the final patch staged, with its census beside it.
+              if (made && finalStaged === carrying) (Reflect.get(target, "stage", target) as (staged: unknown) => void).call(target, { ...carrying.staged, run: { ...carrying.staged.run, census: made } });
+            }
+            if (fence.lost) throw new ClaimLost(`run ${runId}: this runner lost its claim; the commit is not written`);
+            return (await value.apply(target, [carriedOut(args[0]), ...args.slice(1)])) as { stored?: number };
+          })();
+          if (carrying || before) ending = applied;
+          return applied.then((result) => {
             if (at >= 0 && at < (result?.stored ?? 0) && finalEffect === effect) {
               finalEffect = undefined;
               ended();
@@ -590,6 +635,8 @@ export function startRunner(options: RunnerOptions): Runner {
     let mayWithdraw = data.state === "stopped";
     // A run whose journal holds no conversation never sent a request: its end carries a cost of $0, as a loop's end does.
     let neverSent = false;
+    // Where in the run's files what its caller handed it sits, written in its place as this end erases it.
+    const counted = await censusFor(claim.runId);
     try {
       const journal = store.journal(claim);
       const [root] = (await journal.scanConversations({}, 1, undefined, BACKGROUND_CONTEXT)).items;
@@ -613,13 +660,13 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
-      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(neverSent ? { costUsd: 0 } : {}) }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
+      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(neverSent ? { costUsd: 0 } : {}), ...counted }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
       const result = await journal.commit([writes], () => {}, BACKGROUND_CONTEXT);
       if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
     } catch (error) {
       if (isFenced(error)) throw error;
       if (mayWithdraw) throw new EndNotWithdrawn(claim.runId, error);
-      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}) }, take.length ? { take } : undefined);
+      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}), ...counted }, take.length ? { take } : undefined);
     }
     // An ended run's Screen has no ended-while-waiting state to keep (browser-wait-ended.ts): its row goes with the end.
     if (store.settings) await clearWaitEnded(store.settings, claim.runId, claim.epoch).catch(() => undefined);
@@ -669,7 +716,7 @@ export function startRunner(options: RunnerOptions): Runner {
       emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId} ended without withdrawing: journal unreadable or refusing (after ${tries} tries; the last: ${why})` });
       // On its row alone, so no outcome 'stopped' (endRun): a run whose journal never took its end is never reopened.
       const end = stopEnd(stop.kind === "cancel");
-      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}) }, { take: [stop.id] });
+      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}), ...(await censusFor(claim.runId)) }, { take: [stop.id] });
       await releaseStopped(claim, stop);
       return;
     }
@@ -1007,7 +1054,7 @@ export function startRunner(options: RunnerOptions): Runner {
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
-          await store.runs.update(claim, { state: "failed", summary: redact(message(error)) }).catch(() => {});
+          await store.runs.update(claim, { state: "failed", summary: redact(message(error)), ...(await censusFor(claim.runId)) }).catch(() => {});
           await store.flush().catch(() => {});
           await release(claim, {}).catch(() => {});
         }

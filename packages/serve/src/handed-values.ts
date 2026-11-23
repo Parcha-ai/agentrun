@@ -2,11 +2,17 @@
 // mark (the SHA-256 of each pointer, never the pointer), the browser vendor its launch's plane kept, and the agent's
 // sign-ins (live and forgotten) opened to find each pointer the mark names (run-view.ts handedPointers). One read for
 // every place that must cut a run of what it was handed: the store-backed run view (store-view.ts) and the runner's
-// learning end (runner/learning-end.ts), which refuses to learn it.
+// learning end (runner/learning-end.ts), which refuses to learn it. Beside them, what the run's caller handed it at its
+// launch or with a message (its MCP credentials, its own model key and tool keys: store/seal.ts RunLaunchSecrets), opened
+// from the launch's sealed part while the run holds it (launchValuesOf), and once its end erased that, where in its files
+// they sat (the launch's census, run-census.ts).
 import { MIN_SECRET } from "./learn/secrets.js";
+import { launchSecrets } from "./runner/store-secrets.js";
+import { ServerSecrets } from "./server-secrets.js";
+import { sealedAt, unsealColumn } from "./store/seal.js";
 import { type Handed, handedMark, handedPointers, type SignInReader } from "./run-view.js";
 import { type RunLaunch, readLaunchBody } from "./run-launch.js";
-import type { RunRow, Store } from "./store/store.js";
+import { type RunRow, type Store, StoreLaunchMissing } from "./store/store.js";
 import { keptVendor, type Plane } from "./tool-plane.js";
 
 /** The run's launch body read back, or undefined when it has none (an old run, or one not started with one). */
@@ -36,6 +42,43 @@ export async function handedValuesOf(deps: { readonly signIns?: SignInReader }, 
   const launch = known ? known.launch : await launchOf(store, runId);
   const browser = launch?.plane ? keptVendor(launch.plane as Plane).browser : undefined;
   return handedPointers(deps.signIns, runRow.agentId, browser, handedOf(runRow));
+}
+
+/** Run `runId`'s launch row as a cut reads it: its body, its sealed part (null when it holds none) and its census (null when
+ *  no end erased a sealed part). A run with no launch row (one started before launch rows) holds neither; a read that fails
+ *  is `unreadable`, so the run is withheld, never cut of a shorter set. */
+export async function launchRowOf(store: Pick<Store, "runs">, runId: string): Promise<{ readonly body: RunLaunch | undefined; readonly sealed: Uint8Array | null; readonly census: string | null } | "unreadable"> {
+  try {
+    const row = await store.runs.launch(runId);
+    let body: RunLaunch | undefined;
+    try {
+      body = readLaunchBody(row.body);
+    } catch {
+      body = undefined;
+    }
+    return { body, sealed: row.sealed, census: row.census };
+  } catch (error) {
+    return error instanceof StoreLaunchMissing ? { body: undefined, sealed: null, census: null } : "unreadable";
+  }
+}
+
+/** What run `runId`'s launch holds sealed now (`sealed`: its caller's MCP credentials, its own model key and tool keys),
+ *  opened with this server's `sealKey`: each value as the runner's own cut lists it (runner/store-secrets.ts
+ *  launchSecrets), in every spelling the server's list has (ServerSecrets), each at least MIN_SECRET long. None when it
+ *  holds none (none handed, or its end erased them); `unreadable` when its bytes don't open here (no seal key, another
+ *  key, damaged): what the run was handed can't be known, so it is withheld. */
+export function launchValuesOf(sealKey: Buffer | undefined, runId: string, sealed: Uint8Array | null): string[] | "unreadable" {
+  if (sealed === null) return [];
+  if (!sealKey) return "unreadable";
+  let plain: string;
+  try {
+    plain = unsealColumn(sealKey, sealedAt.runLaunch(runId), sealed).toString("utf8");
+  } catch {
+    return "unreadable";
+  }
+  const list = new ServerSecrets();
+  list.add("handed", () => (plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain]));
+  return list.values().filter((value) => value.length >= MIN_SECRET);
 }
 
 /** The browser vendors that keep a sign-in (sign-ins-store.ts vendorOf). */
