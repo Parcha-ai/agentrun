@@ -71,6 +71,11 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
   const modelTokens = data ? data.models.reduce((n, m) => n + m.tokens, 0) : 0;
   const harnessTokens = data ? data.harnesses.reduce((n, h) => n + h.tokens, 0) : 0;
 
+  const unread = data && data.unread_files > 0 && (
+    <p className="border border-warning bg-card p-3 font-sans text-small text-warning-text" role="status" data-unread>
+      {data.unread_files.toLocaleString("en-US")} session {data.unread_files === 1 ? "file" : "files"} could not be read, so these numbers may be incomplete.
+    </p>
+  );
   // Every source seen on either side: a session file moved or deleted after its import leaves runs with no session read.
   const sources = data ? [...new Set([...data.sources.map((s) => s.source), ...data.imported.map((i) => i.source)])] : [];
   const importedSection = data && sources.length > 0 && (
@@ -108,12 +113,14 @@ export function WrappedPage({ v2, year, go }: { v2: Client; year?: number; go: (
           : !data ? <ListSkeleton label="Reading your year" rows={5} />
           : data.requests === 0 ? (
             <div className="mx-auto grid max-w-4xl gap-4 p-5 md:p-6">
-              <p className="font-sans text-body text-muted-foreground" role="status">No coding agent sessions under this machine's home in {shown}.</p>
+              {unread}
+              <p className="font-sans text-body text-muted-foreground" role="status">No {data.unread_files > 0 ? "readable " : ""}coding agent sessions under this machine's home in {shown}.</p>
               {importedSection}
             </div>
           )
           : (
             <div className="mx-auto grid max-w-4xl gap-4 p-5 md:p-6">
+              {unread}
               <p className="font-sans text-small text-muted-foreground">Read on this machine from its own session files. Nothing leaves it: no prompt, title, path or project is in what the page shows.</p>
               <section className={card} aria-labelledby="w-year">
                 <h2 id="w-year" className={heading}>Your year in tokens</h2>
