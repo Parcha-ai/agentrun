@@ -5,7 +5,8 @@
 // never reads, copies, stores or relays its tokens: a session only tells the CLI where its login is (two directories, by
 // environment), and the host asks the CLI whether it is signed in (`claude auth status`), reading nothing but that answer.
 // On a login the person's own CLI uses too, that check runs the CLI on a private copy of the account file
-// (`.claude.json`), which the CLI rewrites on start, so the person's own file is only ever opened to read.
+// (`.claude.json`), which the CLI rewrites on start, so the person's own file is only ever opened to read. The copy
+// leaves out the fields that hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -114,16 +115,54 @@ export const LOGIN_STATUS_MS = 15_000;
  *  CLI's default folder, in the folder itself for their `CLAUDE_CONFIG_DIR`. Undefined for AgentRun's own login. */
 const sharedAccount = (login: ClaudeAgentLogin): string | undefined => (login.home !== undefined ? join(login.home, ".claude.json") : login.shared ? join(login.dir, ".claude.json") : undefined);
 
-/** A new folder `to` holding a copy of the account file `from`, or nothing when there is none. `from` is only read. */
+/** The account file's fields that hold secrets, which its copy never gets: the API key an older CLI signed in with
+ *  (`primaryApiKey`, the CLI's key when no other is set), the variables the CLI exports on start (`env`, which can hold
+ *  `ANTHROPIC_API_KEY` or a token), and MCP servers, whose `env` and `headers` hold their tokens (`mcpServers`: the
+ *  user's here, each folder's under `projects`). The rest holds none: `customApiKeyResponses` keeps the last 20
+ *  characters of a key, `oauthAccount` the account's words; the tokens are in the credentials dir. A run's config dir
+ *  has none of these either, so the check answers as a run would. */
+const ACCOUNT_SECRETS = ["primaryApiKey", "env", "mcpServers"] as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** The account file `raw` without its secrets (ACCOUNT_SECRETS), or undefined when it is no JSON object: nothing of a
+ *  file that can't be read field by field is copied, as if it were missing. The CLI reads no account from such a file
+ *  either (it calls it corrupted). */
+function withoutSecrets(raw: Buffer): string | undefined {
+  // A UTF-8 byte order mark ahead of the JSON is skipped.
+  const text = raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf ? raw.subarray(3) : raw;
+  let account: unknown;
+  try {
+    account = JSON.parse(text.toString("utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(account)) return undefined;
+  const copy: Record<string, unknown> = { ...account };
+  for (const field of ACCOUNT_SECRETS) delete copy[field];
+  if (isRecord(copy.projects)) {
+    copy.projects = Object.fromEntries(Object.entries(copy.projects).map(([folder, project]) => {
+      if (!isRecord(project)) return [folder, project];
+      const rest: Record<string, unknown> = { ...project };
+      delete rest.mcpServers;
+      return [folder, rest];
+    }));
+  }
+  return `${JSON.stringify(copy, null, 2)}\n`;
+}
+
+/** A new folder `to` (0700) holding a copy (0600) of the account file `from` without its secrets (withoutSecrets), or
+ *  nothing when there is none or it is no JSON object. `from` is only read. */
 function accountCopy(from: string, to: string): string {
   mkdirSync(to, { mode: 0o700 });
-  let account: Buffer | undefined;
+  let raw: Buffer | undefined;
   try {
-    account = readFileSync(from);
+    raw = readFileSync(from);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  if (account) writeFileSync(join(to, ".claude.json"), account, { mode: 0o600, flag: "wx" });
+  const account = raw === undefined ? undefined : withoutSecrets(raw);
+  if (account !== undefined) writeFileSync(join(to, ".claude.json"), account, { mode: 0o600, flag: "wx" });
   return to;
 }
 
@@ -135,8 +174,8 @@ function accountCopy(from: string, to: string): string {
  *  - AgentRun's own login: the sign-in's variables (signInEnv), so it reads the account `auth login` left in the login's
  *    folder, in an empty home inside `scratch`.
  *  - A login the person's own CLI uses too (the default folder, `home`; their `CLAUDE_CONFIG_DIR`, `shared`): the config
- *    dir is a copy of their account file inside `scratch`, and the credentials dir is a run's (loginEnv), which reaches
- *    the tokens they keep without the folder as config dir. On the default folder it runs in their home, elsewhere in an
+ *    dir is a copy of their account file inside `scratch`, less its secrets (accountCopy), and the credentials dir is
+ *    a run's (loginEnv), which reaches the tokens they keep without the folder as config dir. On the default folder it runs in their home, elsewhere in an
  *    empty one inside `scratch`.
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Throws when the CLI gives no answer that reads as one. */
