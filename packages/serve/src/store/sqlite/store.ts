@@ -1746,14 +1746,14 @@ class SqliteStore implements Store {
       return written && mcpServerOf(written);
     };
 
-    /** `statement`, the write of server `name`'s row, answering the row it wrote (RETURNING): alone, or, when the token's mark
-     *  decides it (`tokens`, `owns`), in one transaction under the server's lock (underMcpLock), the owner's dropping the
-     *  mark once its row is written and only then. */
     /** A server row's updated_at as a write sets it to `value` (SQL): kept as given when the caller passes the one it read
      *  (`given`, a refresh: not an edit), else past the row's own (mcp_servers.updated_at, the row before the write) by at
      *  least 1 ms, so two saves in one millisecond are still two edits a compare-and-set tells apart. */
     const lastEdit = (given: number | undefined, value: string) => (given === undefined ? `${d.greatest}(${value}, mcp_servers.updated_at + 1)` : value);
 
+    /** `statement`, the write of server `name`'s row, answering the row it wrote (RETURNING): alone, or, when the token's mark
+     *  decides it (`tokens`, `owns`), in one transaction under the server's lock (underMcpLock), the owner's dropping the
+     *  mark once its row is written and only then. */
     const writeMcpRow = async (name: string, statement: Statement, tokens: McpTokensMark | undefined, owns: McpOwnersMark | undefined): Promise<McpServerRecord | undefined> => {
       if (!tokens && !owns) return (await db.write([statement]))[0]!.rows[0] as McpServerRecord | undefined;
       return underMcpLock(name, async (tx) => {
