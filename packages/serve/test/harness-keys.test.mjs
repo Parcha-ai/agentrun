@@ -106,6 +106,36 @@ test("a claim that read one recipe file's binding, then the bytes a save for ano
   assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), {});
 });
 
+test("a save whose value is put and whose binding write fails reads the store again: the cut holds the value, and the key reads not saved", async (t) => {
+  const { store, file } = await storeOn(t);
+  let failBinds = false;
+  const flaky = {
+    sealedKeys: store.sealedKeys,
+    settings: {
+      get: (...args) => store.settings.get(...args),
+      put: async (...args) => {
+        if (failBinds) {
+          failBinds = false;
+          throw new Error("the disk is full");
+        }
+        return store.settings.put(...args);
+      },
+    },
+    flush: () => store.flush(),
+  };
+  const keys = new HarnessKeysOverStore(flaky, SEAL, [ACME], file);
+  await keys.load();
+  failBinds = true;
+  await assert.rejects(keys.save(ACME, "ACME_API_KEY", { value: VALUE }), /the disk is full/);
+  assert.ok(await store.sealedKeys.get(harnessKeyRow("acme", "ACME_API_KEY")), "the value was put");
+  assert.ok(keys.values().includes(VALUE), "the cut holds the value the store holds");
+  assert.equal(keys.view(ACME).keys[0].set, false, "bound to no recipe, so not saved");
+  assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), {}, "and no claim opens it");
+  // The next save, with the store well again, binds it.
+  await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
+  assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), { ACME_API_KEY: VALUE });
+});
+
 test("a recipe the server no longer names keeps its keys, sealed and cut and run by nothing: listed by its id, and a DELETE removes them", async (t) => {
   const { store, file, keys } = await keysOn(t);
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });

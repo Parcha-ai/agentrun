@@ -181,9 +181,18 @@ export class HarnessKeysOverStore {
    *  by one at a time. */
   private writing: Promise<void> = Promise.resolve();
 
-  /** `work` once every write before it has settled, its failure its own. */
+  /** `work` once every write before it has settled, its failure its own. A write that fails partway (a value put and its
+   *  binding not) reads the store again before the next one, so the snapshot, and the cut it gives (values()), holds
+   *  every value the store does. */
   private serial(work: () => Promise<void>): Promise<void> {
-    const next = this.writing.then(work);
+    const next = this.writing.then(async () => {
+      try {
+        await work();
+      } catch (error) {
+        await this.load().catch(() => undefined);
+        throw error;
+      }
+    });
     this.writing = next.catch(() => undefined);
     return next;
   }

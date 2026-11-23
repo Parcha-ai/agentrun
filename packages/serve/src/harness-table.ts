@@ -666,10 +666,12 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
     // Then each recipe the owner names (HARNESS_RECIPES_ENV): loaded under its five rules, so a refused one, or one whose
     // id a module or another recipe already adds, refuses the start in words (a recipe never takes a built-in's id).
     for (const file of recipes?.files ?? []) {
-      const entry = recipeServerEntry(file, recipes!.data, { signIn: recipes!.signIn });
+      // One read: the entry, and the digest a run's keys are bound to, are of the same bytes.
+      const loadedFile = loadRecipe(file);
+      const entry = recipeServerEntry(loadedFile, recipes!.data, { signIn: recipes!.signIn });
       if (Object.hasOwn(built, entry.id)) throw new Error(`harness recipe ${file} names ${entry.id}, which a harness module or another recipe already adds`);
       built[entry.id] = entry;
-      const { recipe, sha256 } = loadRecipe(file);
+      const { recipe, sha256 } = loadedFile;
       madeByRecipe.set(entry, { billing: recipe.model.billing, label: recipe.label, keys: Object.freeze([...recipe.keys]), digest: sha256 });
     }
     table = Object.freeze(built);

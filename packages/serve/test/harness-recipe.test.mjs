@@ -383,6 +383,20 @@ test("a link out of the install folder is refused: the tree digest holds a link,
   const data = join(root, "inside");
   assert.equal((await installRecipe(recipe, file, data, { fetch: servedFetch(bytes) })).installed, "now");
   assert.equal(await installHolds(recipeInstall(data, recipe, file, process.env, PLATFORM)), undefined, "a link that stays inside holds");
+  // A link back in through a folder's name is read where it leads once in place: through the install folder's own name
+  // (its harness id) it stays inside; through any other name (`tree`, which the unpack's folder was once called) it
+  // leads out of the installed folder, and the unpack refuses it rather than report it installed.
+  for (const [through, holds] of [[recipe.id, true], ["tree", false]]) {
+    const named = archiveOf(`through-${through}`, (at) => { mkdirSync(join(at, "bin")); writeFileSync(join(at, "bin", "agent"), "#!/bin/sh\necho inside\n", { mode: 0o755 }); symlinkSync(`../${through}/bin/agent`, join(at, "again")); });
+    const namedFile = await recipeFile(t, formatRecipe(named, "tar.gz", { cmd: "./bin/agent" }));
+    const at = join(root, `through-${through}`);
+    if (holds) {
+      assert.equal((await installRecipe(loadRecipe(namedFile).recipe, namedFile, at, { fetch: servedFetch(named) })).installed, "now", through);
+      assert.equal(await installHolds(recipeInstall(at, loadRecipe(namedFile).recipe, namedFile, process.env, PLATFORM)), undefined, `${through}: holds once in place`);
+    } else {
+      await assert.rejects(installRecipe(loadRecipe(namedFile).recipe, namedFile, at, { fetch: servedFetch(named) }), (error) => error instanceof ArchiveInstallFailed && error.code === ARCHIVE_CODES.unpack && error.message.includes("link out of its files (again)"), through);
+    }
+  }
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
@@ -1443,6 +1457,39 @@ test("a scheduled run on a plan-billed recipe with every key saved for its harne
   assert.equal(last.status, "completed", `${JSON.stringify((await server.api("GET", `/runs/${id}`)).body)}\n${lines.join("\n")}`);
   const heard = origin.messages().slice(before);
   assert.ok(heard.length >= 1 && heard.every((r) => r.headers["x-api-key"] === key), "every vendor request of the scheduled run on the saved key");
+});
+
+test("a recipe file swapped for another vendor's under the same id, with no restart, never runs on the keys saved for the first: a run's process asks its runner for the keys bound to the file it loaded itself", { skip: linux, timeout: 240_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { data, file, origin } = await installed(t, (o) => planOn(o));
+  await noteChecked(data, file);
+  const lines = [];
+  const server = await serve(t, { data, harnessRecipes: [file], accounts: true, openSetup: true, childRuns: { log: (line) => void lines.push(line) } });
+  const { owner } = await asOwnerAndToken(server);
+  const key = plantedValue("harness-vendor-key");
+  assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: key })).status, 204);
+  const person = await startRun(server.api, "nightly", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  // The same path now holds another vendor's recipe under the same id, on the same install, checked as a run's process
+  // checks it. The server and its runner are not restarted: their table still holds the first file.
+  const other = await fakeAnthropic({ step: checkStep });
+  t.after(() => other.close());
+  const otherVendor = new URL(other.url).host;
+  const first = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(file, `${JSON.stringify({ ...first, env: { ...first.env, MODEL_AGENT_VENDOR: otherVendor }, model: { ...first.model, hosts: [otherVendor] } }, null, 2)}\n`);
+  await noteChecked(data, file);
+  // A schedule's run: no person started it, so a claim that lays no key refuses it.
+  const row = await server.store.runs.get(person.run_id);
+  const launch = await server.store.runs.launch(person.run_id);
+  const id = randomUUID();
+  await server.store.runs.create({ id, agentId: row.agentId, revisionId: row.revisionId }, { body: launchBody({ ...readLaunchBody(launch.body), trigger: { id: "trg_nightly", firing_key: "k1" } }), sealed: launch.sealed });
+  const { last } = await follow(server.api, id, ["completed", "failed"], { deadlineMs: 120_000 });
+  const read = (await server.api("GET", `/runs/${id}`)).body;
+  assert.equal(other.messages().filter((r) => r.headers["x-api-key"] === key).length, 0, "the other vendor never hears the key saved for the first file");
+  assert.equal(last.status, "failed", `${JSON.stringify(read)}\n${lines.join("\n")}`);
+  assert.match(JSON.stringify(read), /never on its owner's own sign-in/);
+  assert.equal(other.messages().length, 0, "no turn went to the other vendor");
 });
 
 test("a start runs only on the keys its claim laid: the server's listing holding them saved, or the operator's shell exporting one, never puts it on the keys route", { skip: linux, timeout: 240_000 }, async (t) => {

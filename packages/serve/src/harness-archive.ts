@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, realpath, rename } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { leftoverPrefix, releaseHold, removeLeftover, sweepLeftovers, takeHold, writable } from "./harness-install.js";
@@ -222,8 +222,10 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     if (got !== want) throw fail(ARCHIVE_CODES.archive, `${named}'s archive from ${release.url} has ${algorithm} ${got}, and the pin is ${want}; it was not unpacked`);
     await options.onStep?.("downloaded");
 
-    // Unpacked, verified archive only, into a folder of its own inside the fresh one: a zip by node, a tarball by tar.
-    const tree = join(work, "tree");
+    // Unpacked, verified archive only, into a folder of its own inside the fresh one: a zip by node, a tarball by tar. It
+    // takes the name the install's folder has, so a link is read (linkOutOf) where it leads once renamed into place: a
+    // link `a -> ../tree/b` would lead inside a folder named tree and outside the installed one.
+    const tree = join(work, basename(dir));
     await mkdir(tree);
     if (release.format === "zip") {
       try {

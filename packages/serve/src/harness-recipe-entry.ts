@@ -131,14 +131,14 @@ export function recipeEntryOf(options: RecipeEntryOptions): HarnessEntry {
   return options.hidden && entry.hidden === undefined ? Object.freeze({ ...entry, hidden: options.hidden }) : entry;
 }
 
-/** The entry of the recipe at `file` on a server whose data directory is `data` (harness-table.ts HARNESS_RECIPES_ENV),
- *  loaded under its five rules when the table is (a refused one refuses the start, in words). It runs only on the
+/** The entry of the recipe `loaded` (loadRecipe: read once, so the entry and the digest its keys are bound to are of the
+ *  same bytes) on a server whose data directory is `data` (harness-table.ts HARNESS_RECIPES_ENV), loaded under its five
+ *  rules when the table is (a refused one refuses the start, in words). It runs only on the
  *  install its owner made and checked: hidden, and each run refused, with the command that fixes it, until a harness-check
  *  passed for this very recipe and this install's tree, the binary among it (HARNESS_NOT_CHECKED). Each start of its
  *  agent digests the tree again and holds it to its pin (harness-recipe.ts installHolds). It runs on
  *  the route serverRoute gives, its owner's sign-in only where `signIn` (--harness-sign-in). */
-export function recipeServerEntry(file: string, data: string, { signIn = false }: { signIn?: boolean } = {}): HarnessEntry {
-  const loaded = loadRecipe(file);
+export function recipeServerEntry(loaded: ReturnType<typeof loadRecipe>, data: string, { signIn = false }: { signIn?: boolean } = {}): HarnessEntry {
   const { recipe } = loaded;
   const platform = archivePlatform();
   const release = releaseFor(recipe, platform);

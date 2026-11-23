@@ -789,11 +789,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // The zone alone, from the claim's own launch's trigger: the process never reads a trigger's row.
     runZone: () => runZone(store, launch.inputOrigin),
     // The keys saved for the claim's own harness alone (harness-keys.ts), whatever the process names: none unless that
-    // harness is a plan-billed recipe on this runner's table, and never another harness's.
-    harnessKeys: async () => {
+    // harness is a plan-billed recipe on this runner's table, and never another harness's. Opened for the recipe file
+    // the process loaded (`digest`), never the one this runner's table read at its start: a file swapped for another
+    // vendor's under the same id since then runs its own binary, and a key bound to the first file never opens for it.
+    harnessKeys: async (digest) => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
       const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
-      return recipe?.keys.length ? openHarnessKeys(store, sealKey, recipe) : {};
+      return recipe?.keys.length && typeof digest === "string" ? openHarnessKeys(store, sealKey, { ...recipe, digest }) : {};
     },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
