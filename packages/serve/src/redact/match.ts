@@ -489,15 +489,49 @@ export function cutAt(text: string, spans: readonly Span[]): string {
 type View = { readonly text: string; readonly covered: readonly Span[] };
 
 const HEX = only("0123456789abcdefABCDEF");
-const SPECIAL = [/[\s\u0080-￿]/g, /[\s%\u0080-￿]/g, /[\s%+\u0080-￿]/g] as const;
 const BLANKS = /[\t-\r ]+/y;
 
-/** `text` as the whole-text check reads it: percent-decoded (`decode` 1; 2, with "+" as a space too), NFKC, and its
- *  whitespace gone, as learn/secrets.ts has always squeezed it. NFKC is applied to each stretch of non-ASCII characters
- *  with the ASCII character before it, which gives what it gives over the whole text (an ASCII character is a starter
- *  nothing composes onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of
- *  `text`), the view's covered stretches: where every character comes from inside one cut. */
-function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
+/** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
+ *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
+type Decoder = { readonly trigger: string; readonly decode: (text: string, at: number, unit: Sink) => number };
+type Sink = (char: string, from: number, to: number) => void;
+
+/** A run of percent-encoded bytes, decoded as UTF-8 (decoded). */
+const PERCENT: Decoder = {
+  trigger: "%",
+  decode(text, at, unit) {
+    let end = at;
+    while (text[end] === "%" && HEX(text.charCodeAt(end + 1)) && HEX(text.charCodeAt(end + 2))) end += 3;
+    if (end === at) return -1;
+    decoded(text, at, end, unit);
+    return end;
+  },
+};
+/** "+" as a space, as a form's encoding writes one. */
+const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
+
+/** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
+ *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */
+type ViewSpec = { readonly when: (text: string) => boolean; readonly decoders: readonly Decoder[]; readonly special: RegExp };
+const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[]): ViewSpec => ({
+  when,
+  decoders,
+  special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
+});
+/** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
+ *  space. Each is lowered for hexes and flattened for folded identifiers in holds. */
+const VIEWS: readonly ViewSpec[] = [
+  viewSpec(() => true, []),
+  viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
+  viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
+];
+
+/** `text` as the whole-text check reads it: decoded by `spec`'s decoders, NFKC, and its whitespace gone, as
+ *  learn/secrets.ts has always squeezed it. NFKC is applied to each stretch of non-ASCII characters with the ASCII
+ *  character before it, which gives what it gives over the whole text (an ASCII character is a starter nothing composes
+ *  onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
+ *  covered stretches: where every character comes from inside one cut. */
+function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   const out: string[] = [];
   const covered: Span[] = [];
   let length = 0;
@@ -570,7 +604,7 @@ function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
     flushHeld();
     held = { char, from, to };
   };
-  const special = new RegExp(SPECIAL[decode].source, "g");
+  const special = new RegExp(spec.special.source, "g");
   let at = 0;
   while (at < text.length) {
     special.lastIndex = at;
@@ -584,12 +618,10 @@ function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
     }
     if (!hit) break;
     const char = text[stop]!;
-    if (char === "%" && decode > 0 && HEX(text.charCodeAt(stop + 1)) && HEX(text.charCodeAt(stop + 2))) {
-      let end = stop;
-      while (text[end] === "%" && HEX(text.charCodeAt(end + 1)) && HEX(text.charCodeAt(end + 2))) end += 3;
-      decoded(text, stop, end, unit);
-      at = end;
-    } else if (char.charCodeAt(0) < 128 && isSpace(char.charCodeAt(0))) {
+    let end = -1;
+    for (const decoder of spec.decoders) if (decoder.trigger === char) end = decoder.decode(text, stop, unit);
+    if (end >= 0) at = end;
+    else if (char.charCodeAt(0) < 128 && isSpace(char.charCodeAt(0))) {
       // A run of ASCII whitespace is gone from the view: only its last character is held, as the one a non-ASCII
       // character after it could compose onto.
       BLANKS.lastIndex = stop;
@@ -599,7 +631,7 @@ function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
       held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
       at = BLANKS.lastIndex;
     } else {
-      unit(char === "+" ? " " : char, stop, stop + 1);
+      unit(char, stop, stop + 1);
       at = stop + 1;
     }
   }
@@ -611,7 +643,7 @@ function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
 /** The characters a run of percent-encoded bytes text[from, to) decodes to (as UTF-8, invalid bytes as U+FFFD, as
  *  Buffer decodes the run whole), each with the bytes it came from; a run whose bytes decode otherwise one sequence at
  *  a time has each character come from the whole run. */
-function decoded(text: string, from: number, to: number, unit: (char: string, from: number, to: number) => void): void {
+function decoded(text: string, from: number, to: number, unit: Sink): void {
   // An ASCII byte is its own character: a run of them (the common "%20", "%2F%3D") is read without a buffer.
   let ascii = true;
   for (let at = from + 1; at < to && ascii; at += 3) ascii = text.charCodeAt(at) < 56;
@@ -690,11 +722,9 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
 export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
-  const decodes: (0 | 1 | 2)[] = [0];
-  if (/%[0-9a-fA-F]{2}/.test(text)) decodes.push(1);
-  if (text.includes("+")) decodes.push(2);
-  for (const decode of decodes) {
-    const view = viewOf(text, decode, cuts);
+  for (const spec of VIEWS) {
+    if (!spec.when(text)) continue;
+    const view = viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (!needles.hexes.length && !folds.length) continue;
