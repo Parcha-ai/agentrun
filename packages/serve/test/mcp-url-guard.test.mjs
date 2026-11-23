@@ -9,6 +9,7 @@
 // have no socket but the fake MCP server's. Public addresses are RFC 5737's, names RFC 2606's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -64,7 +65,7 @@ test("each private-network range, link-local and cloud metadata are refused at t
   assert.deepEqual((await server.api("GET", "/settings/mcp-servers")).body, { servers: [] }, "nothing kept");
 });
 
-test("loopback is a local install's alone: a server listening on loopback with no public address saves a loopback MCP server; one with a public address refuses it at the preview and the save, and it hears nothing", async (t) => {
+test("loopback is a local install's alone: a server its operator started as one (AGENTRUN_MCP_ALLOW_LOOPBACK=1, the test servers' default) saves a loopback MCP server; one with a public address and no switch refuses it at the preview and the save, and it hears nothing", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
@@ -86,6 +87,14 @@ test("loopback is a local install's alone: a server listening on loopback with n
     }
   }
   assert.equal(fake.log.length, heard, "the hosted server sent it nothing");
+});
+
+test("the README says a loopback MCP URL needs the start switch, as the refusal does", () => {
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  const preview = readme.slice(readme.indexOf("`POST /v2/settings/mcp-servers/preview` takes"));
+  const rule = preview.slice(preview.indexOf("`url` is `https`"), preview.indexOf("A server advertising MCP resources"));
+  assert.match(rule, /`http` on loopback/, "the preview's URL rule");
+  assert.match(rule, /AGENTRUN_MCP_ALLOW_LOOPBACK=1/, `the URL rule names the switch a loopback URL needs: ${rule}`);
 });
 
 /** A network with one socket, the fake MCP server's: `names[host]` is what a name resolves to (a function, each lookup's
