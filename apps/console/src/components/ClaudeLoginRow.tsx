@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
-import { checksFolder, claudeLoginView, LOGIN_ROW, LOGIN_RUNS, loginSignedInAs, MACHINE_DEFAULT_FOLDER, NO_CLI, ONLY_ME, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
+import { checksFolder, claudeLoginView, LOGIN_ROW, LOGIN_RUNS, type LoginView, loginSignedInAs, MACHINE_DEFAULT_FOLDER, NO_CLI, ONLY_ME, ONLY_ME_WHY, OTHER_MACHINE, placeWords, SIGNED_OUT, signInWords, UNKNOWN } from "@/lib/claudeLogin";
 import { type Client, ClientError } from "@/lib/client";
 import { type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ClaudeLoginView } from "@/lib/v2";
@@ -29,7 +29,7 @@ const STATE: Record<ClaudeLoginView["state"], { tone: ChipTone; words: string }>
  *  `available`: capabilities' `features.claude_login`; false (switched off, or capabilities not read yet) asks nothing, so
  *  the browser never logs the 404. `onChange`: after a turn on or off, which change what Claude Agent runs on. */
 export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, available = true }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; onChange?: () => void; available?: boolean }) {
-  const [view, setView] = useState<ClaudeLoginView | null>(null);
+  const [view, setView] = useState<LoginView | null>(null);
   const [place, setPlace] = useState<ClaudeLoginView["place"]>("agentrun");
   const [onlyMe, setOnlyMe] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -87,7 +87,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     writing.current = true;
     asked.current++;
     try {
-      setView(await write());
+      setView(claudeLoginView(await write()));
       if (changes) onChange?.();
       return true;
     } catch (e) {
@@ -104,11 +104,11 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const command = <pre className="overflow-x-auto border bg-card p-3 font-mono text-small"><code>{view.command}</code></pre>;
   const signIn = signInWords(view);
   // The folder the status is read from, and, for this machine's login where the server saw no CLAUDE_CONFIG_DIR, how a
-  // Claude Code that keeps it elsewhere is found.
-  const folder = on && view.state !== "other_machine" && (
+  // Claude Code that keeps it elsewhere is found. An older server names no folder: no line.
+  const folder = on && view.state !== "other_machine" && view.folder !== undefined && (
     <div className="space-y-1">
       <p className="text-small text-muted-foreground">{checksFolder(view.folder)}</p>
-      {view.place === "machine" && view.machine.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
+      {view.place === "machine" && view.machine?.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
     </div>
   );
   return (
@@ -150,7 +150,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
                 </label>
               ))}
             </fieldset>
-            {place === "machine" && view.machine.source === "default" && <p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
+            {place === "machine" && view.machine?.source === "default" &&<p className="text-small text-muted-foreground">{MACHINE_DEFAULT_FOLDER}</p>}
             <label className="flex items-center gap-2 text-body">
               <input type="checkbox" name="only_me" className="accent-primary" checked={onlyMe} onChange={(e) => setOnlyMe(e.target.checked)} />
               {ONLY_ME}
