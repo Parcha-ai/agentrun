@@ -16,8 +16,8 @@ const ORIGIN = "https://gateway.example";
 test("cutHanded cuts each handed value from every string in a body, nested and past multibyte text, and nothing else", () => {
   const values = handedSecretValues({ model: KEY, keys: { TOOL_KEY: TOOL } });
   assert.ok(values.includes(KEY) && values.includes(TOOL), "the model key and each tool key");
-  const body = { input: { content: `ñandú → ${KEY} ✓`, parts: [`tool ${TOOL}`, 3, null, true] }, effort: "high", title_hint: "sk-ant-api03-shape-only-not-held" };
-  assert.deepEqual(cutHanded(body, values), { input: { content: "ñandú → [redacted] ✓", parts: ["tool [redacted]", 3, null, true] }, effort: "high", title_hint: "sk-ant-api03-shape-only-not-held" }, "a shape alone is not cut: only what was handed");
+  const body = { input: { content: `ñandú → ${KEY} ✓`, parts: [`tool ${TOOL}`, 3, null, true] }, effort: "high", title_hint: `not-a-secret-${"never-handed-value"}-4d21aa` };
+  assert.deepEqual(cutHanded(body, values), { input: { content: "ñandú → [redacted] ✓", parts: ["tool [redacted]", 3, null, true] }, effort: "high", title_hint: `not-a-secret-${"never-handed-value"}-4d21aa` }, "a value never handed is not cut: only what was handed");
   assert.equal(cutHanded(`as JSON: ${JSON.stringify(KEY)}`, values), "as JSON: \"[redacted]\"");
   assert.equal(cutHanded("unchanged", []), "unchanged", "nothing handed: as given");
   assert.deepEqual(handedSecretValues({}), [], "a start that hands nothing");
