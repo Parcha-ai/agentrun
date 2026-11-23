@@ -7,6 +7,7 @@ import { type CalculateCost, type Catalog, builtinCatalog, type Priced, priceReq
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
+import { packKey } from "./record-key.js";
 import type { Usage } from "./types.js";
 import { addTokens, noTokens, type Tokens } from "./usage.js";
 
@@ -43,7 +44,7 @@ export type HomeState = { read?: number; sources?: Partial<Record<string, Source
 /** One source's part of a HomeState. */
 type SourceState = {
   cursors: Map<string, unknown>;
-  /** Each record read (the reader's "u:"/"m:" keys), with the locator (locatorKey) that read it first: the one it counts in. */
+  /** Each record read (the reader's "u:"/"m:" keys, packed: packKey), with the locator (locatorKey) that read it first: the one it counts in. */
   owners: Map<string, string>;
   /** For each locator, the locators whose records it found already read (its copies' owners). */
   copied: Map<string, Set<string>>;
@@ -202,17 +203,23 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
       // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
       // holds, which a retry would take for a copy.
+      // Records are held by their packed keys (packKey): a reader asks has, then add, of one record, packed once.
       const mine = new Map<string, string>();
       const found = new Set<string>();
+      let asked: string | undefined;
+      let packed = "";
+      const pack = (record: string) => (record === asked ? packed : ((asked = record), (packed = packKey(record))));
       const seen = {
         has: (record: string) => {
-          const owner = owners.get(record) ?? mine.get(record);
+          const at = pack(record);
+          const owner = owners.get(at) ?? mine.get(at);
           if (owner === undefined) return false;
           if (owner !== key) found.add(owner);
           return true;
         },
         add(record: string) {
-          if (!owners.has(record) && !mine.has(record)) mine.set(record, key);
+          const at = pack(record);
+          if (!owners.has(at) && !mine.has(at)) mine.set(at, key);
           return this;
         },
       } as Set<string>;
