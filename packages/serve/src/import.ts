@@ -57,8 +57,8 @@ export async function exportRemoteHistory(
   const project=await realpath(target.project), selected:Pick<Session,'source'|'id'|'file'|'within'>[]=[], skipped=new Map<string,number>(),stamps=new Map<string,string>();
   const sourceEnv=options.env??process.env;
   const skip=(reason:string)=>skipped.set(reason,(skipped.get(reason)??0)+1);
-  for(const {locator,stats} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
-    const file=locator.file;
+  for(const {locator,stats:listed} of await inOrder(await sessionLocators(options.home??homedir(),target.runtime,{env:sourceEnv}),target.runtime)){
+    const file=locator.file,stats=(await fileStats(file))??listed;
     if(stats.size>MAX_SESSION_BYTES){skip('Source session project could not be checked: file exceeds the metadata limit.');continue;}
     // Stop once a complete metadata record names its project. An opening prompt may itself be over 128 KiB;
     // the probe is bounded by the same byte limit as a remotely importable session, without scanning its secrets.
@@ -83,10 +83,10 @@ export async function exportRemoteHistory(
   for(;index<groups.length && sessions.length<20;index++){
     const parts:Session[]=[],seen=new Set<string>();let changed=false,child=false;
     for(const listed of groups[index]!){
-      const before=await stat(listed.file).catch(()=>undefined);
+      const before=await fileStats(listed.file);
       const approvedStamp=stamps.get(locatorKey(locatorOf(listed)));
       if(!before || remoteHistoryStamp(before)!==approvedStamp || now-before.mtimeMs<LIVE_MS || before.size>REMOTE_HISTORY_SOURCE_BYTES){changed=true;break;}
-      const part=await readSession(locatorOf(listed),target.runtime,{seen}).catch(()=>undefined),after=await stat(listed.file).catch(()=>undefined);
+      const part=await readSession(locatorOf(listed),target.runtime,{seen}).catch(()=>undefined),after=await fileStats(listed.file);
       if(!part || !after || remoteHistoryStamp(after)!==approvedStamp || !part.cwd || (await realpath(part.cwd).catch(()=>part.cwd))!==project || part.id!==listed.id){changed=true;break;}
       // Opening metadata is only a candidate: a later record can identify a child session.
       // The full parser remains authoritative before any transcript can leave the machine.
@@ -310,10 +310,21 @@ export function candidatesOf(plan: Pick<Plan, "projects">, env?: NodeJS.ProcessE
  *  and different for each id, so two such sessions stay two runs and a later import finds each one's. The plan and the
  *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
 const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
+/** What a session file's checks go by: its size and last write, with the rest of its stat. */
+type FileStats = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">;
+/** A session file's stat, with its SQLite write-ahead log's (`<file>-wal`) where it has one: a database being written
+ *  appends to its log, its own size and mtime unchanged until a checkpoint, so the size is the two's sum and the last
+ *  write the later of the two; the rest is the file's own. What every live check, size cap and saved stamp here goes by,
+ *  so each sees a write to the log. null: the file is gone. */
+async function fileStats(file: string): Promise<FileStats | null> {
+  const [own, wal] = await Promise.all([stat(file), stat(`${file}-wal`)].map((stats) => stats.catch(() => null)));
+  if (!own) return null;
+  return { dev: own.dev, ino: own.ino, ctimeMs: own.ctimeMs, size: own.size + (wal?.size ?? 0), mtimeMs: Math.max(own.mtimeMs, wal?.mtimeMs ?? 0) };
+}
 /** A file's size and time, as an import read it: the same after means the same content was read. */
 const stampOf = (stats: { size: number; mtimeMs: number }) => `${stats.size}:${stats.mtimeMs}`;
 /** Bind remote consent to the enumerated source, including archive replacements that preserve size and mtime. */
-const remoteHistoryStamp = (stats: Stats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+const remoteHistoryStamp = (stats: FileStats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
 const keptId = (envs: readonly NodeJS.ProcessEnv[], own: readonly string[] = []) => {
   const { text, add } = secretCut(envs, SECRET_NAMES);
   add(own);
@@ -373,7 +384,7 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       const budget = budgetOf();
       let over = false;
       for (const entry of files) {
-        const stats = await stat(entry.file).catch(() => null);
+        const stats = await fileStats(entry.file);
         if (stats && !fits(budget, stats.size)) {
           over = true;
           break;
@@ -396,7 +407,7 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       });
       if (!subagents) continue;
       for (const child of subagents) {
-        const stats = await stat(child.file).catch(() => null);
+        const stats = await fileStats(child.file);
         if (stats) stamps.set(locatorKey(locatorOf(child)), stampOf(stats));
       }
       add(await keysInSessions(subagents));
@@ -454,8 +465,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
-    for (const { locator, stats } of await inOrder(await sessionLocators(home, source), source)) {
+    for (const { locator, stats: listed } of await inOrder(await sessionLocators(home, source), source)) {
       const { file } = locator;
+      const stats = (await fileStats(file)) ?? listed;
       if (signal?.aborted) {
         stopped = true;
         break;
@@ -572,7 +584,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       const budget = budgetOf();
       let over = false;
       for (const listed of files) {
-        const stats = await stat(listed.file).catch(() => null);
+        const stats = await fileStats(listed.file);
         // Grown over the cap since the scan above: left out here as the import leaves it out, and read no further.
         if (stats && !fits(budget, stats.size)) {
           over = true;
@@ -620,7 +632,7 @@ export async function untiedFound(plan: Plan): Promise<Found[]> {
   // A thread resumed in a second file of the same id is one: its own subagents, which name it, count once with it.
   const threads = new Map<string, Session[]>();
   for (const { locator, source } of plan.untied) {
-    const stats = await stat(locator.file).catch(() => null);
+    const stats = await fileStats(locator.file);
     if (!stats || stats.size > MAX_SESSION_BYTES) continue;
     const session = await readSession(locator, source, { seen: counted(source) }).catch(() => undefined);
     if (session) threads.set(`${source}:${session.id}`, [...(threads.get(`${source}:${session.id}`) ?? []), session]);
@@ -748,7 +760,7 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
       const key = locatorKey(locator);
       if (visited.has(key)) continue;
       visited.add(key);
-      const stats = await stat(locator.file).catch(() => null);
+      const stats = await fileStats(locator.file);
       if (!stats) continue;
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
       // No subagent is passed over for its size: the run would be kept without its usage.
@@ -1225,7 +1237,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       for (const entry of files) {
         const { file } = entry;
         const key = locatorKey(locatorOf(entry));
-        const stats = await stat(file).catch(() => null);
+        const stats = await fileStats(file);
         if (stats && !fits(budget, stats.size)) {
           over = true;
           break;
@@ -1262,7 +1274,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         report.skipped.push(tooLarge(listed));
       });
       if (!subagents) continue;
-      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await stat(child.file).catch(() => null)) ?? { size: -1, mtimeMs: -1 })));
+      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await fileStats(child.file)) ?? { size: -1, mtimeMs: -1 })));
       if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
       // so its timeline's usage row counts what its metrics do, one number for the run.

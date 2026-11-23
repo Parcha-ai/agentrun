@@ -472,7 +472,7 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
  *  prompt, an answer reading a file, the read's result (failed with `readFails`) and a last answer: two requests, of
  *  tokens and a model Cursor does not keep (its lastUsedModel is the chat's, not a request's). Dated an hour ago unless
  *  `fresh`. */
-export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false } = {}) {
+export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "fixture-model", readFails = false, fresh = false, wal = false } = {}) {
   const id = sessionId(n);
   const dir = join(home, ".cursor", "chats", createHash("md5").update(cwd).digest("hex"), id);
   mkdirSync(dir, { recursive: true });
@@ -504,6 +504,9 @@ export function cursorChat(home, cwd, n, { prompt = "Tidy the notes.", model = "
   if (!fresh) {
     const old = new Date(Date.now() - 60 * 60_000);
     utimesSync(file, old, old);
+    utimesSync(join(dir, "meta.json"), old, old);
   }
+  // With `wal`, the chat is open: it has just written its write-ahead log, store.db's own mtime unchanged.
+  if (wal) writeFileSync(`${file}-wal`, Buffer.alloc(4096));
   return file;
 }

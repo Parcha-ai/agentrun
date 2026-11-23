@@ -2375,6 +2375,28 @@ test("an import of the projects chosen says a Cursor chat still being written is
   );
 });
 
+test("a Cursor chat whose store.db looks old but whose write-ahead log was just written is still being written: left out as live, never imported as done; one imported already whose log has grown since is read again", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const mine = join(at, "code", "mine");
+  mkdirSync(mine, { recursive: true });
+  const done = cursorChat(at, mine, 45);
+  const open = cursorChat(at, mine, 46, { wal: true });
+  const h = { at, temp: join(root, "tmp") };
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const plan = await planImport(options(h), store);
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["live", open]]);
+  assert.deepEqual(plan.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)]), [[mine, [sessionId(45)]]]);
+  await runImport(store, plan, options(h));
+  // The chat imported grows its log, dated as old as its store: what the import saved for it no longer matches.
+  const old = statSync(done).mtime;
+  writeFileSync(`${done}-wal`, Buffer.alloc(8192));
+  utimesSync(`${done}-wal`, old, old);
+  const again = await planImport(options(h), store);
+  assert.deepEqual([again.already, again.projects.map((p) => [p.cwd, p.sessions.map((s) => s.id)])], [0, [[mine, [sessionId(45)]]]], "read again, not held as unchanged");
+});
+
 test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
