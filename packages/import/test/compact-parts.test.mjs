@@ -100,7 +100,7 @@ test("Claude Code: a session's cost sums its own requests, then its subagents' i
   assert.equal(sessions[0].cost, EXPECTED);
 });
 
-test("each request is priced as read: its own model or else the session's, its 1h cache write and reasoning only where it has them, none without usage", async (t) => {
+test("each request is priced as read: its own model or else the session's, its 1h cache write only where it has one, none without usage; reasoning counted in the totals", async (t) => {
   const home = await tempHome(t);
   const files = ["a.jsonl", "b.jsonl"].map((name) => join(home, name));
   for (const file of files) await writeFile(file, "");
@@ -129,7 +129,7 @@ test("each request is priced as read: its own model or else the session's, its 1
     ["session", [{ provider: "p", cost: { ...listed, input: 20 } }]],
   ]);
   const cost = ({ cost }, usage) => {
-    asked.push({ price: cost.input, keys: Object.keys(usage).filter((k) => k === "cacheWrite1h" || k === "reasoning"), input: usage.input, output: usage.output });
+    asked.push({ price: cost.input, keys: Object.keys(usage).filter((k) => k === "cacheWrite1h"), input: usage.input, output: usage.output });
     return { total: cost.input * usage.input + 0.1 };
   };
   const [a, b] = await parseHome(home, { sources: ["fixture"], readers: { fixture: reader }, catalog: prices, calculateCost: cost }).then((out) => out.sort((x, y) => (x.file < y.file ? -1 : 1)));
