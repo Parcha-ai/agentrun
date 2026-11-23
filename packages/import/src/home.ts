@@ -231,7 +231,12 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     const tokens = noTokens();
     let reasoning = 0;
     let calls = 0;
-    const requests = [...parts, ...subagents].flatMap(({ read }) => read.requests.map((request) => ({ model: request.model ?? read.session.model, usage: request.usage })));
+    const requests = [...parts, ...subagents].flatMap(({ read }) =>
+      read.requests.map(({ at, model, usage }): SessionRequest => {
+        const named = model ?? read.session.model;
+        return { at, ...(named ? { model: named } : {}), ...(usage ? { usage } : {}) };
+      }),
+    );
     for (const { usage } of requests) {
       calls += 1;
       if (!usage) continue;
@@ -264,7 +269,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     out.push(totals);
     if (sink) {
       const times = parts.flatMap(({ read }) => read.requests.map(({ at }) => at)).filter(Number.isFinite);
-      sink(totals, [...parts, ...subagents].flatMap(({ read }) => read.requests.map(({ at, model, usage }): SessionRequest => ({ at, ...((model ?? read.session.model) ? { model: (model ?? read.session.model)! } : {}), ...(usage ? { usage } : {}) }))), times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
+      sink(totals, requests, times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
     }
   }
   return out;
