@@ -19,7 +19,12 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's per-request cost), else the
   requests at pi-ai's list prices (an optional peer), else `null`.
 - `turns` counts the person's messages; `calls` the model requests, its subagents' with them, each once.
-- `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since.
+- `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since, and
+  returns what a fresh call would. When a file holding a copied record now comes before the file it counts in (an append
+  moved the original after its resumed copy, or a new file sorts before one it shares records with), that source is read
+  again from the start.
+- `failures: []` collects each file its reader could not read (`{ key, file, source, error }`) while the rest are
+  totalled; without it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`); without it the home's.
 
 ## Known answer
@@ -30,9 +35,10 @@ node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
 cost, turns, calls}`. Numbers only: no content, title, directory or path is printed. `--help` (`-h`) prints the usage
-and exits 0; a bad argument exits 2. The CLI imports pi-ai statically for its prices: a bundle (`bun build --compile`)
-carries it, prints the same bytes as under Node, and a build or run without pi-ai fails instead of pricing nothing. The
-library keeps pi-ai an optional peer.
+and exits 0; a bad argument exits 2. A file that cannot be read prints no answer: one stderr line per such file
+(`agentrun-import: cannot read <source> <key> (<code>)`) and exit 1. The CLI imports pi-ai statically for its prices:
+a bundle (`bun build --compile`) carries it, prints the same bytes as under Node, and a build or run without pi-ai
+fails instead of pricing nothing. The library keeps pi-ai an optional peer.
 
 ## Usage
 
