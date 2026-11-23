@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { personHands, personWaitMs, personWindows, releasedAfterWait } from "../dist/browser-person.js";
 import { browserAsk, handBackTarget, waitingAsk } from "../dist/browser-commands.js";
+import { secretRedactor } from "../dist/runner/redact.js";
 import { scratch, toolLedger } from "./support.mjs";
 
 /** A run's journal of hand-over entries (their data, in order): the asks' waiting entries and their answers, as the
@@ -33,6 +34,8 @@ const entriesAt = (root) => journalAt(root).list.map((data) => ({ kind: "agent.h
 function personAt({ root, note, answered, ...options }) {
   const journal = journalAt(root);
   return personHands({
+    // The run's redactor, as tools.ts hands the person's process one (a test's run holds no secrets), unless a test gives its own.
+    redact: secretRedactor([]),
     ...options,
     asks: options.asks ?? journal.asks,
     answered: answered ?? journal.answered,
