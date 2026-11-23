@@ -12,6 +12,7 @@ import { createServer, request } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { serve } from "../../serve/test/support.mjs";
 import { packageSha256 } from "../lib/deploy.mjs";
 import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
@@ -757,6 +758,49 @@ test("agentrun deploy checks the package as the target's import does before it s
   writeFileSync(join(pkg, "agent.md"), readFileSync(join(pkg, "agent.md"), "utf8").replace("category: productivity", "category: engineering"));
   await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], key);
   assert.deepEqual(fake.seen.slice(0, 1), ["POST /templates/import"]);
+});
+
+test("agentrun deploy checks the package with this node on the server's cli.js, never its shell launcher or any shell: a bad category is still refused with nothing sent and a good one still goes out", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const key = { AGENTRUN_API_KEY: "not-a-secret" };
+  const fake = await fakeTarget(t, {});
+  // Loaded before the command (and so before each node it starts): a child_process call that starts anything but this
+  // node, or anything through a shell, throws, as the launcher's start does where there is no POSIX shell. Each process
+  // started is written to `started`, one line each.
+  const preload = join(dir, "only-node.mjs");
+  const started = join(dir, "started.txt");
+  writeFileSync(preload, [
+    'import cp from "node:child_process";',
+    'import { appendFileSync } from "node:fs";',
+    'import { syncBuiltinESMExports } from "node:module";',
+    "for (const name of [\"spawn\", \"spawnSync\", \"exec\", \"execSync\", \"execFile\", \"execFileSync\", \"fork\"]) {",
+    "  const real = cp[name];",
+    "  cp[name] = (command, args, options) => {",
+    "    const argv = Array.isArray(args) ? args : [];",
+    "    const opts = Array.isArray(args) ? options : args;",
+    '    if (command !== process.execPath || name.startsWith("exec") && !name.startsWith("execFile") || opts?.shell) throw new Error(`deploy started ${command} (${name})`);',
+    `    appendFileSync(${JSON.stringify(started)}, [command, ...argv].join(" ") + "\\n");`,
+    "    return real(command, args, options);",
+    "  };",
+    "}",
+    "syncBuiltinESMExports();",
+    "",
+  ].join("\n"));
+  const onlyNode = { ...key, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim() };
+  const pkg = folder(dir, { extra: ["category: productivity"] });
+  const refused = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], onlyNode);
+  assert.doesNotMatch(refused.err, /deploy started/, refused.err);
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /category is one of engineering, .*, not "productivity"/, refused.err);
+  assert.match(refused.err, /does not check, so nothing was sent/, refused.err);
+  assert.deepEqual(fake.seen, [], "no request sent");
+  writeFileSync(join(pkg, "agent.md"), readFileSync(join(pkg, "agent.md"), "utf8").replace("category: productivity", "category: engineering"));
+  const sent = await cli(env, ["deploy", pkg, "--to", fake.base, "--yes"], onlyNode);
+  assert.doesNotMatch(sent.err, /deploy started/, sent.err);
+  assert.deepEqual(fake.seen.slice(0, 1), ["POST /templates/import"]);
+  const lines = readFileSync(started, "utf8").trim().split("\n");
+  assert.equal(lines.length, 2, "one check per deploy");
+  for (const line of lines) assert.match(line, /^\S+ \S+[\\/]dist[\\/]cli\.js check-upload$/, line);
 });
 
 test("agentrun deploy whose lock names an agent gone from the target: --agent ID deploys onto the agent the hint names, --agent new makes another, and a missing one is refused; while the locked agent is there, --agent naming another is refused with nothing written", { timeout: 300_000 }, async (t) => {
