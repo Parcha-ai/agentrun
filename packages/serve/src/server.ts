@@ -35,7 +35,7 @@ import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
 import { RUN_KEYS_ENV } from "./env-switch.js";
-import { declaredKeys, keysOwed, keysOwedRefusal, packageKeysOf, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
+import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -3502,11 +3502,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A trigger is made only when its firings have somewhere to go: on an API-only server, a schedule or a feed with the
     // launch hook set (api-only.ts); under the run-keys setting, for an agent whose runs owe keys, only with the launch
     // hook, the one way a firing's run carries them (run-keys.ts). Each other is said, and stays listed, so a trigger the
-    // agent has by its name is left as it is, never removed.
+    // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
-      return skip ? [[i, skip] as const] : [];
+      if (!skip) return [];
+      const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
+      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
+      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
@@ -3844,7 +3848,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const undeclared = undeclaredKeys(Object.keys(handed.keys), revision ? await declaredKeys(revision as unknown as Revision) : []);
       if (undeclared.length) throw invalid(undeclared);
     }
-    const owed = options.runKeys && revision ? packageKeysOf(revision).filter((name) => !env[name]) : [];
+    const owed = options.runKeys && revision ? keysOwed(revision, env, []) : [];
     const needsKey = handed.model === undefined && serverKeyMissing(env, target);
     if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined && !needsKey && !owed.length) return undefined;
     const origin = runModelOrigin(env);
@@ -3854,8 +3858,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
       const keys = handed.keys ?? held.keys;
       if (!model && needsKey) throw modelKeyRequired(true);
-      const unpaid = revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
-      if (owed.length && unpaid.length) throw new ApiError("agent_not_runnable", unpaid.map((one) => one.message).join(" "), { fields: unpaid });
+      const unpaid = owed.length && revision ? keysOwed(revision, env, Object.keys(keys ?? {})) : [];
+      if (unpaid.length) throw keysOwedRefusal(unpaid);
       return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}), ...(keys ? { keys } : {}) });
     };
   }

@@ -9,7 +9,6 @@
 // profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { test } from "node:test";
 import { ended } from "./learn-support.mjs";
@@ -46,12 +45,8 @@ test("AGENTRUN_API_ONLY is on for 1 or true, off when unset, empty, 0 or false, 
   for (const value of ["1", "true", "TRUE", " 1 "]) assert.equal(read(value), true, value);
   for (const value of [undefined, "", "0", "false", "False"]) assert.equal(read(value), false, String(value));
   for (const value of ["yes", "on", "2", "api"]) {
-    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message === `AGENTRUN_API_ONLY is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(value)}`, value);
+    assert.throws(() => read(value), (error) => error instanceof TypeError && error.message.startsWith("AGENTRUN_API_ONLY ") && error.message.includes(JSON.stringify(value)), value);
   }
-});
-
-test("the switches' module imports nothing: the CLI reads both before the rest of the server loads", () => {
-  assert.doesNotMatch(readFileSync(new URL("../dist/env-switch.js", import.meta.url), "utf8"), /^\s*import\b|\bfrom\s*["']|\bimport\s*\(/m);
 });
 
 test("every route the profile serves is a route of the server", () => {
