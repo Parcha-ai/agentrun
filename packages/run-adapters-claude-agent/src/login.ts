@@ -73,7 +73,7 @@ const FOLDER_VARS = ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"] as 
  *  but HOME, which is their terminal's own. A folder variable signInEnv leaves unset (the CLI's default folder) is
  *  cleared in a subshell, `(unset ...; ...)`, since a terminal that exports it would sign in there; the terminal keeps
  *  its own. The line stays the shell's own command, never `env`'s: env reads any word holding '=' as a variable (a CLI
- *  under /srv/a=b would never start) and skips the shell's aliases and functions, where a `claude` alias is often the
+ *  under /data/a=b would never start) and skips the shell's aliases and functions, where a `claude` alias is often the
  *  CLI's local install. sh, bash and zsh all read this line the same way. `platform`: as signInEnv's. */
 export const loginCommand = (login: ClaudeAgentLogin, cli = "claude", platform: NodeJS.Platform = process.platform): string => {
   const env = signInEnv(login, platform);

@@ -112,7 +112,7 @@ const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh'].filter((shel
 /** A terminal that exports both folder variables, with `path` as its PATH. */
 const terminal = (home, path) => ({ PATH: path, HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' });
 
-test("the shown line on the CLI's default folder starts a CLI kept in a folder whose name holds '=' (a data folder such as /srv/a=b), with neither folder variable", () => {
+test("the shown line on the CLI's default folder starts a CLI kept in a folder whose name holds '=' (a data folder such as /data/a=b), with neither folder variable", () => {
   const home = scratch();
   const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
   assert.ok(SHELLS.length >= 1);
