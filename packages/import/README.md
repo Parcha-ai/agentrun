@@ -66,7 +66,7 @@ const { hitRate, breaks } = await analyzeCache(session);
 | --- | --- |
 | `model` | the turn ran on another model than the turn before |
 | `idle` | the gap since the turn before is past the cache's life: 5 minutes, or an hour when the latest cache write was a 1h one (`cacheWrite1h`) |
-| `compaction` | a compaction since the turn before: Claude Code's `compact_boundary` or `isCompactSummary` record, Codex's `compacted` |
+| `compaction` | a compaction since the turn before: Claude Code's `compact_boundary` or `isCompactSummary` record, Codex's `compacted`. It counts in the file that holds it first; across a session's files it carries to the next file's first turn, and a later file's copy of it is never consulted |
 | `edited` | the prompt leaves the chain of the turn before (its prompt and answer) at an earlier message: `diverged` is that message's index |
 | `sidechain` | the turn opens a sidechain after a main-chain turn (Claude Code's `isSidechain`) |
 | `unknown` | none of the above |

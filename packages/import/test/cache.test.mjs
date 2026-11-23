@@ -349,6 +349,32 @@ test("a moved session's copy of an old compaction is no evidence for its boundar
   }
 });
 
+test("a compaction after the first file's last turn is evidence for the boundary break, though the next file holds only its copy", async (t) => {
+  // The session in its first folder: two turns, then a compaction. Moved, its file in the second folder copies all of it
+  // (the compaction too, the same uuids) and goes on from the summary with a turn that reads little.
+  const first = [...linear([{ read: 1000, i: 10 }, { read: 1100, i: 20 }]), ...compaction("a1", 30)];
+  const home = await tempHome(t);
+  const earlier = await writeJsonl(claudeFile(home, SESSION, "-work-a"), first);
+  await utimes(earlier, new Date(at(0)), new Date(at(0)));
+  await writeJsonl(claudeFile(home, SESSION, "-work-b"), [...first, ...linear([{ read: 50, write: 1000, i: 50 }], 2, "cs")]);
+  const result = run(home, "--cache", "--sources", "claude-code");
+  assert.equal(result.status, 0, result.stderr);
+  const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[3, "compaction"]]);
+});
+
+test("a file with no turn compared passes the carry on with its own compaction", async (t) => {
+  const home = await tempHome(t);
+  // One thread in three rollouts: the middle one holds a compaction and no request.
+  await rollout(home, "1", "thread-1", [[1000, 0], [1200, 1000]], 1);
+  await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-02-fixture.jsonl"), [codexMeta("thread-1"), ctx(20), { type: "compacted", timestamp: at(21), payload: { message: "", replacement_history: [] } }]);
+  await rollout(home, "3", "thread-1", [[1300, 50]], 30);
+  const result = run(home, "--cache", "--sources", "codex");
+  assert.equal(result.status, 0, result.stderr);
+  const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+  assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[3, "compaction"]]);
+});
+
 test("a copied compaction between two turns of a file's own is no evidence either", async (t) => {
   const home = await tempHome(t);
   const earlier = await writeJsonl(claudeFile(home), [...linear([{ read: 1000, i: 10 }]), ...compaction("a0", 20)]);

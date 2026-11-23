@@ -25,12 +25,15 @@ export const CACHE_TTL_LONG_MS = 60 * 60_000;
 export type CacheBreak = { turn: number; at: number; dropPct: number; rewritten: number; extraCost: number | null; cause: CacheCause; diverged?: number };
 
 /** `hitRate`: the cache read over the whole prompt (input, cache read and write), null for a session that sent none.
- *  `last`: the last turn compared, to carry into the session's next file (CacheOptions.before). */
-export type CacheReport = { hitRate: number | null; breaks: CacheBreak[]; last?: CacheCarry };
+ *  `last`: the last turn compared, to carry into the session's next file (CacheOptions.before). `compacted`: whether
+ *  a compaction this file holds first (no copy) comes after that turn (anywhere in the file when it compared none, or
+ *  after the carried turn). */
+export type CacheReport = { hitRate: number | null; breaks: CacheBreak[]; last?: CacheCarry; compacted: boolean };
 
 /** The turn a file of a session ended on, which the session's next file compares its first turn with: its model, its
- *  time, its usage, and whether the latest cache write by then was a 1h one. */
-export type CacheCarry = { model?: string; at: number; usage: Usage; long: boolean };
+ *  time, its usage, whether the latest cache write by then was a 1h one, and whether a compaction came after it (the
+ *  evidence is where the compaction was first read; a later file's copy of it is never consulted). */
+export type CacheCarry = { model?: string; at: number; usage: Usage; long: boolean; compacted?: boolean };
 
 export type CacheOptions = {
   /** The catalog to price with; false prices none (every extraCost null). Default: pi-ai's. */
@@ -75,7 +78,7 @@ export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | 
     if (before && before.usage.cacheRead > 0 && (before.usage.cacheRead - usage.cacheRead) / before.usage.cacheRead > BREAK_DROP) {
       const lost = before.usage.cacheRead - usage.cacheRead;
       const rewritten = Math.min(lost, usage.cacheWrite + usage.input);
-      const { cause, diverged } = causeOf(before.index, before.answer, index, answer, { long, chain, opens, byId });
+      const { cause, diverged } = causeOf(before.index, before.answer, index, answer, { long, compacted: carried?.compacted === true, chain, opens, byId });
       const model = answer.model ?? session.model;
       breaks.push({
         turn: index + 1,
@@ -90,22 +93,30 @@ export async function analyzeCache(session: Pick<SessionOf, "turns" | "chain" | 
     if (usage.cacheWrite > 0) long = (usage.cacheWrite1h ?? 0) > 0;
     before = { index, answer, usage };
   }
-  const last = before ? { ...(before.answer.model ?? session.model ? { model: (before.answer.model ?? session.model)! } : {}), at: before.answer.at, usage: before.usage, long } : undefined;
-  return { hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks, ...(last ? { last } : {}) };
+  // A compaction of this file's own after the last turn compared (the carried one's, or none: the whole file).
+  const from = before && before.index >= 0 ? opens.get(before.index) : -1;
+  const compacted = (before?.index === -1 && carried?.compacted === true) || (from !== undefined && chain.slice(from + 1).some(isCompaction));
+  const last = before ? { ...(before.answer.model ?? session.model ? { model: (before.answer.model ?? session.model)! } : {}), at: before.answer.at, usage: before.usage, long, compacted } : undefined;
+  return { hitRate: prompt > 0 ? round(read / prompt, 4) : null, breaks, ...(last ? { last } : {}), compacted };
 }
 
-type Evidence = { long: boolean; chain: ChainRecord[]; opens: Map<number, number>; byId: Map<string, ChainRecord> };
+/** A compaction where it was first read: a copy of one an earlier file holds is that file's evidence, carried from it. */
+const isCompaction = (record: ChainRecord): boolean => record.compact === true && !record.copy;
+
+/** `compacted`: the carried turn's file had a compaction after it. */
+type Evidence = { long: boolean; compacted: boolean; chain: ChainRecord[]; opens: Map<number, number>; byId: Map<string, ChainRecord> };
 
 /** The first cause, in CACHE_CAUSES' order, the transcript shows for the break at request `index` after `last`. */
-function causeOf(lastIndex: number, last: Pick<Answer, "model" | "at">, index: number, answer: Answer, { long, chain, opens, byId }: Evidence): { cause: CacheCause; diverged?: number } {
+function causeOf(lastIndex: number, last: Pick<Answer, "model" | "at">, index: number, answer: Answer, { long, compacted, chain, opens, byId }: Evidence): { cause: CacheCause; diverged?: number } {
   if (last.model && answer.model && last.model !== answer.model) return { cause: "model" };
   if (answer.at - last.at > (long ? CACHE_TTL_LONG_MS : CACHE_TTL_MS)) return { cause: "idle" };
-  // The turn before in the session's previous file: a compaction this file opens with is since it; its chain is that
-  // file's, so no edit or sidechain is named across the two.
+  // The turn before in the session's previous file: a compaction after it there (carried), or one this file opens with,
+  // is since it; its chain is that file's, so no edit or sidechain is named across the two.
+  if (lastIndex < 0 && compacted) return { cause: "compaction" };
   const from = lastIndex < 0 ? -1 : opens.get(lastIndex);
   const to = opens.get(index);
   if (from === undefined || to === undefined) return { cause: "unknown" };
-  if (chain.slice(from + 1, to).some((record) => record.compact && !record.copy)) return { cause: "compaction" };
+  if (chain.slice(from + 1, to).some(isCompaction)) return { cause: "compaction" };
   if (from < 0) return { cause: "unknown" };
   const was = chain[from]!;
   const now = chain[to]!;
@@ -200,7 +211,8 @@ export async function cacheHome(home: string, { sources = SOURCES, readers = REA
           if (edge) breaks.push({ ...edge, turn: edge.turn + report.skipped + counted });
         }
         for (const found of report.alone.breaks) breaks.push({ ...found, turn: found.turn + counted });
-        carry = report.alone.last ?? carry;
+        // A file with no turn compared passes the carry on, with any compaction of its own.
+        carry = report.alone.last ?? (carry && { ...carry, compacted: carry.compacted === true || report.alone.compacted });
         counted += part.read.requests.length;
       }
       subagents.forEach((part, n) => {
@@ -238,7 +250,7 @@ function headOf(session: Pick<SessionOf, "turns" | "chain" | "model">): { head?:
   const chain = session.chain ?? [];
   const opens = chain.findIndex(({ request }) => request === index);
   const answer = answers[index]!;
-  // Only whether a compaction came before it: the chain's ids are this file's alone.
-  const compacted = opens > 0 && chain.slice(0, opens).some(({ compact, copy }) => compact && !copy);
+  // Only whether a compaction of this file's own came before it: the chain's ids are this file's alone.
+  const compacted = opens > 0 && chain.slice(0, opens).some(isCompaction);
   return { head: { turns: [{ role: "assistant", text: "", calls: [], at: answer.at, ...(answer.model ? { model: answer.model } : {}), usage: answer.usage! }], chain: [...(compacted ? [{ compact: true as const }] : []), { request: 0 }], ...(session.model ? { model: session.model } : {}) }, skipped: index };
 }
