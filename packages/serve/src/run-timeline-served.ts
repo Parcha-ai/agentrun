@@ -9,12 +9,12 @@
 // servedTriggerRow): its name read by its id from the store at each read, never one the run's launch froze, cut as the
 // row's words are; a trigger gone keeps the id the journal wrote.
 import type { Context } from "@earendil-works/chord/context";
-import { CALL_RESULT_CHARS, TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, scrubUrls, TRIGGER_LABELS, type TimelineEvent } from "./timeline/index.js";
 import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
-import { heldNumber, redacted } from "./key-refusal.js";
+import { heldNumber, redacted, redactedCall } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { answersOf, asksOf, type SignInReader, shownOf, stopAsked, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
@@ -36,7 +36,7 @@ export type ServedTimelineDeps = {
 };
 
 /** Run `runId`'s Timeline rows as served: cut by its one cut set, its decision rows among them, its error rows in the
- *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output's head to
+ *  run's error's words; none for a run withheld. `calls`: each call's arguments whole and its output whole to
  *  CALL_RESULT_CHARS too (TimelineOptions.calls), through the same cut, for a reader that grades the run. */
 export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store, runId: string, context: Context, calls = false): Promise<TimelineEvent[]> {
   // The run's rows, its decisions, its learning end and the triggers' names, all read in one snapshot of the store (one
@@ -69,7 +69,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // And every call still waiting once a stop is asked and not yet taken, as the run's view reads it (stopAsked).
       const final = run?.state === "stopped" || run?.state === "failed" ? run.state
         : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
-      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redacted(text, values, CALL_RESULT_CHARS), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
+      const options = { redact, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
