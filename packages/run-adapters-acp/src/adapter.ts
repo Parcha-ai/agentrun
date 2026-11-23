@@ -62,12 +62,11 @@ export type AcpProxy = (session: AcpProxySession) => Promise<{ env: Record<strin
 
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
-  const e = event as { type?: string; delta?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; parent?: unknown };
+  const e = event as { type?: string; delta?: unknown; text?: unknown; name?: unknown; callId?: unknown; args?: unknown; isError?: unknown; result?: unknown; truncated?: unknown; parent?: unknown };
   if (e?.type === "text" && typeof e.delta === "string") return { type: "text", delta: e.delta };
   if (e?.type === "tool_start" && typeof e.name === "string") return { type: "tool_start", callId: String(e.callId ?? ""), name: e.name, args: e.args, ...(typeof e.parent === "string" ? { parent: e.parent } : {}) };
   if (e?.type === "tool_end" && typeof e.name === "string") return { type: "tool_end", callId: String(e.callId ?? ""), name: e.name, isError: e.isError === true, ...(typeof e.result === "string" ? { result: e.result } : {}), ...(e.truncated === true ? { truncated: true as const } : {}) };
-  const notice = event as { type?: string; text?: unknown };
-  if (notice?.type === "notice" && typeof notice.text === "string") return { type: "notice", text: notice.text };
+  if (e?.type === "notice" && typeof e.text === "string") return { type: "notice", text: e.text };
   return undefined;
 }
 

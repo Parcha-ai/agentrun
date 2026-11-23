@@ -317,7 +317,7 @@ test("a call or an answer past the channel's cap fails as FrameTooLarge on the c
   const child = new Channel(b, { maxFrame: 4096 });
   child.expose("big", () => "y".repeat(8192));
   child.expose("echo", (_method, args) => args[0]);
-  const named = (error) => error instanceof FrameTooLarge && error.limit === 4096 && error.bytes > 8192 && error.message.includes(String(error.bytes)) && error.message.includes("4096");
+  const named = (error) => error instanceof FrameTooLarge && Number(/(\d+) bytes/.exec(error.message)?.[1]) > 8192 && error.message.includes("past the channel's 4096");
   // The answer is refused on the child's side and crosses back as an error: still a FrameTooLarge here.
   await assert.rejects(runner.call("big", "it", []), named, "an answer");
   await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), named, "a call");

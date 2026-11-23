@@ -59,6 +59,8 @@ const CLAIM_REFUSED = "claim-refused";
 /** A failed end's code when the run's records no longer cross the channel to its process (run-channel's FrameTooLarge):
  *  every try reads the same records, so none can go on. */
 const TOO_LARGE = "frame-too-large";
+/** The failed ends no resume can mend: a parked run that ends with one of these fails, never tries again. */
+const FOR_GOOD: ReadonlySet<string> = new Set([CLAIM_REFUSED, TOO_LARGE]);
 
 /** The untaken row a run ends on when no loop can: a cancel before a stop (it ends the run for good, in its words). */
 const endingRow = (untaken: readonly Command[]): Command | undefined => untaken.find((row) => row.kind === "cancel") ?? untaken.find((row) => row.kind === "stop");
@@ -737,7 +739,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A claim refused for good (CLAIM_REFUSED), or a run whose records no longer cross to its process (TOO_LARGE), is no
       // resume to try again: it fails the run below, parked or not, and the row that woke it (an approval already answered
       // 204) is refused as a failed run's, never left to wait.
-      if (threw && end.state === "failed" && claim.from === "parked" && end.error.code !== CLAIM_REFUSED && end.error.code !== TOO_LARGE) return await resumeFailed(held, end.error.message);
+      if (threw && end.state === "failed" && claim.from === "parked" && !FOR_GOOD.has(end.error.code)) return await resumeFailed(held, end.error.message);
       if (threw && end.state === "failed") {
         // A loop that failed with no end written: a person's stop waiting now is the run's end (stopped, its row taken),
         // never refused as a failed run's; else the run ends failed with why. Either way its end is in the journal.

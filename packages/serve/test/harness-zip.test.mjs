@@ -53,8 +53,7 @@ for (const [label, bytes, refusal] of BEFORE) {
   });
 }
 
-// An entry that inflates past its declared size stops there, whether or not it also passes the zip's cap: the first case
-// stays under the cap, so the entry's own check is what stops it.
+// An entry that inflates past its declared size stops there.
 for (const [label, actual] of [["500 bytes, under the zip's cap", 500], ["1 MiB, past it (an inflate bomb)", 1024 * 1024]]) {
   test(`an entry declared as 100 bytes that inflates to ${label} stops at its declared size: no more reaches the disk`, async () => {
     const { root, error } = await unpack(zipOf([file("agent", "\0".repeat(actual), { size: 100 })]), { maxUnpacked: 1000 });

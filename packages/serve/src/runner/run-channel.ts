@@ -29,18 +29,11 @@ export class ChannelRefused extends Error {
   override name = "ChannelRefused";
 }
 
-/** A call or an answer past the channel's cap: it fails alone, and the channel goes on. Its bytes and the cap cross with
- *  it (registered on both sides), so a runner can tell a run whose records no longer fit from one that may go on. */
+/** A call or an answer past the channel's cap: it fails alone, and the channel goes on. It crosses as itself (registered
+ *  on both sides), so a runner can tell a run whose records no longer fit from one that may go on; its message names the
+ *  bytes and the cap. */
 export class FrameTooLarge extends RangeError {
   override name = "FrameTooLarge";
-  readonly bytes: number;
-  readonly limit: number;
-  /** `what`: "an answer", or "a call of <method>". */
-  constructor(what: string, bytes: number, limit: number) {
-    super(what === "an answer" ? `an answer of ${bytes} bytes is past the channel's ${limit}` : `${what} is ${bytes} bytes, past the channel's ${limit}`);
-    this.bytes = bytes;
-    this.limit = limit;
-  }
 }
 
 /** The error classes made again by name on the receiving side, so instanceof holds across the channel. Each side
@@ -236,10 +229,10 @@ export class Channel {
       if (message.t === "call") {
         const pending = this.#pending.get(message.id);
         this.#pending.delete(message.id);
-        pending?.reject(new FrameTooLarge(`a call of ${String(message.m)}`, body.length, this.#maxFrame));
+        pending?.reject(new FrameTooLarge(`a call of ${String(message.m)} is ${body.length} bytes, past the channel's ${this.#maxFrame}`));
         return;
       }
-      if (message.t === "ok") return this.#send({ t: "err", id: message.id, e: this.#encode(new FrameTooLarge("an answer", body.length, this.#maxFrame)) });
+      if (message.t === "ok") return this.#send({ t: "err", id: message.id, e: this.#encode(new FrameTooLarge(`an answer of ${body.length} bytes is past the channel's ${this.#maxFrame}`)) });
       return;
     }
     const head = Buffer.alloc(4);
