@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningCommit } from "../dist/learn/commit.js";
-import { readSnapshot, rebuiltSnapshotAt, runMergeOf } from "../dist/learn/folder.js";
+import { readSnapshot, rebuiltSnapshotAt, runMergeOf, SNAPSHOT_FILE } from "../dist/learn/folder.js";
 import { learningStoreOf, useLearningStore } from "../dist/learn/store-of.js";
 import { launchBody } from "../dist/run-launch.js";
 import { ended, git, repoOf, started } from "./learn-support.mjs";
@@ -444,6 +444,37 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.equal(done.landed, true, JSON.stringify(done));
     const after = await c.purge();
     assert.deepEqual({ readme: after[c.readme], file: after[c.path] }, { readme: edited.trim(), file: c.v1[c.path] }, "the hand commit's README stays as it wrote it; workflow.json, still the purged run's, goes back to first's");
+  });
+
+  // The snapshot every commit keeps (.agentrun/snapshot.json) carries the log forward, each earlier change with its
+  // reason. Run `gone` merged a workflow, its reason holding the marker and none of its files; run `other` merged after
+  // it, so main's snapshot names gone's merge as an earlier change. After the purge, main's snapshot.json, read as the
+  // store reads a file at a commit, holds no word of gone's reason; the other run's reason stays.
+  test(`${kind}: a purge leaves none of the purged run's reason in main's .agentrun/snapshot.json, read as the store reads it; another run's reason stays`, { timeout: 120_000 }, async (t) => {
+    const mark = `PURGED-REASON-${randomBytes(6).toString("hex")}`;
+    const { api, data } = await serve(t, { learning: "on" });
+    onStore(t, data, settingsOf());
+    const gone = (await startRun(api, "reasons", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+    await ended(api, gone);
+    const other = await started(api, "reasons", "What is three?");
+    await ended(api, other);
+    await learned(data, "reasons", (ws) => learningCommit(ws, { runId: gone, reason: `It learned answer from ${mark}.`, files: filesOf("in whole numbers") }));
+    await learned(data, "reasons", (ws) => learningCommit(ws, { runId: other, reason: "It learned other.", files: [{ path: "workflows/other/workflow.json", text: JSON.stringify(topicFlow("Answer by topic.")) }, readmeOf("other")] }));
+    /** Main's .agentrun/snapshot.json as the agent's learning store reads it (its read of one path at main's commit). */
+    const snapshotFile = async () => {
+      const learning = learningStoreOf(data, "reasons");
+      const main = await learning.head();
+      const [file] = (await learning.read(main, [SNAPSHOT_FILE])) ?? [];
+      assert.ok(file, `main ${main} keeps ${SNAPSHOT_FILE}`);
+      return Buffer.from(file.body).toString("utf8");
+    };
+    const before = await snapshotFile();
+    assert.ok(before.includes(mark), "before the purge, main's snapshot.json carries the purged run's reason forward");
+
+    assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+    const after = await snapshotFile();
+    assert.ok(!after.includes(mark), `after the purge, main's snapshot.json holds none of the purged run's reason: ${after}`);
+    assert.ok(JSON.parse(after).log.some((change) => change.by?.run === other && change.reason === "It learned other."), `the other run's change keeps its reason: ${after}`);
   });
 
   // #3458 (f5567cd095): a purged run that revised a workflow and put its earlier bytes back in a later round: the

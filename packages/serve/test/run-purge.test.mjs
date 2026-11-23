@@ -29,9 +29,10 @@ import { runMergeOf } from "../dist/learn/folder.js";
 import { learningStoreOf } from "../dist/learn/store-of.js";
 import { StoreConstraint, Unanswered } from "../dist/store/index.js";
 import { gradesKey, putGrade } from "../dist/learn/promote.js";
+import { readLaunchBody } from "../dist/run-launch.js";
 import { metersOverStore, spendOverStore, spentOverStore } from "../dist/store-reads/cap.js";
 import { forgetServed, viewOverStore } from "../dist/store-view.js";
-import { agentLearningFolder, runFolder, scratchFolder } from "../dist/workspace/paths.js";
+import { agentLearningFolder, learningKey, runFolder, scratchFolder } from "../dist/workspace/paths.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { ended, git, repoOf, started } from "./learn-support.mjs";
@@ -578,6 +579,85 @@ test("a run on its agent's own Archil disk: its folder there is deleted, the dis
   assert.equal(await store.settings.get(runDiskKey(gone)), undefined, "the run's disk setting is gone");
   assert.deepEqual(await store.settings.get(runDiskKey(kept)), { diskId: own }, "its sibling's is kept");
   assert.equal((await api("GET", `/runs/${kept}`)).status, 200);
+});
+
+test("a Mode 2 run on its agent's own Archil disk learns into the agent's learning store, never onto the disk: its purge leaves its feedback line and its merge's reason in no file of any disk (none ever had a learning folder) and in no read of the agent's learning (the view, the log, corrections.md at main, another run's diff)", { timeout: 180_000 }, async (t) => {
+  const mark = `PURGE-MARK-${randomBytes(6).toString("hex")}`;
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  // One in-memory disk per disk id, the same to the server (a purge's folder delete) and to the runner (each claim's
+  // folder): the agent's own disk is the one the control fake makes at its first run's claim.
+  const control = archilControlFetch({ region: "aws-us-east-1" });
+  const disks = new Map();
+  const diskOf = ({ disk: id }) => {
+    if (!disks.has(id)) disks.set(id, Object.assign(new FakeArchilDisk(), { id }));
+    return disks.get(id);
+  };
+  const plane = { baseUrl: control.baseUrl, fetch: control.fetch };
+  const server = await serve(t, { learning: "on", runner: false, archilControl: { ...plane, makeDisk: diskOf } });
+  const { api, data, store } = server;
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  let halted;
+  const halt = async () => (halted ??= (await runner)());
+  const runner = startInProcessRunner(data, { learning: "on", faux: FAUX, mcpOwn: server.own, archil: { makeDisk: diskOf, control: plane } });
+  t.after(halt);
+
+  // The run's look-back merges its owner's feedback (holding the marker) as one line of corrections.md; another run's
+  // merges its own line after (its diff shows the purged line as context). A later round of the purged run merged a
+  // workflow, its reason holding the marker, into the same store its end merges into.
+  const gone = (await startRun(api, "keeper", "What is six times seven?", { learning: true, instructions: "Answer the question." })).run_id;
+  await ended(api, gone);
+  const graded = await api("PUT", `/runs/${gone}/grade`, { correct: false, label: `Never answer ${mark} again.` });
+  assert.deepEqual([graded.status, graded.body.feedback], [200, "correction"], JSON.stringify(graded.body));
+  assert.equal((await ended(api, gone)).view.learning?.state, "merged");
+  const kept = await started(api, "keeper", "What is two and two?");
+  await ended(api, kept);
+  const keptGraded = await api("PUT", `/runs/${kept}/grade`, { correct: false, label: "Answer in whole numbers." });
+  assert.deepEqual([keptGraded.status, keptGraded.body.feedback], [200, "correction"], JSON.stringify(keptGraded.body));
+  assert.equal((await ended(api, kept)).view.learning?.state, "merged");
+  await halt();
+  await learned(data, "keeper", (learning) => learningCommit(learning, { runId: gone, round: 3, reason: `It learned from ${mark}.`, files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerFlow("Answer the question.")) }, { path: "workflows/answer/README.md", text: "---\nname: answer\ndescription: Answers a question; use when asked\n---\n" }] }));
+
+  // Both ran in Mode 2 on the agent's own disk: the first run's claim kept the disk it resolved to (it made it), the
+  // second's launch named it, and each run's folder is there.
+  const diskOfRun = async (run) => readLaunchBody((await store.runs.launch(run)).body)?.archilDisk?.diskId ?? (await store.settings.get(runDiskKey(run)))?.diskId;
+  const own = await diskOfRun(gone);
+  assert.ok(own && disks.has(own), `the run's claim kept its agent's own disk: ${own}`);
+  assert.equal(await diskOfRun(kept), own, "the other run is on the same disk");
+  const disk = disks.get(own);
+  for (const run of [gone, kept]) assert.ok([...disk.files.keys()].some((key) => key.includes(`/runs/${run}/`)), `run ${run}'s folder is on the disk`);
+
+  /** Every key, link target and file text on every disk, and every call made to one. */
+  const onDisks = () => [...disks.values()].flatMap((one) => [...one.dirs, ...[...one.links].flat(), ...[...one.files].flatMap(([key, body]) => [key, Buffer.from(body).toString("utf8")])]);
+  const calls = () => [...disks.values()].flatMap((one) => one.calls.map((call) => JSON.stringify(call)));
+  /** No disk has, or was ever asked for, a learning folder: the agent's (learningKey) or one under any folder. */
+  const noLearningFolder = (when) => {
+    const folder = learningKey("keeper");
+    const named = (text) => text.includes(folder) || /(^|[/"])\.?learning(\/|"|$)/.test(text);
+    assert.deepEqual([...disks.values()].flatMap((one) => [...one.dirs, ...one.files.keys(), ...one.links.keys()]).filter(named), [], `${when}, no disk holds a learning folder`);
+    assert.deepEqual(calls().filter(named), [], `${when}, no call to a disk named one`);
+  };
+  /** What a person reads of the agent's learning: its view, its log, corrections.md at main and the other run's diff. */
+  const reads = async () => {
+    const one = async (route) => {
+      const res = await api("GET", route);
+      assert.equal(res.status, 200, `${route}: ${JSON.stringify(res.body ?? res.text)}`);
+      return res.body ?? res.text;
+    };
+    return { view: await one("/agents/keeper/learning"), log: await one("/agents/keeper/learning/log?limit=200"), corrections: await one("/agents/keeper/learning/corrections"), diff: await one(`/runs/${kept}/learning/diff`) };
+  };
+  const holding = (read) => Object.entries(read).filter(([, body]) => JSON.stringify(body).includes(mark)).map(([name]) => name);
+
+  noLearningFolder("before the purge");
+  const before = holding(await reads());
+  assert.deepEqual(["log", "corrections", "diff"].filter((name) => !before.includes(name)), [], `before the purge, the log, corrections.md and the other run's diff serve the marker: ${before}`);
+
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  noLearningFolder("after the purge");
+  const left = onDisks().filter((text) => text.includes(mark));
+  assert.deepEqual(left, [], "no file of any disk holds the marker");
+  const after = await reads();
+  assert.deepEqual(holding(after), [], `no read of the agent's learning serves the marker: ${JSON.stringify(after)}`);
+  assert.match(JSON.stringify(after.corrections), /Answer in whole numbers\./, "the other run's line stays");
 });
 
 test("a purged run's answer and input stay in no in-process cache of its store: a read keeps both (its view's answer and input, its whole answer row), and its purge drops them", { timeout: 120_000 }, async (t) => {
