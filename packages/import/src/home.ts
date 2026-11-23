@@ -246,7 +246,9 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
       tokens,
       reasoning,
       cost: cost ?? null,
-      turns: untied ? 0 : parts.reduce((n, { read }) => n + read.session.users, 0),
+      // A subagent's session counted on its own line (its parent not under the home, or named nowhere: Codex's
+      // source.subagent alone, a Claude Code sidechain file): its prompts are its parent agent's, as serve takes it.
+      turns: untied || parts.every(({ read }) => read.session.child) ? 0 : parts.reduce((n, { read }) => n + read.session.users, 0),
       calls,
       subagents: subagents.length,
     });

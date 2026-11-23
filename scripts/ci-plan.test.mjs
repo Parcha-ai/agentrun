@@ -138,6 +138,24 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.ok(Object.values(shards).some((s) => s.pool === 'any' && s.suites.some((x) => x.name === '@parcha/agentrun-serve')), 'serve is in the any pool');
 });
 
+test("on a pull request this repository's any pool runs the tests its changes reach, and lean every test; the merge queue and main every test", () => {
+  const { config } = readConfig(root);
+  assert.equal(config.pools.any.affected, true);
+  assert.ok(!config.pools.lean.affected, "lean's shards run every test: the lean job's sweep needs a capture from each of its suites");
+  const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
+  const steps = workflow.jobs.test.steps;
+  const shard = steps.find((step) => /ci-shard\.mjs/.test(step.run ?? ''));
+  assert.equal(shard.env.CI_AFFECTED_BASE, "${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}", 'the base is set on a pull request only');
+  // HEAD^1 is in the checkout only with a depth of 2 or more (0 is the whole history).
+  const depth = steps.find((step) => /^actions\/checkout@/.test(step.uses ?? '')).with['fetch-depth'];
+  assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
+});
+
+test('a pool\'s "affected" is true or false', () => {
+  const root = repo('affected-flag', { workspaces: { a: ['@x/a', "node --test 'test/*.test.mjs'", ['test/a.test.mjs']] }, config: { pools: { any: { shards: 1, affected: 'yes' } } } });
+  assert.throws(() => testShards(root), /the pool any's "affected" is true or false, not "yes"/);
+});
+
 test('a file a named pool lists runs once: the rest pool drops it from its own suite', () => {
   const { config } = readConfig(root);
   const shards = Object.values(testShards(root));

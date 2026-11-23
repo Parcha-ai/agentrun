@@ -1,5 +1,6 @@
 // The tests a change reaches: `node scripts/test-affected.mjs` maps the paths changed since a base to the test files they
-// reach and prints a command per suite that runs only those. A round runs these; CI on the pushed head runs every suite.
+// reach and prints a command per suite that runs only those. A round runs these, and a pull request's CI runs them in its
+// any shards (scripts/ci-affected.mjs); the merge queue and main run every suite.
 //   node scripts/test-affected.mjs [--base <ref>] [--stdin] [<path>...] [--list | --json | --run] [--concurrency <n>] [--no-smoke]
 // - The changed paths: those given on argv, or one per line on stdin with --stdin; with neither, every file changed since
 //   the merge base of HEAD and <ref> (default origin/untangle/cutover, else origin/main), committed, staged, unstaged and
@@ -23,7 +24,7 @@
 //             picks its package's test files that import by a computed path themselves.
 //   smoke     SMOKE below, a fast file per package, always (--no-smoke drops it), so a round catches a gross break.
 //   A shared root (SHARED_ROOTS: the root manifests, lockfile, scripts/, .github/) picks the tests that import it and the
-//   smoke set only, not every suite, and says so: CI runs every suite on the pushed head.
+//   smoke set only, not every suite, and says so: CI runs every test for it (scripts/ci-affected.mjs).
 // - Output: by default a shell command per suite, run from the root, on stdout, and what each changed path picked on stderr.
 //   --list prints the picked test files, one per line, from the root. --json prints { base, changed, paths, suites }, with
 //   each picked file's reasons: `{ kind, changed, chain }`, the chain running from the test to the changed path. --run runs
@@ -111,7 +112,10 @@ function isFile(root, path) {
   return fileCache.get(key);
 }
 
-/** The suites: `{ name, dir, files, command(files, { concurrency }) }`, `dir` and `files` relative to the root and `dir`. */
+/**
+ * The suites: `{ name, dir, files, whole, command(files, { concurrency }) }`, `dir` and `files` relative to the root and
+ * `dir`; `whole` marks a suite CI runs as one unit (ci-shards.json's `whole`), which still runs the files it is given here.
+ */
 export function readTestSets(root) {
   const config = existsSync(join(root, 'scripts', 'ci-shards.json')) ? readConfig(root).config : { rootSuites: [], whole: {} };
   const sets = readSuites(root, { config }).map((suite) => {
@@ -132,7 +136,7 @@ export function readTestSets(root) {
     const listed = npmSpawnSync(['exec', ...where, '-c', `${script} --list`], { cwd: root, encoding: 'utf8' });
     if (listed.status !== 0) throw new Error(`${suite.name}: \`${script} --list\` exited ${listed.status ?? listed.signal}: ${(listed.stderr || '').trim().split('\n').slice(-2).join(' / ')}`);
     const files = [...new Set(listed.stdout.split('\n').map((line) => line.trim()).filter(Boolean))].sort();
-    return { name: suite.name, dir: suite.cwd, files, command: (some, { concurrency } = {}) => ({
+    return { name: suite.name, dir: suite.cwd, files, whole: true, command: (some, { concurrency } = {}) => ({
       argv: ['npm', 'exec', ...where, '-c', [script, ...some].join(' ')], env: concurrency ? knobs(concurrency) : {},
     }) };
   });
@@ -393,7 +397,7 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
         }
       }
     }
-    if (shared) note = 'a shared root: its importers and the smoke set only; CI runs every suite on the pushed head';
+    if (shared) note = 'a shared root: its importers and the smoke set only; CI runs every test for it';
     else if (!Object.keys(picked).length && !note) note = exists ? 'no test imports or names it' : 'deleted; no test names it';
     const kinds = Object.fromEntries(Object.entries(picked).map(([kind, set]) => [kind, set.size]));
     paths.push({ path, kinds, ...(note ? { note } : {}) });

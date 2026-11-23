@@ -11,7 +11,7 @@
 // a deadline of at most 30 minutes, and Groundbox's own timer ends it 5 minutes past that.
 import { createHash } from "node:crypto";
 import { boxImageRef } from "../box-image.js";
-import { create, type GroundboxProvider, type GroundboxProviderOptions } from "../groundbox.js";
+import { create, DEFAULT_API_URL, type GroundboxProvider, type GroundboxProviderOptions } from "../groundbox.js";
 import type { MachineHost } from "../host.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
 import { kindFrom } from "./kind.js";
@@ -35,8 +35,6 @@ export const GROUNDBOX_ENV = {
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
 export const ENV = GROUNDBOX_ENV;
-
-const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
 
 /** What this module reads from the environment: the key, and each other option whose name is set. */
 export type GroundboxSettings = Pick<GroundboxProviderOptions, "apiKey" | "apiUrl" | "daemonPath" | "daemonUser" | "kind">;

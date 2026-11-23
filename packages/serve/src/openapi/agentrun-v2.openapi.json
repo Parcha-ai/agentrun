@@ -3523,7 +3523,7 @@
       },
       "TimelineKind": {
         "type": "string",
-        "description": "#572 `TimelineKind`: Grep's ten kinds, then `user_message`, `waiting` and `usage`.",
+        "description": "#572 `TimelineKind`: the ten base kinds, then `user_message`, `waiting` and `usage`.",
         "enum": [
           "thinking",
           "text_block",
@@ -3542,7 +3542,7 @@
       },
       "TimelineRow": {
         "type": "object",
-        "description": "#572 `TimelineEvent`, field for field: Grep's 13 fields, then the open additions. `seq` is optional in the\ntype (Grep's rows have none) and required here: every /v2 row has it, and a page sorts by it.\nCaps are Grep's: summary and previews 500, text 2000. A row never carries a live-view URL, a browser\ncontext id or a cookie; every string but a person's own message keeps a URL's origin, path and query keys\nand drops the rest.\n",
+        "description": "#572 `TimelineEvent`, field for field: the 13 base fields, then the open additions. `seq` is optional in the\ntype (a base row has none) and required here: every /v2 row has it, and a page sorts by it.\nThe base caps: summary and previews 500, text 2000. A row never carries a live-view URL, a browser\ncontext id or a cookie; every string but a person's own message keeps a URL's origin, path and query keys\nand drops the rest.\n",
         "additionalProperties": false,
         "required": [
           "id",

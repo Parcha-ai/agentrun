@@ -1,11 +1,6 @@
-// A parked permission of the agent's own tool (its shell), and an agent that, started again, asks for another command
-// instead of the one it parked on, as Cursor does: its model writes a new command after the restart. The person's
-// answer must still reach the run: the adapter asks the gate about each parked request of the open turn before it
-// starts the agent again, so the answer is taken (the run's pending moves on) whatever the agent asks next, and with
-// none yet the run parks again with no prompt sent. An agent that keeps asking for other commands instead of the one
-// the person approved is stopped after REASK_LIMIT of them, in words, never left to spend its plan.
+// A parked shell permission reaches the run when the restarted agent asks for another command.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
@@ -21,17 +16,17 @@ const lines = (file) => {
   }
 };
 const PARK = { park: true };
-// Read with their values as fallbacks, so a build without them fails on what it does, not on an import.
-const REASK_LIMIT = acp.REASK_LIMIT ?? 3;
-const REASK_CODE = acp.ACP_CODES.reaskLimit ?? 'ACP_REASK_LIMIT';
+const { REASK_LIMIT } = acp;
+const REASK_CODE = acp.ACP_CODES.reaskLimit;
 
 /** A Cursor-style fake whose shell step asks `Run ls` first and another command each time it is taken again; `after`,
- *  steps it takes next. */
+ *  steps it takes next. While the file `hold` exists, a process it starts is not initialized. */
 function reasking(dir, load, after = []) {
   const nativeLog = join(dir, 'native.log');
+  const hold = join(dir, 'hold');
   const step = { native: 'execute', title: 'Run ls', input: { command: 'ls' }, retitled: ['Run ls -la', 'Run ls -la /', 'Run pwd', 'Run pwd -P', 'Run id'] };
-  const recipe = fakeRecipe(dir, { script: [step, ...after, { sayLastResult: true }], style: 'cursor', load, http: load, nativeLog, tally: join(dir, 'tally') });
-  return { recipe, nativeLog };
+  const recipe = fakeRecipe(dir, { script: [step, ...after, { sayLastResult: true }], style: 'cursor', load, http: load, nativeLog, tally: join(dir, 'tally'), holdInit: hold });
+  return { recipe, nativeLog, hold };
 }
 
 /** The first runner: the agent asks, the gate parks, the runner lets the session go. The parked call's id. */
@@ -83,18 +78,21 @@ for (const load of [true, false]) {
 
   test(`an answer taken by a runner that stopped before its prompt still reaches the agent's note on the next one (${how})`, async (t) => {
     const dir = scratch();
-    const { recipe } = reasking(dir, load);
+    const { recipe, hold } = reasking(dir, load);
     const store = memorySessionStore();
     const asked = [];
     const parked = await parkFirst(t, recipe, store, asked);
     const sentBefore = prompts(recipe).length;
 
-    // The second runner takes the person's answer and is lost right after, before the agent gets a prompt.
-    let second;
-    second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), setImmediate(() => second.stop(new Error('the runner was lost'))), 'allow') });
+    // The second runner takes the person's answer and is lost after it is saved; the agent it starts is held before
+    // initialize, so nothing reaches it first.
+    writeFileSync(hold, '');
+    const second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), 'allow') });
     second.session.recover().catch(() => undefined);
-    await until(() => asked.length === 2, 'the gate to be asked about the parked call');
+    await until(async () => (await streamRecords(store, 'acp.permission')).some((r) => r.type === 'answered'), 'the answer to be saved');
+    second.stop(new Error('the runner was lost'));
     await second.session.turnEnd().catch(() => undefined);
+    rmSync(hold);
     const records = await streamRecords(store, 'acp.permission');
     assert.deepEqual(records.filter((r) => r.type === 'answered').map((r) => [r.callId, r.answer]), [[parked, 'allow']], 'the answer was taken and saved');
     assert.equal(prompts(recipe).length, sentBefore, 'the lost runner sent the agent nothing');
@@ -122,7 +120,6 @@ for (const load of [true, false]) {
     const second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), PARK) });
     second.session.recover().catch(() => undefined);
     await until(() => asked.length === 2, 'the gate to be asked about the parked call');
-    await new Promise((resolve) => setTimeout(resolve, 500));
     second.stop(new Error('the run parked again'));
     await second.session.turnEnd().catch(() => undefined);
 

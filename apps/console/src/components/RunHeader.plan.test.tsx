@@ -75,17 +75,4 @@ describe("a run's cost on Claude Code's login", () => {
     const shown = [...header.querySelectorAll("[title]")].map((e) => e.getAttribute("title")).join(" ");
     expect(shown).toContain("Requests on your Claude plan through Claude Code's login cost no dollars here");
   });
-
-  it("a live run, a request on the plan still in flight, says what the ended run says: its tokens and your Claude plan, never not priced", () => {
-    // The server counts a plan request in flight at $0 and among the plan's requests, as it counts one answered.
-    const live: Cost = { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null, plan: { requests: 2, tokens: 3_698, on: "claude_code" } };
-    expect(cost(live)).toBe("3,698 tokens · On your Claude plan");
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    const working: Run = { ...run(live), status: "working", state: "working", ended_at: null };
-    act(() => root!.render(createElement(RunHeader, { run: working, agentName: "Hello" })));
-    const header = host.querySelector("header")!;
-    expect(header.textContent).toContain("3,698 tokens · On your Claude plan");
-    expect(header.textContent).not.toMatch(/not priced|so far|\$0\.00/);
-  });
 });

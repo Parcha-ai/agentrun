@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkNotice, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkNotice, checkPublished, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -92,7 +92,13 @@ async function fixture(fn) {
   try { await cp(baseline, root, { recursive: true }); await fn(root); }
   finally { await rm(root, { recursive: true, force: true }); }
 }
-const preflight = root => releasePreflight(root, `v${version}`, { checkGit: false });
+// Every package is on npm already: the tests never ask the registry (see the npm tests below for the gate itself).
+const published = async () => '0.1.0-beta.1';
+const preflight = (root, npmView = published) => releasePreflight(root, `v${version}`, { checkGit: false, npmView });
+/** What execFile rejects with when `npm view` fails: npm's exit status, its output on stderr. */
+const npmFailure = stderr => Object.assign(new Error(`Command failed: npm view\n${stderr}`), { code: 1, stdout: '', stderr });
+const notFound = name => npmFailure(`npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/${name.replace('/', '%2f')} - Not found\nnpm error 404\nnpm error 404  '${name}@*' is not in this registry.\n`);
+const absent = (...names) => async name => { if (names.includes(name)) throw notFound(name); return '0.1.0-beta.1'; };
 
 test('provenance requires both the dispatch tag and SHA to match checked-out source', () => {
   const tag = `v${version}`, commit = 'a'.repeat(40);
@@ -125,7 +131,7 @@ test('release plan binds the exact verified tarballs in dependency order', () =>
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
-  await assert.rejects(releasePreflight(root, 'v0.1.0', { checkGit: false }), /Tag must match/);
+  await assert.rejects(releasePreflight(root, 'v0.1.0', { checkGit: false, npmView: published }), /Tag must match/);
   await putJson(join(root, 'package.json'), { version, license: 'UNLICENSED' });
   await assert.rejects(preflight(root), /approved MIT or Apache/);
 }));
@@ -585,3 +591,33 @@ test("a release folded with a held package's fragment passes the preflight, and 
   assert.equal((await preflight(root)).status, 'passed', 'entries left under a held package\'s Unreleased do not block the release');
 }));
 
+
+test('a package of the publish set not on npm yet stops the release before anything is published, naming it and the bootstrap step', async () => {
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], absent('@parcha/agentrun-import')), error =>
+    error.message === '@parcha/agentrun-import is not on npm yet. Bootstrap it before releasing: publish a first version by hand and set up its trusted publisher (docs/releasing.md).');
+});
+
+test('every package not on npm yet is named in one error', async () => {
+  await assert.rejects(checkPublished(['@parcha/agentrun-import', '@parcha/agentrun-dsl', '@parcha/agentrun-eve'], absent('@parcha/agentrun-import', '@parcha/agentrun-eve')), error =>
+    error.message === '@parcha/agentrun-import and @parcha/agentrun-eve are not on npm yet. Bootstrap them before releasing: publish a first version of each by hand and set up its trusted publisher (docs/releasing.md).');
+});
+
+test('every package on npm passes the gate', async () => {
+  const asked = [];
+  await checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], async name => { asked.push(name); return '0.1.0-beta.1'; });
+  assert.deepEqual(asked, ['@parcha/agentrun-dsl', '@parcha/agentrun-import']);
+});
+
+test('an npm failure that is not a 404 (network, auth) stops the release too: never taken for published', async () => {
+  const offline = async name => { if (name === '@parcha/agentrun-import') throw npmFailure('npm error code ECONNRESET\nnpm error network aborted\n'); return '0.1.0-beta.1'; };
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl', '@parcha/agentrun-import'], offline), error =>
+    /npm could not say whether @parcha\/agentrun-import is published/.test(error.message) && /ECONNRESET/.test(error.message) && !/Bootstrap/.test(error.message));
+  await assert.rejects(checkPublished(['@parcha/agentrun-dsl'], async () => { throw Object.assign(new Error('spawn npm ENOENT'), { code: 'ENOENT' }); }), /npm could not say whether @parcha\/agentrun-dsl is published/);
+});
+
+test('releasePreflight runs the gate over the tree\'s publish set: a held package is not asked for, a missing one stops it', () => fixture(async root => {
+  const asked = [];
+  await preflight(root, async name => { asked.push(name); return '0.1.0-beta.1'; });
+  assert.deepEqual(asked, releasePackages.map(directory => releasePackageNames[directory]));
+  await assert.rejects(preflight(root, absent('@parcha/agentrun-import')), /@parcha\/agentrun-import is not on npm yet\. Bootstrap it before releasing/);
+}));

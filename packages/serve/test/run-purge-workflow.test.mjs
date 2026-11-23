@@ -695,10 +695,21 @@ test("a learning folder whose end() throws after the purge gate's ask leaves the
   assert.deepEqual(reads, { run: 200, cost: 200 }, "an end() that throws after the gate's ask leaves both reads 200");
 });
 
+// A claim's purge gate ask (runner/promotion.ts claimPromotion's `refused`) ends the learning folder after it, as the
+// server's reads do: an end() that throws is said in the run's log, never dropped.
+test("a claim's purge gate ask whose learning folder end() throws says so in the claim's log", async () => {
+  const { claimPromotion } = await import("../dist/runner/promotion.js");
+  const lines = [];
+  const folder = () => ({ workspace: {}, end: async () => { throw new Error("the learning folder's end failed"); } });
+  const { refused } = claimPromotion({ store: {}, agentId: "ender", log: (line) => lines.push(line), folder, shown: async () => ({}) });
+  await refused([], []);
+  assert.ok(lines.some((line) => line.includes("the learning folder's end failed")), `the end's error is logged: ${JSON.stringify(lines)}`);
+});
+
 // A purge gate whose store read fails (its read of a writer's run row throws): a promote write still fails closed
 // (decideCheck throws, nothing is promoted), and the single-run GET degrades instead of a 500, its share read without the
-// gate's answer.
-test("a purge gate whose store read fails leaves the run read 200 and still refuses the promote write", { timeout: 120_000 }, async (t) => {
+// gate's answer, and says so (`cost.degraded`); the same read before the row broke says nothing of it.
+test("a purge gate whose store read fails leaves the run read 200, its cost marked degraded, and still refuses the promote write", { timeout: 120_000 }, async (t) => {
   const { api, data, store } = await serve(t, { runner: false });
   const runId = await servedRunOf(api, store, "torn");
   // The workflow's writer, a run of another agent: no read of torn's own runs reads its row, only the gate does.
@@ -716,6 +727,9 @@ test("a purge gate whose store read fails leaves the run read 200 and still refu
     { workflow: "answer", digest: digestOf(v1[path]), at, decided: "promote", reason: "checked: promoted", commit },
     { workflow: "answer", digest: digestOf(v2[path]), at, decided: "replaying", reason: "checking", check: bar, ...replay },
   ] });
+  const whole = await api("GET", `/runs/${runId}`);
+  assert.equal(whole.status, 200);
+  assert.equal(whole.body.cost?.degraded, undefined, `a read with the gate's answer is not degraded: ${JSON.stringify(whole.body.cost)}`);
   // The writer's row no longer reads: every store read of it throws (its metrics are not JSON, past the column's check).
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
@@ -735,7 +749,7 @@ test("a purge gate whose store read fails leaves the run read 200 and still refu
   const deps = { store, agentId: "torn", log: () => {}, shown: async () => secretsShown([]), refused: refusedIn(() => learningFolderOf(data, "torn"), store) };
   const write = await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was?.decided === "replaying", replay).then(() => "written", () => "refused");
   const decided = promotionOf((await store.settings.get("learning.promotions.torn")).items, "answer", digestOf(v2[path]))?.decided;
-  assert.deepEqual({ run: run.status, write, decided }, { run: 200, write: "refused", decided: "replaying" }, "a gate whose store read fails leaves the run read 200, and the promote write is still refused");
+  assert.deepEqual({ run: run.status, degraded: run.body.cost?.degraded, write, decided }, { run: 200, degraded: true, write: "refused", decided: "replaying" }, "a gate whose store read fails leaves the run read 200 and marked degraded, and the promote write is still refused");
 });
 
 // A check that outlives its revision's run, with the inputs it did not agree on: the run's purge puts v1 back on main

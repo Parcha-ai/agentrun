@@ -63,6 +63,9 @@ export interface McpForClaimOptions {
   /** A test's fake GitHub MCP origin, handed to the claim step (mcpClaim's githubMcpOrigin): for tests only: no environment variable, flag or setting maps onto it; absent, GitHub's hosted MCP
    *  (github.ts GITHUB_MCP_ORIGIN). */
   readonly githubMcpOrigin?: string;
+  /** A test's fake Composio MCP origin, handed to the claim step and the pin's listing (mcpClaim's composioMcpOrigin): for
+   *  tests only: no environment variable, flag or setting maps onto it; absent, Composio's (composio-made.ts COMPOSIO_ORIGIN). */
+  readonly composioMcpOrigin?: string;
   /** Whether this runner may reach an MCP server whose URL is on loopback (AdapterSpecDeps.mcpLoopback): the runner
    *  beside a local-install server, or a runner in its own process whose own environment opts in. Absent, never. */
   readonly loopback?: boolean;
@@ -136,13 +139,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       sealKey: options.sealKey,
       signal: held.signal,
       // A run whose revision has no pin (one made before the upgrade) pins it here, listing as a save does.
-      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}) }),
+      pinListing: registryListing(options.store, options.sealKey, { loopback: options.loopback === true, own: options.own ?? [], ...(options.network ? { network: options.network } : {}), ...(githubApp ? { githubApp } : {}), ...(options.githubMcpOrigin ? { appOrigin: options.githubMcpOrigin } : {}), ...(options.composioMcpOrigin ? { composioOrigin: options.composioMcpOrigin } : {}) }),
       ...(options.bounds ? { bounds: options.bounds } : {}),
       ...(options.network ? { network: options.network } : {}),
       ...(options.loopback ? { loopback: true } : {}),
       ...(options.own ? { own: options.own } : {}),
       ...(githubApp ? { githubApp } : {}),
       ...(options.githubMcpOrigin ? { githubMcpOrigin: options.githubMcpOrigin } : {}),
+      ...(options.composioMcpOrigin ? { composioMcpOrigin: options.composioMcpOrigin } : {}),
       ...(options.githubTimer ? { githubTimer: options.githubTimer } : {}),
       ...(options.hold ? { hold: options.hold } : {}),
     });
