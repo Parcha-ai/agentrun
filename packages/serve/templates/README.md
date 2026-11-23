@@ -319,14 +319,15 @@ and runs on the eval's own server.
 A case passes when every grader passes on every run.
 
 **The output check.** A package with `output` holds every completed run to its schema with no grader file: the run
-fails when the server's own read of its answer sets `result.output_error` (its last fenced `json` block missing, not
-JSON, or refused by the schema, after the runner's one retry). The report lists it as the grader `output`.
+fails when the server's own read of its answer sets `result.output_error` (its json block missing, not JSON, or refused
+by the schema, after the runner's one retry). The json block is the answer's last fenced `json` block, or the whole
+answer when it is one JSON object and nothing else. The report lists it as the grader `output`.
 
 **The graders**, as the runner reads them:
 
 - `regex`: `pattern` with `flags` (some of `i`, `m`, `s`, `u`, `v`) over the whole answer, or over `target`, a field of
-  the last `json` block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no such
-  field fails the grader, whatever `expect` says.
+  the answer's json block (`a.b` for a nested one; a string as it is, anything else as its JSON). An answer with no
+  such field fails the grader, whatever `expect` says.
 - `tool_used`: the calls of `tool` (or any of `tools`) by gate name (`write`, `web_fetch`, `mcp:<server>/<tool>`,
   `monid:<provider>/<endpoint>`). A monid endpoint is one the package's `tools` grants by name: a provider's wildcard
   (`monid:<provider>/*`) is filled from monid's listing when the agent is saved, so the eval cannot check a name under
@@ -340,12 +341,12 @@ JSON, or refused by the schema, after the runner's one retry). The report lists 
 - `llm`: a run of a grader agent on the same server, with no tools, a fixed instruction and the `--grader-model`. It is
   given the rubric, the run's input, its answer, its tool calls and the calls each fake received, and with `target`
   that field besides (the whole answer stays, for anything else the rubric checks). Each call shows its arguments as
-  `tool_used` reads them, its status, and its result's first 8,000 characters through the same redaction. The prompt
+  `tool_used` reads them, its status, and its result whole to 120,000 characters through the same redaction. The prompt
   stays under 120,000 characters: past that, the two call lists share what the rest leaves, the longest results (and a
   fake's longest arguments) lose their middle first (marked), then the middle calls, and each list's first line says
   what was cut. The rubric, task and answer are never cut, so they alone can pass the cap. Never another grader, the case's
-  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block; any other answer
-  fails the grader.
+  description or anything the case expects. It answers `{pass, reason}` in a fenced `json` block, or as that one
+  object alone; any other answer fails the grader.
 
 The report gives each run's cost and each `llm` grade's, as their run records say, and the total.
 
