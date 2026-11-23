@@ -1584,6 +1584,8 @@ lists no models and slows nothing: the listing has 2 seconds in all, and follows
 - Cost: $0, booked as a known cost. Its requests never count toward the [limit on free
   requests](#a-limit-on-free-requests): there is no shared quota behind them.
 - Harness: pi alone. claude-agent, codex and opencode never list them.
+- Cloud models: an Ollama cloud model (a `-cloud` tag, with `remote_host` and `remote_model` in `/api/tags` or
+  `/api/show`) runs on ollama.com, not here, so it is never listed: never local, never $0, never the default.
 - Default: with no model key held (and no `AGENT_MODEL`, ChatGPT sign-in or gateway), pi runs on the first model Ollama
   lists that calls tools. Any key wins. A model without tools is pickable, never the default.
 

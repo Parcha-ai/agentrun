@@ -90,6 +90,12 @@ export function ollamaAsking(env: NodeJS.ProcessEnv): Promise<readonly OllamaLis
   return base === undefined ? undefined : asking.get(base);
 }
 
+/** What marks an Ollama cloud model (a `-cloud` tag): it runs on `remote_host` (ollama.com) as `remote_model`. */
+type Remote = { remote_host?: unknown; remote_model?: unknown };
+/** Whether an /api/tags or /api/show entry is a cloud model's. Its prompts leave this machine, so it is never listed: the
+ *  models here are local, $0 and uncounted, and a cloud model is none of those. */
+const remote = (entry: Remote | null | undefined): boolean => entry?.remote_host !== undefined || entry?.remote_model !== undefined;
+
 /** The base OLLAMA_HOST names, or undefined where it is refused (ollamaBase). */
 const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
   try {
@@ -103,7 +109,7 @@ const baseOf = (env: NodeJS.ProcessEnv): string | undefined => {
  * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
  * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
  * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
- * does not answer for is left out. The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ * does not answer for is left out, and so is a cloud model (remote_host or remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
  */
 export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
   const base = baseOf(env);
@@ -116,11 +122,12 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   };
   let models: readonly OllamaListed[] = [];
   try {
-    const tags = (await ask("/api/tags")) as { models?: { name?: unknown; model?: unknown }[] } | null;
-    const names = (Array.isArray(tags?.models) ? tags.models : []).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
+    const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
+    const names = (Array.isArray(tags?.models) ? tags.models : []).filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
     const shown = await Promise.all(names.map(async (name): Promise<OllamaListed | undefined> => {
       try {
-        const show = (await ask("/api/show", { model: name })) as { capabilities?: unknown; model_info?: Record<string, unknown> } | null;
+        const show = (await ask("/api/show", { model: name })) as ({ capabilities?: unknown; model_info?: Record<string, unknown> } & Remote) | null;
+        if (remote(show)) return undefined;
         // An Ollama from before /api/show said capabilities chats, with its tools as text.
         const capabilities = Array.isArray(show?.capabilities) ? show.capabilities.filter((c): c is string => typeof c === "string") : ["completion"];
         const length = Object.entries(show?.model_info ?? {}).find(([key]) => key.endsWith(".context_length"))?.[1];

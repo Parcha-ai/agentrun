@@ -14,6 +14,10 @@ export const SYNTH_MODELS = Object.freeze([
   { name: "synth-embed:1b", capabilities: ["embedding"], family: "synthembed", context_length: 8_192 },
 ]);
 
+/** A cloud model's fields (Ollama's `-cloud` tags, run on ollama.com): `remote_model` and `remote_host`, in /api/tags
+ *  and /api/show alike, as a model given them names them. */
+const remoteOf = (model) => Object.fromEntries(["remote_model", "remote_host"].filter((key) => model[key] !== undefined).map((key) => [key, model[key]]));
+
 const json = (res, status, value) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
 
 /**
@@ -45,13 +49,13 @@ export function ollamaHandler({ models = SYNTH_MODELS, reply = () => ({ text: "D
       }
       if (route === "tags") {
         got.tags += 1;
-        return json(res, 200, { models: models.map((m) => ({ name: m.name, model: m.name, modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) });
+        return json(res, 200, { models: models.map((m) => ({ name: m.name, model: m.name, ...remoteOf(m), modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) });
       }
       if (route === "show") {
         got.show.push(body?.model);
         const model = models.find((m) => m.name === body?.model);
         if (!model) return json(res, 404, { error: `model '${body?.model}' not found` });
-        return json(res, 200, { details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });
+        return json(res, 200, { ...remoteOf(model), details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });
       }
       got.chat.push(body);
       const answer = reply(body, got.chat.length);

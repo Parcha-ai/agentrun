@@ -59,6 +59,16 @@ test("under the model gateway or the faux model, providerModels never asks Ollam
   assert.deepEqual(ollama.got.show, []);
 });
 
+test("an Ollama cloud model (remote_model and remote_host, run on ollama.com) is never listed, so never local and never the default, even newest and with tools", async (t) => {
+  const cloud = { name: "synth-cloud:20b-cloud", remote_model: "synth-cloud:20b", remote_host: "https://ollama.com", capabilities: ["completion", "tools", "thinking"], family: "synthcloud" };
+  const ollama = await fakeOllama(t, { models: [cloud, ...SYNTH_MODELS] });
+  const env = { OLLAMA_HOST: ollama.host };
+  const models = await providerModels(env);
+  assert.deepEqual(models.getModels("ollama").map((model) => model.id), [PLAIN, TOOLS], "the cloud model left out");
+  assert.equal(hostModel(env, "default", "pi"), `ollama/${TOOLS}`, "the default is the first local model with tools");
+  assert.ok(!ollama.got.show.includes(cloud.name), "its tag alone says it is a cloud model: no /api/show for it");
+});
+
 test("an Ollama that takes the request and never answers lists nothing once its timeout passes, and that answer is kept for its address", async (t) => {
   const ollama = await fakeOllama(t, { hang: true });
   const env = { OLLAMA_HOST: ollama.host };
