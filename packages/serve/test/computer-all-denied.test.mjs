@@ -17,7 +17,7 @@ import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import { specFor, toolNames } from "./runner-spec-support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 
-const { computerDepsFrom } = await import("../dist/workspace/index.js");
+const { computerDepsFrom, withoutKindSkill } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { computerDenied, deniedText } = await import("../dist/tool-gate.js");
 const { computerDeniedWords, computerOffText, computerOffWords } = await import("../dist/refusal-words.js");
@@ -99,6 +99,16 @@ test("computerDenied: a computer is denied only when every tool it serves the ru
   assert.equal(computerDenied(agent({ kind: "browser", provider: "local-chrome" }, ["browser"]), "none", read({ browser: { permission: "deny" } })), "browser");
   assert.equal(computerDenied(agent({ kind: "none" }, ["read"]), "none", read({ read: { permission: "deny" } })), undefined, "no computer");
   assert.equal(computerDeniedWords("phone"), "Every tool for this agent's phone is set to deny, so a run never starts it: allow one, or set the computer to none.");
+});
+
+// The skill list of a run whose computer is off, a moved project's included (its files read from the folder, the kind's
+// among them): the kind's own skill is named to no one; an authored skill of that name is the agent's, and stays.
+test("withoutKindSkill: a computer off drops the kind's skill from the run's skill files, never an authored one of its name", () => {
+  const files = ["notes/SKILL.md", "phone-computer/SKILL.md"];
+  assert.deepEqual(withoutKindSkill(files, { "notes/SKILL.md": "x" }, "phone"), ["notes/SKILL.md"]);
+  assert.deepEqual(withoutKindSkill(files, { "phone-computer/SKILL.md": "mine" }, "phone"), files, "the agent's own phone-computer skill");
+  assert.deepEqual(withoutKindSkill(["notes/SKILL.md", "desktop-computer/SKILL.md"], {}, "desktop"), ["notes/SKILL.md"]);
+  assert.deepEqual(withoutKindSkill(files, {}, "browser"), files, "a browser brings no skill");
 });
 
 /** The claim's phone, as a provider hands it: a fake computerd client that records each call (no ui group). */
