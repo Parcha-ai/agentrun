@@ -49,6 +49,7 @@ import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
+import suggestAgents from "./suggest-agents.mjs";
 
 export const flows = [
   setupOpen,
@@ -89,4 +90,5 @@ export const flows = [
   playgroundOperationWidth,
   devToolsPanelWidth,
   playgroundPaneLines,
+  ...suggestAgents,
 ];

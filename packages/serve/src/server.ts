@@ -185,6 +185,7 @@ import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
 import { HOOK_TOLERANCE_S } from "./standard-webhooks.js";
 import { GitHubConnect, GitHubConnection, INSTALLED_PATH, startedHere as gitHubStartedHere, stateCookie } from "./github-connection.js";
+import { SCOUT_TEMPLATE, Suggestions } from "./suggestions.js";
 import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js";
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
@@ -200,7 +201,7 @@ import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
-import { deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -559,6 +560,10 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  loopback. The runner beside it is told them with localInstall (runner/beside.ts mcpOwn), so its runs' loopback reads
    *  never reach this server, as its own reads never do. */
   own: readonly string[];
+  /** With --faux-github: the fake GitHub's API and its repository's site, for a test's own runner alone
+   *  (test/support.mjs): the runner's GitHub API has one way in, a test runner's option, so neither the CLI's runner nor
+   *  any setting is ever pointed at it. */
+  fauxGitHub?: { api: string; web?: string };
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number };
   /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
@@ -811,6 +816,14 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/integrations\/github\/connect$/, name: "connectGitHub" },
   { method: "GET", pattern: /^\/integrations\/github\/callback$/, name: "gitHubCallback" },
   { method: "GET", pattern: /^\/integrations\/github\/installed$/, name: "gitHubInstalled" },
+  { method: "GET", pattern: /^\/integrations\/github\/repositories$/, name: "listGitHubRepositories" },
+  // Suggested agents (suggestions.ts): what the agent-scout template finds in a repository, and what a person decides.
+  { method: "GET", pattern: /^\/suggestions$/, name: "listSuggestions" },
+  { method: "POST", pattern: /^\/suggestions\/scans$/, name: "scanForSuggestions" },
+  { method: "GET", pattern: /^\/suggestions\/([^/]+)$/, name: "getSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/discard$/, name: "discardSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/restore$/, name: "restoreSuggestion" },
+  { method: "POST", pattern: /^\/suggestions\/([^/]+)\/create$/, name: "createSuggestedAgent" },
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
@@ -2169,13 +2182,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // --faux-github (with --faux only): the fake App is connected afresh at each start, its API in this process.
   const was = options.faux && options.fauxGitHub ? github.view() : undefined;
   if (was && was.slug !== FAUX_GITHUB.slug) throw new Error(`--faux-github connects a fake GitHub App, and this data directory has the GitHub App ${was.slug} connected: use a scratch data directory.`);
-  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub() : undefined;
+  // Its repository as a bare git repository beside the data, so a run's checkout of it (agent-scout's) stays on this machine.
+  const fauxGitHub = options.faux && options.fauxGitHub ? await startFauxGitHub({ webDir: join(data, "faux-github-web") }) : undefined;
   if (fauxGitHub) {
     stops.push(() => fauxGitHub.close());
     if (was) await github.remove();
     await github.save(fauxGitHub.app);
     await github.setInstallations([{ id: FAUX_GITHUB.installation, account: FAUX_GITHUB.account }]);
-    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories })}\n`, { mode: 0o600 });
+    await writeFile(join(data, FAUX_GITHUB_FILE), `${JSON.stringify({ webhook_secret: fauxGitHub.app.webhookSecret, installation: FAUX_GITHUB.installation, account: FAUX_GITHUB.account, repositories: FAUX_GITHUB.repositories, api_url: fauxGitHub.url })}\n`, { mode: 0o600 });
   }
   const githubConnect = new GitHubConnect(github, { ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}), api: fauxGitHub?.url ?? options.githubApi ?? GITHUB_API, say: (fields) => log?.(logLine("github", fields)) });
   /** The connection a GitHub template or the console reads: the App's id, slug and installations, never a secret. */
@@ -2193,6 +2207,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return "token" in minted ? { api, hosts, token: minted.token } : { api, hosts, anonymous: "unusable" in minted ? minted.unusable : minted.failed };
     },
   };
+  // Suggested agents (suggestions.ts): scans run the bundled agent-scout, applied once and reused (one apply at a time
+  // on this server); a create pushes through the App's token for the one repository, then applies the package it pushed
+  // as an imported template, so the agent here is made from the very files the pull request adds.
+  let scouting: Promise<string> | undefined;
+  const suggestions = new Suggestions({
+    settings: store.settings,
+    github: { view: () => github.view(), settingsUrl: () => github.settingsUrl(), get api() { return githubConnect.api; }, repoInstallation: (repo, signal) => githubConnect.repoInstallation(repo, signal), tokenWith: (installation, repo, permissions, signal) => githubConnect.tokenWith(installation, repo, permissions, signal), revokeToken: (token) => githubConnect.revokeToken(token) },
+    scoutAgent: () => (scouting ??= (async () => {
+      const mine = (await agents.list()).find((one) => one.template?.id === SCOUT_TEMPLATE && !one.agent.archivedAt);
+      if (mine) return mine.agent.id;
+      const pkg = registry.get(SCOUT_TEMPLATE);
+      if (!pkg) throw new ApiError("unavailable", `This server does not ship the ${SCOUT_TEMPLATE} template, which scans a repository.`);
+      return (await applyTemplate(pkg, { parameters: {} })).applied.agent_id;
+    })().finally(() => { scouting = undefined; })),
+    startScan: async (agentId, content) => (await startRunOf(await needRunnableAgent(agentId), { input: { content } })).id,
+    readRun: async (runId) => {
+      const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
+      if (!view) return undefined;
+      const result = isObject(view.result) ? view.result : undefined;
+      const error = isObject(view.error) && typeof view.error.message === "string" ? view.error.message : typeof result?.output_error === "string" ? `Its answer did not meet the scout's schema: ${result.output_error}` : undefined;
+      return { status: String(view.status), ...(result && result.output != null ? { output: result.output } : {}), ...(error ? { error } : {}), ...(typeof view.ended_at === "string" ? { endedAt: Date.parse(view.ended_at) } : {}) };
+    },
+    // Kept, then applied (template-import.ts applyImported): a thrown error means no agent was made. The package has no
+    // trigger, so the apply makes the agent as its last write.
+    cancelScan: async (runId) => { await cancel(store, await needRun(runId)); },
+    agentFrom: async (id, sha) => (await agents.list()).find((one) => one.template?.id === id && one.template.sha === sha && !one.agent.archivedAt)?.agent.id,
+    makeAgent: async (id, origin, files) => {
+      const made = await applyImported({ registry, store, apply: (pkg) => applyTemplate(pkg, { parameters: {} }) }, id, origin, files);
+      return { agentId: made.applied.agent_id, warnings: made.applied.warnings };
+    },
+    ...(options.publicUrl ? { publicUrl: options.publicUrl.replace(/\/+$/, "") } : {}),
+  });
   // A github_app MCP server's tools are listed with an installation token of the App, narrowed to one repository it covers
   // with metadata read (tokenForListing); a run's own is minted in the runner (runner/github-app.ts). Every token minted
   // is a server secret while it may be in use.
@@ -5552,6 +5598,32 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = githubConnection();
         return send(res, 200, view ? { connected: true, ...view } : { connected: false });
       }
+      case "listGitHubRepositories": {
+        // The installations repaired from GitHub's own first, as getGitHubConnection does (at most once a minute): an
+        // installation whose event was missed is listed, not hidden until a restart.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        const listed = await githubConnect.repositories(stopping.signal);
+        if ("unusable" in listed) throw new ApiError("github_not_connected", listed.unusable);
+        return send(res, 200, listed, { "cache-control": "no-store" });
+      }
+      case "listSuggestions":
+        // The same repair first: the page's Refresh and Check again read installations as GitHub has them.
+        await githubConnect.reconcile((detail) => triggers.turnOff("github", detail));
+        return send(res, 200, await suggestions.list({ ...(url.searchParams.has("repo") ? { repo: url.searchParams.get("repo")! } : {}), ...(url.searchParams.has("status") ? { status: url.searchParams.get("status")! } : {}) }), { "cache-control": "no-store" });
+      case "scanForSuggestions": {
+        const scanned = await suggestions.scan(await bodyOf(req));
+        return send(res, scanned.status, scanned.body, { location: `/v2/runs/${String(scanned.body.run_id)}` });
+      }
+      case "getSuggestion":
+        return send(res, 200, await suggestions.get(id, stopping.signal, url.searchParams.get("name") ?? undefined), { "cache-control": "no-store" });
+      case "discardSuggestion":
+        return send(res, 200, await suggestions.discard(id));
+      case "restoreSuggestion":
+        return send(res, 200, await suggestions.restore(id));
+      case "createSuggestedAgent": {
+        const created = await suggestions.create(id, await bodyOf(req), stopping.signal);
+        return send(res, created.status, created.body);
+      }
       case "disconnectGitHub": {
         const view = githubConnection();
         if (!view) throw new ApiError("not_found", "No GitHub App is connected to this server.");
@@ -6505,6 +6577,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
     localInstall,
     own: mcpServers.own,
+    ...(fauxGitHub ? { fauxGitHub: { api: fauxGitHub.url, ...(fauxGitHub.web ? { web: fauxGitHub.web } : {}) } } : {}),
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
