@@ -1225,6 +1225,12 @@ export type McpRemoved = { readonly url: string; readonly sealed: Uint8Array | n
 /** The fields of a server's write (Mcp.put). */
 export type McpServerWrite = { name: string; url: string; auth: string; protocol?: string | null; tools: unknown; prices?: unknown; serverInfo?: unknown; instructions?: string | null; sealed?: Uint8Array | null; listedAt?: number; updatedAt?: number; credentialChangedAt?: number | null; tokenLeftMs?: number | null };
 
+/** The API token's mark a write over a saved server's row needs, compared in the statement that writes or removes the row:
+ *  the setting at `record` (the server's source record, mcp-sources.ts) still says `by: "token"` for that very row (its
+ *  `of` is the row's created_at). An owner's save drops the mark before it writes its row, so a write that needs the mark
+ *  never lands over the owner's save, whenever that save lands. */
+export type McpTokensMark = { readonly record: string };
+
 export interface Mcp {
   /** The server's write: the server's row, inserted or replaced by name (its first save's time kept). An owner's save
    *  clears any refresh lease and changes the credential, so a refresh in flight is dropped (keepRefreshed's `kept: false`)
@@ -1233,8 +1239,9 @@ export interface Mcp {
   put(server: McpServerWrite): Promise<McpServerRow>;
   /** put(), only while the server's credential is still `expected` (its mark as the writer read it; null: no server by
    *  that name), compared and written in one statement: no other write lands between. Undefined, writing nothing, when
-   *  it is not. */
-  putIfCredential(server: McpServerWrite, expected: McpCredentialMark): Promise<McpServerRow | undefined>;
+   *  it is not. `tokens`: the API token's write over a saved row, which lands only while the row still carries the
+   *  token's mark (McpTokensMark), in the same statement. */
+  putIfCredential(server: McpServerWrite, expected: McpCredentialMark, tokens?: McpTokensMark): Promise<McpServerRow | undefined>;
   /** An owner's rewrite of a row it read, its credential kept as it is (a tools refresh, a save that sends no new
    *  credential): the listing, prices, url and times written by a compare-and-set on the CREDENTIAL, iff the row is still
    *  saved and its sealed value is still `seen` (the one the owner read). The credential's columns (sealed, token_until,
@@ -1245,8 +1252,10 @@ export interface Mcp {
   /** Deletes the row, answering what it held as it went (McpRemoved); undefined when there was none. */
   remove(name: string): Promise<McpRemoved | undefined>;
   /** remove(), only while the server's credential is still `expected` (its mark as the remover read it), compared and
-   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). */
-  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>): Promise<McpRemoved | undefined>;
+   *  deleted in one statement. Undefined, deleting nothing, when it is not (or the server is gone). `tokens`: the API
+   *  token's removal, which lands only while the row still carries the token's mark (McpTokensMark), in the same
+   *  statement. */
+  removeIfCredential(name: string, expected: NonNullable<McpCredentialMark>, tokens?: McpTokensMark): Promise<McpRemoved | undefined>;
   /** The registry's rows, by name. */
   servers(): Promise<McpServerRow[]>;
   server(name: string): Promise<McpServerRow | undefined>;

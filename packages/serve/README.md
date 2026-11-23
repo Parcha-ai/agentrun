@@ -2270,9 +2270,13 @@ refused, so a host must not bind a per-run server to a `user_id` that a single-u
 What can go wrong, told apart:
 
 - `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
-  owner's console saves, or deleted a server the token did not save (the owner's, sealing a credential or not), which
-  only the owner's console deletes. The link opens Settings → MCP servers with the form filled in (name, URL, kind of
-  credential, toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
+  owner's console saves, or saved over or deleted a server the token did not save (the owner's, sealing a credential or
+  not), which only the owner's console changes or deletes. The link opens Settings → MCP servers with the form filled in
+  (name, URL, kind of credential, toolkit; for a saved server, its Change form), never the credential. A URL that could
+  hold one is left out.
+- `412 precondition_failed`: the server changed while the save or delete ran (another save, a sign-in, a removal), so
+  nothing was written over it: read it again and try again. An owner's save that lands while the token's save or delete
+  of a server it saved is under way makes the server the owner's, and the token's is this `412`.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).
@@ -3244,8 +3248,8 @@ serves these routes alone:
   the hook, or start those runs through the API). A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
-- a Composio server's save, and the delete of a server the token saved, for a backend that grants its runs Composio
-  tools. The token here never writes a secret, so the save keeps none:
+- a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
+  backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
     `"api_key_env": "COMPOSIO_API_KEY"`, never `api_key` (still `403`). The server keeps the variable's name, never its
     value, and reads the value it and each runner were started with at each use: the save's calls to Composio, each
@@ -3261,8 +3265,9 @@ serves these routes alone:
     address, and the key read from the variable is only ever sent to Composio's own origin, fixed in code. A server
     whose saved address is anywhere else is refused by name wherever that key would be read (a refresh, a run's start),
     and nothing is sent;
-  - a delete (`DELETE /settings/mcp-servers/{name}`) takes only a server the token saved. One saved any other way (by the
-    owner, sealing a credential or not) is `403`, it stays, and nothing is sent to Composio.
+  - a save over a saved name and a delete (`DELETE /settings/mcp-servers/{name}`) take only a server the token saved.
+    One saved any other way (by the owner, sealing a credential or not) is `403` to both, it stays as it was, and
+    nothing is sent to Composio. An owner's save that lands while the token's is under way wins: the token's is `412`.
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here, and no
   generic save (`PUT /settings/mcp-servers/{name}`), so the token saves no server at an address or with headers of its

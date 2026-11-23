@@ -4518,7 +4518,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // What a stored predicate read to let the request through (SecretRequest.seen): the operation's write is refused if
     // that changed before it lands, so a write allowed against one stored credential never lands over another.
     // `byToken`: the gate read this request as the API token's, so an MCP server it saves is recorded as the token's, and
-    // it removes only one the token saved (mcp-sources.ts savedByToken).
+    // it saves over or removes only one the token saved (mcp-secret-writes.ts tokenWriteOverRefused), compared again in
+    // the statement that writes or removes the row (mcp-servers-store.ts save, remove).
     let secretSeen: unknown;
     let byToken = false;
     if (isSecretWriteOperation(found.name) && req.headers.authorization !== undefined && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
@@ -5532,8 +5533,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // another toolkit), with the key it was made with, and says so as a delete does; what another saved server uses is
         // that one's now, and said too. A save as another user or auth config is refused while Composio triggers use the
         // server, in the delete's words, checked in its project's turn before the row is written. An API-only server's token
-        // saves one that names its key by api_key_env (the secret-write gate), landing only while the row still has the
-        // credential the gate read (secretSeen). The body names no address or headers (composioSave refuses them).
+        // saves one that names its key by api_key_env (the secret-write gate), and over a saved server only one it saved
+        // (mcp-secret-writes.ts tokenWriteOverRefused), landing only while the row still has the credential the gate read
+        // (secretSeen) and the token's mark. The body names no address or headers (composioSave refuses them).
         const answer = await inComposioTurn(async () => {
           const over: { dropped?: ComposioDropped } = {};
           const guard: SaveGuard = { turn: (work) => composioTriggers.inTurnOf(id, work), inUse: () => composioTriggers.inUse(id, SAVE_AFTER_TRIGGERS) };

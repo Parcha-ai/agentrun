@@ -18,7 +18,7 @@ import {
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
-  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
+  FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite, type McpTokensMark,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type AttemptCause, type ComputerIntervalRow, type ComputerIntervals, type RunAttemptRow, type RunAttempts, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
@@ -1659,11 +1659,19 @@ class SqliteStore implements Store {
       },
     };
 
+    /** The WHERE term of the API token's write over a saved row (McpTokensMark), its one `?` the source record's key: that
+     *  setting still says the token saved this very row (`by` token, `of` the row's created_at). In the statement that
+     *  writes or removes the row, so an owner's save, which drops the mark before it writes, never lands in between. */
+    const recordJson = readableJson(d, "settings.value");
+    const tokensMarked = `EXISTS (SELECT 1 FROM settings WHERE settings.key = ? AND ${d.jsonText(recordJson, ["by"])} = 'token' AND ${d.jsonValue(recordJson, ["of"])} = CAST(mcp_servers.created_at AS TEXT))`;
+
     /** A server's write (Mcp.put), or with `expected` (Mcp.putIfCredential) only while the row's credential is still that:
-     *  the statement's own WHERE compares it, so the comparison and the write are one statement. */
+     *  the statement's own WHERE compares it, so the comparison and the write are one statement. `tokens`: over a saved
+     *  row, only while it still carries the token's mark, compared there too (a new row has none to carry). */
     const putServer = async (
       { name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, sealed = null, listedAt, updatedAt, credentialChangedAt, tokenLeftMs = null }: McpServerWrite,
       expected: McpCredentialMark | undefined,
+      tokens?: McpTokensMark,
     ): Promise<McpServerRow | undefined> => {
       const at = now();
       // The access token's end on the deadlines' clock (the database's on Postgres): the writer's measure of its life (a
@@ -1684,9 +1692,9 @@ class SqliteStore implements Store {
         ? {
           sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, sealed = ?, refresh_holder = NULL, refresh_until = NULL,
               updated_at = ?, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
-            WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}
+            WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}${tokens ? ` AND ${tokensMarked}` : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...stamp.params],
+          params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : []), ...stamp.params],
         }
         : {
           sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
@@ -1708,7 +1716,7 @@ class SqliteStore implements Store {
     };
     this.mcp = {
       put: async (row) => (await putServer(row, undefined))!,
-      putIfCredential: (row, expected) => putServer(row, expected),
+      putIfCredential: (row, expected, tokens) => putServer(row, expected, tokens),
       // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
       // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
       rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen) => {
@@ -1727,10 +1735,10 @@ class SqliteStore implements Store {
         const [result] = await db.write([{ sql: "DELETE FROM mcp_servers WHERE name = ? RETURNING url, sealed", params: [name] }]);
         return removedOf(result!.rows[0] as { url: string; sealed: Uint8Array | null } | undefined);
       },
-      removeIfCredential: async (name, expected) => {
+      removeIfCredential: async (name, expected, tokens) => {
         const [result] = await db.write([{
-          sql: `DELETE FROM mcp_servers WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"} RETURNING url, sealed`,
-          params: [name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt])],
+          sql: `DELETE FROM mcp_servers WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}${tokens ? ` AND ${tokensMarked}` : ""} RETURNING url, sealed`,
+          params: [name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : [])],
         }]);
         return removedOf(result!.rows[0] as { url: string; sealed: Uint8Array | null } | undefined);
       },

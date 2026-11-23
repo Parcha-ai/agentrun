@@ -134,6 +134,8 @@ export class McpServersOverStore {
   private readonly signIns: McpSignIns;
   /** The callbacks under way, which close() waits out before the server lets its data go. */
   private readonly inflight = new Set<Promise<unknown>>();
+  /** Each server name's save turn (nameTurn): the last save in it, settled either way. */
+  private readonly nameTurns = new Map<string, Promise<unknown>>();
   private readonly stopped = new AbortController();
   /** Whether this server is a local install (attach): only then may an MCP server's URL be on loopback. */
   private loopback = false;
@@ -296,7 +298,9 @@ export class McpServersOverStore {
    *  the listing is done (never across it), and the check of the triggers that use it, made in that turn before a write
    *  that leaves what they stand on (an ordinary save moving the row off Composio, a preset save as another user or auth
    *  config): refused, nothing written. `byToken`: the API token makes the save (a request the secret-write gate read), so
-   *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), for its delete. */
+   *  a row it makes is recorded as the token's (mcp-sources.ts savedByToken), and it writes over a saved row only while
+   *  that row still carries the token's mark, compared in the row's own statement (412, nothing written, when an owner's
+   *  save took it meanwhile). */
   async save(name: string, body: Record<string, unknown>, stop?: AbortSignal, checkedAgainst?: McpCredentialMark, made?: SourceRecord, stands?: ComposioMade, dropped?: (left: ComposioDropped) => void, guard?: SaveGuard, byToken = false) {
     nameOf(name);
     const was = await this.store.mcp.server(name);
@@ -354,6 +358,9 @@ export class McpServersOverStore {
       const got = composioEnvKey(name, url.href, stands.key_env, this.composioOrigin);
       if ("refused" in got) throw invalid([{ field: "url", reason: got.reason, message: got.refused }]);
     }
+    // The token keeps no sealed credential: the secret-write gate lets its save over no sealed row (mcp-secret-writes.ts
+    // tokenWriteOverRefused), so one read here is an owner's, saved since. Refused as changed meanwhile, nothing written.
+    if (byToken && keeping) changedMeanwhile(name, undefined);
     // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
     const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop, perRun);
@@ -392,8 +399,10 @@ export class McpServersOverStore {
         // MCP server at the address read; Composio's share an origin). It writes no credential column, so it never drops or
         // replaces one.
         ? await this.rewriteKeeping(name, was!, fields, "save", (fresh) => fresh.auth === auth.type && fresh.sealed !== null && fresh.url === was!.url)
-        // A new credential, or none: written only while the row's credential is still `against`, in the store's one statement.
-        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin }));
+        // A new credential, or none: written only while the row's credential is still `against`, and the token's over a
+        // saved row only while that row still carries its mark (savedByToken), both in the store's one statement: the
+        // check and the write are one step, so an owner's save that lands after the gate's read is never written over.
+        : changedMeanwhile(name, await saveMcpServerIfCredential(this.store, this.sealKey, { ...fields(was), ...(credential ? { credential } : {}) }, against, { githubMcpOrigin: this.appOrigin, ...(byToken ? { tokens: { record: mcpSourceKey(name) } } : {}) }));
       if (source) await this.store.settings.put(mcpSourceKey(name), storedSource(source, saved, !made && source === standIn, mark));
       // A row the token made with no source given: url with none, as an unrecorded row reads (sourceOf), marked.
       else if (mark && !wasToken) await this.store.settings.put(mcpSourceKey(name), storedSource({ source: "url", toolkit: null }, saved, false, true));
@@ -446,9 +455,25 @@ export class McpServersOverStore {
       }
       return saved;
     };
-    const saved = guard ? await guard.turn(write) : await write();
+    // The name's turn (nameTurn) inside the guard's: the row and its record are written with no other save of the name between.
+    const saved = guard ? await guard.turn(() => this.nameTurn(name, write)) : await this.nameTurn(name, write);
     await this.store.flush();
     return this.view(saved);
+  }
+
+  /** `work` in the turn of the saved server `name`, after every save of that name already in it: a save writes its row and
+   *  then its source record (mcp-sources.ts), so the token's mark, written after its row, never lands on a row an owner's
+   *  save wrote between the two. One server holds a store (StoreOwned), so the turn is this process's. A delete takes
+   *  none: its statement compares the mark itself (Mcp.removeIfCredential). */
+  private async nameTurn<T>(name: string, work: () => Promise<T>): Promise<T> {
+    const mine = (this.nameTurns.get(name) ?? Promise.resolve()).then(work);
+    const held = mine.then(() => undefined, () => undefined);
+    this.nameTurns.set(name, held);
+    try {
+      return await mine;
+    } finally {
+      if (this.nameTurns.get(name) === held) this.nameTurns.delete(name);
+    }
   }
 
   /** POST refresh: list the saved server's tools again, keep them, and say what was added, removed and changed. */
@@ -501,20 +526,23 @@ export class McpServersOverStore {
    *  credential saved meanwhile is never dropped by it. An OAuth one's sign-in is then let go at its authorization server
    *  (its refresh token revoked, RFC 7009, where its metadata names a revocation_endpoint), behind the answer: best effort,
    *  never holding or failing the removal. A claimed run sees the removal at its next call (runner/mcp-claim.ts check).
-   *  `byToken`: the API token removes it, which it may only while the row is one the token saved (savedByToken): checked
-   *  again here, after the gate's check, so the owner's save over it meanwhile is never removed. */
+   *  `byToken`: the API token removes it, which it may only while the row is one the token saved (savedByToken): its
+   *  credential and its mark are compared in the deleting statement itself (Mcp.removeIfCredential), never in a read
+   *  before it, so an owner's save that lands after the gate's check (it drops the mark before it writes) is never
+   *  removed, and nothing is sent to Composio for it. */
   async remove(name: string, checkedAgainst?: McpCredentialMark, byToken = false): Promise<{ composio?: ComposioHandle }> {
     const row = await this.need(name);
-    if (byToken && !savedByToken(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) changedMeanwhile(name, undefined);
+    // The credential the row goes against: the gate's, else (a token's removal the gate did not read) the one read here.
+    const expected = checkedAgainst !== undefined ? checkedAgainst : byToken ? credentialMark(row) : undefined;
     // Whether it is a Composio preset server: from its record (source composio), read before the row goes.
     const preset = row.auth === "headers" && (await this.sourceOf(row)).source === "composio";
     // What it stands on at Composio, as its save recorded it (none: saved before that was recorded, or not a preset).
     const stands = preset ? recordedMade(await this.store.settings.get(composioMadeKey(name)), row.createdAt) : undefined;
     // The credential revoked is the one the deleting statement saw (RETURNING): a run's refresh landing before it is in it,
     // one landing after finds no row to keep. A sign-in kept as expired has no refresh token left to revoke.
-    const removed = checkedAgainst === undefined ? await removeMcpServer(this.store, this.sealKey, name)
-      : checkedAgainst === null ? undefined : await removeMcpServerIfCredential(this.store, this.sealKey, name, checkedAgainst);
-    if (checkedAgainst !== undefined && !removed) changedMeanwhile(name, undefined);
+    const removed = expected === undefined ? await removeMcpServer(this.store, this.sealKey, name)
+      : expected === null ? undefined : await removeMcpServerIfCredential(this.store, this.sealKey, name, expected, byToken ? { record: mcpSourceKey(name) } : undefined);
+    if (expected !== undefined && !removed) changedMeanwhile(name, undefined);
     // Its record goes with it, unless a server saved again under the name meanwhile wrote its own: one left behind is
     // never read for another row (mcp-sources.ts), so a server saved again says what it is afresh.
     if (!recordedForAnother(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) await this.store.settings.remove(mcpSourceKey(name));

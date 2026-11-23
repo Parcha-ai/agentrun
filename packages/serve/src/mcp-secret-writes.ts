@@ -1,16 +1,15 @@
 // MCP's predicates for the one secret-write gate (secret-writes.ts): which MCP operations the server's dispatch takes from
 // the owner's signed-in page alone, refusing every token.
 // - A save that sends a value (a bearer token or a header's value, in any auth type: a value sent is a value, even in a
-//   body the save then refuses) writes a secret; so does one that would DROP or CHANGE the credential a saved server
-//   holds (another auth type, or none), read from the store.
+//   body the save then refuses) writes a secret.
 // - A sign-in's start always writes one: its callback seals whatever token set the sign-in it started returns, so who
 //   starts it decides whose credential the server's runs use.
-// - Removing a server that holds a credential drops it (read from the store); the private-network OAuth hosts count whole,
-//   since they widen where a sign-in sends its code and tokens.
-// - The token removes only a server the token saved (its source record's mark, mcp-sources.ts): the owner's stays the
-//   owner's, sealed or not, and nothing of it reaches Composio.
-// A server the token saved with no credential, a save that keeps the sealed one (prices, tools, url), a preview and a
-// refresh (each keeps nothing new) stay open to a token.
+// - The private-network OAuth hosts count whole, since they widen where a sign-in sends its code and tokens.
+// - The token saves over and removes only a server the token saved that seals no credential (tokenWriteOverRefused: one
+//   rule for every such route, read from the store): the owner's stays the owner's, sealed or not, so the token never
+//   drops or changes its credential, moves it, or removes what it made at Composio.
+// A new server with no credential, the token's own server, a preview and a refresh (each keeps nothing new) stay open to a
+// token.
 import { COMPOSIO_TOOLKIT } from "./composio-preset.js";
 import type { InputIssue } from "./errors.js";
 import { secretShapes } from "./learn/secrets.js";
@@ -42,25 +41,14 @@ type SavedServers = { mcp: { server(name: string): Promise<SavedRow | undefined>
  *  (Mcp.putIfCredential), so it never lands over a credential saved or signed in with after the check. */
 export const credentialMark = (row: SavedRow | undefined): McpCredentialMark => (row ? { auth: row.auth, sealed: row.sealed !== null && row.sealed !== undefined, changedAt: row.credentialChangedAt ?? null } : null);
 
-/** Whether a save of the server its path names (with no value in its body) would drop or change the credential the
- *  server holds: it holds one, and the save names another auth type, or none (a body with no auth is none). */
-export async function mcpSaveDropsSecret(body: unknown, request: SecretRequest): Promise<boolean> {
-  const [name] = request.params;
-  if (!name) return false;
-  const was = await (request.store as SavedServers).mcp.server(name);
-  // What the save is let through against: it lands only if the credential is still this one.
-  request.seen = credentialMark(was);
-  if (!was || was.sealed === null || was.sealed === undefined) return false;
-  const auth = isObject(body) ? body.auth : undefined;
-  const type = auth === undefined ? "none" : isObject(auth) ? auth.type : undefined;
-  return type !== was.auth;
-}
-
-/** Whether removing the server its path names is refused to the token: it holds a sealed credential, or the token did not
- *  save it (its source record has no token's mark, mcp-sources.ts savedByToken): an owner's server stays the owner's,
- *  sealed or not. A server the token saved with none (an eval's fake, say) is the token's to remove; the removal lands
- *  only while its credential is still none (request.seen) and it is still the token's (McpServers.remove checks again). */
-export async function mcpDeleteRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
+/** The one rule for the token's write over the saved server its path names, whatever the route: a save over it (the
+ *  generic save, a Composio save) or its removal. Refused unless the token saved that very row (its source record's mark,
+ *  mcp-sources.ts savedByToken) and it seals no credential: an owner's server stays the owner's, sealed or not, so the
+ *  token never drops or changes its credential, moves it, or removes what it made at Composio. A new name has nothing to
+ *  write over. The write lands only while the row's credential is still the one read here (request.seen) and the row
+ *  still carries the token's mark, both compared in the store's statement that writes or removes it (McpServers save and
+ *  remove), so an owner's save landing after this check is never written over or removed. */
+export async function tokenWriteOverRefused(_body: unknown, request: SecretRequest): Promise<boolean> {
   const [name] = request.params;
   if (!name) return false;
   const store = request.store as SavedServers;
@@ -72,7 +60,7 @@ export async function mcpDeleteRefused(_body: unknown, request: SecretRequest): 
 
 /** MCP's operations the one gate reads: the predicates above decide each request. */
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
-const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteRefused };
+const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: tokenWriteOverRefused, deleteMcpServer: tokenWriteOverRefused };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
 // The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
 // whatever the body (the listing sends the key too, and only the session may type one).
@@ -83,16 +71,12 @@ function composioSaveSendsKey(body: unknown): boolean {
   return !(isObject(body) && body.api_key === undefined && body.api_key_env !== undefined);
 }
 /** A Composio save that names its key by api_key_env (the server keeps the variable's name, never its value) writes no
- *  secret only on an API-only server, which has no owner to save the key from the console: its token's own save, landing
- *  only while the row still has the credential read here (request.seen), and refused over a row that seals one, which it
- *  would drop. Anywhere else the owner saves keys from the console, so the token's is the one refusal as before. */
-export async function composioSaveDropsSecret(_body: unknown, request: SecretRequest): Promise<boolean> {
-  if (!request.apiOnly) return true;
-  const [name] = request.params;
-  if (!name) return true;
-  const was = await (request.store as SavedServers).mcp.server(name);
-  request.seen = credentialMark(was);
-  return !!was && was.sealed !== null && was.sealed !== undefined;
+ *  secret only on an API-only server, which has no owner to save the key from the console: its token's own save, over a
+ *  new name or a server the token saved, by the one rule (tokenWriteOverRefused). Anywhere else the owner saves keys from
+ *  the console, so the token's is the one refusal as before. */
+export async function composioSaveDropsSecret(body: unknown, request: SecretRequest): Promise<boolean> {
+  if (!request.apiOnly || !request.params[0]) return true;
+  return tokenWriteOverRefused(body, request);
 }
 // A Composio server's webhook subscription (composio-triggers.ts): a rotate seals its new secret, a delete drops it.
 registerSecretWrite("rotateComposioSecret", () => true);
