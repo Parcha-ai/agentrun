@@ -21,8 +21,8 @@ const PLAIN = { name: "synth-plain:1b", capabilities: ["completion"], family: "s
 /** The words with no model, where this server asks an Ollama (model.ts START_OLLAMA). */
 const NO_MODEL = /^No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys/;
 
-/** A server on a fake Ollama listing `models` (the array itself: a test removes a tag from it), its listing aged by a
- *  test clock, and an agent `name` on `model` (none: the host default). */
+/** A server on a fake Ollama listing `models` (a tag removed through the fake's own remove, as `ollama rm`), its listing
+ *  aged by a test clock, and an agent `local` on `model` (none: the host default). */
 async function setUp(t, models, model) {
   withEnv(t, {}, KEYS);
   let clock = Date.now();
@@ -46,26 +46,24 @@ async function setUp(t, models, model) {
   return { ollama, start, ran, age: () => void (clock += OLLAMA_TTL_MS + 1) };
 }
 
-/** `models` with `gone` taken out, in place, as `ollama rm` leaves the fake's listing. */
-const remove = (models, gone) => models.splice(models.indexOf(gone), 1);
-
 test("the host's Ollama default removed: a run that names no model, started without reading capabilities, runs on the next tools model", { timeout: 180_000 }, async (t) => {
-  const models = [A, B];
-  const { ollama, ran, age } = await setUp(t, models);
+  const { ollama, ran, age } = await setUp(t, [A, B]);
   assert.equal(await ran(), A.name, "the default: the first tools model listed");
   const tags = ollama.got.tags;
   assert.equal(await ran(), A.name);
   assert.equal(ollama.got.tags, tags, "a fresh listing is not asked again");
-  remove(models, A);
+  ollama.remove(A.name);
+  // The listing asked again behind the claim's first look lands well after it (CI's order, made certain): the choice
+  // must not depend on that listing winning. Under OLLAMA_LIST_TIMEOUT_MS, so the listing still answers.
+  ollama.slowTags(800);
   age();
   assert.equal(await ran(), B.name, "chosen again from a fresh listing, never refused on the removed tag");
 });
 
 test("the host's Ollama default removed and no tools model left: the run is refused in the no-model words", { timeout: 180_000 }, async (t) => {
-  const models = [A, PLAIN];
-  const { ran, start, age } = await setUp(t, models);
+  const { ollama, ran, start, age } = await setUp(t, [A, PLAIN]);
   assert.equal(await ran(), A.name);
-  remove(models, A);
+  ollama.remove(A.name);
   age();
   const refused = await start();
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
@@ -75,10 +73,9 @@ test("the host's Ollama default removed and no tools model left: the run is refu
 });
 
 test("an agent that names ollama/<tag> keeps it once removed: refused naming that tag, never moved to another model", { timeout: 180_000 }, async (t) => {
-  const models = [A, B];
-  const { ollama, ran, start, age } = await setUp(t, models, `ollama/${A.name}`);
+  const { ollama, ran, start, age } = await setUp(t, [A, B], `ollama/${A.name}`);
   assert.equal(await ran(), A.name);
-  remove(models, A);
+  ollama.remove(A.name);
   age();
   const chats = ollama.got.chat.length;
   const refused = await start();

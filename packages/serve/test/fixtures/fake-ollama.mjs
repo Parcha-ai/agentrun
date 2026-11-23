@@ -32,10 +32,13 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
  * any other tag streams Ollama's error line. A pull streams the manifest, one layer of 1,000 bytes at 400, then waits for
  * `pullHold` (a promise; none, at once), then the layer whole, `success`, and lists the model from then on (`got.pull`:
  * each tag asked).
+ * The handler keeps a copy of `models`: a test changes what it lists through its `remove(tag)` (`ollama rm`), never by
+ * changing the array it gave.
  */
 export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, version = "0.40.17", pullable = {}, pullHold, got = { tags: 0, show: [], chat: [], version: 0, pull: [] } } = {}) {
   const models = [...given];
-  return (req, res) => {
+  let tagsDelayMs = 0;
+  const handle = (req, res) => {
     const path = new URL(req.url ?? "/", "http://ollama").pathname;
     const route = req.method === "GET" && path === "/api/tags" ? "tags" : req.method === "POST" && path === "/api/show" ? "show" : req.method === "POST" && path === "/api/chat" ? "chat" : req.method === "GET" && path === "/api/version" ? "version" : req.method === "POST" && path === "/api/pull" ? "pull" : undefined;
     if (!route) {
@@ -67,7 +70,8 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       if (route === "pull") return void pull(body?.model, res);
       if (route === "tags") {
         got.tags += 1;
-        return json(res, 200, { models: models.map((m) => ({ name: m.name, model: m.name, ...remoteOf(m), modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) });
+        const listed = { models: models.map((m) => ({ name: m.name, model: m.name, ...remoteOf(m), modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) };
+        return void setTimeout(() => json(res, 200, listed), tagsDelayMs);
       }
       if (route === "show") {
         got.show.push(body?.model);
@@ -96,6 +100,15 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       res.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
     });
   };
+  /** `tag` gone from this fake, as `ollama rm` leaves an Ollama: no longer in /api/tags, and /api/show answers 404. */
+  handle.remove = (tag) => {
+    const at = models.findIndex((model) => model.name === tag);
+    if (at < 0) throw new Error(`the fake Ollama lists no ${tag}`);
+    models.splice(at, 1);
+  };
+  /** Each /api/tags answered `ms` late from now on (what it lists read when asked): an Ollama slow to list, so a listing
+   *  asked behind a caller lands after that caller has moved on. */
+  handle.slowTags = (ms) => void (tagsDelayMs = ms);
 
   /** POST /api/pull of `tag`, streamed as Ollama streams it. */
   async function pull(tag, res) {
@@ -113,21 +126,23 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
     if (!models.some((m) => m.name === model.name)) models.push(model);
     res.end(`${JSON.stringify({ status: "success" })}\n`);
   }
+  return handle;
 }
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
- *  form OLLAMA_HOST usually takes) and `got` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
+ *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
  *  address closedPort gave), else any. */
 export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
   const got = { tags: 0, show: [], chat: [], version: 0, pull: [] };
-  const server = createServer(ollamaHandler({ ...options, got }));
+  const handle = ollamaHandler({ ...options, got });
+  const server = createServer(handle);
   await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got };
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
 }
 
 /** A loopback port nothing listens on: one a server held, then closed. */
