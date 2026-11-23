@@ -323,12 +323,13 @@ step is never run again; a write a crash cut off mid-call is marked interrupted 
 
 ## Templates
 
-Five ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
+Six ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
 one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply** grants nothing
 until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
+| `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
@@ -337,6 +338,10 @@ until you tick each MCP tool yourself.
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.
+
+**Agents → Suggested** connects a repository and runs `agent-scout` for you. A scan reads with a token for that one
+repository, contents read-only. Opening a pull request needs the GitHub App's Contents write, asked for only when you
+tick it at Connect GitHub ([Suggested agents](packages/serve/README.md#suggested-agents)).
 
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.

@@ -130,6 +130,17 @@ __all__ = [
     "CreateRunComputerViewerBody",
     "CreateRunComputerViewerResponse",
     "CreateRunResponse",
+    "CreateSuggestedAgentBody",
+    "CreateSuggestedAgentResponse",
+    "CreateSuggestedAgentResponseAgent",
+    "CreateSuggestedAgentResponseAgentInputsItem",
+    "CreateSuggestedAgentResponseAgentOutputItem",
+    "CreateSuggestedAgentResponseCreated",
+    "CreateSuggestedAgentResponseCreatedPullRequest",
+    "CreateSuggestedAgentResponseEvidenceItem",
+    "CreateSuggestedAgentResponseIntegration",
+    "CreateSuggestedAgentResponseIntegrationCallSite",
+    "CreateSuggestedAgentResponseScan",
     "CreateTriggerBody",
     "CreateTriggerBodySource1",
     "CreateTriggerBodySource2",
@@ -293,6 +304,16 @@ __all__ = [
     "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
     "DeleteWorkspaceArchilResponseSecret",
+    "DiscardSuggestionResponse",
+    "DiscardSuggestionResponseAgent",
+    "DiscardSuggestionResponseAgentInputsItem",
+    "DiscardSuggestionResponseAgentOutputItem",
+    "DiscardSuggestionResponseCreated",
+    "DiscardSuggestionResponseCreatedPullRequest",
+    "DiscardSuggestionResponseEvidenceItem",
+    "DiscardSuggestionResponseIntegration",
+    "DiscardSuggestionResponseIntegrationCallSite",
+    "DiscardSuggestionResponseScan",
     "DisconnectGitHubResponse",
     "DisconnectNativeResponse",
     "DisconnectNativeResponseNative",
@@ -510,6 +531,18 @@ __all__ = [
     "GetStatsResponseLearning",
     "GetStatsResponsePerAgentItem",
     "GetStatsResponseRuns",
+    "GetSuggestionResponse",
+    "GetSuggestionResponseAgent",
+    "GetSuggestionResponseAgentInputsItem",
+    "GetSuggestionResponseAgentOutputItem",
+    "GetSuggestionResponseCreated",
+    "GetSuggestionResponseCreatedPullRequest",
+    "GetSuggestionResponseEvidenceItem",
+    "GetSuggestionResponseFilesItem",
+    "GetSuggestionResponseGithub",
+    "GetSuggestionResponseIntegration",
+    "GetSuggestionResponseIntegrationCallSite",
+    "GetSuggestionResponseScan",
     "GetTemplateResponse",
     "GetTemplateResponseTemplate",
     "GetTemplateResponseTemplateAuthor",
@@ -649,6 +682,9 @@ __all__ = [
     "ListComputersResponsePairedItemFeaturesValue",
     "ListComputersResponsePairedItemScreen",
     "ListFilesResponse",
+    "ListGitHubRepositoriesResponse",
+    "ListGitHubRepositoriesResponseRepositoriesItem",
+    "ListGitHubRepositoriesResponseUnreadItem",
     "ListHomeFilesResponse",
     "ListHomeFilesResponseFilesItem1",
     "ListHomeFilesResponseFilesItem2",
@@ -703,6 +739,22 @@ __all__ = [
     "ListRunsResponse",
     "ListSlackDeliveriesResponse",
     "ListSlackDeliveriesResponseAttemptsItem",
+    "ListSuggestionsResponse",
+    "ListSuggestionsResponseGithub",
+    "ListSuggestionsResponseGithubInstallationsItem",
+    "ListSuggestionsResponseRepositoriesItem",
+    "ListSuggestionsResponseRepositoriesItemCounts",
+    "ListSuggestionsResponseRepositoriesItemScan",
+    "ListSuggestionsResponseSuggestionsItem",
+    "ListSuggestionsResponseSuggestionsItemAgent",
+    "ListSuggestionsResponseSuggestionsItemAgentInputsItem",
+    "ListSuggestionsResponseSuggestionsItemAgentOutputItem",
+    "ListSuggestionsResponseSuggestionsItemCreated",
+    "ListSuggestionsResponseSuggestionsItemCreatedPullRequest",
+    "ListSuggestionsResponseSuggestionsItemEvidenceItem",
+    "ListSuggestionsResponseSuggestionsItemIntegration",
+    "ListSuggestionsResponseSuggestionsItemIntegrationCallSite",
+    "ListSuggestionsResponseSuggestionsItemScan",
     "ListTemplatesResponse",
     "ListTemplatesResponseTemplatesItem",
     "ListTemplatesResponseTemplatesItemAuthor",
@@ -877,6 +929,16 @@ __all__ = [
     "ResolveSourceSyncResponseSourceToolConnectionsItem",
     "ResolveSourceSyncResponseSourceToolConnectionsItemCandidatesItem",
     "Resources",
+    "RestoreSuggestionResponse",
+    "RestoreSuggestionResponseAgent",
+    "RestoreSuggestionResponseAgentInputsItem",
+    "RestoreSuggestionResponseAgentOutputItem",
+    "RestoreSuggestionResponseCreated",
+    "RestoreSuggestionResponseCreatedPullRequest",
+    "RestoreSuggestionResponseEvidenceItem",
+    "RestoreSuggestionResponseIntegration",
+    "RestoreSuggestionResponseIntegrationCallSite",
+    "RestoreSuggestionResponseScan",
     "ResumeRunResponse",
     "ReviewSourceProjectBody",
     "ReviewSourceProjectBodyReceiptsItem1",
@@ -1015,6 +1077,8 @@ __all__ = [
     "SaveWebhookResponseObject21Disabled",
     "SaveWebhookResponseObject22",
     "SaveWebhookResponseObject22Disabled",
+    "ScanForSuggestionsBody",
+    "ScanForSuggestionsResponse",
     "SdkRunEventsBody",
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
@@ -1374,7 +1438,7 @@ class Definition(_DefinitionRequired, total=False):
     tool_settings: DefinitionToolSettings
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionLearning
-    checkout: Literal["pull_request", "none"]
+    checkout: Literal["pull_request", "repository", "none"]
     max_requests: int
 
 
@@ -1883,7 +1947,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     tool_settings: DefinitionInputToolSettings
     approvals: Literal["ask", "never"]
     learning: bool | DefinitionInputLearning
-    checkout: Literal["pull_request", "none"]
+    checkout: Literal["pull_request", "repository", "none"]
     max_requests: int
 
 
@@ -2962,13 +3026,13 @@ class GetAgentPackageResponseReport(TypedDict):
 
 
 class GetAgentPackageResponseReportBlockedItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
 
 class GetAgentPackageResponseReportRemadeItem(TypedDict):
-    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "secrets", "input_schema", "budget", "package"]
+    kind: Literal["mcp_server", "trigger", "pin", "tool_setting", "tool_policy", "computer", "paired_computer", "sign_in", "learning", "input_schema", "budget", "package"]
     name: str
     reason: str
 
@@ -4570,6 +4634,7 @@ class PutLearningCorrectionsResponse(TypedDict):
 
 class ConnectGitHubBody(TypedDict, total=False):
     org: str
+    contents: Literal["read", "write"]
 
 
 class ConnectGitHubResponse(TypedDict):
@@ -4583,6 +4648,97 @@ class CreatePairingResponse(TypedDict):
     code: str
     expires_at: str
     runs_refused: str | None
+
+
+class CreateSuggestedAgentBody(TypedDict, total=False):
+    name: str
+
+
+class CreateSuggestedAgentResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[CreateSuggestedAgentResponseEvidenceItem]
+    agent: CreateSuggestedAgentResponseAgent
+    integration: CreateSuggestedAgentResponseIntegration
+    scan: CreateSuggestedAgentResponseScan
+    decided_at: str | None
+    created: None | CreateSuggestedAgentResponseCreated
+    warnings: list[dict[str, Any]]
+
+
+class CreateSuggestedAgentResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _CreateSuggestedAgentResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[CreateSuggestedAgentResponseAgentInputsItem]
+    output: list[CreateSuggestedAgentResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class CreateSuggestedAgentResponseAgent(_CreateSuggestedAgentResponseAgentRequired, total=False):
+    instructions: str
+
+
+class CreateSuggestedAgentResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _CreateSuggestedAgentResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class CreateSuggestedAgentResponseAgentOutputItem(_CreateSuggestedAgentResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class CreateSuggestedAgentResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: CreateSuggestedAgentResponseIntegrationCallSite
+
+
+class CreateSuggestedAgentResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class CreateSuggestedAgentResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class CreateSuggestedAgentResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | CreateSuggestedAgentResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class CreateSuggestedAgentResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class DeleteComposioSubscriptionResponse(TypedDict):
@@ -4629,6 +4785,92 @@ class DeleteWorkspaceArchilResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+class DiscardSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[DiscardSuggestionResponseEvidenceItem]
+    agent: DiscardSuggestionResponseAgent
+    integration: DiscardSuggestionResponseIntegration
+    scan: DiscardSuggestionResponseScan
+    decided_at: str | None
+    created: None | DiscardSuggestionResponseCreated
+
+
+class DiscardSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _DiscardSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[DiscardSuggestionResponseAgentInputsItem]
+    output: list[DiscardSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class DiscardSuggestionResponseAgent(_DiscardSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class DiscardSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _DiscardSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class DiscardSuggestionResponseAgentOutputItem(_DiscardSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class DiscardSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: DiscardSuggestionResponseIntegrationCallSite
+
+
+class DiscardSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class DiscardSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class DiscardSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | DiscardSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class DiscardSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class DisconnectGitHubResponse(TypedDict):
@@ -4751,6 +4993,110 @@ class GetModelGatewayResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+class GetSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[GetSuggestionResponseEvidenceItem]
+    agent: GetSuggestionResponseAgent
+    integration: GetSuggestionResponseIntegration
+    scan: GetSuggestionResponseScan
+    decided_at: str | None
+    created: None | GetSuggestionResponseCreated
+    files: list[GetSuggestionResponseFilesItem]
+    problems: list[str]
+    github: GetSuggestionResponseGithub
+
+
+class GetSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _GetSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[GetSuggestionResponseAgentInputsItem]
+    output: list[GetSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class GetSuggestionResponseAgent(_GetSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class GetSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _GetSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class GetSuggestionResponseAgentOutputItem(_GetSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class GetSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: GetSuggestionResponseIntegrationCallSite
+
+
+class GetSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class GetSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class GetSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | GetSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class GetSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
+
+
+class GetSuggestionResponseFilesItem(TypedDict):
+    path: str
+    content: str
+
+
+class GetSuggestionResponseGithub(TypedDict):
+    ready: bool
+    reason: Literal["not_connected", "not_installed", "github_failed", "permission_missing"] | None
+    message: str | None
+    missing: list[str]
+    install_url: str | None
+    permissions_url: str | None
+    installation_url: str | None
 
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
@@ -4979,8 +5325,160 @@ class ListComputersResponseKindsItemProvidersItemPersistent(TypedDict, total=Fal
     images: list[str]
 
 
+class ListGitHubRepositoriesResponse(TypedDict):
+    repositories: list[ListGitHubRepositoriesResponseRepositoriesItem]
+    truncated: bool
+    unread: list[ListGitHubRepositoriesResponseUnreadItem]
+
+
+class _ListGitHubRepositoriesResponseRepositoriesItemRequired(TypedDict):
+    full_name: str
+    private: bool
+    account: str
+    installation: int
+
+
+class ListGitHubRepositoriesResponseRepositoriesItem(_ListGitHubRepositoriesResponseRepositoriesItemRequired, total=False):
+    default_branch: str
+    description: str
+
+
+class ListGitHubRepositoriesResponseUnreadItem(TypedDict):
+    account: str
+    why: str
+
+
 class ListMcpServerNamesResponse(TypedDict):
     names: list[str]
+
+
+class ListSuggestionsResponse(TypedDict):
+    github: ListSuggestionsResponseGithub
+    repositories: list[ListSuggestionsResponseRepositoriesItem]
+    suggestions: list[ListSuggestionsResponseSuggestionsItem]
+
+
+class ListSuggestionsResponseGithub(TypedDict):
+    connected: bool
+    app: str | None
+    installations: list[ListSuggestionsResponseGithubInstallationsItem]
+    install_url: str | None
+
+
+class ListSuggestionsResponseGithubInstallationsItem(TypedDict):
+    account: str
+
+
+class ListSuggestionsResponseRepositoriesItem(TypedDict):
+    repo: str
+    scan: ListSuggestionsResponseRepositoriesItemScan
+    counts: ListSuggestionsResponseRepositoriesItemCounts
+
+
+class ListSuggestionsResponseRepositoriesItemScan(TypedDict):
+    run_id: str
+    agent_id: str
+    started_at: str
+    status: Literal["running", "waiting", "completed", "failed", "cancelled"]
+    ended_at: str | None
+    app: str | None
+    commit: str | None
+    found: int | None
+    dropped: list[str]
+    already_decided: int
+    error: str | None
+
+
+class ListSuggestionsResponseRepositoriesItemCounts(TypedDict):
+    open: int
+    created: int
+    discarded: int
+
+
+class ListSuggestionsResponseSuggestionsItem(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[ListSuggestionsResponseSuggestionsItemEvidenceItem]
+    agent: ListSuggestionsResponseSuggestionsItemAgent
+    integration: ListSuggestionsResponseSuggestionsItemIntegration
+    scan: ListSuggestionsResponseSuggestionsItemScan
+    decided_at: str | None
+    created: None | ListSuggestionsResponseSuggestionsItemCreated
+
+
+class ListSuggestionsResponseSuggestionsItemEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _ListSuggestionsResponseSuggestionsItemAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[ListSuggestionsResponseSuggestionsItemAgentInputsItem]
+    output: list[ListSuggestionsResponseSuggestionsItemAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class ListSuggestionsResponseSuggestionsItemAgent(_ListSuggestionsResponseSuggestionsItemAgentRequired, total=False):
+    instructions: str
+
+
+class ListSuggestionsResponseSuggestionsItemAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _ListSuggestionsResponseSuggestionsItemAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class ListSuggestionsResponseSuggestionsItemAgentOutputItem(_ListSuggestionsResponseSuggestionsItemAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class ListSuggestionsResponseSuggestionsItemIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: ListSuggestionsResponseSuggestionsItemIntegrationCallSite
+
+
+class ListSuggestionsResponseSuggestionsItemIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class ListSuggestionsResponseSuggestionsItemScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class ListSuggestionsResponseSuggestionsItemCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | ListSuggestionsResponseSuggestionsItemCreatedPullRequest
+    pull_error: str | None
+
+
+class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class _PutWorkspaceArchilBodyRequired(TypedDict):
@@ -5085,6 +5583,92 @@ class ReceiveHookComposioResponseObject2FiringsItem1Error(TypedDict):
 
 class ReceiveHookComposioResponseObject2FiringsItem2(TypedDict):
     ok: Literal["duplicate"]
+
+
+class RestoreSuggestionResponse(TypedDict):
+    id: str
+    repo: str
+    key: str
+    status: Literal["open", "created", "discarded"]
+    title: str
+    summary: str
+    why: str
+    impact: Literal["high", "medium", "low"]
+    evidence: list[RestoreSuggestionResponseEvidenceItem]
+    agent: RestoreSuggestionResponseAgent
+    integration: RestoreSuggestionResponseIntegration
+    scan: RestoreSuggestionResponseScan
+    decided_at: str | None
+    created: None | RestoreSuggestionResponseCreated
+
+
+class RestoreSuggestionResponseEvidenceItem(TypedDict):
+    path: str
+    line: int
+    quote: str
+    url: str
+
+
+class _RestoreSuggestionResponseAgentRequired(TypedDict):
+    name: str
+    description: str
+    inputs: list[RestoreSuggestionResponseAgentInputsItem]
+    output: list[RestoreSuggestionResponseAgentOutputItem]
+    tools: list[Literal["web_search", "web_fetch"]]
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class RestoreSuggestionResponseAgent(_RestoreSuggestionResponseAgentRequired, total=False):
+    instructions: str
+
+
+class RestoreSuggestionResponseAgentInputsItem(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean"]
+    description: str
+    required: bool
+
+
+class _RestoreSuggestionResponseAgentOutputItemRequired(TypedDict):
+    name: str
+    type: Literal["string", "number", "integer", "boolean", "string_list"]
+    description: str
+
+
+class RestoreSuggestionResponseAgentOutputItem(_RestoreSuggestionResponseAgentOutputItemRequired, total=False):
+    enum: list[str]
+
+
+class RestoreSuggestionResponseIntegration(TypedDict):
+    language: Literal["typescript", "javascript", "python", "other"]
+    path: str
+    call_site: RestoreSuggestionResponseIntegrationCallSite
+
+
+class RestoreSuggestionResponseIntegrationCallSite(TypedDict):
+    path: str
+    line: int
+    note: str
+    url: str
+
+
+class RestoreSuggestionResponseScan(TypedDict):
+    run_id: str
+    commit: str | None
+    at: str
+
+
+class RestoreSuggestionResponseCreated(TypedDict):
+    agent_id: str
+    template_id: str
+    branch: str | None
+    pull_request: None | RestoreSuggestionResponseCreatedPullRequest
+    pull_error: str | None
+
+
+class RestoreSuggestionResponseCreatedPullRequest(TypedDict):
+    number: int
+    url: str
 
 
 class RotateComposioSecretResponse(TypedDict):
@@ -5329,6 +5913,18 @@ class SaveModelGatewayResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+class ScanForSuggestionsBody(TypedDict):
+    repo: str
+
+
+class ScanForSuggestionsResponse(TypedDict):
+    repo: str
+    run_id: str
+    agent_id: str
+    status: Literal["running"]
+    already_running: bool
 
 
 class _SignOutChatGPTResponseRequired(TypedDict):
@@ -8016,6 +8612,7 @@ class ApplyTemplateResponseObject12Plan(TypedDict):
     action: Literal["create", "revise"]
     agent_id: str | None
     current_revision_id: str | None
+    twins: list[str]
     missing_secrets: list[str]
     unmatched_mcp: list[ApplyTemplateResponseObject12PlanUnmatchedMcpItem]
     triggers: list[ApplyTemplateResponseObject12PlanTriggersItem]
@@ -8035,6 +8632,7 @@ class _ApplyTemplateResponseObject12PlanTriggersItemRequired(TypedDict):
 
 
 class ApplyTemplateResponseObject12PlanTriggersItem(_ApplyTemplateResponseObject12PlanTriggersItemRequired, total=False):
+    code: Literal["not_set_up_here", "not_an_option"]
     reason: str
 
 
@@ -8102,7 +8700,7 @@ class GetTemplateResponseTemplate(TypedDict):
     model: GetTemplateResponseTemplateModel | None
     effort: str | None
     tools: list[str] | None
-    checkout: Literal["pull_request"] | None
+    checkout: Literal["pull_request", "repository"] | None
     tool_policy: GetTemplateResponseTemplateToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
@@ -8248,7 +8846,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     model: ImportTemplateResponseTemplateModel | None
     effort: str | None
     tools: list[str] | None
-    checkout: Literal["pull_request"] | None
+    checkout: Literal["pull_request", "repository"] | None
     tool_policy: ImportTemplateResponseTemplateToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
@@ -8375,7 +8973,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     model: ListTemplatesResponseTemplatesItemModel | None
     effort: str | None
     tools: list[str] | None
-    checkout: Literal["pull_request"] | None
+    checkout: Literal["pull_request", "repository"] | None
     tool_policy: ListTemplatesResponseTemplatesItemToolPolicy | None
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
@@ -10620,12 +11218,14 @@ OPERATIONS: dict[str, Operation] = {
     "putLearningCorrections": Operation(method="PUT", path="/agents/{agent_id}/learning/corrections", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("text/markdown", "text/plain", "application/json")), answer="json", secret=False, public_fields=(), tagged=True),
     "connectGitHub": Operation(method="POST", path="/integrations/github/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createPairing": Operation(method="POST", path="/computers/pairings", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "createSuggestedAgent": Operation(method="POST", path="/suggestions/{suggestion_id}/create", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteCalendar": Operation(method="DELETE", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteModelGateway": Operation(method="DELETE", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "discardSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/discard", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getCalendar": Operation(method="GET", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -10634,6 +11234,7 @@ OPERATIONS: dict[str, Operation] = {
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -10642,15 +11243,19 @@ OPERATIONS: dict[str, Operation] = {
     "listComposioTriggers": Operation(method="GET", path="/settings/mcp-servers/{name}/composio/triggers", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputerChoices": Operation(method="GET", path="/computers/{provider}/choices", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listComputers": Operation(method="GET", path="/computers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listGitHubRepositories": Operation(method="GET", path="/integrations/github/repositories", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "rotateComposioSecret": Operation(method="POST", path="/settings/mcp-servers/{name}/composio/rotate-secret", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "saveCalendar": Operation(method="PUT", path="/settings/calendar", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
+    "scanForSuggestions": Operation(method="POST", path="/suggestions/scans", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -11045,6 +11650,10 @@ class LocalResource(Group):
         """A code that pairs a person's own computer with this server (POST /computers/pairings)."""
         return self._call("createPairing", (), None, None, timeout=timeout)
 
+    def create_suggested_agent(self, suggestion_id: str, body: CreateSuggestedAgentBody | None = None, *, timeout: float | None = None) -> CreateSuggestedAgentResponse:
+        """Create a suggested agent: a branch with its package and client, the agent made here, and a pull request (POST /suggestions/{suggestion_id}/create)."""
+        return self._call("createSuggestedAgent", (suggestion_id,), body, None, timeout=timeout)
+
     def delete_calendar(self, *, timeout: float | None = None) -> None:
         """Forget this server's calendar (DELETE /settings/calendar)."""
         return self._call("deleteCalendar", (), None, None, timeout=timeout)
@@ -11068,6 +11677,10 @@ class LocalResource(Group):
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
+
+    def discard_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> DiscardSuggestionResponse:
+        """Discard a suggested agent: it goes away, and later scans leave it out (POST /suggestions/{suggestion_id}/discard)."""
+        return self._call("discardSuggestion", (suggestion_id,), None, None, timeout=timeout)
 
     def disconnect_git_hub(self, *, timeout: float | None = None) -> DisconnectGitHubResponse:
         """Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github)."""
@@ -11101,6 +11714,10 @@ class LocalResource(Group):
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
 
+    def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
+        """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""
+        return self._call("getSuggestion", (suggestion_id,), None, {"name": name}, timeout=timeout)
+
     def get_workspace_archil(self, *, timeout: float | None = None) -> GetWorkspaceArchilResponse:
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
         return self._call("getWorkspaceArchil", (), None, None, timeout=timeout)
@@ -11125,9 +11742,17 @@ class LocalResource(Group):
         """Settings → Computers: the kinds of computer this server offers, each provider and whether its keys are saved (GET /computers)."""
         return self._call("listComputers", (), None, None, timeout=timeout)
 
+    def list_git_hub_repositories(self, *, timeout: float | None = None) -> ListGitHubRepositoriesResponse:
+        """The repositories this server's GitHub App is installed on (GET /integrations/github/repositories)."""
+        return self._call("listGitHubRepositories", (), None, None, timeout=timeout)
+
     def list_mcp_server_names(self, *, timeout: float | None = None) -> ListMcpServerNamesResponse:
         """The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names)."""
         return self._call("listMcpServerNames", (), None, None, timeout=timeout)
+
+    def list_suggestions(self, *, repo: str | None = None, status: Literal["open", "created", "discarded", "all"] | None = None, timeout: float | None = None) -> ListSuggestionsResponse:
+        """Suggested agents: each repository's scan and the agents it suggests (GET /suggestions)."""
+        return self._call("listSuggestions", (), None, {"repo": repo, "status": status}, timeout=timeout)
 
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
@@ -11136,6 +11761,10 @@ class LocalResource(Group):
     def receive_hook_composio(self, hook: str, body: RawBody, *, body_type: str | None = None, timeout: float | None = None) -> ReceiveHookComposioResponse:
         """Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook})."""
         return self._call("receiveHook_composio", (hook,), body, None, timeout=timeout, body_type=body_type)
+
+    def restore_suggestion(self, suggestion_id: str, *, timeout: float | None = None) -> RestoreSuggestionResponse:
+        """Bring a discarded suggestion back (an undo) (POST /suggestions/{suggestion_id}/restore)."""
+        return self._call("restoreSuggestion", (suggestion_id,), None, None, timeout=timeout)
 
     def rotate_composio_secret(self, name: str, *, timeout: float | None = None) -> RotateComposioSecretResponse:
         """Rotate the Composio project's webhook subscription's secret, and keep the new one (POST /settings/mcp-servers/{name}/composio/rotate-secret)."""
@@ -11160,6 +11789,10 @@ class LocalResource(Group):
     def save_model_gateway(self, body: SaveModelGatewayBody, *, timeout: float | None = None) -> SaveModelGatewayResponse:
         """Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
         return self._call("saveModelGateway", (), body, None, timeout=timeout)
+
+    def scan_for_suggestions(self, body: ScanForSuggestionsBody, *, timeout: float | None = None) -> ScanForSuggestionsResponse:
+        """Scan a repository for places its app needs an agent (POST /suggestions/scans)."""
+        return self._call("scanForSuggestions", (), body, None, timeout=timeout)
 
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""

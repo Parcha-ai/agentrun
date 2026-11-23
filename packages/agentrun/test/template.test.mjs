@@ -10,7 +10,9 @@ import { test } from "node:test";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const REVIEW = new URL("../../serve/templates/code-review/", import.meta.url).pathname;
-const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8", timeout: 120_000 });
+// A local check that starts nothing: run to its end, its timeout a SIGKILL, since spawnSync's timeout sends one signal and
+// then waits for the exit with this file's event loop blocked (no test timeout fires meanwhile).
+const validate = (dir) => spawnSync(process.execPath, [BIN, "template", "validate", dir], { encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL" });
 
 // A command this file starts that cannot outlive its test. It runs in a process group of its own, and on every path (a
 // pass, a failed assertion, the test's timeout) that group (the command and the eval it started) is sent a SIGKILL and
@@ -67,19 +69,26 @@ const EVALPKG = new URL("../../serve/test/fixtures/templates-eval/evalpkg/", imp
 const EVAL_FAUX = new URL("../../serve/test/fixtures/faux-template-eval.mjs", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("../../serve/test/fixtures/faux-review.mjs", import.meta.url).pathname;
 const evalEnv = (dir) => ({ ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_BASE_URL"].includes(name))), AGENTRUN_BOXES: "none", HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") });
-const evaluate = (args, env) => spawnSync(process.execPath, [BIN, "template", "eval", ...args], { encoding: "utf8", env, timeout: 240_000 });
+// Each eval is started, never run with spawnSync: spawnSync's timeout sends one SIGTERM, which `template eval` catches to
+// pass on, then blocks this file's event loop until the eval ends on its own, up to its 30-minute run bound, with no
+// test timeout able to fire meanwhile, past a CI shard's 24-minute limit.
+const evaluate = async (t, args, env) => {
+  const { seen, closed } = started(t, ["template", "eval", ...args], env);
+  const status = await within(closed, 240_000, `template eval ${args.join(" ")}`, seen);
+  return { status, stdout: seen.out, stderr: seen.err };
+};
 
-test("template eval runs a package's cases on a server of its own and exits as the eval did", { timeout: 300_000 }, (t) => {
+test("template eval runs a package's cases on a server of its own and exits as the eval did", { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const env = evalEnv(dir);
-  const passed = evaluate([EVALPKG, "--case", "learned", "--faux", EVAL_FAUX, "--report", join(dir, "report.json")], env);
+  const passed = await evaluate(t, [EVALPKG, "--case", "learned", "--faux", EVAL_FAUX, "--report", join(dir, "report.json")], env);
   assert.equal(passed.status, 0, passed.stderr);
   assert.match(passed.stdout, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "report.json"), "utf8")).cases.map((c) => [c.name, c.pass]), [["learned", true]]);
-  const failed = evaluate([EVALPKG, "--case", "mcp-mismatch", "--faux", EVAL_FAUX], env);
+  const failed = await evaluate(t, [EVALPKG, "--case", "mcp-mismatch", "--faux", EVAL_FAUX], env);
   assert.equal(failed.status, 1, failed.stderr);
-  const refused = evaluate([EVALPKG, "--case", "nope"], env);
+  const refused = await evaluate(t, [EVALPKG, "--case", "nope"], env);
   assert.equal(refused.status, 2, refused.stderr);
   assert.match(refused.stderr, /evals\/nope: no such case/);
 });

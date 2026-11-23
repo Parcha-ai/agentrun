@@ -1,4 +1,4 @@
-import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sun } from "lucide-react";
+import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { DojoIcon } from "@/components/DojoIcon";
@@ -6,11 +6,11 @@ import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "triggers" | "settings";
+export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "settings";
 
 /** Each section as the browser's tab names it. */
-const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", triggers: "Triggers", settings: "Settings" };
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", triggers: "#/triggers", settings: "#/settings/keys" };
+const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", settings: "Settings" };
+const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", settings: "#/settings/keys" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -57,7 +57,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
   }, [everywhere]);
   const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
   const [agentsExpanded, setAgentsExpanded] = useState(true);
-  const agentsActive = active === "agents" || active === "runs" || active === "templates";
+  const agentsActive = active === "agents" || active === "runs" || active === "templates" || active === "suggestions";
   useEffect(() => { if (agentsActive || building) setAgentsExpanded(true); }, [active, building]);
   const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
   const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
@@ -86,6 +86,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
               </NavItem>
               <div id="agent-navigation" hidden={!agentsExpanded} className="space-y-0.5">
                 <NavItem className="w-full pl-8" active={building} onClick={build}><Hammer className="size-3.5 shrink-0" aria-hidden />Build</NavItem>
+                <NavItem className="w-full pl-8" active={active === "suggestions"} onClick={() => navigate("suggestions")}><Sparkles className="size-3.5 shrink-0" aria-hidden />Suggested</NavItem>
                 <NavItem className="w-full pl-8" active={active === "agents" && !building} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Connected agents</NavItem>
                 <NavItem className="w-full pl-8" active={active === "templates"} onClick={() => navigate("templates")}><LayoutTemplate className="size-3.5 shrink-0" aria-hidden />Templates</NavItem>
                 <NavItem className="w-full pl-8" active={active === "runs"} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</NavItem>

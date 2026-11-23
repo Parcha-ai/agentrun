@@ -9,6 +9,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { type InputIssue, invalid } from "./errors.js";
+import { frontMatter } from "./manifest.js";
 import { DOCKER_IMAGE_FIX, needsIssues } from "./computer-needs.js";
 // Where a package's MCP tools come from (a Composio toolkit, GitHub's MCP server, or any other server by its address): a
 // saved MCP server records one too, and apply maps each need to a server whose record matches.
@@ -64,10 +65,11 @@ export const INPUT_TYPES = [...SCALAR_TYPES, "array"] as const;
  *  formats it knows. cron and timezone are for the form alone (a schedule picker, a zone choice); where a parameter fills
  *  a schedule, the schedule's own check reads the value at apply. */
 export const INPUT_FORMATS = ["uri", "email", "hostname", "date", "date-time", "uuid", "cron", "timezone"] as const;
-/** An input's or a parameter's keys: what a form and a JSON Schema say of one field. */
-const INPUT_KEYS = ["type", "required", "pattern", "enum", "format", "default", "description", "title", "examples", "minimum", "maximum", "minLength", "maxLength", "items"];
+/** An input's or a parameter's keys: what a form and a JSON Schema say of one field, in the order an export writes them
+ *  (agent-package.ts). */
+export const INPUT_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default", "required", "items"] as const;
 /** A list input's `items`: a scalar's keys alone. */
-const ITEM_KEYS = ["type", "pattern", "enum", "format", "minimum", "maximum", "minLength", "maxLength"];
+export const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"] as const;
 const NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PARAMETER = /^[a-z][a-z0-9_]{0,63}$/;
 /** The keys a package may need: those Settings saves (a tool's or a model provider's), each one a run is handed. */
@@ -95,22 +97,6 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[
 const PLACEHOLDER = /\$\{parameters\.([^}]*)\}/g;
 /** Text that is one placeholder alone: it takes the parameter's value with its type (a pin's, a trigger's input's). */
 const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
-const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
-
-/** The `name` agent.md's front matter gives (`text`), as text, or undefined: what an upload's folder is named before
- *  readPackage checks it whole (the name read as readPackage's front matter reads it). */
-export function manifestName(text: string): string | undefined {
-  const match = FRONT.exec(text);
-  if (!match) return undefined;
-  const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
-  if (doc.errors.length) return undefined;
-  try {
-    const data: unknown = doc.toJS({ maxAliasCount: 0 });
-    return isObject(data) && typeof data.name === "string" ? data.name : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
  *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent uses and the package asks the owner to
@@ -220,8 +206,9 @@ export type Package = {
    *  agent's tool settings, so the gate holds its runs to it whatever the tool's permission. */
   toolPolicy?: { bash: BashPolicy };
   /** What the server checks out in each run's folder before its first turn (the definition's `checkout`,
-   *  runner/pr-checkout.ts): the pull request the run's GitHub event names. */
-  checkout?: "pull_request";
+   *  runner/pr-checkout.ts): the pull request the run's GitHub event names, or the default branch of the repository the
+   *  run names. */
+  checkout?: "pull_request" | "repository";
   /** The setup an apply takes (manifest `parameters`), compiled as `inputs` are (fieldsSchema): a closed object schema,
    *  with no properties when the package names none. */
   parameters: Json;
@@ -624,10 +611,13 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const dir = src.where;
   const problems: string[] = [];
   const bad = (where: string, message: string) => void problems.push(`${where}: ${message}`);
+  /** The entries of the folder at `sub`, every read of a folder's entries here: a hidden file or folder (.env,
+   *  .DS_Store, .cache/) is no part of a package, at its top or anywhere under it, so it is left out, never refused. */
+  const entries = (sub: string) => src.entries(sub).filter((entry) => !entry.name.startsWith("."));
   /** The regular files under `sub`, by path from it with forward slashes; a link or any other kind of entry is a
    *  problem (a package is read from disk, and a link would carry a file from outside it into an agent). */
   const files = (sub: string): string[] =>
-    src.entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
+    entries(sub).sort((a, b) => (a.name < b.name ? -1 : 1)).flatMap((entry) => {
       const path = sub ? `${sub}/${entry.name}` : entry.name;
       if (entry.isDirectory()) return files(path);
       if (!entry.isFile()) return bad(path, "is not a regular file or a folder (links are refused)"), [];
@@ -638,21 +628,14 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   /** A file's YAML front matter and body. */
   const front = (path: string, required = true): { data: Json; body: string } | undefined => {
     const content = text(path);
-    const match = FRONT.exec(content);
-    if (!match) {
+    const read = frontMatter(content);
+    if (!read) {
       if (required) bad(path, "has no YAML front matter between --- lines");
       return required ? undefined : { data: {}, body: content };
     }
-    const doc = parseDocument(match[1]!, { schema: "core", merge: false, uniqueKeys: true, strict: true });
-    if (doc.errors.length) return bad(path, `its front matter is not YAML: ${doc.errors[0]!.message.split("\n")[0]}`), undefined;
-    let data: unknown;
-    try {
-      data = doc.toJS({ maxAliasCount: 0 });
-    } catch (error) {
-      return bad(path, `its front matter is refused: ${(error as Error).message}`), undefined;
-    }
-    if (!isObject(data)) return bad(path, "its front matter is not a mapping"), undefined;
-    return { data, body: content.slice(match[0].length) };
+    if ("problem" in read) return bad(path, `its front matter ${read.problem}`), undefined;
+    if (!isObject(read.data)) return bad(path, "its front matter is not a mapping"), undefined;
+    return { data: read.data, body: read.body };
   };
   const list = (value: unknown, field: string, test: (item: string) => boolean = (item) => item !== ""): string[] => {
     if (value === undefined) return [];
@@ -666,7 +649,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const name = src.name;
   if (src.kind("") !== "dir") throw new PackageError(dir, ["it is not a folder: a package is one"]);
   if (kind(MANIFEST) !== "file") throw new PackageError(dir, [`${MANIFEST}: missing: a package is a folder with agent.md (its manifest in the front matter, the agent's instructions in the body)`]);
-  for (const entry of src.entries("")) {
+  for (const entry of entries("")) {
     if (entry.isDirectory() && !["skills", "rules", "evals"].includes(entry.name)) bad(`${entry.name}/`, "a package's folders are skills/, rules/ and evals/");
   }
   // Bounded before anything is read: a file, the files together, and how many there are.
@@ -766,7 +749,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     else if (!issues.length) needs = [...(f.needs as string[])];
   }
   // The server's checkout before each run's first turn: the pull request the run's GitHub event names, at its head.
-  if (f.checkout !== undefined && f.checkout !== "pull_request") bad(MANIFEST, "checkout is pull_request: the server checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn");
+  // Or the head of the default branch of the repository the run names.
+  if (f.checkout !== undefined && f.checkout !== "pull_request" && f.checkout !== "repository") bad(MANIFEST, "checkout is pull_request or repository: the server checks out, in repo/ before the first turn, the pull request the run's GitHub event names (at its head), or the head of the default branch of the repository the run names");
   // The setup an apply takes, in the inputs' grammar, by the same compiler; none, a schema of no fields.
   const parameters = fieldsSchema(f.parameters, "parameters", (message) => bad(MANIFEST, message)) ?? { type: "object", additionalProperties: false, properties: {} };
   const fields = fieldsOf(parameters);
@@ -907,7 +891,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
 
   // skills/<name>/SKILL.md, each named as its folder and described, as Agent Skills are; rules/*.md beside each.
   const skills: Record<string, string> = {};
-  const skillDirs = kind("skills") === "dir" ? src.entries("skills") : [];
+  const skillDirs = kind("skills") === "dir" ? entries("skills") : [];
   for (const entry of skillDirs) {
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(`skills/${entry.name}`, "skills/ holds only skill folders, each named in lowercase letters, digits and dashes");
@@ -922,7 +906,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     if (skill && (skill.data.name !== entry.name || typeof skill.data.description !== "string" || !skill.data.description.trim())) bad(`skills/${entry.name}/SKILL.md`, `its front matter names the skill (${entry.name}) and describes it`);
     for (const path of own) skills[`${entry.name}/${path}`] = text(`skills/${entry.name}/${path}`);
   }
-  const rules = kind("rules") === "dir" ? src.entries("rules") : [];
+  const rules = kind("rules") === "dir" ? entries("rules") : [];
   if (rules.length && !skillDirs.length) bad("rules/", "rules ship beside each skill's SKILL.md, and the package has no skill");
   const ruleNames: string[] = [];
   for (const entry of rules) {
@@ -944,7 +928,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   // evals/<case>/: prompt.md (the run's input), graders/*.md (each its type in its front matter), case.yaml and
   // fixtures/ if it has them. The layout only: no eval runs here.
   const evals: string[] = [];
-  for (const entry of kind("evals") === "dir" ? src.entries("evals") : []) {
+  for (const entry of kind("evals") === "dir" ? entries("evals") : []) {
     const at = `evals/${entry.name}`;
     if (!entry.isDirectory() || !NAME.test(entry.name)) {
       bad(at, "evals/ holds only case folders, each named in lowercase letters, digits and dashes");
@@ -986,7 +970,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(needs ? { needs } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" || f.checkout === "repository" ? { checkout: f.checkout } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number, ...(f.budget.max_requests !== undefined ? { max_requests: f.budget.max_requests as number } : {}) } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, ...(ruleNames.length ? { rules: ruleNames.sort() } : {}), evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -1076,11 +1060,12 @@ function modelView(model: Package["model"]) {
   return { ...rest, ...(choices ? { choices: choices.map(({ id, label, model: ref, harness, warning, note, secrets }) => ({ id, label, model: ref, harness, warning: warning ?? null, note: note ?? null, secrets })) } : {}) };
 }
 
-/** A package as an import answers it: its listing, and every text its agent would be given, the instructions and each
- *  skill file by path (a rule and the answer's schema beside each SKILL.md among them), so a person reads what a third
- *  party's package would tell their agent before it is installed. */
-export function packageDetail(p: Package) {
-  return { ...packageView(p), instructions: p.instructions, skill_files: { ...p.skills } };
+/** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
+ *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
+ *  it is applied. */
+export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
+  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
