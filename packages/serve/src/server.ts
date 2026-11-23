@@ -3459,9 +3459,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
-      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
-      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
+      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off. Under the run-keys
+      // setting the kept one's firings bring no keys, so each is refused for the keys its runs owe and starts no run: the
+      // warning says so, so that nobody reads "still fires" as spending.
+      const kept = options.apiOnly
+        ? "is kept as it was, and still fires: archiving the agent turns it off"
+        : `is kept as it was: it still fires, and each firing is refused 409 until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}); a refused firing starts no run`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
