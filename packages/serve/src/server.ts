@@ -57,7 +57,7 @@ import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
 import { FAUX_EXA_ENV } from "./exa-keyless.js";
 import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
-import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
+import { FAUX_BROWSER_ENV, grantedTools, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
@@ -3094,15 +3094,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return got && "refused" in got ? [{ field: `definition.tools[${index}]`, reason: got.reason, message: got.refused, tool, keyEnv: keyEnv!, unset: got.reason === "missing" }] : [];
       });
       if (unset.length) throw new ApiError("agent_not_runnable", [...new Set(unset.map((one) => one.message))].join(" "), { fields: unset.map(({ tool: _tool, keyEnv: _keyEnv, unset: _unset, ...issue }) => issue), details: { unbound: [], missing: Object.fromEntries(unset.filter((one) => one.unset).map((one) => [one.tool, [one.keyEnv]])) } });
-      // A granted tool of a per_run server an API-only server's token saved at a listed origin, that origin off this
-      // server's list now (originGone): refused by its name before the run starts, as the claim refuses it, nothing sent.
-      const gone = ((revision.body as { tools?: readonly string[] }).tools ?? []).flatMap((tool, index) => {
-        const named = mcpToolOf(tool);
-        const why = named ? mcpMeta.get(named.server)?.originGone : undefined;
-        return why ? [{ field: `definition.tools[${index}]`, reason: "not_an_option", message: why }] : [];
-      });
-      if (gone.length) throw new ApiError("agent_not_runnable", [...new Set(gone.map((one) => one.message))].join(" "), { fields: gone, details: { unbound: [], missing: {} } });
     }
+    // A granted tool of a per_run server an API-only server's token saved at a listed origin, that origin off this server's
+    // list now (originGone): refused by its name before the run is made, as the claim refuses it, nothing sent. Every tool
+    // the revision grants: an agentic one's, and a workflow's at its top level or on a node (grantedTools), so a workflow's
+    // run is never made to be refused at its claim. A workflow this server can't read grants its top-level tools here, and
+    // is refused below in its own words (runnable.ts).
+    const listed = (revision.body as { tools?: readonly string[] }).tools ?? [];
+    const granted = revision.kind === "workflow" ? await grantedTools({ kind: "workflow", tools: listed, workflow: (revision.body as { workflow?: unknown }).workflow }).catch(() => listed) : listed;
+    const gone = granted.flatMap((tool) => {
+      const named = mcpToolOf(tool);
+      const why = named ? mcpMeta.get(named.server)?.originGone : undefined;
+      const at = listed.indexOf(tool);
+      return why ? [{ field: at >= 0 ? `definition.tools[${at}]` : "definition.workflow", reason: "not_an_option", message: why }] : [];
+    });
+    if (gone.length) throw new ApiError("agent_not_runnable", [...new Set(gone.map((one) => one.message))].join(" "), { fields: gone, details: { unbound: [], missing: {} } });
     const pinnedTools = (server: string) => {
       const saved = mcpMeta.get(server);
       if (!saved || !Object.hasOwn(pin, server)) return undefined;

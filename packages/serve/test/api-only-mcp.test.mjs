@@ -23,7 +23,7 @@ import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { queued, registryPin, storeOn } from "./store-helpers.mjs";
-import { asOwner, follow, scratch, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
+import { answerFlow, asOwner, follow, scratch, serve, serverLog, storeBytes, withEnv } from "./support.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
 const { composioMadeKey, storedMade } = await import("../dist/composio-made.js");
@@ -532,6 +532,33 @@ test("API-only: a run of a per_run server the token saved, whose origin the serv
   const fresh = await notesRun(again.token, "notes-writer");
   assert.equal(fresh.status, 422, JSON.stringify(fresh.body));
   assert.match(JSON.stringify(fresh.body.error), /gw.*AGENTRUN_MCP_TOKEN_ORIGINS/);
+  assert.equal((await again.token("GET", "/runs")).body.runs.length, before, "no run made");
+  assert.equal(fake.log.length, sent, "that host got nothing");
+});
+
+test("API-only: a workflow revision granting a tool of a per_run server the token saved, whose origin the server's list no longer holds, is refused before it starts (409 agent_not_runnable) by the server's name; no run is made, and that host gets nothing", async (t) => {
+  const fake = await notesFake(t);
+  withEnv(t, { [ORIGINS_ENV]: originOf(fake.url) });
+  const first = await tokenServer(t);
+  assert.equal((await first.token("PUT", "/settings/mcp-servers/gw", { url: fake.url, auth: { type: "per_run" } })).status, 200);
+  // A workflow revision that grants the server's tools, at its top level and on its model node (written to the store: a
+  // workflow's save refuses an MCP grant, so this is one saved before that rule, or by hand).
+  const flow = answerFlow();
+  flow.root.steps[0].tools = ["mcp:gw/send_note"];
+  await first.server.store.agents.create({ id: "flow-notes", name: "flow-notes" }, { id: "rev-flow-notes", kind: "workflow", body: { workflow: flow, tools: ["mcp:gw/list_notes"] } });
+  await first.server.stop();
+
+  // The operator took the origin off the list and started the server again on the same data.
+  process.env[ORIGINS_ENV] = "https://elsewhere.example";
+  const again = await tokenServer(t, { data: first.server.data });
+  const sent = fake.log.length;
+  const before = (await again.token("GET", "/runs")).body.runs.length;
+  const refused = await again.token("POST", "/agents/flow-notes/runs", { input: { question: "What are my notes?" }, mcp_auth: { gw: { headers: { authorization: RUN_BEARER } } } });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.error?.code, "agent_not_runnable");
+  assert.match(refused.body.error.message, /gw.*AGENTRUN_MCP_TOKEN_ORIGINS/, refused.body.error.message);
+  assert.deepEqual(refused.body.error.fields?.map((issue) => [issue.field, issue.reason]), [["definition.tools[0]", "not_an_option"], ["definition.workflow", "not_an_option"]]);
+  assert.equal(JSON.stringify(refused.body).includes(RUN_BEARER), false, "the run's bearer is not echoed");
   assert.equal((await again.token("GET", "/runs")).body.runs.length, before, "no run made");
   assert.equal(fake.log.length, sent, "that host got nothing");
 });
