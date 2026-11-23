@@ -25,6 +25,10 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("opens a race by its label under Runs", () => {
+    expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
+    expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });
@@ -85,6 +89,33 @@ let root: ReturnType<typeof createRoot> | undefined;
 // are unstubbed after each).
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
+
+describe("App, a race's page", () => {
+  it("reads the race's own runs alone: no runs list and no observations, which nobody sees there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const at = new URL(url, "http://serve.test");
+      asked.push(`${at.pathname}${at.search}`);
+      if (at.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (at.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (at.pathname === "/v2/runs" || at.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      if (at.pathname === "/v2/observations") return json(200, { sessions: [], days: 30 });
+      return json(404, { error: { code: "not_found", message: at.pathname, retryable: false } });
+    });
+    location.hash = "#/races/bench";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("No run carries the label") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.textContent).toContain("No run carries the label");
+    const runs = asked.filter((a) => a.startsWith("/v2/runs"));
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((a) => new URLSearchParams(a.split("?")[1] ?? "").get("label") === "race:bench"), runs.join(" ")).toBe(true);
+    expect(asked.filter((a) => a.startsWith("/v2/observations"))).toEqual([]);
+  });
+});
 
 describe("App, Mission Control when the stats can't be read", () => {
   it("shows the error, not Loading for ever", async () => {
