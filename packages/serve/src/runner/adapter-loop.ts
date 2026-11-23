@@ -1693,8 +1693,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return session!.turnEnd();
   };
 
-  /** run(claim), its trace ended with it: every span still open ends, with the claim's failure where it failed, and its
-   *  spans are flushed (tracer.ts: bounded, and never a throw). */
+  /** run(claim), its trace ended with it: every span still open ends, with the claim's failure where it failed, handed to
+   *  the exporter, which sends it in the background (tracer.ts: the claim's end never waits on a collector, and never
+   *  throws). */
   async function traced(claim: Claim): Promise<LoopEnd> {
     try {
       const end = await run(claim);

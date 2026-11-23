@@ -28,6 +28,7 @@ import { clearWaitEnded } from "../browser-wait-ended.js";
 import { cutDeep, heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
 import { keepPresence, type Presence } from "./presence.js";
+import { flushTraces } from "../otel/tracer.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -1228,6 +1229,8 @@ export function startRunner(options: RunnerOptions): Runner {
       await ticker?.close();
       // It claims no more: its word that it is here goes.
       await presence?.close();
+      // Its runs' trace spans still waiting in the batch are sent, at most FLUSH_MS (nothing when tracing is off).
+      await flushTraces();
     },
     kill() {
       killed = true;

@@ -123,7 +123,8 @@ export function chatAttributes(run: TracedRun, request: { readonly model?: strin
   return {
     ...common(run, "chat"),
     ...(via.provider ? { "gen_ai.provider.name": providerName(via.provider) } : {}),
-    ...(model ? { "gen_ai.request.model": model, "gen_ai.response.model": model } : {}),
+    // The model asked for. gen_ai.response.model is never set: no usage the host reads names the model that answered.
+    ...(model ? { "gen_ai.request.model": model } : {}),
     ...(via.serverAddress ? { "server.address": via.serverAddress } : {}),
     ...(ended?.end === "answered" && ended.label === "filtered" ? { "gen_ai.response.finish_reasons": ["content_filter"] } : {}),
     ...(plan ? { "agentrun.billing": "plan" } : usage && error === undefined ? usageAttributes(usage) : {}),

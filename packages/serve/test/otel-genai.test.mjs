@@ -18,6 +18,11 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { genAiTracing, otelOn, traceIdOf } = await import("../dist/otel/tracer.js");
 const { chatAttributes, routeTrace, toolAttributes, USAGE_ATTRIBUTES } = await import("../dist/otel/genai.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { exporterConfig, FLUSH_MS } = await import("../dist/otel/tracer.js");
+const { runEnv } = await import("../dist/runner/main.js");
+const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
+const { otelPair } = await import("../dist/runner/run-child-host.js");
+const { encode } = await import("../dist/secrets.js");
 after(closeOpenSessions);
 const TIMING = { leaseMs: 60_000, renewEveryMs: 10_000, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -261,8 +266,7 @@ test("the mapping: a request that came by another route (a subagent's tier) name
 });
 
 /** A trace made directly (no run), into memory: its finished spans once `steps` ran on it and it ended. */
-async function directTrace(steps) {
-  const exporter = new InMemorySpanExporter();
+async function directTrace(steps, exporter = new InMemorySpanExporter()) {
   const tracing = await genAiTracing(ON, { exporter });
   const trace = tracing.open({ startedAt: Date.now() });
   await steps(trace);
@@ -279,6 +283,79 @@ test("a plan harness's turn whose only event is its turn_end (no text, no tool) 
   assert.equal(chats.length, 1, `one turn, one chat span: ${spans.map((span) => span.name)}`);
   assert.equal(chats[0].attributes["agentrun.billing"], "plan");
   assert.equal(chats[0].status.code, 0, "it ended as its turn did, not interrupted");
+});
+
+test("a claim's end never waits on the collector: with an exporter that never answers, it ends at once; the closing flush is bounded", async (t) => {
+  const hanging = { export: () => {}, shutdown: async () => {}, forceFlush: () => new Promise(() => {}) };
+  const tracing = await genAiTracing(ON, { exporter: hanging });
+  const trace = tracing.open({ startedAt: Date.now() });
+  trace.known({ runId: "run-1", harness: "pi", provider: "anthropic" });
+  trace.request("claude-sonnet-4.5")({ input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 });
+  trace.event({ type: "tool_start", callId: "c1", name: "bash", args: {} });
+  trace.event({ type: "tool_end", callId: "c1", name: "bash", isError: false });
+  let timer;
+  t.after(() => clearTimeout(timer));
+  const bound = new Promise((resolve) => (timer = setTimeout(() => resolve("waited"), 250)));
+  assert.equal(await Promise.race([trace.end().then(() => "ended"), bound]), "ended", "the claim's end did not wait for the export");
+  clearTimeout(timer);
+  // The process's closing flush waits for it, but never past FLUSH_MS.
+  const flushBound = new Promise((resolve) => (timer = setTimeout(() => resolve("hung"), FLUSH_MS + 1_000)));
+  assert.equal(await Promise.race([tracing.flush().then(() => "flushed"), flushBound]), "flushed");
+});
+
+test("a run whose root span failed to start leaves its trace id to no later span", async () => {
+  let thrown = false;
+  const failing = { runId: "run-a", get harness() { if (!thrown) { thrown = true; throw new Error("no name yet"); } return "pi"; } };
+  const exporter = new InMemorySpanExporter();
+  const tracing = await genAiTracing(ON, { exporter, log: () => {} });
+  const a = tracing.open();
+  a.known(failing);
+  // The next span that starts a trace of its own (here run-a's chat, its root never made) takes a fresh id.
+  a.request("m")({ input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 });
+  const b = tracing.open();
+  b.known({ runId: "run-b", harness: "pi" });
+  await b.end();
+  await a.end();
+  const spans = exporter.getFinishedSpans();
+  const ids = spans.map((span) => [span.name, span.spanContext().traceId]);
+  assert.ok(!ids.some(([, id]) => id === traceIdOf("run-a")), `run-a's id is on no span: ${JSON.stringify(ids)}`);
+  assert.equal(spans.find((span) => span.name === "invoke_agent pi").spanContext().traceId, traceIdOf("run-b"));
+});
+
+test("a turn that did not complete cuts its own calls, never one an earlier turn left going", async () => {
+  const spans = await directTrace((trace) => {
+    trace.known({ runId: "run-1", harness: "pi" });
+    trace.event({ type: "tool_start", callId: "outlived", name: "subagent", args: {} });
+    trace.event({ type: "turn_end", status: "completed" });
+    trace.event({ type: "tool_start", callId: "own", name: "bash", args: {} });
+    trace.event({ type: "turn_end", status: "interrupted" });
+    trace.event({ type: "tool_end", callId: "outlived", name: "subagent", isError: false });
+  });
+  const byCall = Object.fromEntries(spans.filter((span) => span.attributes["gen_ai.tool.call.id"]).map((span) => [span.attributes["gen_ai.tool.call.id"], span]));
+  assert.equal(byCall.own.attributes["error.type"], "interrupted", "the cut turn's own call");
+  assert.equal(byCall.outlived.status.code, 0, "the earlier turn's call ended by its own end, ok");
+  assert.equal(byCall.outlived.attributes["error.type"], undefined);
+});
+
+test("no OTEL_* setting reaches a run: the run environment and a CLI's have none, and a run's process gets them on its pipe alone", () => {
+  const server = { PATH: "/usr/bin:/bin", OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.invalid:4318/", OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20dummy-otlp-key,x-team=jobs", OTEL_SERVICE_NAME: "agentrun-prod" };
+  const runs = runEnv(server);
+  assert.deepEqual(Object.getOwnPropertyNames(runs).filter((name) => name.startsWith("OTEL_")), [], "the run environment has no OTEL_* at all");
+  assert.equal(runs.OTEL_EXPORTER_OTLP_HEADERS, undefined, "not even by name");
+  const cli = cliRunEnv(runs, "/data");
+  assert.deepEqual(Object.getOwnPropertyNames(cli).filter((name) => name.startsWith("OTEL_")), [], "a CLI harness's environment has none");
+  // A run's own process: on its pipe, read back as that process reads it, and the exporter configured from it.
+  const pipe = encode(otelPair(server));
+  const read = "const { otelEnv, exporterConfig } = await import(process.argv[1]); process.stdout.write(JSON.stringify({ env: Object.keys(process.env).filter((n) => n.startsWith('OTEL_')), config: exporterConfig(otelEnv()) }));";
+  const child = spawnSync(process.execPath, ["--import", new URL("../dist/secrets.js", import.meta.url).pathname, "--input-type=module", "-e", read, new URL("../dist/otel/tracer.js", import.meta.url).pathname], {
+    input: pipe, encoding: "utf8", timeout: 30_000,
+    env: { PATH: process.env.PATH, AGENTRUN_SECRETS_FD: "0", AGENTRUN_SECRETS_LEN: String(pipe.length), AGENTRUN_TELEMETRY: "0" },
+  });
+  assert.equal(child.status, 0, child.stderr);
+  const said = JSON.parse(child.stdout);
+  assert.deepEqual(said.env, [], "the run's process has no OTEL_* in its environment");
+  assert.deepEqual(said.config, { url: "http://collector.invalid:4318/v1/traces", headers: { Authorization: "Bearer dummy-otlp-key", "x-team": "jobs" } });
+  assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 
 test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
