@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+The server serves a share preview of an ended run at `/share/<run_id>`, for the owner's session alone (the owner's sign-in with accounts, the printed link's session without; any other browser gets a 401 page that says to sign in first). The page is the console's second entry, `share.html`, under the console's CSP. It reads the run's export (`GET /v2/runs/<run_id>/export`) and nothing else, so it shows exactly what a share would publish: the run's Report, Timeline, a workflow's graph and its files as text, drawn from the bundle alone.
+A panel lists the scrubber's cuts by kind with their counts. A value beside a label and a personal detail each have a switch that exports the run again with that value put back; a known key format, a value the server holds and a dump are locked. The footer says nothing was sent and shows the bundle's sha256 and the `agentrun share <run> --restore <ids> --expect <sha256>` command that will publish exactly that bundle. A run that has not ended, a withheld run and an export that failed closed each show their reason and nothing of the run. The console now draws every `[redacted:<rule>]` marker as a chip.
