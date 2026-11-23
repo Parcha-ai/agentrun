@@ -96,7 +96,7 @@ async function runOn(t, account, { run, url = FAL, entry = { meter: "fal" }, ser
   };
 }
 
-const job = (prompt, key) => ({ endpoint_id: IDEOGRAM, input: { rendering_speed: "TURBO", prompt, num_images: 1 }, submission_key: key });
+const job = (prompt, key) => ({ endpoint_id: IDEOGRAM, input: { prompt, num_images: 1 }, submission_key: key });
 
 test("two runs that make the same key both reach fal, each under its own key; one run's retry reaches it with the same key", async (t) => {
   const account = falAccount();

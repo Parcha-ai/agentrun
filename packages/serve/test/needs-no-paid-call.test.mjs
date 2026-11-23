@@ -15,7 +15,7 @@ import { fakeComputer } from "./workspace-fake-computer.mjs";
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
 const RUN_MODEL = "mcp:fal/run_model";
 const HELLO = { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
-const JOB = 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"rendering_speed":"TURBO","prompt":"a title card"},"submission_key":"card-20261121-1"}';
+const JOB = 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a title card"},"submission_key":"card-20261121-1"}';
 
 /** The `sh` the check runs: the names after `sh -c <script> sh`. */
 const checked = (argv) => (argv[0] === "sh" && argv[1] === "-c" && argv[3] === "sh" ? argv.slice(4) : undefined);

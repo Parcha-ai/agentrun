@@ -31,6 +31,8 @@ const PRICES = {
   "fal-ai/whisper": [0.001111111, "compute seconds"],
   "fal-ai/elevenlabs/dubbing": [0.6, "minutes"],
   "fal-ai/elevenlabs/music": [0.6, "minutes"],
+  "fal-ai/kling-video/v3/pro/image-to-video": [0.14, "seconds"],
+  "fal-ai/nano-banana-pro": [0.15, "images"],
   "veed/fabric-1.0": [0.08, "seconds"],
   "fal-ai/bytedance/omnihuman/v1.5": [0.16, "seconds"],
   "fal-ai/infinitalk": [0.2, "seconds"],
@@ -145,13 +147,40 @@ test("a voiceover is booked per 1000 characters of its text", async (t) => {
   assert.equal(run.admits[0].basis, `fal's price for ${TTS}: $0.1 per 1000 characters × 1.5 (the 1500 characters of its text), from get_pricing at 2026-11-20T12:00:00.000Z`);
 });
 
-test("a job at a setting that costs more than get_pricing's one rate is refused unsent under a cap", async (t) => {
-  const capped = await setup(t, { capUsd: 5 });
-  const refused = await capped.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "QUALITY" } });
-  assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/ideogram/v3 per image at the rate get_pricing states only for rendering_speed "TURBO" (BALANCED, the default, and QUALITY cost more), and this job's rendering_speed is "QUALITY", so a run with a spend cap can't send it. Nothing was sent.`);
-  assert.equal(capped.received("run_model"), 0, "fal never received the job");
-  await capped.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "TURBO" } });
-  near(capped.spent(), 0.03, "TURBO: get_pricing's rate");
+test("a job is held and booked at the rate its settings are billed at: get_pricing's rate times the model page's ratio, a default included", async (t) => {
+  // fal's model pages (read 2026-11-23), against get_pricing's one rate: Ideogram v3 renders at BALANCED by default,
+  // $0.06 an image against TURBO's $0.03; Kling v3 pro image-to-video makes audio by default, $0.168 a second against
+  // $0.14, and $0.196 with voice control; a Nano Banana Pro web search adds $0.015; Fabric at 720p is $0.15 a second
+  // against 480p's $0.08.
+  const run = await setup(t, { capUsd: 5, media: TALKING_MEDIA, run: (args) => reply(args, { status: "processing" }) });
+  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo" } });
+  near(run.admits[0].holdUsd, 0.06, "no rendering_speed: BALANCED, its default, twice get_pricing's rate");
+  assert.equal(run.admits[0].basis, `fal's price for fal-ai/ideogram/v3: $0.03 per image × 2 for rendering_speed "BALANCED", its default (fal's model page: $0.06 against $0.03) × 1 (1 image by default), from get_pricing at 2026-11-20T12:00:00.000Z`);
+  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "TURBO" } });
+  near(run.admits[1].holdUsd, 0.03, "TURBO: get_pricing's rate");
+  const kling3 = "fal-ai/kling-video/v3/pro/image-to-video";
+  const start = { start_image_url: "https://media.example/i.png", duration: "5" };
+  await run.call("run_model", { endpoint_id: kling3, input: start });
+  near(run.admits[2].holdUsd, 0.168 * 5, "no generate_audio: audio on, its default");
+  await run.call("run_model", { endpoint_id: kling3, input: { ...start, generate_audio: false } });
+  near(run.admits[3].holdUsd, 0.112 * 5, "audio off");
+  await run.call("run_model", { endpoint_id: kling3, input: { ...start, elements: [{ voice_id: "v1" }] } });
+  near(run.admits[4].holdUsd, 0.196 * 5, "voice control");
+  await run.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "a poster", enable_web_search: true } });
+  near(run.admits[5].holdUsd, 0.15 + 0.015, "a web search adds $0.015");
+  assert.equal(run.admits[5].basis, "fal's price for fal-ai/nano-banana-pro: $0.15 per image × 1 (1 image by default) plus $0.015 for a web search, from get_pricing at 2026-11-20T12:00:00.000Z");
+  await run.call("run_model", head(FABRIC, { resolution: "720p" }));
+  near(run.admits[6].holdUsd, 0.15 * 4, "Fabric at 720p, the 4 s voice");
+  // A value the page names no rate for is refused unsent.
+  const refused = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", rendering_speed: "turbo" } });
+  assert.equal(textOf(refused), `mcp:fal/run_model was not sent: fal bills fal-ai/ideogram/v3 per image at a rate its rendering_speed sets, and fal's model page names no rate for rendering_speed "turbo", so a run with a spend cap can't send it. Nothing was sent.`);
+  assert.equal(run.received("run_model"), 7, "fal received the seven priced jobs, not the refused one");
+  // Settled at the images returned, at the same rate, and the flat charge once.
+  const done = await setup(t, { capUsd: 5, run: (args) => reply(args, { result: { images: [{ url: "https://v3.fal.media/1.png" }, { url: "https://v3.fal.media/2.png" }] } }) });
+  await done.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a logo", num_images: 2 } });
+  near(done.spent(), 0.12, "2 images at BALANCED");
+  await done.call("run_model", { endpoint_id: "fal-ai/nano-banana-pro", input: { prompt: "a poster", num_images: 2, resolution: "4K", enable_web_search: true } });
+  near(done.spent(), 0.12 + 2 * 0.3 + 0.015, "2 images at 4K, plus one web search");
 });
 
 test("a job fal bills in whole minutes is held and booked at its length rounded up to the minute", async (t) => {
@@ -255,7 +284,7 @@ test("a unit that can't be known before the job runs: refused unsent under a cap
 
 test("a price that can't be read makes the job unpriceable: get_pricing failing, or listing no price for the endpoint", async (t) => {
   const failing = await setup(t, { pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
-  const refused = await failing.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
+  const refused = await failing.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
   assert.equal(textOf(refused), "mcp:fal/run_model was not sent: fal's price for fal-ai/ideogram/v3 could not be read (its get_pricing answered an error), so a run with a spend cap can't send it. Nothing was sent.");
   assert.equal(failing.received("run_model"), 0);
 
@@ -269,7 +298,7 @@ test("a price that can't be read makes the job unpriceable: get_pricing failing,
   assert.equal(noEndpoint.received("get_pricing"), 0);
 
   const open = await setup(t, { capUsd: null, pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
-  await open.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
+  await open.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
   assert.deepEqual(await open.turns(), [null], "an unknown charge");
 });
@@ -397,11 +426,11 @@ test("a talking head whose voice can't be read, or whose rate get_pricing doesn'
     assert.equal(result.isError, true, JSON.stringify(job));
     return textOf(result);
   };
-  // Fabric at 720p costs more than the 480p rate get_pricing states; its resolution has no default, so one not sent is
-  // not priced either.
-  for (const resolution of ["720p", undefined, "480"]) {
+  // Fabric's resolution sets its rate and has no default (its OpenAPI), so a job that sends none, or one fal's model page
+  // names no rate for, is not priced.
+  for (const resolution of [undefined, "480", "1080p"]) {
     const text = await refusedFor(head(FABRIC, resolution === undefined ? {} : { resolution }));
-    assert.match(text, /^mcp:fal\/run_model was not sent: fal bills veed\/fabric-1\.0 per second at the rate get_pricing states only for resolution "480p"/, String(resolution));
+    assert.match(text, /^mcp:fal\/run_model was not sent: fal bills veed\/fabric-1\.0 per second at a rate its resolution sets/, String(resolution));
   }
   assert.deepEqual(run.asked.media, [], "no voice was read for a rate that can't be priced");
   // A voice that is not at an https URL is never read.
@@ -432,7 +461,7 @@ test("a talking head whose voice can't be read, or whose rate get_pricing doesn'
 
   // With no cap a talking head whose voice can't be read runs, booked as an unknown charge, never $0.
   const open = await setup(t, { capUsd: null, media: TALKING_MEDIA, run: (args) => reply(args, { result: { video: { url: "https://v3.fal.media/o.mp4" } } }) });
-  await open.call("run_model", head(FABRIC, { resolution: "720p" }));
+  await open.call("run_model", head(FABRIC));
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
   assert.deepEqual(await open.turns(), [null], "an unknown charge");
 });
@@ -465,7 +494,7 @@ test("submit_jobs books each job by its own outcome: a replayed or rejected one 
 
 test("a price its owner saved for a tool wins over fal's metering for that tool", async (t) => {
   const run = await setup(t, { entry: { meter: "fal", prices: { run_model: 0.5 } } });
-  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x", num_images: 2 } });
+  await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 2 } });
   near(run.spent(), 0.5, "its owner's price");
   assert.equal(run.admits[0].basis, "the price its owner set for mcp:fal/run_model");
   assert.equal(run.received("get_pricing"), 0, "fal's price is never read");
@@ -508,7 +537,7 @@ test("fal's price is read once per endpoint and kept 5 minutes", async (t) => {
 
 test("a fal job with no run to book it under is never sent", async (t) => {
   const run = await setup(t, { ledger: false });
-  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "x" } });
+  const result = await run.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
   assert.equal(textOf(result), "mcp:fal/run_model was not sent: this call has no run to book its price under.");
   assert.equal(run.received("run_model"), 0);
 });

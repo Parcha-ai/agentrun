@@ -33,12 +33,12 @@ test("run_model and submit_job submit one job, submit_jobs one per request; any 
 
 test("images and audios are counted from the input, one by default", async () => {
   const { unitsBefore } = await load();
-  assert.equal(unitsBefore("fal-ai/ideogram/v3", "images", { rendering_speed: "TURBO", prompt: "x", num_images: 3 }).units, 3);
+  assert.equal(unitsBefore("fal-ai/ideogram/v3", "images", { prompt: "x", num_images: 3 }).units, 3);
   assert.equal(unitsBefore("fal-ai/nano-banana", "images", { prompt: "x" }).units, 1);
   assert.equal(unitsBefore("fal-ai/some/model", "images", { num_outputs: 2 }).units, 2);
   assert.equal(unitsBefore("fal-ai/stable-audio-25/text-to-audio", "audios", { prompt: "x", seconds_total: 30 }).units, 1);
-  assert.ok("unknown" in unitsBefore("fal-ai/ideogram/v3", "images", { rendering_speed: "TURBO", num_images: "many" }), "a count that is no number");
-  assert.ok("unknown" in unitsBefore("fal-ai/ideogram/v3", "images", { rendering_speed: "TURBO", num_images: 0 }), "a count of none");
+  assert.ok("unknown" in unitsBefore("fal-ai/ideogram/v3", "images", { num_images: "many" }), "a count that is no number");
+  assert.ok("unknown" in unitsBefore("fal-ai/ideogram/v3", "images", { num_images: 0 }), "a count of none");
 });
 
 test("megapixels are each image's width by height, rounded up to a whole megapixel, times the images; with no image_size, unknown", async () => {
@@ -69,7 +69,7 @@ test("seconds and minutes are the length the input names, only in the field that
   assert.equal(s({ prompt: "x", duration: "5" }).units, 5);
   assert.equal(s({ duration: 10 }).units, 10);
   assert.equal(s({ duration: "10" }, "fal-ai/kling-video/v2.5-turbo/pro/image-to-video").units, 10);
-  assert.equal(s({ duration: "12", generate_audio: false }, "fal-ai/kling-video/v3/pro/image-to-video").units, 12);
+  assert.equal(s({ duration: "12" }, "fal-ai/kling-video/v3/pro/image-to-video").units, 12);
   assert.equal(s({ duration: "6" }, "fal-ai/minimax/hailuo-02/standard/text-to-video").units, 6);
   for (const veo of ["fal-ai/veo3/fast", "fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video"]) assert.equal(s({ duration: "8s" }, veo).units, 8, veo);
   assert.equal(s({ seconds_total: 30 }, "fal-ai/stable-audio-25/text-to-audio").units, 30);
@@ -141,7 +141,7 @@ test("a job that names no length is billed by its input media only where fal bil
   assert.equal(unitsBefore("fal-ai/kling-video/v2.5-turbo/pro/image-to-video", "seconds", { image_url: "https://m.example/i.png", duration: "10" }).units, 10);
 });
 
-test("a talking head is billed by the voice at its audio_url alone, https only; Fabric only at the 480p rate get_pricing states", async () => {
+test("a talking head is billed by the voice at its audio_url alone, https only", async () => {
   const { unitsBefore } = await load();
   const face = "https://m.example/i.png";
   const voice = "https://v3.fal.media/files/a.mp3";
@@ -151,10 +151,9 @@ test("a talking head is billed by the voice at its audio_url alone, https only; 
   // A length the input states is not what fal bills.
   assert.deepEqual(unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url: voice, duration: 1 }), { voice });
   assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, resolution: "480p", duration_seconds: 1 }), { voice });
-  // Fabric's 720p rate is not get_pricing's, and its resolution has no default.
+  // Fabric's resolution sets its rate (rateOf), not its length: the voice is the length at any resolution.
   for (const resolution of ["720p", undefined, "480", 480]) {
-    const units = unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, ...(resolution === undefined ? {} : { resolution }) });
-    assert.match(units.unknown ?? "", /^fal bills veed\/fabric-1\.0 per second at the rate get_pricing states only for resolution "480p"/, String(resolution));
+    assert.deepEqual(unitsBefore("veed/fabric-1.0", "seconds", { image_url: face, audio_url: voice, ...(resolution === undefined ? {} : { resolution }) }), { voice }, String(resolution));
   }
   for (const audio_url of ["http://m.example/a.mp3", "ftp://m.example/a.mp3", "not a url", "", 3, null, undefined]) {
     const units = unitsBefore("fal-ai/bytedance/omnihuman/v1.5", "seconds", { image_url: face, audio_url });
@@ -210,43 +209,93 @@ test("a media read is capped at web_save's 200 MiB, or the lower cap its caller 
   assert.equal((await read("https://m.example/hop", signal)).length, 100, "without httpsOnly an http hop is followed, as web_save's is");
 });
 
-test("a job is priced only at the settings get_pricing's one rate is for: a setting that costs more, or a default that does, is unknown", async () => {
-  const { unitsBefore } = await load();
-  const off = (endpoint, unit, input) => unitsBefore(endpoint, unit, input).unknown;
-  // fal's model pages (read 2026-11-23) state each tier; get_pricing states one rate.
+test("a job is priced at the rate its settings are billed at: get_pricing's rate times the model page's ratio, a default included; a value the page names no rate for is unknown", async () => {
+  const { rateOf, unitsBefore } = await load();
+  const ratio = (endpoint, unit, input) => {
+    const rate = rateOf(endpoint, unit, input);
+    assert.ok(!("unknown" in rate), `${endpoint} ${JSON.stringify(input)}: ${rate.unknown}`);
+    assert.equal(rate.extraUsd, 0, `${endpoint} ${JSON.stringify(input)}: no flat charge`);
+    return rate.ratio;
+  };
+  const off = (endpoint, unit, input) => rateOf(endpoint, unit, input).unknown;
+  // fal's model pages (read 2026-11-23) state each tier; get_pricing states one rate, the base below.
   // Ideogram v3: $0.03 an image at TURBO (get_pricing's), $0.06 at BALANCED (the default), $0.09 at QUALITY.
   for (const endpoint of ["fal-ai/ideogram/v3", "fal-ai/ideogram/v3/edit", "fal-ai/ideogram/v3/remix", "fal-ai/ideogram/v3/reframe", "fal-ai/ideogram/v3/replace-background"]) {
-    assert.deepEqual(unitsBefore(endpoint, "images", { prompt: "x", rendering_speed: "TURBO", num_images: 2 }), { units: 2, from: "num_images" }, endpoint);
-    for (const [speed, shown] of [[undefined, "not set"], ["BALANCED", '"BALANCED"'], ["QUALITY", '"QUALITY"'], ["turbo", '"turbo"']]) {
-      assert.equal(off(endpoint, "images", { prompt: "x", ...(speed === undefined ? {} : { rendering_speed: speed }) }), `fal bills ${endpoint} per image at the rate get_pricing states only for rendering_speed "TURBO" (BALANCED, the default, and QUALITY cost more), and this job's rendering_speed is ${shown}`, `${endpoint} ${shown}`);
+    near(ratio(endpoint, "images", { prompt: "x", rendering_speed: "TURBO" }), 1, `${endpoint} TURBO`);
+    near(ratio(endpoint, "images", { prompt: "x" }), 2, `${endpoint} BALANCED, the default`);
+    near(ratio(endpoint, "images", { prompt: "x", rendering_speed: "BALANCED" }), 2, `${endpoint} BALANCED`);
+    near(ratio(endpoint, "images", { prompt: "x", rendering_speed: "QUALITY" }), 3, `${endpoint} QUALITY`);
+    for (const [speed, shown] of [["turbo", '"turbo"'], [null, "null"], [2, "2"]]) {
+      assert.equal(off(endpoint, "images", { prompt: "x", rendering_speed: speed }), `fal bills ${endpoint} per image at a rate its rendering_speed sets, and fal's model page names no rate for rendering_speed ${shown}`, `${endpoint} ${shown}`);
     }
+    // The setting sets the rate, not the units.
+    assert.deepEqual(unitsBefore(endpoint, "images", { prompt: "x", num_images: 2 }), { units: 2, from: "num_images" }, endpoint);
   }
-  // Veo 3.1: get_pricing's rate is 720p or 1080p with audio (audio off costs less); 4k costs more.
+  assert.deepEqual(rateOf("fal-ai/ideogram/v3", "images", { prompt: "x" }), { ratio: 2, extraUsd: 0, words: [`× 2 for rendering_speed "BALANCED", its default (fal's model page: $0.06 against $0.03)`] });
+  assert.deepEqual(rateOf("fal-ai/ideogram/v3", "images", { prompt: "x", rendering_speed: "TURBO" }), { ratio: 1, extraUsd: 0, words: [] }, "get_pricing's own rate: no words");
+  // Veo 3.1 and its image-to-video: $0.20 a second without audio and $0.40 with (get_pricing's) at 720p, the default, or
+  // 1080p; at 4k $0.40 without and $0.60 with. Audio is on by default.
+  for (const endpoint of ["fal-ai/veo3.1", "fal-ai/veo3.1/image-to-video"]) {
+    for (const resolution of [undefined, "720p", "1080p"]) {
+      for (const generate_audio of [undefined, true]) near(ratio(endpoint, "seconds", { prompt: "x", duration: "8s", resolution, generate_audio }), 1, `${endpoint} ${resolution} ${generate_audio}`);
+      near(ratio(endpoint, "seconds", { prompt: "x", duration: "8s", resolution, generate_audio: false }), 0.5, `${endpoint} ${resolution} audio off`);
+    }
+    near(ratio(endpoint, "seconds", { prompt: "x", duration: "8s", resolution: "4k" }), 1.5, `${endpoint} 4k with audio`);
+    near(ratio(endpoint, "seconds", { prompt: "x", duration: "8s", resolution: "4k", generate_audio: false }), 1, `${endpoint} 4k without audio`);
+  }
+  // Veo 3.1 fast: $0.10 without audio and $0.15 with (get_pricing's) at 720p or 1080p; at 4k $0.30 and $0.35.
+  near(ratio("fal-ai/veo3.1/fast", "seconds", { prompt: "x", duration: "8s" }), 1);
+  near(ratio("fal-ai/veo3.1/fast", "seconds", { prompt: "x", duration: "8s", generate_audio: false }), 0.1 / 0.15);
+  near(ratio("fal-ai/veo3.1/fast", "seconds", { prompt: "x", duration: "8s", resolution: "4k" }), 0.35 / 0.15);
+  near(ratio("fal-ai/veo3.1/fast", "seconds", { prompt: "x", duration: "8s", resolution: "4k", generate_audio: false }), 2);
+  // Veo 3 fast: $0.10 without audio and $0.15 with (get_pricing's); it has no 4k, so its resolution sets no rate.
+  near(ratio("fal-ai/veo3/fast", "seconds", { prompt: "x", duration: "8s" }), 1);
+  near(ratio("fal-ai/veo3/fast", "seconds", { prompt: "x", duration: "8s", generate_audio: false }), 0.1 / 0.15);
+  for (const endpoint of ["fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video", "fal-ai/veo3/fast"]) {
+    assert.equal(off(endpoint, "seconds", { prompt: "x", duration: "8s", generate_audio: "false" }), `fal bills ${endpoint} per second at a rate its generate_audio sets, and fal's model page names no rate for generate_audio "false"`, endpoint);
+  }
   for (const endpoint of ["fal-ai/veo3.1", "fal-ai/veo3.1/fast", "fal-ai/veo3.1/image-to-video"]) {
-    for (const resolution of [undefined, "720p", "1080p"]) for (const generate_audio of [undefined, true, false]) {
-      assert.equal(unitsBefore(endpoint, "seconds", { prompt: "x", duration: "8s", resolution, generate_audio }).units, 8, `${endpoint} ${resolution} ${generate_audio}`);
-    }
-    for (const [resolution, shown] of [["4k", '"4k"'], ["4K", '"4K"'], [null, "null"]]) {
-      assert.equal(off(endpoint, "seconds", { prompt: "x", duration: "8s", resolution }), `fal bills ${endpoint} per second at the rate get_pricing states only for resolution "720p", the default, or "1080p" (4k costs more), and this job's resolution is ${shown}`, `${endpoint} ${shown}`);
+    for (const [resolution, shown] of [["4K", '"4K"'], ["2160p", '"2160p"'], [null, "null"]]) {
+      assert.equal(off(endpoint, "seconds", { prompt: "x", duration: "8s", resolution }), `fal bills ${endpoint} per second at a rate its resolution sets, and fal's model page names no rate for resolution ${shown}`, `${endpoint} ${shown}`);
     }
   }
-  // Kling v3 pro: get_pricing's $0.14 a second is above audio off ($0.112) and below audio on, the default ($0.168),
-  // and voice control ($0.196).
+  // Kling v3 pro image-to-video: $0.112 a second with audio off, $0.168 with audio on (the default), $0.196 with voice
+  // control (an element with a voice_id); get_pricing states $0.14.
   const kling3 = "fal-ai/kling-video/v3/pro/image-to-video";
-  assert.equal(unitsBefore(kling3, "seconds", { start_image_url: "https://m.example/i.png", duration: "5", generate_audio: false }).units, 5);
-  for (const [generate_audio, shown] of [[undefined, "not set"], [true, "true"], ["false", '"false"']]) {
-    assert.equal(off(kling3, "seconds", { duration: "5", ...(generate_audio === undefined ? {} : { generate_audio }) }), `fal bills ${kling3} per second at the rate get_pricing states only for generate_audio false (audio on, the default, and voice control cost more), and this job's generate_audio is ${shown}`, shown);
-  }
+  const start = { start_image_url: "https://m.example/i.png", duration: "5" };
+  near(ratio(kling3, "seconds", start), 1.2, "audio on, the default");
+  near(ratio(kling3, "seconds", { ...start, generate_audio: true }), 1.2, "audio on");
+  near(ratio(kling3, "seconds", { ...start, generate_audio: false }), 0.8, "audio off");
+  near(ratio(kling3, "seconds", { ...start, elements: [{ frontal_image_url: "https://m.example/f.png" }] }), 1.2, "an element with no voice");
+  near(ratio(kling3, "seconds", { ...start, elements: [{ frontal_image_url: "https://m.example/f.png" }, { voice_id: "v1" }] }), 1.4, "voice control");
+  near(ratio(kling3, "seconds", { ...start, generate_audio: true, elements: [{ voice_id: "" }] }), 1.4, "any voice_id named");
+  assert.equal(off(kling3, "seconds", { ...start, generate_audio: false, elements: [{ voice_id: "v1" }] }), `fal bills ${kling3} per second at a rate its generate_audio and voice control set, and fal's model page names no rate for voice control with generate_audio false`);
+  assert.equal(off(kling3, "seconds", { ...start, elements: { voice_id: "v1" } }), `fal bills ${kling3} per second at a rate voice control sets (an element's voice_id), and this job's elements are not a list`);
+  assert.equal(off(kling3, "seconds", { ...start, generate_audio: "true" }), `fal bills ${kling3} per second at a rate its generate_audio sets, and fal's model page names no rate for generate_audio "true"`);
   // sync-lipsync v2: $3 a minute for lipsync-2 (the default, get_pricing's), $5 for lipsync-2-pro.
   const media = { video_url: "https://v3.fal.media/files/v.mp4", audio_url: "https://v3.fal.media/files/a.mp3" };
-  for (const model of [undefined, "lipsync-2"]) assert.deepEqual(unitsBefore("fal-ai/sync-lipsync/v2", "minutes", { ...media, model }), { media: [media.audio_url, media.video_url] }, String(model));
-  assert.equal(off("fal-ai/sync-lipsync/v2", "minutes", { ...media, model: "lipsync-2-pro" }), `fal bills fal-ai/sync-lipsync/v2 per minute at the rate get_pricing states only for model "lipsync-2", the default (lipsync-2-pro costs more), and this job's model is "lipsync-2-pro"`);
-  // Nano Banana Pro: $0.15 an image at 1K (the default) or 2K; 4K costs double, and a web search costs more.
-  for (const resolution of [undefined, "1K", "2K"]) assert.equal(unitsBefore("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution, enable_web_search: false }).units, 1, String(resolution));
-  assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution: "4K" }), `fal bills fal-ai/nano-banana-pro per image at the rate get_pricing states only for resolution "1K", the default, or "2K" (4K costs double), and this job's resolution is "4K"`);
-  assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", enable_web_search: true }), `fal bills fal-ai/nano-banana-pro per image at the rate get_pricing states only for enable_web_search false, the default (a web search costs more), and this job's enable_web_search is true`);
-  // An endpoint with one rate is priced whatever its settings.
-  assert.equal(unitsBefore("fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "seconds", { duration: "5", rendering_speed: "QUALITY", resolution: "4k", generate_audio: true }).units, 5);
+  for (const model of [undefined, "lipsync-2"]) near(ratio("fal-ai/sync-lipsync/v2", "minutes", { ...media, model }), 1, String(model));
+  near(ratio("fal-ai/sync-lipsync/v2", "minutes", { ...media, model: "lipsync-2-pro" }), 5 / 3, "lipsync-2-pro");
+  assert.equal(off("fal-ai/sync-lipsync/v2", "minutes", { ...media, model: "lipsync-1.9" }), `fal bills fal-ai/sync-lipsync/v2 per minute at a rate its model sets, and fal's model page names no rate for model "lipsync-1.9"`);
+  assert.deepEqual(unitsBefore("fal-ai/sync-lipsync/v2", "minutes", { ...media, model: "lipsync-2-pro" }), { media: [media.audio_url, media.video_url] }, "still priced from its media");
+  // Nano Banana Pro: $0.15 an image at 1K (the default) or 2K (get_pricing's), double at 4K; a web search adds $0.015.
+  for (const resolution of [undefined, "1K", "2K"]) near(ratio("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution, enable_web_search: false }), 1, String(resolution));
+  near(ratio("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution: "4K" }), 2, "4K");
+  assert.deepEqual(rateOf("fal-ai/nano-banana-pro", "images", { prompt: "x", enable_web_search: true }), { ratio: 1, extraUsd: 0.015, words: ["plus $0.015 for a web search"] });
+  assert.deepEqual(rateOf("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution: "4K", enable_web_search: true }), { ratio: 2, extraUsd: 0.015, words: [`× 2 for resolution "4K" (fal's model page: $0.3 against $0.15)`, "plus $0.015 for a web search"] });
+  assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", resolution: "4k" }), `fal bills fal-ai/nano-banana-pro per image at a rate its resolution sets, and fal's model page names no rate for resolution "4k"`);
+  assert.equal(off("fal-ai/nano-banana-pro", "images", { prompt: "x", enable_web_search: "yes" }), `fal bills fal-ai/nano-banana-pro per image at a rate plus a charge its enable_web_search sets, and fal's model page names no rate for enable_web_search "yes"`);
+  // Fabric: $0.08 a second at 480p (get_pricing's), $0.15 at 720p; its resolution has no default (its OpenAPI).
+  const talking = { image_url: "https://m.example/i.png", audio_url: "https://v3.fal.media/files/a.mp3" };
+  near(ratio("veed/fabric-1.0", "seconds", { ...talking, resolution: "480p" }), 1, "480p");
+  near(ratio("veed/fabric-1.0", "seconds", { ...talking, resolution: "720p" }), 0.15 / 0.08, "720p");
+  assert.equal(off("veed/fabric-1.0", "seconds", talking), "fal bills veed/fabric-1.0 per second at a rate its resolution sets, and resolution has no default and this job sets none");
+  for (const [resolution, shown] of [["480", '"480"'], [480, "480"], ["1080p", '"1080p"']]) {
+    assert.equal(off("veed/fabric-1.0", "seconds", { ...talking, resolution }), `fal bills veed/fabric-1.0 per second at a rate its resolution sets, and fal's model page names no rate for resolution ${shown}`, shown);
+  }
+  // An endpoint not listed is priced at get_pricing's one rate, whatever its settings.
+  assert.deepEqual(rateOf("fal-ai/kling-video/v2.5-turbo/pro/text-to-video", "seconds", { duration: "5", rendering_speed: "QUALITY", resolution: "4k", generate_audio: true }), { ratio: 1, extraUsd: 0, words: [] });
+  assert.deepEqual(rateOf("fal-ai/bytedance/omnihuman/v1.5", "seconds", { ...talking, resolution: "1080p" }), { ratio: 1, extraUsd: 0, words: [] });
 });
 
 test("ffmpeg's compose is billed by its timeline's end: the last keyframe's end across its tracks, in milliseconds", async () => {

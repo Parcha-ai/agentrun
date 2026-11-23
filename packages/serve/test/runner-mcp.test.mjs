@@ -209,7 +209,7 @@ test("R2b: a fal job's card says priced by usage: fal prices it only when it run
     const pinned = savePin(args);
     return pinned && { fake: { ...pinned.fake, meter: "fal" } };
   };
-  const script = [{ call: "mcp__fake__submit_job", args: { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "a card", num_images: 1 } } }, { sayLastResult: true }];
+  const script = [{ call: "mcp__fake__submit_job", args: { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a card", num_images: 1 } } }, { sayLastResult: true }];
   const run = await mcpRun(t, { script, grants: ["mcp:fake/submit_job"], tools: [SUBMIT], pin: falPin });
   assert.equal(run.row.state, "parked", JSON.stringify(run.row));
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
