@@ -1,7 +1,7 @@
 import { observationHash, observedState, observedTone, type ObservationRead } from "@/lib/observations";
 import { agentInventory } from "@/lib/agentInventory";
 import type { Agent } from "@/lib/agentForm";
-import { Banner, Chip } from "@/components/ui";
+import { Banner, buttonVariants, Chip } from "@/components/ui";
 import { agentHash } from "@/components/AgentPage";
 import { LearningChips } from "@/components/LearningChips";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -25,7 +25,10 @@ function MissionFrame({ actions, children }: { actions?: React.ReactNode; childr
   return <div className="flex h-full min-h-0 flex-col">
     <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
       <h1 className={pageTitleClass}><LayoutGrid className="size-4" aria-hidden />Mission Control</h1>
-      {actions && <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{actions}</div>}
+      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {actions}
+        <a href="#/wrapped" className={buttonVariants({ variant: "ghost", size: "sm" })}>Your year</a>
+      </div>
     </header>
     <div className="min-h-0 flex-1 overflow-auto">{children}</div>
   </div>;
