@@ -99,7 +99,11 @@ export interface HostedTimeouts {
 	 * listings while create waits for the new computer to show: those start at 150 ms and double up to it.
 	 */
 	pollMs: number;
-	/** How long create waits for the listing to show the new computer. */
+	/**
+	 * How long create waits for the listing to show the new computer. A computer still not listed then is read by its id:
+	 * one that reads running with its labels is kept, with a note, since a vendor's listing may trail its create (Daytona's
+	 * is eventually consistent); any other is a timeout.
+	 */
 	listedMs: number;
 	/**
 	 * The listing's stability window: create's wait ends once the listing has shown the new computer on two consecutive
@@ -1100,7 +1104,7 @@ export class HostedProvider implements ComputerProvider {
 			await opened.value.close();
 		}
 		const listed = await this.#waitListed(ref, signal);
-		return listed.ok ? ok([...closed, ...notes]) : listed;
+		return listed.ok ? ok([...closed, ...notes, ...listed.value]) : listed;
 	}
 
 	/** What init wrote to its log (child) or the vendor's words of the machine (pid1): the end of it, or nothing. */
@@ -1316,23 +1320,43 @@ export class HostedProvider implements ComputerProvider {
 	 * Create waits until the listing shows the new computer on two consecutive polls at least listedStableMs apart (and on
 	 * every poll between), so list() shows it once create returns: a listing that showed it once and then not starts over.
 	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
+	 * A listing that has not settled by listedMs is no failure alone (#unlisted): the computer is read by its id.
 	 */
-	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<void>> {
+	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
-		const until = Date.now() + listedMs;
+		const began = Date.now();
+		const until = began + listedMs;
 		let since: number | undefined;
+		const seen = { polls: 0, shown: 0 };
 		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
 			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
 			if (!listed.ok) return listed;
+			seen.polls += 1;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
 				hits += 1;
+				seen.shown += 1;
 				since ??= Date.now();
 			} else [hits, since] = [0, undefined];
-			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok(undefined);
-			if (Date.now() >= until) return this.#fail("timeout", `the computer was not listed within ${seconds(listedMs)} of its creation`);
+			if (hits >= LISTED_ROUNDS && since !== undefined && Date.now() - since >= listedStableMs) return ok([]);
+			if (Date.now() >= until) return this.#unlisted(ref, { ...seen, ms: Date.now() - began }, signal);
 			await pause(Math.min(delay, until - Date.now()), signal);
 			if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
 		}
+	}
+
+	/**
+	 * A new computer the listing did not show twice in a row within listedMs, read by its id: one that reads running and
+	 * carries its labels is kept, the note saying so (create already reached its daemon and checked it from inside, so only
+	 * the vendor's listing lags; list() leaves it out until that listing shows it). Any other answer, or a read that fails,
+	 * is a timeout naming the labels asked for, the machine, the polls and the time waited.
+	 */
+	async #unlisted(ref: ComputerRef, seen: { polls: number; shown: number; ms: number }, signal?: AbortSignal): Promise<Result<string[]>> {
+		const asked = Object.entries(byName(ref.name)).map(([key, value]) => `${key}=${value}`).join(", ");
+		const what = `the listing by the labels ${asked} did not show ${ref.name} (machine ${ref.id}) on ${LISTED_ROUNDS} polls in a row within ${seconds(this.#timeouts.listedMs)} (${seen.polls} polls in ${seconds(seen.ms)}, ${seen.shown} of them showed it)`;
+		const read = await this.#own(ref, signal);
+		if (signal?.aborted) return this.#fail("aborted", "create was aborted while it waited for the listing");
+		if (read.ok && read.value.state === "running") return ok([`${what}; a read by its id finds it running with its labels, so it is kept: the vendor's listing trails its create, and list() leaves the computer out until it shows it`]);
+		return this.#fail("timeout", `${what}; ${read.ok ? `a read by its id finds it ${read.value.state}` : `a read by its id: ${read.error.message}`}`);
 	}
 
 	/** This provider's machine for ref, as the vendor reads it, or why not. */

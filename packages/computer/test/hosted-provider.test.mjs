@@ -455,6 +455,38 @@ test("create's listing wait backs off from 150 ms to the host's pollMs: a vendor
 	assert.ok(lists <= 14,`the wait backed off to pollMs (${lists} listings in ${waited / 1000} s)`);
 });
 
+// A vendor's listing may trail its create past listedMs: Daytona's GET /sandbox is eventually consistent (an index the
+// API never writes itself), and agentrun-prod's Daytona left two new sandboxes unlisted for 15 s on 11-23, each started,
+// dialed and checked from inside, and each deleted for it ("the computer was not listed within 15 s of its creation").
+test("a computer the listing never shows within listedMs, which a read by its id finds running with its labels, is kept and answered, with a note naming the labels, the machine and the wait", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	const host = { ...fake.host, list: async () => (++lists, []) };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.deleted, false, "the machine create started and checked is not deleted for a listing that trails it");
+	assert.equal(ref.id, m.id);
+	assert.ok(!fake.calls.some(([name]) => name === "delete"), "no delete");
+	const note = ref.notes?.find((line) => line.startsWith("the listing by the labels"));
+	assert.ok(note, `a note says the listing trailed: ${JSON.stringify(ref.notes)}`);
+	assert.match(note, new RegExp(`^the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=${ref.name} did not show ${ref.name} \\(machine ${ref.id}\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it running with its labels, so it is kept`));
+	assert.ok(lists >= 3, `the wait polled the listing (${lists})`);
+});
+
+test("a computer the listing never shows within listedMs, which a read by its id finds not running, fails create as a timeout naming the labels, the machine, the polls and the wait, and is deleted", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	// The name's listing and the convergence read come first; from the wait's own polls on, the vendor reads it stopped.
+	const host = { ...fake.host, list: async () => (++lists, []), get: async (id, ctx) => { const got = await fake.host.get(id, ctx); return lists > 2 && got ? { ...got, state: "stopped" } : got; } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const failed = await create(provider);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout");
+	assert.match(failed.error.message, new RegExp(`the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=computer-[0-9a-f]{12} did not show computer-[0-9a-f]{12} \\(machine [^)]+\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it stopped`));
+	assert.equal(only(fake).deleted, true, "a computer that is not running is deleted, as before");
+});
+
 test("idempotent create: a retry of one request returns the computer the first made, and never makes a second", async () => {
 	const { provider, fake } = setup();
 	const first = made(await provider.create(SPEC, { requestId: "run-a#1" }));

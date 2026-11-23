@@ -453,7 +453,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -1600,8 +1600,13 @@ the TTL.
   name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
-  none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
-  a create). A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  none from inside, and waits until the label listing shows the new computer twice running. Daytona's `GET /sandbox`
+  is eventually consistent (`daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/controllers/sandbox.controller.ts:130-146`:
+  an OpenSearch index the API never writes itself), and on 11-23 it left two new production sandboxes unlisted past
+  15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
+  its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
+  and `list()` leaves it out until the listing shows it. Any other answer fails create `timeout` in those words. A
+  sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
   `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
   has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
@@ -1791,7 +1796,8 @@ default snapshot whose `/opt` another user can write would now be refused at cre
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
 - how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
   for both, up to `goneMs`); how long a stop takes to read `stopped`;
-- how soon the label listing shows a new sandbox;
+- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s twice on production
+  on 11-23 (create keeps a sandbox the listing trails, above);
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.
@@ -2051,7 +2057,8 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `create` waits for the sandbox to run; E2B's create options are not read back. Then the daemon: hello (version,
   `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
   capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
-  listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
+  listing shows the new computer, or, still unlisted after `listedMs`, keeps it when a read by its id finds it running
+  with its labels (the shared adapter's rule, as on Daytona). A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
   create never returns ok once its signal has aborted.
 - `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
   create. `image` is the template create was asked for, from its label.
