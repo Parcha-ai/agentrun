@@ -9,7 +9,6 @@
 // have no socket but the fake MCP server's. Public addresses are RFC 5737's, names RFC 2606's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
@@ -65,7 +64,7 @@ test("each private-network range, link-local and cloud metadata are refused at t
   assert.deepEqual((await server.api("GET", "/settings/mcp-servers")).body, { servers: [] }, "nothing kept");
 });
 
-test("loopback is a local install's alone: a server its operator started as one (AGENTRUN_MCP_ALLOW_LOOPBACK=1, the test servers' default) saves a loopback MCP server; one with a public address and no switch refuses it at the preview and the save, and it hears nothing", async (t) => {
+test("a loopback MCP URL: saved with AGENTRUN_MCP_ALLOW_LOOPBACK=1 (the test servers' default), refused at the preview and the save without it, https as http, nothing sent", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const fake = await startFakeMcp();
   t.after(() => fake.close());
@@ -82,19 +81,14 @@ test("loopback is a local install's alone: a server its operator started as one 
   for (const [who, api] of [["a token", hosted.api], ["the owner", asOwner(hosted)]]) {
     refusedOnUrl(await api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "none" } }), machine(fake.url), `${who}'s preview`);
     refusedOnUrl(await api("PUT", "/settings/mcp-servers/here", { url: fake.url, auth: { type: "none" } }), machine(fake.url), `${who}'s save`);
-    for (const url of [fake.url.replace("127.0.0.1", "localhost"), `http://[::1]:${new URL(fake.url).port}/mcp`]) { // key-gate: loopback-rule the loopback names a hosted server refuses
+    // Loopback is this machine whatever the scheme: an https one is refused the same.
+    const port = new URL(fake.url).port;
+    const others = [fake.url.replace("127.0.0.1", "localhost"), `http://[::1]:${port}/mcp`, `https://127.0.0.1:${port}/mcp`, `https://localhost:${port}/mcp`]; // key-gate: loopback-rule the loopback names a hosted server refuses
+    for (const url of others) {
       refusedOnUrl(await api("PUT", "/settings/mcp-servers/here", { url, auth: { type: "none" } }), machine(url), `${who}'s save of ${url}`);
     }
   }
   assert.equal(fake.log.length, heard, "the hosted server sent it nothing");
-});
-
-test("the README says a loopback MCP URL needs the start switch, as the refusal does", () => {
-  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8").replace(/\s+/g, " ");
-  const preview = readme.slice(readme.indexOf("`POST /v2/settings/mcp-servers/preview` takes"));
-  const rule = preview.slice(preview.indexOf("`url` is `https`"), preview.indexOf("A server advertising MCP resources"));
-  assert.match(rule, /`http` on loopback/, "the preview's URL rule");
-  assert.match(rule, /AGENTRUN_MCP_ALLOW_LOOPBACK=1/, `the URL rule names the switch a loopback URL needs: ${rule}`);
 });
 
 /** A network with one socket, the fake MCP server's: `names[host]` is what a name resolves to (a function, each lookup's

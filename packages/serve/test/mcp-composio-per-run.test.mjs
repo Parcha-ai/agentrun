@@ -31,7 +31,7 @@ const USER_B = "host-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
 // A Composio user id with a ':', such as a team's.
-const TEAM = "team:tenant-0042";
+const TEAM = "acme:ops-0042";
 const ACCOUNT_TEAM = "ca_team_gmail_0042";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
 // The preset's default user (`agentrun`) has its own account too: the one a single-user preset server calls as.
@@ -86,7 +86,7 @@ test("a user id with a ':' binds a run as any other does; a space, a slash or th
   assert.equal(toolCalls(team.sent).length, 1, `the team's one call reached Composio: ${team.answer}`);
   assert.match(team.answer, /The tool said: 5/, "the team's call answered");
   assert.deepEqual(team.sent.map(asWho), team.sent.map(() => [TEAM, ACCOUNT_TEAM]), "every request is as the team's user and account");
-  for (const user of ["team:has space", "team:a/b", COMPOSIO_LISTING_USER]) {
+  for (const user of ["acme:has space", "acme:a/b", COMPOSIO_LISTING_USER]) {
     const refused = await s.api("POST", "/agents/reader/runs", { input: { content: "Hi" }, mcp_auth: bind(user, ACCOUNT_TEAM) });
     assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.field, refused.body.error?.fields?.[0]?.reason], [422, "mcp_auth.mail.composio_user_id", "invalid"], `${user}: ${JSON.stringify(refused.body)}`);
   }

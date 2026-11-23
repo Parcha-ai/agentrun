@@ -165,7 +165,7 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
   ]);
   const base = { gateway: false, parallelKey: false };
   for (const harness of HARNESSES) assert.equal(resolveOnBuiltin("web_search", { ...base, harness, model: "anthropic/claude-sonnet-5-5", permission: "deny" }), "unavailable: denied", harness);
-  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask" }), "exa-keyless", "a CLI's own search cannot wait for a person");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask" }), "firecrawl-keyless", "a CLI's own search cannot wait for a person");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "native" }), "unavailable: native search cannot wait for an approval", "native only stays native only");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "parallel", parallelKey: true }), "parallel");
   assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
@@ -209,8 +209,8 @@ test("capabilities and an agent's tools show each tool's permission, its default
   const after = byName((await api("GET", "/capabilities")).body.tools);
   assert.equal(after[ENRICH], undefined);
   assert.deepEqual([after.web_fetch.permission, after.web_fetch.default_permission, after.read.permission], ["ask", "allow", "deny"]);
-  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Exa.
-  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "exa-keyless" }, "web_search allowed: as before");
+  // Every harness the server has (main's opencode among them), each as before: pi's native, claude-agent's keyless Firecrawl.
+  assert.deepEqual(after.web_search.resolves, { ...after.web_search.resolves, pi: "native", "claude-agent": "firecrawl-keyless" }, "web_search allowed: as before");
 
   const made = await retried(api)("POST", "/agents",agent("set", { tools: ["read", "web_fetch"], tool_settings: { read: { permission: "allow" }, web_fetch: { permission: "deny" }, "mcp:srv/*": { permission: "ask" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));

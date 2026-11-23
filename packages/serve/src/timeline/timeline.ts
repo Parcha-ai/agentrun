@@ -15,7 +15,7 @@ export type TimelineKind =
   /** A tool call that waited for a person's approval, after its result's row (serve's tool gate). */
   | "tool_approval_requested";
 
-/** Grep's public `TimelineEvent` (its 13 fields) plus the open additions, all optional. */
+/** The public `TimelineEvent` (its 13 base fields) plus the open additions, all optional. */
 export type TimelineEvent = {
   id: string;
   timestamp: string;
@@ -98,7 +98,7 @@ export const nestingCallOf = (callId: string): string | undefined => {
 /** A pi `AgentEvent`, as `watchEvents` yields it and `GET /events` serves it. */
 export type AgentEventLike = { type: string; [key: string]: unknown };
 
-/** Grep's caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
+/** The base caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
 /** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a tool's output's head, still one
  *  redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). A web call's is not its head: a

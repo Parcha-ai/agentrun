@@ -86,6 +86,23 @@ test("agentrun harness sign-in --recipe: the installed server signs the recipe's
   assert.equal(existsSync(join(data, "harnesses")), false, "nothing made");
 });
 
+test("agentrun harness keys prints the link to Settings → Harness keys on the AgentRun started on DATA, and says when none has started; it never takes a key", (t) => {
+  const dir = home(t);
+  const data = join(dir, "agents");
+  const none = agentrun(["harness", "keys", "--data", data], dir);
+  assert.equal(none.status, 1, none.stderr);
+  assert.match(none.stderr, /No AgentRun has started on .*agents: start it \(agentrun\), then save the keys in Settings → Harness keys \(\/#\/settings\/harness-keys\)/);
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7391/v2", pid: 1 }));
+  const printed = agentrun(["harness", "keys", "--data", data], dir);
+  assert.equal(printed.status, 0, printed.stderr);
+  assert.equal(printed.stdout, "http://127.0.0.1:7391/#/settings/harness-keys\n");
+  // The default data directory, as npx @parcha/agentrun keeps it.
+  mkdirSync(join(dir, ".agentrun"), { recursive: true });
+  writeFileSync(join(dir, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2" }));
+  assert.equal(agentrun(["harness", "keys"], dir).stdout, "http://127.0.0.1:7340/#/settings/harness-keys\n");
+});
+
 test("a rerun with the pinned Goose in place is a no-op: nothing is downloaded, and it says so", { skip: GOOSE ? false : "AGENTRUN_TEST_GOOSE is not set: it names the Goose 1.59.2 binary this test runs" }, (t) => {
   const dir = home(t);
   const data = join(dir, "data");

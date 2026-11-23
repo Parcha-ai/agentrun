@@ -157,14 +157,21 @@ export function partOfRead({ text, beyond, length, links, links_omitted, html_ch
   return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
 }
 
+/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape, keyless Exa's fetch), as a
+ *  Read: its url, title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it
+ *  holds. */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(url, URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+
 /** The page at `url`, read once through the guarded direct fetch, or why it was not. The rest of `options` are the
  *  guard's resolver and fetch, for a test; a signal ends it early. */
 export async function readDirect(url: unknown, options: Omit<PublicFetchOptions, "maxBytes"> = {}): Promise<Read | Unread> {
   const failed = (fields: Partial<Omit<Page, "ok">> & ({ refused: string } | { error: string })): Unread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], ...fields });
   if (typeof url !== "string" || !URL.canParse(url)) return failed({ error: "url is not an absolute URL" });
   if (url.length > URL_MAX) return failed({ error: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` });
-  const { port } = new URL(url);
+  const { port, username, password } = new URL(url);
   if (port && port !== "80" && port !== "443") return failed({ refused: `refused: port ${port} is not 80 or 443` });
+  // A URL's user name and password are never sent anywhere: a fetch refuses them, never a third party's read of them.
+  if (username || password) return failed({ refused: "refused: the URL holds a user name or password" });
   const { BrowserFailureError, publicFetch, readPage } = await import("@parcha/pi-browser");
   try {
     const signal = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(options.signal ? [options.signal] : [])]);
