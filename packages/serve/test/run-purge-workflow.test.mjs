@@ -335,6 +335,47 @@ for (const [kind, settingsOf] of Object.entries(STORES)) {
     assert.deepEqual(await onMain(data, "undone"), before, "a repeat DELETE makes no commit");
   });
 
+  // Greptile P1 (PRRT_kwDOUmdVMs66q6Tx): `first` wrote `answer` v1, `gone` revised it to v2, and `back` wrote v1 again.
+  // The purge of `gone` leaves `back`'s rebuilt merge writing the bytes already there, and its marker keeps `back` as
+  // the writer. A snapshot rebuilt from main's tree and history (a hand commit since holds none of its own) reads the
+  // writer from the markers too, so it names `back`, never `first`; and once `first` is purged as well, `back`'s v1
+  // still reads and serves (a writer read as `first` would make it 410 purged).
+  test(`${kind}: a snapshot rebuilt after a purge names the run whose merge wrote a workflow last by its marker, though its bytes changed nothing: a purge of the run before keeps it`, { timeout: 300_000 }, async (t) => {
+    const mark = `PURGED-REWRITE-${randomBytes(6).toString("hex")}`;
+    const { api, data, store } = await serve(t, { learning: "on" });
+    onStore(t, data, settingsOf());
+    const first = (await startRun(api, "rewrit", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
+    await ended(api, first);
+    const gone = await started(api, "rewrit", "What is three?");
+    await ended(api, gone);
+    const back = await started(api, "rewrit", "What is four?");
+    await ended(api, back);
+    const path = "workflows/answer/workflow.json";
+    const v1 = answerAt("in whole numbers");
+    await learned(data, "rewrit", (ws) => learningCommit(ws, { runId: first, reason: "It learned answer.", files: filesOf("in whole numbers") }));
+    await learned(data, "rewrit", (ws) => learningCommit(ws, { runId: gone, reason: "It revised answer.", files: filesOf(mark) }));
+    const crowned = await learned(data, "rewrit", (ws) => learningCommit(ws, { runId: back, reason: "It put answer back.", files: filesOf("in whole numbers") }));
+    await store.settings.put("learning.promotions.rewrit", { v: 1, items: [{ workflow: "answer", digest: digestOf(v1[path]), at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", commit: crowned }] });
+    const learning = learningStoreOf(data, "rewrit");
+    // A hand commit: it holds no snapshot of its own, so every read of main rebuilds one from its tree and history.
+    const byHand = async (text) => {
+      const saved = await learning.save({ old: await learning.head(), message: "by hand", at: Math.floor(Date.now() / 1000), writes: [{ path: "corrections.md", text }] });
+      assert.equal(saved.ok ?? true, true, JSON.stringify(saved));
+    };
+    const runOf = (snapshot) => snapshot?.workflows.find(({ name }) => name === "answer")?.run ?? null;
+    const writers = async () => [runOf(await readSnapshot(learning)), runOf(await rebuiltSnapshotAt(learning, await learning.head()))];
+    assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+    await byHand("- Say the units.\n");
+    assert.deepEqual(await writers(), [back, back], "after the purge and a hand commit, the writer is `back` on the snapshot read and as rebuilt from main");
+
+    assert.equal((await api("DELETE", `/runs/${first}`)).status, 204);
+    await byHand("- Say the units twice.\n");
+    assert.deepEqual((await onMain(data, "rewrit")).files, v1, "main holds answer v1, as `back` wrote it");
+    const file = await api("GET", `/agents/rewrit/learning/files/${encodeURIComponent(path)}`);
+    const now = await servedNow(api, store, "rewrit", "What is six times seven?");
+    assert.deepEqual({ writers: await writers(), file: file.status === 200 ? JSON.stringify(file.body) : `${file.status} ${file.body?.error?.code}`, served: now.served }, { writers: [back, back], file: v1[path], served: digestOf(v1[path]) }, "once `first` is purged too, `back` is still the writer, and its v1 reads and serves");
+  });
+
   // The purged run's revision was the champion: `first` wrote `answer` v1, promoted; `gone` revised it to v2, promoted
   // after it. The purge puts v1 back on main. The champion record still names v2 at `gone`'s merge, a commit the purge
   // gate refuses (promote.ts refusedOf: it no longer holds v2's text), so championOf walks back to v1's record: the
