@@ -2451,6 +2451,40 @@ test("a session resumed after the plan judged it (its file, a subagent's or its 
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [48, 49, 50, 51].map(sessionId).sort());
 });
 
+test("a run the import leaves out (a subagent live, or one over the cap found after the session was read) holds none of the session's records: a resumed session that copies them is imported with them", async (t) => {
+  for (const why of ["live", "large"]) {
+    const root = await scratch(t);
+    const home = join(root, "home");
+    const project = join(home, "code", "copied");
+    mkdirSync(project, { recursive: true });
+    const original = claudeSession(home, project, 101);
+    const child = claudeSubagent(home, project, 101, 1);
+    resumed(original, 102);
+    const store = await openData(join(root, "agents"));
+    t.after(async () => await store.close());
+    const opts = { home, env: ENV, temp: join(root, "tmp") };
+    const plan = await planImport(opts, store);
+    assert.deepEqual(plan.projects.map((p) => p.sessions.map((s) => s.id)), [[sessionId(101), sessionId(102)]], why);
+    let grown = false;
+    const onProgress = (phase) => {
+      // Once its keys are found, the subagent grows over the run's cap (a hole of that length, dated as it was): found
+      // only when the write reads the session's subagents, after its own file.
+      if (why !== "large" || phase !== "write" || grown) return;
+      grown = true;
+      const old = statSync(child).mtime;
+      truncateSync(child, MAX_SESSION_BYTES + 1);
+      utimesSync(child, old, old);
+    };
+    if (why === "live") utimesSync(child, new Date(), new Date());
+    const report = await runImport(store, plan, { ...opts, onProgress });
+    assert.deepEqual(report.skipped.map((s) => s.kind), [why], why);
+    const runs = await rowsOf(store);
+    assert.deepEqual(runs.map((r) => r.importedFrom.session), [sessionId(102)], why);
+    const copy = await storedMetrics(store, runs[0].id);
+    assert.deepEqual([copy.requests, copy.input, copy.output], [3, 58, 140], `${why}: the resumed session's own request and the two it copies, none held as imported`);
+  }
+});
+
 test("a session with one subagent file over the cap is left out whole and said, never imported without that subagent", async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");

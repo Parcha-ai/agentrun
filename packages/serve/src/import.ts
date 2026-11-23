@@ -292,6 +292,22 @@ const budgetOf = (): Budget => ({ left: MAX_RUN_BYTES });
 const fits = (budget: Budget, bytes: number): boolean => (budget.left -= bytes) >= 0;
 /** A file written within LIVE_MS, left out: its session may still be running, and an import after it ages takes it. */
 const stillLive = (what: string): Skipped => ({ what, why: "written in the last 10 minutes: it may still be running", kind: "live" });
+/** The records a run's read adds, over those the import holds (`base`), added to `base` by `commit` once the run is
+ *  written. A run left out after its read (live, over the cap, unread) holds none of them: a later session that copies
+ *  them keeps them, as none of them was saved. */
+function staged(base: Set<string>): { seen: Set<string>; commit(): void } {
+  const added = new Set<string>();
+  const seen = { has: (record: string) => added.has(record) || base.has(record), add: (record: string) => added.add(record) } as Set<string>;
+  return { seen, commit: () => added.forEach((record) => base.add(record)) };
+}
+/** The first file of a run, or of a subagent the plan found for it, written within LIVE_MS before `now`: stated before any
+ *  of the run is read, so a live run is left out unread. */
+async function liveIn(plan: Plan, files: readonly Session[], listed: Session, now: number): Promise<string | undefined> {
+  const owners = [...files.map((file) => locatorKey(locatorOf(file))), `${listed.source}:${listed.id}`];
+  const paths = [...new Set([...files.map((file) => file.file), ...owners.flatMap((owner) => (plan.children.get(owner) ?? []).map((child) => child.file))])];
+  const stats = await Promise.all(paths.map((path) => fileStats(path)));
+  return paths.find((_, i) => stats[i] && now - stats[i]!.mtimeMs < LIVE_MS);
+}
 const tooLarge = (listed: Pick<Session, "file" | "source" | "id">): Skipped => ({ what: listed.file, why: `its files and its subagents' are over ${MAX_RUN_BYTES} bytes together`, kind: "large", session: `${listed.source}:${listed.id}` });
 
 /** The projects of `plan` for the owner to choose from, the latest active first (then by folder), at most MAX_CANDIDATES.
@@ -1228,6 +1244,13 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         report.skipped.push(tooLarge(listed));
         continue;
       }
+      const early = await liveIn(plan, files, listed, now);
+      if (early) {
+        report.skipped.push(stillLive(early));
+        continue;
+      }
+      // What its read adds to the records the import holds, kept only once the run is written.
+      const run = staged(seen(listed.source));
       const budget = budgetOf();
       let over = false;
       // Each of its files, in order. The first's size and time before its read: a file that changes during it is read
@@ -1241,7 +1264,8 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       let titled: { at: number; title: string } | undefined;
       let changed = false;
       // A file written since the plan judged it (its session resumed while others were read) leaves the session out as
-      // live, as the plan would now: never imported as done, which a later import would hold as unchanged.
+      // live, as the plan would now: never imported as done, which a later import would hold as unchanged. Each is stated
+      // before any is read (liveIn), and again before its own read: one written while an earlier file was read.
       let live = false;
       for (const entry of files) {
         const { file } = entry;
@@ -1256,7 +1280,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
           over = true;
           break;
         }
-        const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: seen(listed.source) }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
+        const part = stats ? await readSession(locatorOf(entry), listed.source, { seen: run.seen }).catch((error: unknown) => void report.skipped.push(unread(file, error))) : void report.skipped.push({ what: file, why: "gone since it was listed", kind: "vanished" });
         if (!part || !stats) continue;
         searched.push(part);
         if (part.sourceTitle !== undefined && (!titled || stats.mtimeMs >= titled.at)) titled = { at: stats.mtimeMs, title: part.sourceTitle };
@@ -1284,7 +1308,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       // holding a key counts among the keys removed.
       const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
       session.id = keptAs;
-      const subagents = await readChildren(plan, session, searched, seen(listed.source), budget).catch((error: unknown) => {
+      const subagents = await readChildren(plan, session, searched, run.seen, budget).catch((error: unknown) => {
         if (!(error instanceof RunTooLarge)) throw error;
         report.skipped.push(tooLarge(listed));
       });
@@ -1323,6 +1347,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),
         transcript: batches,
       });
+      run.commit();
       line.runs += 1;
     }
     report.agents.push(line);
