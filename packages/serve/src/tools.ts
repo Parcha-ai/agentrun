@@ -17,7 +17,7 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
-import { registerTurnEnding } from "./timeline/index.js";
+import { registerTurnEnding, webCut } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
@@ -368,13 +368,15 @@ export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
 }
 
 /** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
- *  reads it. */
-function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+ *  reads it. A web call's JSON is cut string by string (timeline/web-calls.ts webCut), as the agentic specs' answersCut
+ *  cuts it, so it still parses and keeps its links. */
+export function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+  const textCut = (text: string) => webCut(tool.name, text, cut) ?? cut(text);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), textCut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
