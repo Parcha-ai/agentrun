@@ -3,7 +3,23 @@
 // (agentrun-serve validate-template), as it runs import and reset-password: this command reaches the server through its
 // launcher and its API alone. Nothing in the package runs.
 import { spawn, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { readdirSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+/** The refusal of the cases `names` lists that the package in `dir` does not have (a case is a folder in its evals/), in
+ *  the words the server uses (template-eval.ts readCases), or undefined: every one is there, or `dir` is no folder, which
+ *  the server refuses in its own words. The server still checks each case it runs whole. */
+function missingCases(dir, names) {
+  if (!names.length || !statSync(dir, { throwIfNoEntry: false })?.isDirectory()) return undefined;
+  let cases = [];
+  try {
+    cases = readdirSync(join(dir, "evals"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  } catch {
+    // No evals/ folder: the package has no case.
+  }
+  const missing = names.filter((name) => !cases.includes(name));
+  return missing.length ? `${dir}: its eval cases do not check:\n${missing.map((name) => `- evals/${name}: no such case (the package's are ${cases.join(", ") || "none"})`).join("\n")}` : undefined;
+}
 
 export const TEMPLATE_VALIDATE = {
   command: ["template", "validate"],
@@ -83,6 +99,9 @@ export const TEMPLATE_EVAL = {
   ],
   options: { case: { type: "string", multiple: true }, runs: { type: "string" }, server: { type: "string" }, "grader-model": { type: "string" }, report: { type: "string" }, faux: { type: "string" } },
   async run({ values, args, env, cli }) {
+    // A case the package does not have is refused here, at once, in the server's words, before its launcher starts.
+    const missing = missingCases(resolve(args[0]), values.case ?? []);
+    if (missing) throw cli.fail(2, missing);
     const { installedServer } = await import("./start.mjs");
     const launcher = installedServer();
     if (launcher === undefined) throw cli.fail(2, "AgentRun's server is not installed beside this command, and it is the server that runs an eval.");
