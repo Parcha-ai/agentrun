@@ -222,16 +222,14 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       // The records read so far, as the reader asks for them, each new one this locator's, each found one noted. Both are
       // staged and kept only when the read succeeds: a read that fails partway leaves no record owned that no cursor
       // holds, which a retry would take for a copy.
-      // Records are held by their packed keys (packInto): a reader asks has, then add, of one record, packed once.
+      // Records are held by their packed keys (packInto), each packed as it is asked for.
       const me = locatorNumber(owners, key);
       const mine = recordIndex(64);
       const found = new Set<string>();
-      let asked: string | undefined;
       const at = packed();
-      const pack = (record: string) => (record === asked ? at : ((asked = record), packInto(record, at)));
       const seen = {
         has: (record: string) => {
-          pack(record);
+          packInto(record, at);
           let owner = ownerOf(owners, at);
           if (owner === -1) owner = ownerOf(mine, at);
           if (owner === -1) return false;
@@ -239,7 +237,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
           return true;
         },
         add(record: string) {
-          pack(record);
+          packInto(record, at);
           if (ownerOf(owners, at) === -1) addRecord(mine, at, me);
           return this;
         },
