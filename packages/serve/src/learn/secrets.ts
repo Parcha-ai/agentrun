@@ -1,27 +1,35 @@
 import { posix } from "node:path";
 
-const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
-const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/;
-const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
-const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+// Every run a shape reads is bounded (the scrubber's structural test walks these: secret-scrub.test.mjs). A token's run
+// is bounded at 16384, far past any real key of the format and past the 8 KB runs of one repeated prefix the redaction
+// tests read whole (secrets-linear, final-answer-redact): a longer run is read to the bound, never skipped.
+const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,16384}/;
+const SLACK_TOKEN = /xox[abposre]-[A-Za-z0-9-]{10,16384}|xapp-[A-Za-z0-9-]{10,16384}/;
+const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,16384}|github_pat_[A-Za-z0-9_]{20,16384}/;
+/** A JWT: three base64url parts, the first two `eyJ`, starting at a token's start (no base64url character before it,
+ *  unless that character is a JSON escape's letter: `\neyJ...` in a JSON string's raw text). The start is what keeps
+ *  the reading linear: without it a run that repeats `eyJ` and never reaches a dot ("eyJeyJ…", a base64 blob) is read
+ *  again from every repeat. Each part is bounded far past a real token's (a header with an x5c chain, a payload of group
+ *  claims run to a few KB). */
+const JWT = /(?<![A-Za-z0-9_-](?<!\\[bfnrt]))eyJ[A-Za-z0-9_-]{8,16384}\.eyJ[A-Za-z0-9_-]{8,16384}\.[A-Za-z0-9_-]{8,16384}/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
-const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
+const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,16384}={0,2}/;
 /** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
  *  them, so a word after "bearer" ("bearer authentication/authorization"), a placeholder (`<token>`, `$TOKEN`,
  *  `YOUR_API_KEY`) and a challenge's parameter (`Bearer realm="x"`) are none. The token alone is the match: the scheme
  *  before it stays, so a reader still sees a header was there. The scheme is at most three blanks before the token, and
  *  the digit is looked for only through the token's own characters, so the reading stays linear. */
-const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]{20,}={0,2}/i;
+const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]{0,16384}\d)[A-Za-z0-9._~+/-]{20,16384}={0,2}/i;
 /** The value of a URL parameter named like a credential, after `?` or `&`: sixteen characters or more, to the next
  *  separator. The name is the whole parameter's (`token`, never `page_token`), and the value alone is the match, so the
  *  name stays. A signed URL's signature is one: whoever holds the URL holds what it grants. No bracket is a value's
  *  character (a URL writes one percent-encoded), so a value already cut to "[redacted]" is never read as one. */
-const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i;
-const URL_PASSWORD = /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/;
+const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,16384}/i;
+const URL_PASSWORD = /:\/\/[^\s/?#@:]{1,256}:[^\s/?#@]{0,1024}@/;
 /** A complete, single-quoted sed search expression whose password is only a capture pattern.
  * The @ inside [^@] is regex syntax, not a password terminator. Require the closing capture,
  * substitution/backreference and quote too; bracketed passwords or bare URLs are never exempt. */
-const SED_URL_CAPTURE = /(?:^|[\s;(])sed[ \t]+-n[ \t]+'s\|https?:\/\/(?:[A-Za-z0-9._~-]+|\[\^:\]\*):\\\(\[\^@\]\*\\\)@[A-Za-z0-9.-]+\|\\1\|p'/g;
+const SED_URL_CAPTURE = /(?:^|[\s;(])sed[ \t]{1,16}-n[ \t]{1,16}'s\|https?:\/\/(?:[A-Za-z0-9._~-]{1,256}|\[\^:\]\*):\\\(\[\^@\]\*\\\)@[A-Za-z0-9.-]{1,256}\|\\1\|p'/g;
 
 /** A bank account number beside its word: "account", "acct", "a/c" or "bank account", maybe "number", "no.", "#", ":"
  *  or "is" after it, then six digits or more, single dashes or spaces between them. A count before the word ("4
@@ -36,11 +44,12 @@ const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}
 /** A UK sort code beside its word: three pairs of digits. */
 const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/i;
 
-/** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses. */
-const SHAPES: readonly (readonly [string, RegExp])[] = [
+/** Text shaped like a secret, by kind. The same shapes the Pi learning loop's guard refuses, and the scrubber's
+ *  known-format rules (secret-rules.ts). */
+export const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["AWS access key id", /(?:AKIA|ASIA)[0-9A-Z]{16}/],
   ["Google API key", /AIza[0-9A-Za-z_-]{35}/],
-  ["private key block", /-----BEGIN[ A-Z0-9]*PRIVATE KEY[ A-Z0-9]*-----/],
+  ["private key block", /-----BEGIN[ A-Z0-9]{0,40}PRIVATE KEY[ A-Z0-9]{0,40}-----/],
   ["GitHub token", GITHUB_TOKEN],
   ["sk- key", SK_KEY],
   ["Slack token", SLACK_TOKEN],
@@ -76,10 +85,10 @@ const MONEY_SHAPES: readonly (readonly [string, RegExp])[] = [
 /** The kinds of text in `text` learning never keeps: every secret shape, and a bank's numbers beside their words. */
 export const learnedSecretShapes = (text: string): string[] => [...secretShapes(text), ...MONEY_SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind)];
 
-type Span = [start: number, end: number];
+export type Span = [start: number, end: number];
 
 /** Every place `pattern` matches in `text`, overlapping places included. */
-function spans(text: string, pattern: RegExp): Span[] {
+export function spans(text: string, pattern: RegExp): Span[] {
   const re = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
   const out: Span[] = [];
   const expressions: Span[] = pattern === URL_PASSWORD ? [...text.matchAll(SED_URL_CAPTURE)].map(match => [match.index!, match.index! + match[0].length]) : [];
@@ -204,6 +213,66 @@ function derivedOf(values: readonly string[]): Derived {
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
+}
+
+/** Every place a form of `values` stands in `text`, as redactSecrets finds them: each value as written, as JSON writes
+ *  it, its path spellings, plain needles (base64 at each alignment) and percent forms, its hex in any case and its hex
+ *  identifiers folded. The scrubber's held rule (secret-rules.ts) cuts these; a form found nowhere as it stands (split
+ *  by whitespace, partly encoded) is still seen by valueMatcher over what is left. */
+export function heldSpans(text: string, values: readonly string[]): Span[] {
+  const { forms, hexes, folds } = derivedOf(values);
+  return [...forms.flatMap((form) => places(text, form)), ...blankSplitPlaces(text, forms), ...hexes.flatMap((hex) => spans(text, hex)), ...folds.flatMap((fold) => spans(text, fold))];
+}
+
+const isBlank = (code: number): boolean =>
+  code === 32 || (code >= 9 && code <= 13) || code === 0xa0 || code === 0x1680 || (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029 || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+
+/** How many runs of blanks stand in `text` from `start` to `last`. */
+function blankRuns(text: string, start: number, last: number): number {
+  let runs = 0;
+  for (let at = start + 1; at <= last; at++) if (isBlank(text.charCodeAt(at)) && !isBlank(text.charCodeAt(at - 1))) runs++;
+  return runs;
+}
+
+/** Every place a form (one MIN_SECRET long or more, with no blank of its own) stands in `text` split by one run of
+ *  blanks (a line wrapped, a space typed into it; scrubber ruling XXXII: two runs are words, `alpha beta gamma`): the span from its first character to its last, the blanks between included, so a
+ *  cut over it takes the form whole (scrubber ruling XIV). Each blank's offset is kept, not a copy of the text's: an
+ *  offset in the text with its blanks taken out maps back by a search over them. */
+function blankSplitPlaces(text: string, forms: readonly string[]): Span[] {
+  const blanks: number[] = [];
+  const kept: string[] = [];
+  let from = 0;
+  for (let at = 0; at < text.length; at++) {
+    if (!isBlank(text.charCodeAt(at))) continue;
+    if (at > from) kept.push(text.slice(from, at));
+    blanks.push(at);
+    from = at + 1;
+  }
+  if (!blanks.length) return [];
+  kept.push(text.slice(from));
+  const squeezed = kept.join("");
+  // The text's offset of the squeezed text's `k`th character: k plus the blanks before it (blank i has blanks[i] - i
+  // characters before it).
+  const offsetOf = (k: number): number => {
+    let low = 0;
+    let high = blanks.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (blanks[mid]! - mid <= k) low = mid + 1;
+      else high = mid;
+    }
+    return k + low;
+  };
+  const out: Span[] = [];
+  for (const form of forms) {
+    if (form.length < MIN_SECRET || [...form].some((c) => isBlank(c.charCodeAt(0)))) continue;
+    for (const [at, end] of places(squeezed, form)) {
+      const start = offsetOf(at);
+      const last = offsetOf(end - 1);
+      if (last - start + 1 > form.length && blankRuns(text, start, last) === 1) out.push([start, last + 1]);
+    }
+  }
+  return out;
 }
 
 /** `text` with each of `found` replaced by "[redacted]", overlapping ones as one. */

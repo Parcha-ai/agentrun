@@ -1,0 +1,143 @@
+# The local FP sweep's shapes (tl-share fp-sweep, TL-reviewed): one negative a line, each INVENTED in the shape and
+# surrounding syntax of a false-positive class seen in a real-run sample; no token, host, user, email, path or IP
+# taken from one. A `# ` line is a comment; a `# class X` line names the class of the lines under it (FIXES-scrubber.md
+# I-IX). Blank lines are skipped.
+
+# class A (secret-assign): credential word is not the identifier's last segment, or "key" means a name/column
+job_id: uuid.UUID = Field(foreign_key="widget_run.id", index=True, nullable=False)
+owner: str = Field(foreign_key="accounts.handle")
+@redis_cache(key_prefix="blocked_signup_domains")
+cache_key = "orders:recent:v2"
+sort_key="created_at"
+export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=user.email GIT_CONFIG_VALUE_0='lint-bot'
+
+# class B (secret-assign, auth-header, bearer-token, url-credential): value is a shell expansion, not a value
+export WIDGET_API_KEY=$(pass show widgets/api)
+export SERVICE_TOKEN="$(vault-read -q WIDGETS_PROD_KEY)"
+export ACCESS_TOKEN=${ACCESS_TOKEN:-}
+curl -s https://api.example.com/v1/audit -H "Authorization: Bearer $KEY:$SID" -d "$BODY"
+curl "https://search.example.com/q.json?engine=web&q=tea&api_key=${SEARCH_API_KEY}"
+
+# class C (secret-assign): value is a secret-manager reference, not the secret
+WIDGETS_DB_PASSWORD=op://Infra/widgets-db/password
+export STRIPE_SECRET_KEY="op://Payments/stripe-live/credential"
+
+# class D (sshpass, mysql-password, password-flag): label in a prose list, value is punctuation or prose
+Labels: PGPASSWORD=, sshpass -p, mysql -p, Authorization:, --password ... are restorable.
+a label next to it (PGPASSWORD=, sshpass -p, Authorization:). No entropy-only rules.
+/** --password, --passwd, --token, --api-key and kin. */
+
+# class E (secret-assign, sshpass): value already masked or elided
+WIDGETS_API_KEY=wk_live_<redacted>
+<code>sshpass -p ••••</code>
+lower-case names ending in a credential word: WIDGET_API_KEY=..., BOX_SESSION_TOKEN=...
+
+# class F (auth-header): angle-bracket placeholder with spaces inside
+| `remote_auth` | `{<server>: {headers: {authorization: "Bearer <Widget run token>"}}}` |
+
+# class G (auth-header): header name as a code key, value is an expression
+seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
+log.push({ url: request.url, authorization: request.headers.authorization });
+headers = {"Authorization": authorization} if authorization else {}
+return { headers: { "x-api-key": got.key }, ...(query ? { query } : {}) };
+"headers": {"x-api-key": os.environ["WIDGETS_MCP_KEY"]},
+for (const bad of ["Authorization: " + "x".repeat(99_999), "mysql -p" + "y".repeat(99_999)]) check(bad);
+
+# class H (auth-header): "Authorization:" / "x-api-key:" as a prose word
+Scopes. Authorization: read->widgets:read, operate->widgets:write; a team key cannot widen them.
+// headers accept, accept-encoding and x-api-key: nothing here is forwarded upstream.
+
+# class I (curl-user): -u on a command that is not curl
+until [ "$code" = 200 ]; do sleep 30; done; date -u +%H:%M
+echo "deployed $v at $(date -u +%FT%H:%M)"
+
+# class J (mysql-password): `-p` then a space prompts for the password; the next word is the database
+mysql -u root -p widgets_dev
+mysqldump -u admin -p inventory > inventory.sql
+
+# class K (google-api-key, any known prefix): prefix inside a longer base64 run (inline image, encrypted blob)
+data:image/png;base64,Rk9PYmFyQmF6cXV4bm9yZ2NvcmdlQUl6YVN5WFE3bU4ycExrNHZCOHhSM3RZNnVXMGVGNWdIMWpLOWNBMnNEN2ZHM2hKOGtMNHpYAIzaSyQ7mN2pLk4vB8xR3tY6uW0eF5gH1jK9cA2sD7fG3hJ8kL4zXbm9yZ2NvcmdlUXV1eFp6eVdpZGdldHM=
+"encrypted_content":"gAAAAABnWdgtUmF0aGVyTG9uZ0Jsb2JBS0lBMTIzNDU2Nzg5MEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFla0AKIAQWERTYUIOPASDFGH7xLmNpQrStUvWxYz=="
+
+# class L (private-key-block): a BEGIN line alone, no body and no END
+const huge = `${"-----BEGIN DSA PRIVATE KEY-----\n".repeat(5_000)}`;
+if (line.startsWith("-----BEGIN ENCRYPTED PRIVATE KEY-----")) return "pem";
+
+# class M (email): role or bot address in a bot trailer (bots stay)
+Signed-off-by: lintbot[bot] <support@forgehub-widgets.io>
+Co-authored-by: depbump[bot] <noreply@forgehub-widgets.io>
+
+# class N (url-password): the password slot is a template interpolation, not a value
+        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}"
+    return f"postgresql://{user}:{password}@{host}:{port}/{database}{suffix}"
+const dsn = `mysql://${cfg.user}:${cfg.pass}@${cfg.host}/widgets`;
+
+# ---- round 2 (fp-sweep's provisional confirm on the 02:48 build; FIXES-scrubber.md rulings XVII-XXIV) ----
+# class O (email): a decorator in diff or grep -n output; "+" or "NNN-" is the local part, a dotted identifier the domain
++@router.post(WIDGETS_PATH, include_in_schema=False)
+4021-@pytest.mark.parametrize(
++@pytest.fixture
+  88:@app.get("/widgets/{widget_id}")
+
+# class P (email): an SQL LIKE pattern, not an address
+SELECT count(*) FROM events WHERE payload::text LIKE '%@widgets-corp.io%';
+
+# class Q (email): a systemd template-unit instance
+MEMORY_PRESSURE_WATCH=/sys/fs/cgroup/user.slice/user-1001.slice/user@1001.service/app.slice/widgetd.service/memory.pressure
+systemctl status getty@tty1.service
+
+# class R (email): a JSON escape letter glued onto an SSH remote user (\tgit@ read as tgit@)
+{"text":"remote:\tgit@forgehub.io:widgets/app.git"}
+As a JSON string, `\\tgit@forgehub.io` keeps its escape.
+"remote:\\tgit@forgehub.io:widgets/app.git"
+
+# class T (secret-assign): an enum or constant whose value is its own name
+    API_KEY = "api_key"  # API key (external)
+    SESSION_TOKEN = "session_token"
+
+# class U (secret-assign): a fetch() option enum under a credential-looking key
+const res = await fetch(url, { cache: "no-store", credentials: "omit", redirect: "follow" });
+fetch("/api/widgets", { credentials: "same-origin" })
+
+# class V (secret-assign): an unquoted identifier value in an object literal or kwargs, a variable reference
+		WIDGET_ATTACH_TOKEN: token,
+client = WidgetClient(api_key=api_key, timeout=30)
+
+# class W (secret-assign): PASS as a test-verdict word in a results table
+| 1c | `none`: nothing loads | PASS: "Proxy refused the connection", only `lo` |
+
+# class X (auth-header): a cookie header whose value is a shell expansion
+S=(-H "cookie: __Host-widget-session=$SESSION" -H "origin: $BASE")
+
+# class Y (curl-user): date -u later on the same line as an earlier curl
+code=$(curl -s -o /dev/null -w '%{http_code}' https://widgets.example/health); echo "$(date -u +%H:%M) $code"
+
+# ---- round 3 (fp-sweep's final run on the 04:21 build; rulings XXXV-XXXVIII)
+# class Z1 (url-password): a bracketed IPv6 host read as userinfo (the "user" is "[", the "password" is ":1]:port;field")
+    v6_row = "wss://[::1]:8443;widgets@localhost\n"
+row = "wss://[2001:db8::7]:9443,ops@widgets-gw"
+
+# class Z2 (secret-assign): `pat` as a shell variable meaning "pattern", not a personal access token
+pat="^(widget $TAG .* done|WARN(429|503) ${ENV}s?-)"; grep -q -E "$pat" "$LOG"
+
+# class Z3 (secret-assign): an escaped expansion (\$VAR) inside a sed expression
+sed -i "s|^PGPASSWORD=\"\$PGPASSWORD\" psql|PGPASSWORD=\$PGPASSWORD psql|" run.sh
+
+# class Z4 (email): the email rule takes the tail of a URL userinfo whose password starts with an expansion
+const content = [`url sftp://admin:${pw}x@db.corp-widgets.io/x`];
+
+# ---- round 4 (fp-sweep's last run on the 06:13 build; rulings XLV-XLVII; Z8 declined to beta 2)
+# class Z5 (secret-assign): a keyword argument whose value is an identifier or attribute reference; the cut takes the comma too
+        token=token,
+        api_key=settings.widget_api_key,
+        allow_credentials=widget_cors_creds,
+3317	            notify_secret=widget_notify_secret,
+412:        relay_token=lease.relay_token,
+
+# class Z6 (secret-assign, auth-header): a subscript read (os.environ[...], params[...]) cut as "os.environ[" when a backslash escape (\n) appears anywhere later in the text (decoded-view interaction)
+TOKEN = os.environ["WIDGETS_TOKEN"]; print("ready\n")
+env = {"WIDGETS_DB_PWD": params["password"], "WIDGETSPATH": str(ROOT)}; log.write("ok\n")
+srv = {"headers": {"x-api-key": os.environ["WIDGETS_MCP_KEY"]}}; log.write("ok\n")
+
+# class Z7 (secret-assign): a JS object value that is a member expression (process.env.X) as its line's whole
+  apiKey: process.env.WIDGETS_API_KEY
