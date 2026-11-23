@@ -42,7 +42,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
             {filter.source && <Button size="sm" variant="primary" aria-pressed onClick={() => onFilter({ ...filter, source: undefined })}><History aria-hidden /> {filter.source === "live" ? "Made here" : `From ${filter.source}`}</Button>}
           </>
         )}
-        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}${filter.source && !agentId ? `; ${filter.source === "live" ? "runs made here" : `runs imported from ${filter.source}`}` : ""}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />

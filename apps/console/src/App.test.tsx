@@ -7,6 +7,7 @@ import { agentHash } from "@/components/AgentPage";
 import { agentsList, recorded } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
 import { runLabel } from "@/lib/format";
+import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
 import { pick } from "@/test/picker";
@@ -39,6 +40,13 @@ describe("route", () => {
   });
   it("keeps the scope of a read-only query playground link", () => {
     expect(route("#/playground?operation=list-runs&agent=agent%20two&status=failed&archived=true")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "agent two", status: "failed", archived: true });
+  });
+  it("keeps the runs list's source in a Query playground link, as in the runs address", () => {
+    expect(queryPlaygroundHref(undefined, { source: "claude-code", status: "failed" })).toBe("#/playground?operation=list-runs&status=failed&source=claude-code");
+    expect(queryPlaygroundHref("calc", { source: "claude-code" })).toBe("#/playground?operation=list-runs&agent=calc");
+    expect(route("#/playground?operation=list-runs&source=claude-code")).toEqual({ section: "playground", operation: "list-runs", source: "claude-code" });
+    expect(route("#/playground?operation=list-runs&agent=calc&source=codex")).toEqual({ section: "playground", operation: "list-runs", playgroundAgent: "calc" });
+    expect(route("#/playground?operation=list-runs&source=Bad%20Name")).toEqual({ section: "playground", operation: "list-runs" });
   });
   it("opens the triggers list, a new schedule, a new webhook, one trigger, and a schedule's editor at their own addresses", () => {
     expect(route("#/triggers")).toEqual({ section: "triggers" });
