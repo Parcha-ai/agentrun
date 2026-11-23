@@ -139,6 +139,16 @@ export function deviceOffer(capabilities, base) {
   return { metadata, scope };
 }
 
+/** The origins the person is told the code is approved at: those of `addresses` (the ones printed to open, any of them
+ *  null when absent) other than the target's, each once. An address on another origin is taken, not refused: a
+ *  self-hosted install may serve its console on another origin, and this CLI cannot know which. So the line names both
+ *  origins, and a server that hands out another service's code, to keep the token approved there, is seen before the
+ *  code is approved. */
+export function elsewhereOf(target, addresses) {
+  const own = new URL(target).origin;
+  return [...new Set(addresses.filter((at) => at != null).map((at) => new URL(at).origin))].filter((origin) => origin !== own);
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The device flow for `offer` on the target `base`, its lines to the person on `io.stderr`: the token, once the person
@@ -193,10 +203,7 @@ export async function deviceSignIn(base, offer, io, { wait = sleep, now = Date.n
 
   // The metadata's verification_uri first, when it names one, as the open-source connector's client does.
   const open = m.verification_uri ?? g.verification_uri;
-  // An address to open on another origin than the server's is taken, not refused: a self-hosted install may serve its
-  // console on another origin, and this CLI cannot know which. So the line names both origins, and a server that hands
-  // out another service's code, to keep the token approved there, is seen before the code is approved.
-  const elsewhere = [...new Set([open, g.verification_uri_complete].filter((at) => at != null).map((at) => new URL(at).origin))].filter((origin) => origin !== target.origin);
+  const elsewhere = elsewhereOf(target, [open, g.verification_uri_complete]);
   if (elsewhere.length) io.stderr.write(`The code is approved at ${elsewhere.join(" and ")}, not at ${target.origin}. Approve it only if ${target.origin} is the server you meant to sign in to.\n`);
   io.stderr.write(`Open ${open} and enter the code ${g.user_code}${g.verification_uri_complete ? ` (or open ${g.verification_uri_complete})` : ""}.\n`);
   io.stderr.write(`Waiting for the sign-in to be approved there; the code expires in ${Math.ceil(g.expires_in / 60)} min.\n`);
