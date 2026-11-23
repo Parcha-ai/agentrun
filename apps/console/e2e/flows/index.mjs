@@ -19,6 +19,7 @@ import setupPublic from "./setup-public.mjs";
 import setupLinkFollow from "./setup-link-follow.mjs";
 import setupRender from "./setup-render.mjs";
 import signIn from "./sign-in.mjs";
+import demoMode from "./demo-mode.mjs";
 import signOutScope from "./sign-out-scope.mjs";
 import signedOutElsewhere from "./signed-out-elsewhere.mjs";
 import reportJson from "./report-json.mjs";
@@ -34,6 +35,7 @@ import screenSteps from "./screen-steps.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
+import computersRunning from "./computers-running.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
@@ -58,6 +60,7 @@ export const flows = [
   setupRender,
   signIn,
   signOutScope,
+  demoMode,
   connectGitHub,
   githubTrigger,
   { name: "github-trigger-create", pending: "waits on a connected GitHub App without GitHub: the server's GitHub API (githubApi) is a programmatic option only, not a flag the built server takes" },
@@ -75,6 +78,7 @@ export const flows = [
   serverDeny,
   secretsWriteOnly,
   computersKeys,
+  computersRunning,
   workspaceArchil,
   triggerRowLabel,
   computerStep,
