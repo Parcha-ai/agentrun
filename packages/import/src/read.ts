@@ -2,7 +2,7 @@
 // subagents' locators, and one session read.
 import type { Stats } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import type { Env, Locator, Reader, ReadOptions } from "./reader.js";
+import type { Env, Locator, LocatorSize, Reader, ReadOptions } from "./reader.js";
 import { READERS, type Source } from "./readers/index.js";
 import type { SessionOf } from "./types.js";
 
@@ -27,14 +27,24 @@ export async function sessionLocators(home: string, source: string, { env, reade
   return out;
 }
 
-/** The locators of `source`, each with its file's stats (one gone since it was listed is passed over), in the import's
- *  order: the reader's (Claude Code's by project folder, oldest written first: the first file holding a copied record
- *  keeps it), else as they were listed. */
-export async function inOrder(locators: readonly Locator[], source: string, readers?: Readers): Promise<{ locator: Locator; stats: Stats }[]> {
-  const out: { locator: Locator; stats: Stats }[] = [];
+/** What the session at `locator` takes and when it was last written: the reader's stat, else its file's size and mtime.
+ *  null when it is gone. */
+export async function locatorSize(locator: Locator, source: string, readers?: Readers): Promise<LocatorSize | null> {
+  const own = readerOf(source, readers).stat;
+  if (own) return own(locator).catch(() => null);
+  const stats = await stat(locator.file).catch(() => null);
+  return stats && { bytes: stats.size, mtimeMs: stats.mtimeMs };
+}
+
+/** The locators of `source`, each with its file's stats and its own size (locatorSize; one gone since it was listed is
+ *  passed over), in the import's order: the reader's (Claude Code's by project folder, oldest written first: the first
+ *  file holding a copied record keeps it), else as they were listed. */
+export async function inOrder(locators: readonly Locator[], source: string, readers?: Readers): Promise<{ locator: Locator; stats: Stats; size: LocatorSize }[]> {
+  const out: { locator: Locator; stats: Stats; size: LocatorSize }[] = [];
   for (const locator of locators) {
     const stats = await stat(locator.file).catch(() => null);
-    if (stats) out.push({ locator, stats });
+    const size = stats && (readerOf(source, readers).stat ? await locatorSize(locator, source, readers) : { bytes: stats.size, mtimeMs: stats.mtimeMs });
+    if (stats && size) out.push({ locator, stats, size });
   }
   const order = readerOf(source, readers).order;
   if (order) out.sort((a, b) => order({ file: a.locator.file, mtimeMs: a.stats.mtimeMs }, { file: b.locator.file, mtimeMs: b.stats.mtimeMs }));

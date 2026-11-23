@@ -20,7 +20,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
-import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
+import { at as minute, claudeSession, claudeSubagent, codexSession, openCodeDb, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, client, FAUX, scratch, startServe, triggerStore } from "./support.mjs";
 
@@ -2323,4 +2323,93 @@ test("a session whose subagents are over the run's cap together is left out whol
   assert.match(large[0].why, new RegExp(`over ${MAX_RUN_BYTES} bytes together`));
   assert.deepEqual(report.agents.map((a) => [a.name, a.runs]).sort(), [["big", 1], ["small", 1]], "every other session, its own project's too");
   assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), [sessionId(2), sessionId(3)], "no run of the session left out, whole or cut short");
+});
+
+test("an OpenCode session updated in the last 10 minutes is left as still running, and an old one in the same database imports: each session's own last write, not its database's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  // The database file was written just now, as one live session writes it.
+  const db = openCodeDb(h.at, [{ id: "ses_old", cwd: project }, { id: "ses_new", cwd: project, updated: Date.now() }]);
+  const plan = await planImport(options(h));
+  assert.deepEqual(plan.skipped.map((s) => [s.kind, s.what]), [["live", `${db}#ses_new`]], "only the session updated lately");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, plan, options(h));
+  assert.deepEqual((await rowsOf(store)).map((r) => [r.importedFrom.source, r.importedFrom.session]), [["opencode", "ses_old"]]);
+});
+
+test("an OpenCode database over the run's cap whose sessions each fit imports every session: a session's size is its own rows', not its database's", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  const db = openCodeDb(h.at, [{ id: "ses_a", cwd: project }, { id: "ses_b", cwd: project, prompt: "Sort the notes." }]);
+  // Past the cap on disk: a hole after the database's last page, which SQLite never reads (its header holds its size).
+  truncateSync(db, MAX_RUN_BYTES + 1);
+  utimesSync(db, new Date(Date.now() - 60 * 60_000), new Date(Date.now() - 60 * 60_000));
+  const dry = await planImport(options(h, { measure: true }));
+  assert.deepEqual(dry.skipped, [], "none left out as large");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const report = await runImport(store, await planImport(options(h)), options(h));
+  assert.deepEqual(report.skipped, []);
+  assert.deepEqual((await rowsOf(store)).map((r) => r.importedFrom.session).sort(), ["ses_a", "ses_b"]);
+});
+
+test("an OpenCode request run through Claude Code counts once when that Claude Code session is imported too: its usage and cost are the Claude Code run's, its turn still shown in the OpenCode run", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  openCodeDb(h.at, [
+    {
+      id: "ses_K",
+      cwd: project,
+      answers: [
+        // Claude Code's session 1 holds these two requests: its own run counts them.
+        { input: 3, output: 2, cost: 0.5, mirrors: sessionId(1), text: "On it." },
+        { input: 4, output: 1, cost: 0.25, mirrors: sessionId(1), text: "Still on it." },
+        // A Claude Code session this import does not hold: OpenCode's copy is the only count of it.
+        { input: 5, output: 1, cost: 0.125, mirrors: sessionId(2), text: "Elsewhere." },
+        { input: 6, output: 1, cost: 0.0625, text: "Back on Sonnet." },
+      ],
+    },
+  ]);
+  const dry = await planImport(options(h, { measure: true }));
+  const measured = dry.found.find((f) => f.source === "opencode");
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h)), options(h));
+  const runs = await rowsOf(store);
+  const run = runs.find((r) => r.importedFrom.source === "opencode");
+  assert.ok(run && runs.some((r) => r.importedFrom.source === "claude-code"), "both sessions are runs");
+  const { metrics, answers } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output], [2, 11, 2], "the two requests no Claude Code run holds");
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.1875);
+  assert.deepEqual(answers.length, 4, "every turn still in the transcript");
+  const texts = (await entriesOf(store, run.id)).filter((e) => e.kind === "pi.assistant").map((e) => e.model[0].content.map((c) => c.text).join(""));
+  assert.deepEqual(texts, ["On it.", "Still on it.", "Elsewhere.", "Back on Sonnet."]);
+  assert.deepEqual([measured.metrics.requests, measured.metrics.input, measured.metrics.output], [2, 11, 2], "the dry run counts the same");
+});
+
+test("an OpenCode request run through Claude Code counts nothing when the store holds that Claude Code session from an import before", async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "notes");
+  mkdirSync(project, { recursive: true });
+  claudeSession(h.at, project, 1);
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  await runImport(store, await planImport(options(h, { sources: ["claude-code"] })), options(h, { sources: ["claude-code"] }));
+  openCodeDb(h.at, [{ id: "ses_K", cwd: project, answers: [{ input: 3, output: 2, cost: 0.5, mirrors: sessionId(1) }, { input: 6, output: 1, cost: 0.0625 }] }]);
+  // This import reads OpenCode alone: the Claude Code session is the store's only.
+  const only = options(h, { sources: ["opencode"] });
+  await runImport(store, await planImport(only, store), only);
+  const run = (await rowsOf(store)).find((r) => r.importedFrom.source === "opencode");
+  const { metrics, answers } = await metricsOf(store, run.id);
+  assert.deepEqual([metrics.requests, metrics.input, metrics.output, answers.length], [1, 6, 1, 2]);
+  assert.equal((await store.runs.get(run.id)).costUsd, 0.0625);
 });

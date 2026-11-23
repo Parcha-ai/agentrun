@@ -16,6 +16,10 @@ export type Locator = { file: string; id?: string };
 /** A locator as one string: the file, with `#id` after it when it names one. */
 export const locatorKey = ({ file, id }: Locator): string => (id === undefined ? file : `${file}#${id}`);
 
+/** What a locator's session takes: its bytes, and when it was last written (ms). A file's size and mtime for a file of
+ *  one session; for one session of many in a file (a database), that session's own. */
+export type LocatorSize = { bytes: number; mtimeMs: number };
+
 /** One session a read found: where it is, what it is, and every request read (each counted once), whether turns are kept
  *  or not: what a total counts. */
 export type SessionRead<S extends string = string> = { locator: Locator; session: SessionOf<S>; requests: Answer[] };
@@ -53,6 +57,9 @@ export type Reader<S extends string = string, C = unknown> = {
   read: (locator: Locator, cursor?: C, options?: ReadOptions) => Promise<ReadResult<S, C>>;
   /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's). */
   order?: (a: { file: string; mtimeMs: number }, b: { file: string; mtimeMs: number }) => number;
+  /** The locator's own size and last write, when it is not its file's (a session in a database of many): what a caller's
+   *  size caps and liveness go by. null: the session is not there. Without it, the file's (locatorSize). */
+  stat?: (locator: Locator) => Promise<LocatorSize | null>;
   /** Subagents' sessions that name no parent themselves, each with the session it ran under (`of`). */
   children?: (home: string, env?: Env) => Promise<{ locator: Locator; of: Locator }[]>;
 };

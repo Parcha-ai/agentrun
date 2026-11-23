@@ -25,7 +25,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   `OPENCODE_DB`); without it the home's.
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
-  reads that Claude Code session, the request counts there and not in the OpenCode session (tokens, calls and cost),
+  reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
   request by request: one OpenCode session can mix claude-agent requests with other providers'. When it does not, the
   request counts in OpenCode's.
 
@@ -70,6 +70,7 @@ type Reader<S extends string, C> = {
   read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
+  stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number } | null>;
 };
 ```
 
@@ -77,7 +78,8 @@ The cursor is the reader's own: hand it back to the same reader for the same loc
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
 newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
-`discover` and `read` itself and returns one locator per session, with its `id`.
+`discover` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
+last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).
 
 OpenCode is that source. Its sessions are in `$XDG_DATA_HOME/opencode` (`~/.local/share/opencode`): `opencode*.db` (1.x
 and 2.x schemas; a 2.x session wins over the 1.x copy beside it), the database `OPENCODE_DB` names, and the JSON
@@ -85,7 +87,10 @@ and 2.x schemas; a 2.x session wins over the 1.x copy beside it), the database `
 JSON file; each session is listed once, the first database's that holds it. Its cursor is the file's device and inode
 and a stamp of the session's rows (each table's row count and latest `time_updated`): an unchanged session is not read
 again, a changed one is read again whole, a replaced database from its start. A fork's rows copied from its source
-session count nothing. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun.
+session count nothing. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
+`time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun.
 
-`readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
-`childrenOf(home, source)` are what serve's import reads through.
+`readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
+`locatorSize`), `locatorSize(locator, source)` and `childrenOf(home, source)` are what serve's import reads through. The
+mirror rule is one export for both callers: `mirroredIn(counted)` over the `sessionKey(source, id)` of the sessions
+counted, and `ownRequests(requests, cost, mirrored)` for a session's own requests and cost.

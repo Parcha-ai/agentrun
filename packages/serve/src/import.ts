@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -185,6 +185,8 @@ const INSTRUCTIONS: Record<string, string[]> = {
   "claude-agent": ["CLAUDE.md", "AGENTS.md"],
   codex: ["AGENTS.md", "CLAUDE.md"],
   pi: ["AGENTS.md", "CLAUDE.md"],
+  // OpenCode's rules file is AGENTS.md, CLAUDE.md where there is none.
+  opencode: ["AGENTS.md", "CLAUDE.md"],
 };
 
 export type ImportOptions = {
@@ -293,7 +295,10 @@ export function candidatesOf(plan: Pick<Plan, "projects">, env?: NodeJS.ProcessE
  *  import keep it from the same keys, or a later import would not find the run an earlier one made. */
 const redactedId = (id: string) => `redacted-${hash(id).slice(0, 16)}`;
 /** A file's size and time, as an import read it: the same after means the same content was read. */
-const stampOf = (stats: { size: number; mtimeMs: number }) => `${stats.size}:${stats.mtimeMs}`;
+const stampOf = (size: LocatorSize) => `${size.bytes}:${size.mtimeMs}`;
+/** A listed session's own size and last write (locatorSize): its file's, or its own rows' in a database of many. What
+ *  LIVE_MS, MAX_SESSION_BYTES, MAX_RUN_BYTES and an unchanged session go by. */
+const sizeOf = (listed: Pick<Session, "file" | "within" | "source">) => locatorSize(locatorOf(listed), listed.source);
 /** Bind remote consent to the enumerated source, including archive replacements that preserve size and mtime. */
 const remoteHistoryStamp = (stats: Stats) => `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
 const keptId = (envs: readonly NodeJS.ProcessEnv[], own: readonly string[] = []) => {
@@ -355,8 +360,8 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       const budget = budgetOf();
       let over = false;
       for (const entry of files) {
-        const stats = await stat(entry.file).catch(() => null);
-        if (stats && !fits(budget, stats.size)) {
+        const stats = await sizeOf(entry);
+        if (stats && !fits(budget, stats.bytes)) {
           over = true;
           break;
         }
@@ -378,7 +383,7 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
       });
       if (!subagents) continue;
       for (const child of subagents) {
-        const stats = await stat(child.file).catch(() => null);
+        const stats = await sizeOf(child);
         if (stats) stamps.set(locatorKey(locatorOf(child)), stampOf(stats));
       }
       add(await keysInSessions(subagents));
@@ -395,10 +400,10 @@ export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)
  *  owner purged is never imported again. */
 const importedIn = async (store: ImportStore): Promise<Map<string, string>> =>
   new Map((await store.runs.list({ purged: true })).flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
-/** A session file as an import read it: its size and its time, so an unchanged one is not parsed again. */
+/** A session as an import read it: its size and its time (its own, locatorSize), so an unchanged one is not parsed again. */
 /** The file by the sha256 of its path, never the path: a path can hold what the cut takes out of everything written. */
 type SourceFile = { path_sha256: string; size: number; mtime_ms: number };
-const sameFile = (seen: SourceFile | undefined, stats: { size: number; mtimeMs: number }) => seen !== undefined && seen.size === stats.size && seen.mtime_ms === stats.mtimeMs;
+const sameFile = (seen: SourceFile | undefined, size: LocatorSize) => seen !== undefined && seen.size === size.bytes && seen.mtime_ms === size.mtimeMs;
 /** The session files the store's imports read whole, by their path's sha256, with their run: the file stamp an import kept
  *  on the run's `imported_from`, so an unchanged file is not parsed again. */
 async function filesIn(store: ImportStore): Promise<Map<string, SourceFile & { run: string }>> {
@@ -436,24 +441,26 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
-    for (const { locator, stats } of await inOrder(await sessionLocators(home, source), source)) {
+    for (const { locator, size } of await inOrder(await sessionLocators(home, source), source)) {
       const { file } = locator;
       if (signal?.aborted) {
         stopped = true;
         break;
       }
       const known = seen.get(hash(locatorKey(locator)));
-      if (sameFile(known, stats)) {
+      if (sameFile(known, size)) {
         already += 1;
         held.push(known!.run);
         continue;
       }
-      if (now - stats.mtimeMs < LIVE_MS) {
-        leave({ what: file, why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
+      // The session's own last write and size (a database's sessions each their own): one live session, or a large
+      // database, leaves the rest of its file importable.
+      if (now - size.mtimeMs < LIVE_MS) {
+        leave({ what: locatorKey(locator), why: "written in the last 10 minutes: it may still be running", kind: "live" }, source);
         continue;
       }
-      if (stats.size > MAX_SESSION_BYTES) {
-        leave({ what: file, why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
+      if (size.bytes > MAX_SESSION_BYTES) {
+        leave({ what: locatorKey(locator), why: `over ${MAX_SESSION_BYTES} bytes`, kind: "large" }, source);
         continue;
       }
       // One file this user cannot read, or one gone since its stat, is named and passed over: the rest still import.
@@ -533,6 +540,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   // This server's own secrets first, as the import takes them.
   foundKeys(own);
   const { large } = await findKeys(plan, foundKeys, counting.text, (listed) => heldBy?.get(`${listed.source}:${listed.id}`) !== undefined, signal);
+  const mirrored = mirrorsOf(plan, heldBy, large);
   // Measured in the import's own order, a record or response counted once across files, each session with its
   // subagents; a session the store holds already from its run, as the import counts it, not from its file now.
   for (const project of plan.projects) {
@@ -554,9 +562,9 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       const budget = budgetOf();
       let over = false;
       for (const listed of files) {
-        const stats = await stat(listed.file).catch(() => null);
+        const stats = await sizeOf(listed);
         // Grown over the cap since the scan above: left out here as the import leaves it out, and read no further.
-        if (stats && !fits(budget, stats.size)) {
+        if (stats && !fits(budget, stats.bytes)) {
           over = true;
           break;
         }
@@ -569,7 +577,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
       }
       const parts = read.filter((part) => !ownless(part));
       if (!parts.length) continue;
-      const session = merged(parts);
+      const session = settled(merged(parts), mirrored);
       // What the import's cut would take out of it (its turns, its first message): the dry run's count.
       counting.json(session.turns);
       if (session.firstPrompt) counting.text(session.firstPrompt);
@@ -578,7 +586,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
         skipped.push(tooLarge(files[0]!));
       });
       if (!subagents) continue;
-      found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents) });
+      found.push({ source: session.source, agent: project.agentId, ...measured(session, subagents.map((child) => settled(child, mirrored))) });
     }
   }
   // Each project's files read as the import reads them, held agent or new: each file it leaves out (a link, one over its
@@ -597,25 +605,26 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
 
 /** The subagents tied to no session: each one's tokens and tool calls, for a summary's totals, each response once. */
 export async function untiedFound(plan: Plan): Promise<Found[]> {
+  const mirrored = mirrorsOf(plan);
   const seen = new Map<Source, Set<string>>();
   const counted = (source: Source) => seen.get(source) ?? seen.set(source, new Set()).get(source)!;
   // A thread resumed in a second file of the same id is one: its own subagents, which name it, count once with it.
   const threads = new Map<string, Session[]>();
   for (const { locator, source } of plan.untied) {
-    const stats = await stat(locator.file).catch(() => null);
-    if (!stats || stats.size > MAX_SESSION_BYTES) continue;
+    const stats = await locatorSize(locator, source);
+    if (!stats || stats.bytes > MAX_SESSION_BYTES) continue;
     const session = await readSession(locator, source, { seen: counted(source) }).catch(() => undefined);
     if (session) threads.set(`${source}:${session.id}`, [...(threads.get(`${source}:${session.id}`) ?? []), session]);
   }
   const found: Found[] = [];
   for (const parts of threads.values()) {
-    const session = merged(parts);
+    const session = settled(merged(parts), mirrored);
     // One whose own subagents are over the cap together counts for itself alone: the totals never hold more than a run.
     const children = await readChildren(plan, session, parts, counted(session.source), budgetOf()).catch((error: unknown) => {
       if (!(error instanceof RunTooLarge)) throw error;
       return [] as Session[];
     });
-    found.push({ source: session.source, agent: "", untied: true, metrics: metricsOf(session, children) });
+    found.push({ source: session.source, agent: "", untied: true, metrics: metricsOf(session, children.map((child) => settled(child, mirrored))) });
   }
   return found;
 }
@@ -727,11 +736,11 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
       const key = locatorKey(locator);
       if (visited.has(key)) continue;
       visited.add(key);
-      const stats = await stat(locator.file).catch(() => null);
+      const stats = await locatorSize(locator, session.source);
       if (!stats) continue;
       // Every subagent read is held with the run: one more than the run's cap holds ends the read, and the run is left out.
       // No subagent is passed over for its size: the run would be kept without its usage.
-      if (!fits(budget, stats.size)) throw new RunTooLarge();
+      if (!fits(budget, stats.bytes)) throw new RunTooLarge();
       const child = await readSession(locator, session.source, { seen }).catch(() => undefined);
       if (!child) continue;
       out.push(child);
@@ -750,12 +759,27 @@ async function readChildren(plan: Plan, session: Session, parts: readonly Sessio
 const subagentMarks = (children: readonly Session[]): EntryLike[] =>
   children.flatMap((child) =>
     child.turns.flatMap((turn) => {
-      if (turn.role !== "assistant") return [];
+      if (turn.role !== "assistant" || turn.mirrors) return [];
       const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
       // A failed request's counts are its own, zeros included, as its answer's are (entryOf).
       return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
     }),
   );
+
+/** The sessions a request may be counted in instead of its own (mirroredIn): each the plan imports (but those over the
+ *  run's cap, `large`), and each the store holds already. A request OpenCode ran through Claude Code is that Claude Code
+ *  session's when either holds it. */
+const mirrorsOf = (plan: Plan, held: ReadonlyMap<string, string> = new Map(), large: ReadonlySet<string> = new Set()) =>
+  mirroredIn(new Set([...plan.projects.flatMap((project) => project.sessions.map((session) => sessionKey(session.source, session.id))).filter((key) => !large.has(key)), ...held.keys()]));
+
+/** A session as a run counts it, read whole: a turn whose request `mirrored` gives to another session keeps its `mirrors`
+ *  (shown, counted nothing: entryOf), any other loses it; its cost is its own requests' (ownRequests). */
+function settled<S extends Session>(session: S, mirrored: (answer: Answer) => boolean): S {
+  const answers = session.turns.filter((turn): turn is Answer => turn.role === "assistant");
+  for (const answer of answers) if (answer.mirrors && !mirrored(answer)) delete answer.mirrors;
+  session.costUsd = ownRequests(answers, session.costUsd, mirrored).cost;
+  return session;
+}
 
 /** A session's entries as its transcript holds them, its subagents' requests with them (subagentMarks). */
 const runEntries = (session: Session, children: readonly Session[]): EntryLike[] => [...entriesOf(session), ...subagentMarks(children)];
@@ -973,6 +997,8 @@ const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
       ...(turn.error !== undefined ? { stopReason: "error", errorMessage: turn.error } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),
       timestamp: turn.at,
     },
+    // A request another run of the import counts (settled kept its `mirrors`): shown here, counted there.
+    ...(turn.mirrors ? { data: { mirrors: { source: turn.mirrors.source, session: turn.mirrors.sessionId } } } : {}),
   };
 };
 
@@ -1030,7 +1056,7 @@ async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<
   if (runMetricsOf(entries.filter((entry) => entry.kind === "pi.assistant")).unmetered > 0) return undefined;
   // Each answer's request at its own provider's entry, as @parcha/agentrun-import prices a session's totals.
   const requests = entries.flatMap((entry) => {
-    const answer = entry.kind === "pi.assistant" ? (entry.model?.[0] as { provider?: string; model?: string; usage?: Record<string, number> } | undefined) : undefined;
+    const answer = entry.kind === "pi.assistant" && (entry.data as { mirrors?: unknown } | undefined)?.mirrors === undefined ? (entry.model?.[0] as { provider?: string; model?: string; usage?: Record<string, number> } | undefined) : undefined;
     if (!answer?.usage) return [];
     const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cacheWrite1h } = answer.usage;
     return [{ ...(answer.provider && answer.model ? { model: `${answer.provider}/${answer.model}` } : {}), usage: { input, output, cacheRead, cacheWrite, ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}) } }];
@@ -1127,6 +1153,8 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   };
   // Every key of the import is known before anything of it is written.
   const known = await findKeys(plan, add, text, (listed) => held.get(`${listed.source}:${listed.id}`) !== undefined, options.signal, options.onProgress);
+  // A request another session counts (one this import writes, or one the store holds) counts there, not again here.
+  const mirrored = mirrorsOf(plan, held, known.large);
   const toTake = options.onProgress ? plan.projects.reduce((n, p) => n + byRun(p.sessions).length, 0) : 0;
   let written = 0;
   if (!options.signal?.aborted) options.onProgress?.("write", 0, toTake);
@@ -1204,8 +1232,8 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
       for (const entry of files) {
         const { file } = entry;
         const key = locatorKey(locatorOf(entry));
-        const stats = await stat(file).catch(() => null);
-        if (stats && !fits(budget, stats.size)) {
+        const stats = await sizeOf(entry);
+        if (stats && !fits(budget, stats.bytes)) {
           over = true;
           break;
         }
@@ -1218,7 +1246,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
           report.skipped.push({ what: file, why: "holds only records of sessions imported already", kind: "copies" });
           continue;
         }
-        read ??= { path_sha256: hash(key), size: stats.size, mtime_ms: stats.mtimeMs };
+        read ??= { path_sha256: hash(key), size: stats.bytes, mtime_ms: stats.mtimeMs };
         parts.push(part);
         if (scannedAs.get(key) !== stampOf(stats)) changed = true;
       }
@@ -1227,7 +1255,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         continue;
       }
       if (!read) continue;
-      const session = merged(parts);
+      const session = settled(merged(parts), mirrored);
       if (titled) session.sourceTitle = titled.title;
       // A file of it changed since the scan above (a session still being written): what it holds now, read through
       // secretlint again before any of it is cut.
@@ -1241,7 +1269,8 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
         report.skipped.push(tooLarge(listed));
       });
       if (!subagents) continue;
-      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await stat(child.file).catch(() => null)) ?? { size: -1, mtimeMs: -1 })));
+      for (const child of subagents) settled(child, mirrored);
+      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
       if (moved.some(Boolean)) add(await keysInSessions(subagents));
       // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
       // so its timeline's usage row counts what its metrics do, one number for the run.

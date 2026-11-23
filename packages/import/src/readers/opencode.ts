@@ -27,7 +27,7 @@
 import { createHash } from "node:crypto";
 import { lstat, open, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { type Env, entries, type Locator, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
+import { type Env, entries, type Locator, type LocatorSize, type Reader, type ReadResult, rememberUser, type SessionRead } from "../reader.js";
 import { effortOf as effortName, isObject, mostEffortOf, str } from "../text.js";
 import { ACTIVE_GAP_MS, type Answer, type Ended, type Mirror, type SessionOf, type Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
@@ -513,6 +513,36 @@ export async function openCodeFiles(home: string, env: Env = {}): Promise<{ dbs:
   return (await lstat(join(storage, "session")).catch(() => null))?.isDirectory() && (await lstat(storage)).isDirectory() ? { dbs, storage } : { dbs };
 }
 
+/** A database session's own size and last write: the bytes of its messages' and parts' data (the 2.x tables' when the
+ *  session is there, else 1.x's: the rows a read of it takes) and the latest time_updated of its rows. */
+function dbSize(db: Db, tables: ReturnType<typeof tablesOf>, id: string): LocatorSize | null {
+  const v2 = tables.v2 && db.all("SELECT 1 AS n FROM session_v2 WHERE id = ?", id).length > 0;
+  if (!v2 && !(tables.v1 && db.all("SELECT 1 AS n FROM session WHERE id = ?", id).length > 0)) return null;
+  const data = (v2 ? ["session_message", "session_part"] : ["message", "part"]).filter((table) => tables.all.has(table));
+  const bytes = data.reduce((n, table) => n + Number(db.all(`SELECT coalesce(sum(length(CAST(data AS BLOB))), 0) AS n FROM ${table} WHERE session_id = ?`, id)[0]?.n ?? 0), 0);
+  const times = SESSION_TABLES.filter(([table]) => tables.all.has(table)).map(([table, column]) => num(db.all(`SELECT max(time_updated) AS t FROM ${table} WHERE ${column} = ?`, id)[0]?.t) ?? 0);
+  return { bytes, mtimeMs: Math.max(0, ...times) };
+}
+
+/** A storage session's size and last write: its session file's, its messages' and their parts' together. */
+async function storageSize(file: string): Promise<LocatorSize | null> {
+  const own = await stat(file).catch(() => null);
+  if (!own) return null;
+  const dir = storageOf(file);
+  const size = { bytes: own.size, mtimeMs: own.mtimeMs };
+  const add = async (path: string) => {
+    const stats = await stat(path).catch(() => null);
+    if (!stats) return;
+    size.bytes += stats.size;
+    size.mtimeMs = Math.max(size.mtimeMs, stats.mtimeMs);
+  };
+  for (const message of await jsonFiles(join(dir, "message", basename(file, ".json")))) {
+    await add(message);
+    for (const part of await jsonFiles(join(dir, "part", basename(message, ".json")))) await add(part);
+  }
+  return size;
+}
+
 export const opencode: Reader<"opencode", OpenCodeCursor> = {
   source: "opencode",
   name: "OpenCode",
@@ -559,6 +589,21 @@ export const opencode: Reader<"opencode", OpenCodeCursor> = {
       const before = db.read();
       const sessions = dbSessions(db, file, tables, keep, id);
       return result(stamp, sessions, db.read() - before);
+    } finally {
+      db.close();
+    }
+  },
+  /** A database session's own (dbSize), not its database's: one live session leaves the others importable, and none
+   *  is too large for the size of the rest. A storage session's files together; a database without an id, its file's. */
+  async stat({ file, id }) {
+    if (id === undefined && !(await isDatabase(file))) return storageSize(file);
+    if (id === undefined) {
+      const stats = await stat(file);
+      return { bytes: stats.size, mtimeMs: stats.mtimeMs };
+    }
+    const db = await openDb(file);
+    try {
+      return dbSize(db, tablesOf(db), id);
     } finally {
       db.close();
     }

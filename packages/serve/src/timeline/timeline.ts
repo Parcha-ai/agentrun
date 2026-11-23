@@ -440,8 +440,9 @@ function createMeter() {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     const summaryAnswered = compactionAnswers(entry, sideSummaries);
-    if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
+    if (entry.kind === "pi.assistant" && (entry.recordedCall || data?.mirrors !== undefined) && message) {
       // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
+      // So is an imported answer whose request another run counts (`mirrors`: an OpenCode request Claude Code also wrote).
       return "call";
     } else if (entry.kind === REQUEST_REFUSED) {
       refused += 1;

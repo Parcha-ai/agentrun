@@ -2,13 +2,13 @@
 // storage OpenCode kept before SQLite), each read into the one Session shape. A locator with no id reads every session
 // of its database.
 import assert from "node:assert/strict";
-import { symlink, writeFile } from "node:fs/promises";
+import { readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { READERS, readSession } from "../dist/index.js";
+import { locatorSize, READERS, readSession } from "../dist/index.js";
 import { openCodeFiles } from "../dist/readers/opencode.js";
 import { tempHome } from "./fixtures.mjs";
-import { buildLegacy, buildV1, buildV2, T0 } from "./fixtures/opencode/fixture.mjs";
+import { buildLegacy, buildV1, buildV2, T0, V2_MESSAGES, V2_PARTS } from "./fixtures/opencode/fixture.mjs";
 
 const reader = READERS.opencode;
 const read = async (locator, options) => (await reader.read(locator, undefined, options)).sessions.map(({ session }) => session);
@@ -202,4 +202,29 @@ test("discover: the storage's sessions no database holds are their own files'; a
   await writeFile(join(data, "opencode.db"), "not a database, not even close to one");
   const fileOf = (id) => join(data, "storage", "session", "prj_fixture", `${id}.json`);
   assert.deepEqual(await reader.discover(home, {}), [{ file: fileOf("ses_A") }, { file: fileOf("ses_B") }]);
+});
+
+test("a database session's size and last write are its own rows', not its database's; a storage session's, its files' together", async (t) => {
+  const dir = await tempHome(t);
+  const db = join(dir, "opencode.db");
+  await buildV2(db);
+  // ses_C's 2.x rows: each message's and part's data as written, and its session row updated last, at C + 11 s.
+  const data = [...V2_MESSAGES.map(([, , d]) => (typeof d === "string" ? d : JSON.stringify(d))), ...V2_PARTS.map(([, , , , d]) => JSON.stringify(d))];
+  const c = await locatorSize({ file: db, id: "ses_C" }, "opencode");
+  assert.deepEqual(c, { bytes: data.reduce((n, d) => n + Buffer.byteLength(d), 0), mtimeMs: T0 + 111_000 }, "its 2.x rows, never its 1.x copy");
+  // ses_D, 1.x history not yet moved: its 1.x rows, its session row updated last.
+  const d = await locatorSize({ file: db, id: "ses_D" }, "opencode");
+  assert.equal(d.mtimeMs, T0 + 52_000);
+  assert.ok(d.bytes > 0 && c.bytes + d.bytes < (await stat(db)).size, "each less than the database");
+  assert.equal(await locatorSize({ file: db, id: "ses_none" }, "opencode"), null, "a session not there");
+  assert.deepEqual(await locatorSize({ file: db }, "opencode"), { bytes: (await stat(db)).size, mtimeMs: (await stat(db)).mtimeMs }, "a database without an id: its file's");
+  const storage = join(dir, "storage");
+  await buildLegacy(storage);
+  const files = [join(storage, "session", "prj_fixture", "ses_A.json")];
+  for (const message of await readdir(join(storage, "message", "ses_A"))) {
+    files.push(join(storage, "message", "ses_A", message));
+    for (const part of await readdir(join(storage, "part", message.replace(/\.json$/, ""))).catch(() => [])) files.push(join(storage, "part", message.replace(/\.json$/, ""), part));
+  }
+  const stats = await Promise.all(files.map((file) => stat(file)));
+  assert.deepEqual(await locatorSize({ file: files[0] }, "opencode"), { bytes: stats.reduce((n, s) => n + s.size, 0), mtimeMs: Math.max(...stats.map((s) => s.mtimeMs)) });
 });

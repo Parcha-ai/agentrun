@@ -1,8 +1,10 @@
-// Synthetic Claude Code, Codex and pi sessions, written as each tool writes its JSONL, for the importer's tests. Every
+// Synthetic Claude Code, Codex, pi and OpenCode sessions, written as each tool writes its JSONL (OpenCode: its SQLite
+// database), for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 const T0 = Date.UTC(2026, 9, 20, 9, 0, 0);
 export const at = (minute) => new Date(T0 + minute * 60_000).toISOString();
@@ -461,4 +463,43 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
     { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: answer }], usage: usage(17, 19) } },
   ];
   return writeSession(join(home, ".claude", "projects", slug, sessionId(n), "subagents", `agent-a${k}.jsonl`), records);
+}
+
+// The tables of OpenCode 2.x's opencode.db the reader reads, the columns it reads (anomalyco/opencode
+// packages/core/src/database/migration).
+const OPENCODE_SCHEMA = `
+CREATE TABLE session_v2 (id text PRIMARY KEY, project_id text NOT NULL, parent_id text, fork_session_id text, fork_boundary text, slug text NOT NULL,
+  directory text NOT NULL, title text, version text NOT NULL, model text, time_created integer NOT NULL, time_updated integer NOT NULL);
+CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL,
+  time_updated integer NOT NULL, data text NOT NULL);
+CREATE TABLE session_part (message_id text NOT NULL, session_id text NOT NULL, ordinal integer NOT NULL, type text NOT NULL, call_id text,
+  time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL, PRIMARY KEY (message_id, ordinal));`;
+
+/** OpenCode 2.x sessions in one opencode.db under `home` (~/.local/share/opencode), returned. Each session: its `id`,
+ *  `cwd`, when its rows were last updated (`updated`, ms; an hour ago by default), and its `answers` after one prompt,
+ *  each with its tokens and cost; one with `mirrors` ran on the claude-agent provider, which runs Claude Code: the
+ *  request is also that Claude Code session's. */
+export function openCodeDb(home, sessions) {
+  const file = join(home, ".local", "share", "opencode", "opencode.db");
+  mkdirSync(dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec(OPENCODE_SCHEMA);
+  const session = db.prepare("INSERT INTO session_v2 VALUES (?, 'prj_fixture', NULL, NULL, NULL, 'fixture', ?, ?, '2.3.2', ?, ?, ?)");
+  const message = db.prepare("INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const SONNET = { id: "claude-sonnet-5", providerID: "anthropic" };
+  const AGENT = { id: "opus", providerID: "claude-agent" };
+  for (const { id, cwd, title = "Tidy the notes", prompt = "Tidy the notes.", updated = Date.now() - 60 * 60_000, answers = [{ input: 10, output: 5, cost: 0.01 }] } of sessions) {
+    const start = updated - 60_000;
+    session.run(id, cwd, title, JSON.stringify(SONNET), start, updated);
+    message.run(`${id}_m0`, id, "user", 0, start, updated, JSON.stringify({ text: prompt, files: [], agents: [], time: { created: start } }));
+    answers.forEach(({ input, output, cost, mirrors, text = `Done ${input}.` }, i) => {
+      const created = start + (i + 1) * 1000;
+      const model = mirrors ? AGENT : SONNET;
+      const content = [{ type: "text", text, ...(mirrors ? { native: { sessionID: mirrors, messageID: `u${i}` } } : {}) }];
+      const data = { agent: "build", model, finish: "stop", cost, tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created, completed: created + 500 }, content };
+      message.run(`${id}_m${i + 1}`, id, "assistant", i + 1, created, updated, JSON.stringify(data));
+    });
+  }
+  db.close();
+  return file;
 }
