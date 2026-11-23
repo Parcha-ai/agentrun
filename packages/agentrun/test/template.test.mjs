@@ -69,6 +69,18 @@ test("template eval refuses a case the package does not have before it starts an
   assert.equal(refused.err, `${EVALPKG.replace(/\/$/, "")}: its eval cases do not check:\n- evals/nope: no such case (the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch)\n- evals/nor-this: no such case (the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch)\n`);
 });
 
+// A refusal the server makes comes back through its launcher: a folder that isn't one is the server's to refuse (this
+// command checks cases only in a folder). The wait is ran()'s, so output that never closes fails, naming what holds it.
+test("template eval passes on the server's own refusal through its launcher: exit 2, in the server's words", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const missing = join(dir, "no-such-dir");
+  const refused = await ran(t, ["template", "eval", missing, "--case", "x"], evalEnv(dir), 60_000);
+  assert.equal(refused.status, 2, refused.err);
+  assert.equal(refused.out, "");
+  assert.equal(refused.err, `${missing} is not a valid package:\n- it is not a folder: a package is one\n`);
+});
+
 for (const spelling of [["template", "eval"], ["eval-template"]]) test(`agentrun ${spelling.join(" ")} passes a stop sent to it alone on to the eval, which cancels its run and cleans up: 130, no report`, { timeout: 300_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-template-eval-"));
   const holding = join(dir, "holding");

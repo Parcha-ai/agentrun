@@ -3,7 +3,6 @@
 // case per behaviour, its agent and its grader played by fixtures/faux-template-eval.mjs: no key, no network. Every
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -14,6 +13,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -895,14 +895,12 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
 
 test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
-  const run = (args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "eval-template", ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" } });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err }));
-  });
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
+  const run = async (args) => {
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
+  };
   const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
   assert.equal(passed.code, 0, passed.err);
   assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
@@ -923,17 +921,13 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
   const holding = join(dir, "holding");
-  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding } });
-  let heldErr = "";
-  held.stderr.on("data", (chunk) => (heldErr += chunk));
-  held.stdout.resume();
-  const closed = new Promise((resolve) => held.on("close", resolve));
-  await untilFile(holding, closed);
-  assert.ok(existsSync(holding), `the held run reached its turn: ${heldErr}`);
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   held.kill("SIGINT");
-  const code = await closed;
-  assert.equal(code, 130, heldErr);
-  assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   // A report path that exists and can't be written: refused before anything runs.
@@ -941,7 +935,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
   for (const [args, said] of [
-    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
     [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],

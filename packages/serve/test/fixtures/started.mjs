@@ -1,5 +1,5 @@
-// A command a test starts that cannot outlive it, and a bounded wait on it: serve's eval-template tests and the agentrun
-// CLI's template tests start their commands through these. The command runs in a process group of its own, and on every
+// A command a test starts that cannot outlive it, and a bounded wait on it: serve's eval-template CLI test and the
+// agentrun CLI's template eval tests start their commands through these. The command runs in a process group of its own, and on every
 // path (a pass, a failed assertion, the test's timeout) that group (the command and what it started) is sent a SIGKILL and
 // the test lets go of its pipes, which a process it started may still hold, so no case keeps its file's process alive past
 // its end. A signal a case sends goes to the command alone.
@@ -58,7 +58,7 @@ function holders(child) {
   try {
     const own = /^socket:\[(\d+)\]$/.exec(readlinkSync(`/proc/self/fd/${child.stderr._handle.fd}`))?.[1];
     if (own === undefined) throw new Error("its stderr is no socket");
-    for (const line of execFileSync("ss", ["-xpnH"], { encoding: "utf8", timeout: 10_000, maxBuffer: 256 * 1024 * 1024 }).split("\n")) {
+    for (const line of execFileSync("ss", ["-xpnH"], { encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 256 * 1024 * 1024 }).split("\n")) {
       if (line.trim().split(/\s+/)[7] === own) for (const [, pid] of line.matchAll(/pid=(\d+)/g)) holding.add(pid);
     }
   } catch (error) {
@@ -71,8 +71,11 @@ function holders(child) {
       try {
         const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const [state, ppid, pgrp] = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+        const inGroup = Number(pgrp) === child.pid;
+        // A cmdline read can block on its process's memory lock: read only the ones listed.
+        if (!inGroup && !holding.has(pid)) continue;
         const line = `${pid} ppid ${ppid} pgrp ${pgrp} ${state} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim().slice(0, 200)}`;
-        if (Number(pgrp) === child.pid) group.push(line);
+        if (inGroup) group.push(line);
         if (holding.has(pid)) held.push(line);
       } catch {
         // Gone, or not ours to read.
