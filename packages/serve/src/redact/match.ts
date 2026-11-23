@@ -612,6 +612,13 @@ function viewOf(text: string, decode: 0 | 1 | 2, cuts?: readonly Span[]): View {
  *  Buffer decodes the run whole), each with the bytes it came from; a run whose bytes decode otherwise one sequence at
  *  a time has each character come from the whole run. */
 function decoded(text: string, from: number, to: number, unit: (char: string, from: number, to: number) => void): void {
+  // An ASCII byte is its own character: a run of them (the common "%20", "%2F%3D") is read without a buffer.
+  let ascii = true;
+  for (let at = from + 1; at < to && ascii; at += 3) ascii = text.charCodeAt(at) < 56;
+  if (ascii) {
+    for (let at = from; at < to; at += 3) unit(String.fromCharCode(Number.parseInt(text.slice(at + 1, at + 3), 16)), at, at + 3);
+    return;
+  }
   const bytes = Buffer.from(text.slice(from, to).replaceAll("%", ""), "hex");
   const whole = bytes.toString("utf8");
   const pieces: [string, number, number][] = [];
