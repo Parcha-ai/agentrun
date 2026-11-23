@@ -444,9 +444,11 @@ export class McpServersOverStore {
       // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
       if (made && stands) {
         // An auth config the owner named (auth_config_id) is theirs from this save on: every other saved server's claim to
-        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it.
+        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it. One the
+        // token names it only uses: its naming lets go no other server's claim (an owner's server that made it still
+        // removes it at its delete, or hands it on as any shared one), and its own record says it made none.
         const listed = (await this.composioRecords()).filter(([other]) => other !== name);
-        const released = stands.auth_config?.named ? releasedOf(stands.auth_config.id, listed) : [];
+        const released = stands.auth_config?.named && !byToken ? releasedOf(stands.auth_config.id, listed) : [];
         await this.handOver(listed, released);
         const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
         const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
