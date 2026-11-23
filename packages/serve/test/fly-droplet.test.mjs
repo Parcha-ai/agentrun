@@ -172,8 +172,21 @@ test("the Droplet's user data runs the README's --vps line, and nothing else", a
   const vps = /```sh\n(curl -fsSL https:\/\/agentrun\.ai\/install \| sh -s -- --vps)\n```/.exec(rent)?.[1];
   assert.ok(vps, "the section's command");
   const userData = await read("deploy/digitalocean/user-data.sh");
-  assert.deepEqual(userData.split("\n"), ["#!/bin/sh", vps, ""]);
+  // pipefail: a download that fails leaves sh an empty script, which exits 0; the pipeline then fails with curl.
+  assert.deepEqual(userData.split("\n"), ["#!/bin/bash", "set -o pipefail", vps, ""]);
   assert.ok(rent.includes("```sh\n" + userData + "```"), "the README shows the file as it is");
+});
+
+test("the Droplet's user data fails when the installer's download fails", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "user-data-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // A curl that fails before writing a byte, as `curl -f` does on a 404 or no network.
+  await writeFile(join(dir, "curl"), "#!/bin/sh\nexit 22\n");
+  await chmod(join(dir, "curl"), 0o755);
+  const run = promisify(execFile)("bash", [fileURLToPath(new URL("deploy/digitalocean/user-data.sh", ROOT))], {
+    env: { PATH: `${dir}:${process.env.PATH}` },
+  });
+  await assert.rejects(run, (e) => e.code === 22);
 });
 
 test("the README's Fly section runs launch.sh and says what it costs and when that was read", async () => {

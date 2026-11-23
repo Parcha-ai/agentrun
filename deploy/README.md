@@ -200,11 +200,13 @@ When you create the Droplet (one of the Linux images above, 1 GiB or more), expa
 **Startup scripts** and paste [`digitalocean/user-data.sh`](digitalocean/user-data.sh):
 
 ```sh
-#!/bin/sh
+#!/bin/bash
+set -o pipefail
 curl -fsSL https://agentrun.ai/install | sh -s -- --vps
 ```
 
 The Droplet runs it as root on its first boot ([user data](https://docs.digitalocean.com/products/droplets/how-to/provide-user-data/)).
+`pipefail` makes a failed download fail the script, which a plain `curl | sh` would hide.
 With `doctl compute droplet create`, pass `--user-data-file deploy/digitalocean/user-data.sh`. Once the Droplet is up,
 log in as root (`ssh root@<its address>`) and wait for the script with `cloud-init status --wait`. The installer's
 output is in `/var/log/cloud-init-output.log`, and `tail -n 20 /var/log/cloud-init-output.log` shows its last lines:
