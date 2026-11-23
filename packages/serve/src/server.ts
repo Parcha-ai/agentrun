@@ -3951,14 +3951,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const fixed = HANDED_FIXED.filter((field) => body[field] !== undefined);
       if (fixed.length) throw invalid(fixed.map((field) => ({ field, reason: "not_allowed", message: `A run for a trigger firing starts on its trigger's target, on the agent's current revision and holding no computer: send it without ${field}.` })));
       const { trigger_firing: given, ...rest } = body;
-      const firing = await triggers.handedStart(given, agentId);
-      if ("run_id" in firing) return { status: 202, body: await viewOverStore(store, firing.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${firing.run_id}`, "idempotent-replayed": "true" } };
-      const secrets = await handed();
-      const seal = startSeal(secrets);
-      const run = await targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
-      // A host that answered its hook first, or whose hook timed out, started this run after: the firing is started with it now.
-      await triggers.handedRan(firing.trigger.id, firing.key, run.run_id);
-      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}` } };
+      // The firing's room is checked and held as drive's is while its run is written; the firing is started with the run.
+      const run = await triggers.handedStart(given, agentId, async (firing) => {
+        const secrets = await handed();
+        const seal = startSeal(secrets);
+        return targets.start(firing.target, rest.input, firing.trigger, firing.from, firing.title, firing.previous, { body: rest, ...(seal ? { sealed: seal } : {}), ...carriedOf(secrets) });
+      });
+      return { status: 202, body: await viewOverStore(store, run.run_id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.run_id}`, ...(run.replayed ? { "idempotent-replayed": "true" } : {}) } };
     }
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
