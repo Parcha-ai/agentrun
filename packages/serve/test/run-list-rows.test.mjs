@@ -483,7 +483,9 @@ test("an approval that lands between a list's own build of a run's listing (its 
           }
         })();
         const oid = snapshot.workflows.find((one) => one.name === name).files.find((one) => one.path === readme).oid;
-        assert.equal((await changeWorkflow(data, "agent-1", readme, { action: "approve", ifMatch: `"${oid}"`, refuse: [] })).status, 200);
+        // No run of this test is purged: the purge gate's read of the writer's row finds none.
+        const unpurged = { runs: { get: async () => undefined } };
+        assert.equal((await changeWorkflow(data, "agent-1", readme, { action: "approve", ifMatch: `"${oid}"`, refuse: [], store: unpurged })).status, 200);
         approved = true;
       },
     };

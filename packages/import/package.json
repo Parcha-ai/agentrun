@@ -1,6 +1,6 @@
 {
   "name": "@parcha/agentrun-import",
-  "version": "0.1.0-beta.53",
+  "version": "0.1.0-beta.54",
   "description": "Reads the coding-agent sessions under a home (Claude Code, Codex, pi, OpenCode) into one Session shape, with normalized token usage, subagents under their parent, cursors for re-reads, and per-session totals.",
   "keywords": [
     "agentrun",

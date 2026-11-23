@@ -3,7 +3,7 @@ import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries, type Locator, rememberUser } from "../reader.js";
-import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
+import { argsOf, effortOf, isObject, personsWords, str, textOf } from "../text.js";
 import type { Answer, Turn } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -139,7 +139,10 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
   if (value.type !== "response_item") return;
   if (payload.type === "message" && payload.role === "user") {
     const text = wordsOf(payload.content);
-    if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
+    // Without turns, a prompt is held for its count alone once one before it names the session (its first prompt and
+    // title words, rememberUser's): no later prompt's text stays in the cursor.
+    const named = !keep && codex.held.some(({ turn }) => turn.role === "user" && personsWords(turn.text) !== undefined);
+    if (text) codex.held.push({ index: turns.length, turn: { role: "user", text: named ? "" : text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
     if (text) {
@@ -168,7 +171,8 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       role: "toolResult" as const,
       callId: id,
       name: names.get(id) ?? "",
-      text: textOf(output),
+      // Without turns, no output text: the result is kept for whether it failed, in the result and the cursor alike.
+      text: keep ? textOf(output) : "",
       isError: stated ?? codex.items.get(id) ?? false,
       at,
     };

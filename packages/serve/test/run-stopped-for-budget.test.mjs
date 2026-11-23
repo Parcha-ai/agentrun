@@ -1,7 +1,7 @@
 // A completed run says when it wound down for its spend cap (stoppedfor/1): `stopped_for` is "budget" once its model was
 // told to wrap up, or its tool calls were refused, under the cap it has now, and `budget_refused_calls` counts the calls
 // the wrap-up refused, each once. The run read and the list say the same. A run with no cap, or one that finished well
-// under it, reads null and 0. Its status stays completed: grep's own runner says budget_exhausted the same way.
+// under it, reads null and 0. Its status stays completed.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
