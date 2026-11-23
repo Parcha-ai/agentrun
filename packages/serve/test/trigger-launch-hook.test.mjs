@@ -993,7 +993,8 @@ test("a host releases a firing it answered 2xx and will start no run for: with m
   assert.ok(await until(() => w.handed().length === 2), "the next firing was handed on the engine's next tick");
   assert.deepEqual(w.handed(), [a, c]);
   assert.ok(w.clock.now() < sent.startBy - 9 * 60_000, `handed at ${new Date(w.clock.now()).toISOString()}, start_by ${new Date(sent.startBy).toISOString()}`);
-  assert.equal((await w.decided(c)).status, "sent");
+  // The host has its POST before the engine writes its answer: wait for the write, not the POST.
+  assert.ok(await until(async () => (await w.firing(c)).status === "sent"), "the next firing's host took it");
 
   const told = await until(() => failedMessages(receiver).find((message) => message.data?.firing_key === a), 10_000, "no trigger.failed for the released firing");
   assert.deepEqual([told.data.trigger_id, told.data.error.code], [w.id, "host_released"], JSON.stringify(told));
