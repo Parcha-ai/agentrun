@@ -65,3 +65,21 @@ test("a subagent whose parent is not under the home is counted once, as its own 
   assert.equal(sessions.length, 1);
   assert.deepEqual([sessions[0].tokens.input, sessions[0].calls], [9, 1]);
 });
+
+test("Claude Code: a resumed session's file that opens with a copy of another session's record is its own session; the copy counts once, in the first", async (t) => {
+  const home = await tempHome(t);
+  const copied = claudeAnswer({ uuid: "a2", msg: "msg_2", req: "req_2", usage: anthropicUsage(5, 7), i: 2, session: "s-a" });
+  await writeJsonl(claudeFile(home, "s-a", "-work-a"), [claudeUser({ uuid: "u1", text: "Fixture question.", i: 0, session: "s-a" }), claudeAnswer({ uuid: "a1", msg: "msg_1", req: "req_1", usage: anthropicUsage(10, 20), i: 1, session: "s-a" }), copied]);
+  // Claude Code names the file for its session: s-b's file, whose first record is s-a's, copied, then its own request.
+  await writeJsonl(claudeFile(home, "s-b", "-work-b"), [copied, claudeAnswer({ uuid: "b1", msg: "msg_3", req: "req_3", usage: anthropicUsage(3, 9), i: 3, session: "s-b" })]);
+  // A file holding only copies (nothing of its own) is no session to count: serve's import leaves it out too.
+  await writeJsonl(claudeFile(home, "s-c", "-work-c"), [copied]);
+  const lines = await parseHome(home, { sources: ["claude-code"], catalog: false });
+  const by = Object.fromEntries(lines.map((line) => [line.key, line]));
+  assert.equal(lines.length, 2, "s-a and s-b, not the copies-only s-c");
+  const a = by[sha(".claude/projects/-work-a/s-a.jsonl")];
+  const b = by[sha(".claude/projects/-work-b/s-b.jsonl")];
+  assert.ok(b, "s-b has a line of its own");
+  assert.deepEqual([a.id, a.tokens.input, a.tokens.output, a.calls], ["s-a", 15, 27, 2]);
+  assert.deepEqual([b.id, b.tokens.input, b.tokens.output, b.calls], ["s-b", 3, 9, 1]);
+});

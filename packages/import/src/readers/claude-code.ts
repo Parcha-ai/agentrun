@@ -45,7 +45,9 @@ const keyOf = (message: Record<string, unknown>, value: Record<string, unknown>)
 /** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
 function record(value: Record<string, unknown>, at: number, { state, seen, keep, add }: ReadContext<Own>): boolean | void {
   const { session, names, own } = state;
-  if (!session.id && str(value.sessionId)) session.id = value.sessionId as string;
+  // Claude Code names a session's file for its id (<id>.jsonl): the file's own, whatever a record in it says. A resumed
+  // session's file can open with records copied from the session it resumed, each still naming that one.
+  if (!session.id) session.id = basename(session.file, ".jsonl");
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
   if (TITLES.has(value.type as string)) return titleRecord(value, session, own.titles);
