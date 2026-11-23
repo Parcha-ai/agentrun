@@ -23,6 +23,7 @@ import { inputMessage } from "./run-manifest.js";
 import { shownUrl } from "./mcp-probe.js";
 import { isMonidName, MCP_SERVER_NAME, MCP_TOOL_NAME, mcpNameOf, mcpToolName, monidNameOf, parseToolName } from "./tool-names.js";
 import type { EvalFakes } from "./runner/adapter-run-spec.js";
+import { processSecretRedactor } from "./runner/redact.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
@@ -1060,8 +1061,12 @@ const filePath = (runId: string, path: string) => `/runs/${runId}/files/${path.s
 const TEXT_TYPE = /^(text\/|application\/(json|x-ndjson)\b)/;
 /** A run's final files for its llm graders: each text file's whole text, read smallest first while the texts read stay
  *  within GRADER_PROMPT_MAX characters in all (what one grader input can hold), every other file by its size alone. A
- *  read that fails leaves that file's text out, never the grade. In the listing's order. */
+ *  read that fails leaves that file's text out, never the grade. In the listing's order. The files route serves a file's
+ *  bytes as they are, where a call's reach a grader through the run's redaction: each text is cut of every secret value
+ *  this process's environment holds (the runner's own redactor, processSecretRedactor), the server's when the eval runs
+ *  its own, before it can reach a grader's model or its words. */
 async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], signal?: AbortSignal): Promise<FinalFile[]> {
+  const redact = processSecretRedactor();
   const texts = new Map<string, string>();
   let left = GRADER_PROMPT_MAX;
   for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => a.bytes - b.bytes)) {
@@ -1071,9 +1076,10 @@ async function finalFilesOf(api: Api, runId: string, listed: readonly Listed[], 
       if (signal?.aborted) throw error;
       return undefined;
     });
-    if (read?.status !== 200 || typeof read.body !== "string" || read.body.includes("�") || read.body.includes("\u0000") || read.body.length > left) continue;
-    texts.set(file.path, read.body);
-    left -= read.body.length;
+    if (read?.status !== 200 || typeof read.body !== "string" || read.body.includes("\uFFFD") || read.body.includes("\u0000") || read.body.length > left) continue;
+    const text = redact(read.body);
+    texts.set(file.path, text);
+    left -= text.length;
   }
   return listed.map((file) => ({ path: file.path, bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
 }

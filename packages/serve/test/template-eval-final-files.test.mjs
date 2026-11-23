@@ -21,6 +21,10 @@ const graderInputs = () => readFileSync(process.env.AGENTRUN_TEST_EVAL_GRADER_LO
 const WORDS = Array.from({ length: 60 }, (_, i) => ({ word: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
 WORDS.push({ word: "END-OF-VOICEOVER", start: 24, end: 24.6 });
 const TIMESTAMPS = JSON.stringify({ voice: "narrator", words: WORDS, padding: "x".repeat(400) });
+// A held value, made at runtime (no credential-shaped literal for the source export), in this process's environment
+// under a key's name: the eval's own server holds it, so its runner cuts it from the calls, and a file holding it is cut too.
+const HELD = ["not", "a", "real", "key", "0123456789abcdef"].join("-");
+process.env.AGENTRUN_TEST_FINAL_FILES_API_KEY = HELD;
 
 test("a run whose final file is past what its write call shows still grades PASS on the file's whole content", { timeout: 300_000 }, async (t) => {
   assert.ok(TIMESTAMPS.length > 2_500 && TIMESTAMPS.indexOf("END-OF-VOICEOVER") > 2_000, String(TIMESTAMPS.length));
@@ -29,7 +33,7 @@ test("a run whose final file is past what its write call shows still grades PASS
   const at = join(dir, "evals", "final-file");
   mkdirSync(join(at, "graders"), { recursive: true });
   writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
-  writeFileSync(join(at, "prompt.md"), `---\ndescription: Writes the voiceover's timestamps.\n---\nWrite media/voiceover-timestamps.json: ${TIMESTAMPS}\nWrite media/voiceover.mp3: not text a grader reads\nAnswer:\nWrote the timestamps.\n\n\`\`\`json\n{"verdict": "good", "score": 80, "summary": "timestamps"}\n\`\`\`\n`);
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: Writes the voiceover's timestamps.\n---\nWrite media/voiceover-timestamps.json: ${TIMESTAMPS}\nWrite media/voiceover.mp3: not text a grader reads\nCall write with {"path":"notes/key.txt","content":"key={{env:AGENTRUN_TEST_FINAL_FILES_API_KEY}}\\n"}\nAnswer:\nWrote the timestamps.\n\n\`\`\`json\n{"verdict": "good", "score": 80, "summary": "timestamps"}\n\`\`\`\n`);
   writeFileSync(join(at, "graders", "whole.md"), '---\ntype: llm\n---\nPass if the file "media/voiceover-timestamps.json" contains "END-OF-VOICEOVER".\n');
   const report = await evalTemplate({ dir, cases: ["final-file"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
@@ -45,6 +49,9 @@ test("a run whose final file is past what its write call shows still grades PASS
   assert.match(calls, /\.\.\.".*\[the file media\/voiceover-timestamps\.json is in <files>, whole unless marked cut\]/);
   assert.ok(input.indexOf("<files untrusted>") < input.indexOf("<tool-calls untrusted>"));
   assert.ok(input.includes(`<file path="media/voiceover-timestamps.json" bytes="${Buffer.byteLength(TIMESTAMPS) + 1}">\n${TIMESTAMPS}\n\n</file>`), input);
+  // A held value the run wrote to a file never reaches a grader: cut from the file as from the call.
+  assert.ok(graderInputs().every((one) => !one.includes(HELD)), "no grader input holds the held value");
+  assert.match(input, /<file path="notes\/key\.txt" bytes="\d+">\nkey=\[redacted\]\n\n<\/file>/);
   assert.match(input, /Not shown \(not text, or past what a grader is given\), by path and size in bytes: media\/voiceover\.mp3 \(\d+\)/);
 });
 
