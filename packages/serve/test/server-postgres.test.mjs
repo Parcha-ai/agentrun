@@ -204,7 +204,7 @@ async function asRole(url, text) {
 }
 
 test("a least-privilege deployment (a host's three roles): the server as the schema's owner with no CREATE on the database migrates and serves; a runner as a write-only role runs what the server started and may not change the schema; a reader with no grants reads nothing", { ...postgresOnly("a deployment's Postgres store"), timeout: 180_000 }, async (t) => {
-  // The roles a host makes (grep's agentrun_migrator, agentrun_runtime, grep_agentrun_reader): none may create a schema.
+  // The roles a host makes (a migrator, a runtime role and a reader): none may create a schema.
   const migrator = await roleWithoutCreate(t);
   const runtime = await roleWithoutCreate(t);
   const reader = await roleWithoutCreate(t);
