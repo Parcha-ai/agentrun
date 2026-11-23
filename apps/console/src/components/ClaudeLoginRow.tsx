@@ -40,19 +40,23 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const asked = useRef(0);
   const writing = useRef(false);
   const reading = useRef(false);
+  // Switched off (capabilities changed): the row goes, a sign-in it waited for is dropped, no read starts, and a read
+  // still out never puts the row back.
+  const availableNow = useRef(available);
+  availableNow.current = available;
   useEffect(() => {
-    if (!available) { setView(null); return; }
+    if (!available) { asked.current++; setView(null); setStartedAt(null); return; }
     let live = true;
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
   }, [v2, available]);
   const refresh = () => {
-    if (reading.current || writing.current) return;
+    if (!availableNow.current || reading.current || writing.current) return;
     reading.current = true;
     const n = ++asked.current;
     v2.claudeLogin().then((body) => {
       const next = claudeLoginView(body);
-      if (n === asked.current && next) setView(next);
+      if (n === asked.current && next && availableNow.current) setView(next);
     }, () => {}).finally(() => { reading.current = false; });
   };
 

@@ -4099,7 +4099,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     claude_login: {
       type: "boolean",
-      description: "Whether /settings/claude-login answers here. False when AGENTRUN_CLAUDE_CODE_LOGIN=off, or when the server listens past loopback (Docker) without AGENTRUN_CLAUDE_CODE_LOGIN=on: those routes are then 404, so a client asks this first.",
+      description: "Whether /settings/claude-login answers here. False when AGENTRUN_CLAUDE_CODE_LOGIN=off, when the server listens past loopback (Docker) without AGENTRUN_CLAUDE_CODE_LOGIN=on, or on an API-only server (AGENTRUN_API_ONLY=1): those routes are then 404, so a client asks this first.",
       "x-agentrun-serve": "claudelogin/1",
     },
     tool_keys: {

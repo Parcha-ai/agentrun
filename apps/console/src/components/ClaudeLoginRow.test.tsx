@@ -160,6 +160,21 @@ describe("Settings → Model keys, Claude Code's login on this machine", () => {
     expect(page.host.textContent).toContain(ANTHROPIC_KEY_CREDITS);
   });
 
+  it("switched off while it waits for a sign-in it started: the row goes, and no poll or return to the page asks again", async () => {
+    const SIGNED_OUT: ClaudeLoginView = { ...OFF, state: "signed_out", can_start: true };
+    const { v2, calls } = server(() => SIGNED_OUT, () => SIGNED_OUT);
+    const page = await open(v2, undefined, true);
+    await page.click(/Open the CLI's sign-in here/);
+    act(() => root!.render(createElement(KeysPage, { v2, writable: true, plan: createElement(ClaudeLoginRow, { v2, writable: true, available: false }) })));
+    await page.settle();
+    const reads = () => calls.filter((call) => call.method === "GET" && call.path === "/v2/settings/claude-login").length;
+    const before = reads();
+    await act(async () => { window.dispatchEvent(new Event("focus")); await new Promise((r) => setTimeout(r, 2_500)); });
+    await page.settle();
+    expect(page.row()).toBeNull();
+    expect(reads()).toBe(before);
+  });
+
   it("switched off on the server (404): no row; the Anthropic key says which plans include API credits", async () => {
     const { v2 } = server(() => json(404, { error: { code: "not_found", message: "getClaudeLogin: Claude Code's login on this machine is off on this server (AGENTRUN_CLAUDE_CODE_LOGIN=off)." } }), () => OFF);
     const page = await open(v2);

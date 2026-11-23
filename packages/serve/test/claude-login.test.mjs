@@ -146,6 +146,14 @@ test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 1
   assert.match(whyNotOneOwner({ apiOnly: false, tokens: 2 }), /more than one person/);
 });
 
+test("an API-only server serves no claude-login route, and its capabilities say so", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const server = await serve(t, { faux: undefined, runner: false, apiOnly: true });
+  const get = (path) => fetch(`${server.url}/v2${path}`, { headers: { authorization: `Bearer ${server.token}` } });
+  assert.equal((await get("/settings/claude-login")).status, 404);
+  assert.equal((await (await get("/capabilities")).json()).features.claude_login, false);
+});
+
 test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-on is dropped at the start, and claude-agent runs on the model keys", { timeout: 180_000 }, async (t) => {
   withEnv(t, {}, MODEL_VARS);
   const first = await serve(t, { faux: undefined, runner: false });
