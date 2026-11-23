@@ -1570,7 +1570,8 @@ sandbox, or on another machine, uses the keys. The login is the server's user's.
 reads the token from the folder at the run's start and again whenever Anthropic refuses it mid-run, so a renewal the
 person's own Claude Code wrote there is picked up. AgentRun itself does not renew the login yet. A token with less than
 five minutes left fails the run at its start, in words that say to open Claude Code once to renew it, and one refused
-mid-run with no newer token there ends the turn in the same words. A command the run's CLI starts can read the token,
+mid-run with no newer token there ends the turn in words that say to run the claude CLI once on this login to renew
+it. A command the run's CLI starts can read the token,
 as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`) fails at its
 claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
 the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give

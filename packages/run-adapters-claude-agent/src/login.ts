@@ -34,7 +34,7 @@ export interface ClaudeLoginToken {
 export const loginByToken = (login: ClaudeAgentLogin | ClaudeLoginToken): login is ClaudeLoginToken => typeof (login as { token?: unknown }).token === "function";
 
 /** The words a turn ends in when Anthropic refused the login's access token mid-turn and the host had no newer one. */
-export const LOGIN_TOKEN_REFUSED = "Anthropic refused Claude Code's login during the run, and no newer token was there: open Claude Code once to renew its login, then start the run again.";
+export const LOGIN_TOKEN_REFUSED = "Anthropic refused this machine's Claude login during the run, and no newer token was there: run the claude CLI once on this login to renew it, then start the run again.";
 
 /** The variables that point the CLI at `login`: never its config dir (`CLAUDE_CONFIG_DIR`), which the Agent SDK copies
  *  a credentials file out of when it resumes a session. */

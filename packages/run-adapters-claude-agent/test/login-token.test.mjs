@@ -3,7 +3,7 @@
 // pinned CLI reads with no refresh token, so it never renews; no refresh token, no login folder, no model URL or key,
 // and its credentials directories the session's own; no wait on a 401. When Anthropic refuses the token the CLI asks the
 // host for a newer one (the SDK's getOAuthToken): the host reads its login again and answers a different token, or
-// answers none and ends the drive in words that say to open Claude Code once to renew it, never a hang. The token is in
+// answers none and ends the drive in words that say to run the claude CLI once on this login to renew it, never a hang. The token is in
 // no argument the CLI is started with. A stand-in CLI records what it was started with and looks for a credentials file
 // where its environment points; no key, no network, fake values.
 import assert from 'node:assert/strict';
@@ -59,7 +59,7 @@ async function drive({ reader, cli, onQuery, lagMs = 10 }) {
 
 test('the CLI environment on a token: the token alone, no refresh token, no model URL or key, the credentials directories the session\'s own, no wait on a 401; a login by both its folder and its token is refused', () => {
   const token = fake('access');
-  const extra = { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'http://x', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: fake('refresh'), CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: '3', CLAUDE_CODE_OAUTH_TOKEN: 'an inherited one', KEEP: '1' };
+  const extra = { ANTHROPIC_API_KEY: 'k', ANTHROPIC_BASE_URL: 'http://x', CLAUDE_CODE_OAUTH_REFRESH_TOKEN: fake('refresh'), CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR: '3', CLAUDE_CODE_OAUTH_TOKEN: fake('inherited'), KEEP: '1' };
   const env = durableEnv({ home: '/s/home', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', oauthToken: token, model: 'claude-haiku-5-5', extra });
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, token, 'the token handed, never an inherited one');
   for (const name of NEVER) assert.equal(env[name], undefined, name);
@@ -108,11 +108,11 @@ test('when Anthropic refuses the token, the CLI\'s ask for a newer one is answer
   assert.equal(await asked[0], renewed, 'the newer token, which the CLI then uses');
 });
 
-test('when the login read again holds the same token, or none, the CLI\'s ask is answered with none and the drive ends in words that say to open Claude Code once to renew it: never a hang', async () => {
+test('when the login read again holds the same token, or none, the CLI\'s ask is answered with none and the drive ends in words that say to run the claude CLI once on this login to renew it: never a hang', async () => {
   assert.equal(typeof claude.claudeLoginByToken, 'function', 'the adapter takes a login handed as its token (login.ts ClaudeLoginToken)');
   const same = fake('access-same');
   for (const [why, reader, words] of [
-    ['the same token', { token: async () => same }, /open Claude Code once to renew/],
+    ['the same token', { token: async () => same }, /refused this machine's Claude login during the run.*run the claude CLI once on this login to renew it/],
     ['none: the host refuses in its own words', (() => { let reads = 0; return { token: async () => { if (reads++ === 0) return same; throw new Error('Claude Code\'s login on this machine runs out in less than 5 minutes: open Claude Code on this login once to renew it.'); } }; })(), /less than 5 minutes/],
   ]) {
     const asked = [];
