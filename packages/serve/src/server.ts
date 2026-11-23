@@ -74,7 +74,7 @@ import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, lear
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, forgetRunLearning, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
-import { purgedRun, refusedOf } from "./purged-workflow.js";
+import { purgedRun, refusedIn } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -129,7 +129,7 @@ import { namedDisksOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, type PromotionRecord, promotionsOf, promotionsShown, type Refused, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -1683,7 +1683,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const all = await runAllInOverStore(store, runId, own, refusedFor);
+    // A purge gate that can't be asked (its store read of a writer's row fails) leaves this read without its answer, never
+    // a 500: the revision ledger its `learning_usd` and `all_in_usd` share is read from takes the champion with no record
+    // skipped (as before the purge), so a revision a purged run wrote may be the one it counts as serving, for this read
+    // alone. Figures only: no text is read or shown. Every write that asks the gate still fails closed (decideCheck
+    // throws, so no promote lands; recordPromotion trims nothing).
+    const all = await runAllInOverStore(store, runId, own, (agentId, records) => refusedFor(agentId, records).catch((error: unknown): Refused => {
+      const line = `learning: run ${runId}: its costs were read without the purge gate's answer: ${error instanceof Error ? error.message : String(error)}`;
+      if (log) log(logLine("learning", { line }));
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+      return Object.assign(() => false, { unread: true });
+    }));
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
@@ -1990,16 +2000,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return [...serverSecrets(), ...pointers];
   };
   const learningShown = async (agentId: string) => secretsShown(await learningValues(agentId));
-  // What championOf skips of the agent's promotion records (purged-workflow.ts refusedOf): a champion the purge gate
-  // refuses at its commit, so the views name the champion a run's claim serves.
-  const refusedFor = async (agentId: string, records: readonly PromotionRecord[]) => {
-    const { workspace, end } = learningFolderOf(data, agentId);
-    try {
-      return await refusedOf(records, records.map((one) => one.workflow), workspace, store);
-    } finally {
-      await end();
-    }
-  };
+  // What championOf skips of the agent's promotion records (purged-workflow.ts refusedIn): a champion the purge gate
+  // refuses at its commit, so the views name the champion a run's claim serves. A folder whose end() throws after the ask
+  // is logged, never the read's 500.
+  const refusedFor = (agentId: string, records: readonly PromotionRecord[]): Promise<Refused> =>
+    refusedIn(() => learningFolderOf(data, agentId), store, (line) => (log ? log(logLine("learning", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)))(records);
   // The agent's audit ledger on its learning folder's main (learn/audit.ts), oldest first.
   const auditsOfAgent = async (agentId: string) => {
     const { workspace, end } = learningFolderOf(data, agentId);

@@ -55,9 +55,13 @@ export async function purgeGate(snapshot: Snapshot | undefined, store: Pick<Stor
  *  (a champion held since included: skipping it may leave an earlier one serving), one the gate refuses at its commit (a
  *  purged run wrote its workflow there) is skipped with every record of its workflow at that commit (by workflow and
  *  commit, so a copy of the records read later is skipped alike, a hold of it included), until the newest promotion left
- *  is one the gate lets through, or none is left. A record with no commit is let through, and so is a commit the folder
- *  no longer has (reading its text fails on its own). A commit whose read throws refuses none here and is said
- *  (Refused.unread), so the promotions trim trims nothing on it (recordPromotion). One read-only exec per commit asked. */
+ *  is one the gate lets through, or none is left. The holds are walked the same way, newest first: a hold at a commit the
+ *  gate refuses (a check that ended after its revision's run was purged holds it there) is skipped with its commit's
+ *  records, until the newest hold left is one the gate lets through, so the compile's held names (learn/compile.ts
+ *  heldNamesOf) never ask a revision of a purged run's text. A record with no commit is let through, and so is a commit
+ *  the folder no longer has (reading its text fails on its own). A commit whose read throws refuses none here and is said
+ *  (Refused.unread), so the promotions trim trims nothing on it (recordPromotion); a store read of the gate's that throws
+ *  throws, so every write that asks fails closed. One read-only exec per commit asked. */
 export async function refusedOf(records: readonly PromotionRecord[], workflows: Iterable<string>, ws: Workspace, store: Pick<Store, "runs">): Promise<Refused> {
   const refused = new Set<string>();
   const skip = (one: PromotionRecord) => one.commit !== undefined && refused.has(`${one.workflow}\0${one.commit}`);
@@ -67,10 +71,12 @@ export async function refusedOf(records: readonly PromotionRecord[], workflows: 
     unread = true;
     return new Map<string, RunRow>();
   })).get(commit)!;
-  const promotedOf = (workflow: string) => records.findLast((one) => one.workflow === workflow && one.decided === "promote" && !skip(one));
+  const newestOf = (workflow: string, decided: PromotionRecord["decided"]) => records.findLast((one) => one.workflow === workflow && one.decided === decided && !skip(one));
   for (const workflow of new Set(workflows)) {
-    for (let last = promotedOf(workflow); last?.commit && (await gated(last.commit)).has(workflow); last = promotedOf(workflow)) {
-      refused.add(`${workflow}\0${last.commit}`);
+    for (const decided of ["promote", "hold"] as const) {
+      for (let last = newestOf(workflow, decided); last?.commit && (await gated(last.commit)).has(workflow); last = newestOf(workflow, decided)) {
+        refused.add(`${workflow}\0${last.commit}`);
+      }
     }
   }
   return Object.assign(skip, { unread });
@@ -78,12 +84,13 @@ export async function refusedOf(records: readonly PromotionRecord[], workflows: 
 
 /** refusedOf in the learning folder `folder` opens for each ask (ended after it), over `workflows` (every workflow of
  *  the records when absent): the port a champion's readers and the promotions trim ask (runner/promotion.ts
- *  PromotionDeps refused, learn/promote.ts recordPromotion). */
-export const refusedIn = (folder: () => Pick<LearningFolder, "workspace" | "end">, store: Pick<Store, "runs">) => async (records: readonly PromotionRecord[], workflows?: Iterable<string>): Promise<Refused> => {
+ *  PromotionDeps refused, learn/promote.ts recordPromotion). An end() that throws is said to `log` (when given) and never
+ *  fails the ask: the answer was read. */
+export const refusedIn = (folder: () => Pick<LearningFolder, "workspace" | "end">, store: Pick<Store, "runs">, log?: (line: string) => void) => async (records: readonly PromotionRecord[], workflows?: Iterable<string>): Promise<Refused> => {
   const { workspace, end } = folder();
   try {
     return await refusedOf(records, workflows ?? records.map((one) => one.workflow), workspace, store);
   } finally {
-    await end().catch(() => undefined);
+    await end().catch((error: unknown) => log?.(`learning: the learning folder did not end after the purge gate's ask: ${error instanceof Error ? error.message : String(error)}`));
   }
 };
