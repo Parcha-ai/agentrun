@@ -241,12 +241,14 @@ const contextLengthOf = (env: NodeJS.ProcessEnv): number | undefined => {
 /** Whether `model` chats (an embedding model does not). */
 const chats = (model: OllamaListed): boolean => model.capabilities.includes("completion");
 
-/** The first model of `env`'s Ollama that chats and calls tools, as a ref (`ollama/<tag>`), from its kept listing
- *  (ollamaKept); undefined where none does. */
-export function ollamaToolsModel(env: NodeJS.ProcessEnv): string | undefined {
-  const model = ollamaKept(env).find((each) => chats(each) && each.capabilities.includes("tools"));
-  return model ? `${OLLAMA_PROVIDER}/${model.name}` : undefined;
+/** The models of `env`'s Ollama that chat and call tools, as refs (`ollama/<tag>`), from its kept listing (ollamaKept),
+ *  in its order: the ones a run of pi has tools on. */
+export function ollamaToolsModels(env: NodeJS.ProcessEnv): string[] {
+  return ollamaKept(env).filter((each) => chats(each) && each.capabilities.includes("tools")).map((each) => `${OLLAMA_PROVIDER}/${each.name}`);
 }
+
+/** The first of ollamaToolsModels; undefined where none calls tools. */
+export const ollamaToolsModel = (env: NodeJS.ProcessEnv): string | undefined => ollamaToolsModels(env)[0];
 
 type OllamaModel = Model<typeof OLLAMA_API> & { toolsAs?: ToolsAs };
 

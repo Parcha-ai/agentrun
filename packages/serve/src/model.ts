@@ -136,6 +136,12 @@ export function withPlanWords(env: NodeJS.ProcessEnv, harness: string, reason: s
   return `${reason.replace(/\.$/, "")}; ${words}.`;
 }
 
+/** What a person does for a model on the Ollama here, ahead of ADD_A_KEY where one would run `harness` (ollamaWouldRun). */
+export const START_OLLAMA = "start Ollama and pull a model with tools, or ";
+/** Whether a model of the Ollama here would give `harness` its model: this server asks one (asksOllama), and `harness`
+ *  runs its models (pi; an adapter runs its wire's vendor's alone). */
+export const ollamaWouldRun = (env: NodeJS.ProcessEnv, harness: string): boolean => asksOllama(env) && harnessRuns(env, `${OLLAMA_PROVIDER}/any`, harness);
+
 /** Whether `harness` runs the model `id` (its entry in the harness table: harness-table.ts): pi any; one on an adapter, its
  *  wire's vendor's model (or that vendor's on OpenRouter), or behind serve's gateway, on the wire it serves, any id. */
 export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string): boolean => harnessOf(env, harness)?.runs(env, id) ?? true;
@@ -273,7 +279,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     const sent = id && !configured && env.AGENT_MODEL_GATEWAY_IDS === "bare" ? id.slice(slash + 1) : named;
     return { model: { provider: MODEL_PROVIDER, modelId: sent }, ...(id && slash > 0 ? { namedProvider: id.slice(0, slash) } : {}) };
   }
-  if (!named) return { why: withPlanWords(env, harness, `${none}: ${ADD_A_KEY}`), host: true, needs: "key" };
+  if (!named) return { why: withPlanWords(env, harness, `${none}: ${ollamaWouldRun(env, harness) ? START_OLLAMA : ""}${ADD_A_KEY}`), host: true, needs: "key" };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];
