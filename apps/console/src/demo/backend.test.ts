@@ -122,6 +122,9 @@ describe("demo mode's backend", () => {
     await v2.sendMessage("demo-run-brief-question", "Use the bulletin's date.", "key-1");
     now.ms += 5 * 60_000;
     expect((await v2.getRun("demo-run-brief-question")).status).toBe("completed");
+    // The files it wrote after the answer are there to open.
+    expect((await v2.listFiles("demo-run-brief-question")).files.map((f) => f.path)).toEqual(["inputs/message.md", "brief.md", "sources.csv"]);
+    expect(await v2.readFile("demo-run-brief-question", "brief.md")).toMatch(/^# Weekly risk brief/);
     const rows = (await v2.getTimeline("demo-run-brief-question")).rows;
     expect(rows.some((r) => r.kind === "user_message" && r.text === "Use the bulletin's date.")).toBe(true);
   });
