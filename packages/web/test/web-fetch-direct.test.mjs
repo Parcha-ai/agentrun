@@ -14,13 +14,13 @@ const HOSTILE = [
   ["http://localhost/", false],
   ["http://public.example:8080/", false],
   ["http://app.localhost/", false],
-  ["http://169.254.169.254/latest/meta-data/", false],
-  ["http://10.0.0.1/", false],
-  ["http://172.16.0.1/", false],
-  ["http://192.168.1.1/", false],
-  ["http://100.64.0.1/", false],
+  ["http://169.254.169.254/latest/meta-data/", false], // key-gate: denylist a private target the guard must refuse
+  ["http://10.0.0.1/", false], // key-gate: denylist a private target the guard must refuse
+  ["http://172.16.0.1/", false], // key-gate: denylist a private target the guard must refuse
+  ["http://192.168.1.1/", false], // key-gate: denylist a private target the guard must refuse
+  ["http://100.64.0.1/", false], // key-gate: denylist a private target the guard must refuse
   ["http://[::1]/", false],
-  ["http://[fc00::1]/", false],
+  ["http://[fc00::1]/", false], // key-gate: denylist a private target the guard must refuse
   ["http://[::ffff:127.0.0.1]/", false],
   ["http://evil.example/", false],
   ["http://mixed.example/", false],

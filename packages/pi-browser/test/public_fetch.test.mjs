@@ -280,8 +280,15 @@ test("private, loopback, link-local and v4-mapped addresses are private; ordinar
 });
 
 test("publicCheck refuses exactly the first hops publicFetch refuses, in the same words, and dials nothing", async () => {
-  const names = { "private.example": ["10.0.0.5"], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
-  const urls = ["http://public.example/", "https://public.example:443/x", "http://public.example:8080/", "ftp://public.example/", "file:///etc/passwd", "http://localhost/", "http://app.localhost/", "http://printer.local/", "http://metadata.internal/", "http://private.example/", "http://mixed.example/", "http://none.example/", "http://127.0.0.1/", "http://[::1]/", "http://169.254.169.254/latest/meta-data/", "http://[::ffff:10.0.0.1]/"];
+  const PRIVATE = "10.0.0.5"; // key-gate: denylist the private address a name resolves to, which the check must refuse
+  const names = { "private.example": [PRIVATE], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
+  const urls = [
+    "http://public.example/", "https://public.example:443/x", "http://public.example:8080/", "ftp://public.example/", "file:///etc/passwd",
+    "http://localhost/", "http://app.localhost/", "http://printer.local/", "http://metadata.internal/",
+    "http://private.example/", "http://mixed.example/", "http://none.example/", "http://127.0.0.1/", "http://[::1]/",
+    "http://169.254.169.254/latest/meta-data/", // key-gate: denylist the metadata address the check must refuse
+    "http://[::ffff:10.0.0.1]/", // key-gate: denylist a private address mapped into v6, which the check must refuse
+  ];
   for (const url of urls) {
     const fetched = network({ names });
     const checked = network({ names });
