@@ -6,6 +6,7 @@ import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as checks from "../dist/learn/check.js";
 import { PRINT_MAX } from "../dist/learn/secrets.js";
+import { scanned } from "../dist/redact/match.js";
 import { draftMcpTools, unpricedCalls, unpricedLine } from "../dist/learn/workflow-draft.js";
 import * as words from "../dist/learning-words.js";
 import * as tools from "../dist/tools.js";
@@ -102,11 +103,19 @@ test("a printed field over 4 KiB is redacted whole and never scanned", () => {
   const long = `${"a".repeat(PRINT_MAX)}.md`;
   assert.deepEqual(printable({ rule: "outside", path: long, detail: "d".repeat(PRINT_MAX + 1) }, [VALUE]), { rule: "outside", path: "[redacted]", detail: "[redacted]" });
   assert.deepEqual(printable({ rule: "outside", path: "a".repeat(PRINT_MAX), detail: "d" }, []).path, "a".repeat(PRINT_MAX), "at the cap, printed");
-  // A crafted path of a megabyte costs no scan: its problem is printed at once.
-  const started = process.hrtime.bigint();
-  const problems = check([added(`${"ab".repeat(1 << 19)}`, readme)], { refuseValues: [VALUE] });
-  assert.ok(Number(process.hrtime.bigint() - started) / 1e9 < 2);
+  // A crafted path of a megabyte: its name is checked once for a shape and a held value, and its problem is printed at
+  // once, the path never read for it. Counted, not timed (redact/match.ts `scanned`): the check visits at most WORK
+  // characters per character of the path, the whole pipeline's bound with a held value (redact-contract.test.mjs), and
+  // printing the problem visits fewer characters than the path holds, so none of the path.
+  const WORK = 1024;
+  const path = "ab".repeat(1 << 19);
+  scanned.chars = 0;
+  const problems = check([added(path, readme)], { refuseValues: [VALUE] });
+  assert.ok(scanned.chars <= WORK * path.length, `${(scanned.chars / path.length).toFixed(1)} per character of the path`);
   assert.ok(problems.every((problem) => problem.path === "[redacted]"), JSON.stringify(problems).slice(0, 200));
+  scanned.chars = 0;
+  assert.equal(printable({ rule: "outside", path, detail: "d" }, [VALUE]).path, "[redacted]");
+  assert.ok(scanned.chars < path.length, `printing read ${scanned.chars} characters`);
 });
 
 test("the checker reports and never changes what it was given", () => {
@@ -171,7 +180,6 @@ test("a bank account, IBAN, routing or sort-code number beside its word is a sec
   // the shapes' own bound (redact-contract.test.mjs, secrets-private-key.test.mjs). Beside each hostile text, one of
   // the word and a digit repeated (32 KiB): every word a start, so a rule that read on past its bounded reach from each
   // start would visit the rest of the text from every one.
-  const { scanned } = await import("../dist/redact/match.js");
   const WORK = 128;
   for (const word of ["account", "IBAN", "routing", "sort code"]) {
     const hostile = `${word}${" ".repeat(20_000)}x ${word} ${"1-".repeat(20_000)}`.repeat(4);
