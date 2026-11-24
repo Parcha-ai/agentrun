@@ -19,7 +19,8 @@ if (git("rev-parse", "HEAD") !== BASE) refuse(`${root} is at ${git("rev-parse", 
 if (git("status", "--porcelain", "--untracked-files=no") !== "") refuse(`${root} has changes to tracked files`);
 const src = join(root, "packages/serve/src");
 const dist = join(root, "packages/serve/dist");
-for (const file of readdirSync(src).filter((name) => name.endsWith(".ts") && !name.endsWith(".d.ts"))) {
+// Every source tsc compiles, the nested ones too (secret-rules.ts imports src/learn and src/redact).
+for (const file of readdirSync(src, { recursive: true }).filter((name) => name.endsWith(".ts") && !name.endsWith(".d.ts"))) {
   const built = join(dist, file.replace(/\.ts$/, ".js"));
   if (!existsSync(built) || statSync(built).mtimeMs < statSync(join(src, file)).mtimeMs) refuse(`${built} is missing or older than its source: build packages/serve`);
 }

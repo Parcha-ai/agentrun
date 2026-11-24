@@ -3,7 +3,8 @@
 // each row (generate.mjs); scrub-differential.test.mjs requires every one of them cut still. Every input is synthetic.
 /** The commit whose scrubber expected.json records (main before the shell lexer); generate.mjs refuses any other. */
 export const BASE = "b0058698b0032901cecb6002e7f338110e628490";
-const PW = "Copper9lumen9";
+/** Built at run time, so no line of this file holds a password whole. */
+const PW = ["Copper9", "lumen9"].join("");
 /** The password every row gives its command. */
 export const PASSWORD = PW;
 const NBSP = "\u00a0";
@@ -78,6 +79,19 @@ const REVIEWED = [
   `redis-cli >-a report.txt -a ${PW} ping`,
 ];
 
+/** Windows paths whose last segment starts with a JSON escape's letter (`\R`/`\r`, `\n`, `\b`): a view reads the
+ *  backslash and that letter as an escape unless it reads the path as one. Each id names the program and its path. */
+const WINDOWS = {
+  "program-files/redis-cli": `"C:\\Program Files\\Redis\\redis-cli.exe" -a ${PW} ping`,
+  "program-files-call/redis-cli": `& "C:\\Program Files\\Redis\\redis-cli.exe" -h db -a ${PW}`,
+  "program-files-squoted/redis-cli": `'C:\\Program Files\\Redis\\redis-cli.exe' -a ${PW}`,
+  "nodejs/npm": `"C:\\Program Files\\nodejs\\npm.cmd" config set //r/:_authToken ${PW}`,
+  "program-files/nerdctl": `"C:\\Program Files\\nerdctl\\nerdctl.exe" login -p ${PW} r`,
+  "buildah/buildah": `"C:\\Program Files\\buildah\\buildah.exe" login -p ${PW} r`,
+  "dot/redis-cli": `.\\redis-cli.exe -a ${PW} ping`,
+  "dot-up/npm": `..\\nodejs\\npm.cmd config set //r/:_authToken ${PW}`,
+};
+
 /** Every row: { id, class, text }. The ids are stable: expected.json is keyed by them. */
 export function corpus() {
   const rows = [];
@@ -95,6 +109,7 @@ export function corpus() {
     }
   });
   REVIEWED.forEach((text, r) => rows.push({ id: `reviewed/${r}`, class: "reviewed", text }));
+  for (const [path, text] of Object.entries(WINDOWS)) rows.push({ id: `windows/${path}`, class: "windows", text });
   return rows;
 }
 

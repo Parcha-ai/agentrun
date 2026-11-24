@@ -4043,6 +4043,58 @@
      64
     ]
    ]
+  },
+  "windows/program-files/redis-cli": {
+   "raw": [],
+   "json": [
+    [
+     70,
+     83
+    ]
+   ]
+  },
+  "windows/program-files-call/redis-cli": {
+   "raw": [],
+   "json": [
+    [
+     78,
+     91
+    ]
+   ]
+  },
+  "windows/program-files-squoted/redis-cli": {
+   "raw": [],
+   "json": [
+    [
+     68,
+     81
+    ]
+   ]
+  },
+  "windows/nodejs/npm": {
+   "raw": [],
+   "json": []
+  },
+  "windows/program-files/nerdctl": {
+   "raw": [],
+   "json": []
+  },
+  "windows/buildah/buildah": {
+   "raw": [],
+   "json": []
+  },
+  "windows/dot/redis-cli": {
+   "raw": [],
+   "json": [
+    [
+     43,
+     56
+    ]
+   ]
+  },
+  "windows/dot-up/npm": {
+   "raw": [],
+   "json": []
   }
  }
 }

@@ -13,8 +13,9 @@ const expected = JSON.parse(readFileSync(new URL("./fixtures/scrub-differential/
 /** Rows whose password the scrubber leaves, each with why. The exit (deleting the span scans) may shrink this list,
  *  never grow it. */
 const KNOWN_MISS = new Map([
-  // The views read `\r` and `\n` as a JSON string's escapes (ruling A), so no view holds the name: `\redis-cli` reads
-  // as a carriage return and `edis-cli`. Main leaves both too.
+  // A backslash before a name that starts with r, n, b, f or t, outside a Windows path (a drive's, a quoted drive's,
+  // `.\`'s), is read as a JSON string's escape (ruling A), so no view holds the name: `\redis-cli` reads as a carriage
+  // return and `edis-cli`. Main leaves both too.
   ["name/escaped-first/redis-cli", "`\\r` is an escape to the views"],
   ["name/escaped-first/npm", "`\\n` is an escape to the views"],
 ]);

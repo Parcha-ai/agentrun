@@ -2558,11 +2558,11 @@ test("XCV: curl reads on past a substitution, its contents left out (Greptile P1
   await kept('curl -u "admin:$(cat ~/.pw)" https://x.io');
   await kept("curl -H \"X: $(date https://x.io\n-u a:b");
   // curl-user alone reads nested, unclosed and repeated substitutions linear by count: at most 8 reads a character.
+  // Their CPU is bounded relatively in XCIX (each unit against main's span scan, timed in the same call): an absolute
+  // ceiling here sat inside the clock's spread across runs of the same code, so it bounded nothing.
   for (const unit of ['curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ']) {
     const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
     assert.ok(perChar <= 8, `${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
-    const { "curl-user": ms } = await rulesAlone(["curl-user"], repeatTo(unit, 2_000_000));
-    assert.ok(ms < 2_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms at 2 MB`);
   }
 });
 
@@ -2728,6 +2728,32 @@ test("CI: the re-read budget: a command named inside an earlier command's read i
   }
 });
 
+test("CII: the lexer read takes options between `config` and `set`, a login's glued `-p<pw>`, a Windows extension in any case (the name too, with one) and `.bat`/`.ps1`", async () => {
+  const pw = ["Copper9", "lumen9"].join("");
+  for (const text of [
+    // Options between a path's words (`config … set`), with a value too.
+    `npm config --global set //r/:_authToken ${pw}`,
+    `npm config --location=user set //r/:_authToken ${pw}`,
+    `npm config --userconfig ~/.npmrc-ci set //r/:_authToken ${pw}`,
+    // A registry login reads a short flag's value glued on.
+    `docker login -u bot -p${pw} r.io`,
+    `podman login -p${pw} r.io`,
+    // Windows names files without case.
+    `"C:\\Program Files\\Docker\\docker.EXE" login -u bot -p ${pw} r.io`,
+    `Docker.exe login -u bot -p ${pw} r.io`,
+    `MYSQL.EXE -h db -p${pw} app`,
+    `redis-cli.Exe -a ${pw} ping`,
+    `npm.bat config set //r/:_authToken ${pw}`,
+    `npm.ps1 config set //r/:_authToken ${pw}`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+  // A glued `-p` outside a login is a port; a bare name keeps its case (`Docker` in prose names no command).
+  for (const text of ["docker run -p8080:80 img", "Docker login -p 8080"]) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
@@ -2741,7 +2767,8 @@ test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character o
   // span scan, timed in the same call on the same text: a unit's rule may take at most SCAN_TIMES the larger of its
   // own rule's scan and REF, the scan of one heavy unit (`curl $(` at 512 KB, the slowest scan of these units) timed
   // here, so a unit whose scan takes a millisecond is not held to a ratio of noise. CEILING_MS catches a blow-up on any
-  // box. Calibrated at 512 KB (rule / max(scan, REF), one run a unit): main's scrubber 1.96 at most, this one 6.07.
+  // box. Measured at 512 KB (rule / max(scan, REF), the largest unit's): main's scrubber up to 1.96; this one 3.4 to 6.1
+  // across runs at one head, the clock's spread.
   // A unit over its bound is timed once more and the faster run kept (the count is exact; the clock is not).
   const [SCAN_TIMES, CEILING_MS] = [12, 5_000];
   const { SPAN_SCANS } = await import("../dist/secret-rules.js");
