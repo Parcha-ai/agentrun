@@ -40,6 +40,7 @@ import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { webCut } from "../timeline/web-calls.js";
+import { withheldWhole } from "../key-refusal.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
@@ -90,7 +91,7 @@ import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, heldRedactor, holdClaimed, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
@@ -1174,14 +1175,21 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
 
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
  *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
- *  its links whole for a grader's link check. */
-export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
+ *  its links whole for a grader's link check; one whose strings, read joined, hold a held value no cut in place takes (a
+ *  value split across two of them) is "[redacted]" (webHeld). The join is read against the values `cut` holds
+ *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them: withheld when it withholds the
+ *  join whole. */
+export function answersCut(tool: HostTool, cut: Redact): HostTool {
+  const holds = (joined: string): boolean => {
+    const values = cut.heldValues?.();
+    return values ? withheldWhole(joined, values) : cut(joined) === "[redacted]";
+  };
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: webCut(tool.name, answer.text, cut) ?? cut(answer.text) };
+        return { ...answer, text: webCut(tool.name, answer.text, cut, holds) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
