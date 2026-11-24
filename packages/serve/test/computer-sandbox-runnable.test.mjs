@@ -18,6 +18,7 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { asOwner, scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
+import { DOCKER_NO_SOCKET } from "../dist/place-offers.js";
 
 const { blockersOf } = await import("../dist/runnable.js");
 const { computerDepsFrom, resolveComputer } = await import("../dist/workspace/index.js");
@@ -30,7 +31,7 @@ const ARCHIL = { region: "aws-us-east-1", s3Url: "https://s3.archil.example", ke
 /** The words runnable.ts says of a place this server can't run as a box. */
 const PLACE_WORDS = /This agent's place is sandbox on [a-z0-9-]+, and this server cannot run it there/;
 /** No provider key comes from this process's environment: each is the one saved here, or none. */
-const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
+const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CONTEXT", "E2B_API_KEY", "DAYTONA_API_KEY", "DAYTONA_ARCHIL_EGRESS", "AGENTRUN_DAYTONA_SNAPSHOT", "ARCHIL_API_KEY"];
 
 /** A fake `docker` first on PATH, so the server's start-time probe of the Docker box (boxes.ts: `docker version`) never
  *  reaches a real one: it names a daemon's version when `answers`, else fails as a CLI with no daemon does. Every other
@@ -50,9 +51,9 @@ async function fakeDocker(t, answers, adb = true) {
 /** A server alone, with the default boxes (docker alone, on a fake that `docker` answers or not), and an `adb` on PATH
  *  unless `adb` is false; on the real models (no --faux) unless `faux`; in Mode 2 when `archil`; with the template
  *  packages in `templates`, when given; its client sends every request from the owner's session when `owner`. */
-async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false, env = {} }) {
+async function server(t, { archil, docker = false, faux = false, adb = true, templates, owner = false, env = {}, probeContainer }) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: await fakeDocker(t, docker, adb), ...env }, UNSET);
-  const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}) });
+  const started = await serve(t, { ...(faux ? {} : { faux: undefined }), runner: false, accounts: true, openSetup: true, ...(templates ? { templates } : {}), ...(probeContainer ? { probeContainer } : {}) });
   const api = owner ? asOwner(started) : started.api;
   if (archil) {
     const saved = await api("PUT", "/workspace/archil", ARCHIL);
@@ -267,17 +268,21 @@ test("Mode 1: where Docker answers, GET /v2/computers shows Docker ready for a s
   }
 });
 
-test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words, until a restart", async (t) => {
+test("Mode 1: a daemon that answers only after the server started is not taken: Docker stays not ready, in the start probe's words (a host's, or a container's with no socket), until a restart", async (t) => {
   // The start made no Docker box, so its checks of Docker (a daemon elsewhere, this server's paths, host addresses, the
-  // box network) never ran; a daemon that answers now can't stand in for them.
-  const api = await server(t, { archil: false, docker: false });
-  const bin = process.env.PATH.split(":")[0];
-  await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
-  const view = await api("GET", "/computers");
-  for (const kind of ["sandbox", "desktop"]) {
-    const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
-    assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
-    assert.match(docker.why, /^Docker isn't running on this machine.*then restart AgentRun$/, `${kind}: ${JSON.stringify(docker)}`);
+  // box network) never ran; a daemon that answers now can't stand in for them. The probe's facts are pinned, so the words
+  // do not depend on where the suite runs (place-offers.ts containerReason).
+  const HOST_WORDS = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
+  for (const [probeContainer, words] of [[{ inside: false }, HOST_WORDS], [{ inside: true, image: true, exists: () => false }, DOCKER_NO_SOCKET]]) {
+    const api = await server(t, { archil: false, docker: false, probeContainer });
+    const bin = process.env.PATH.split(":")[0];
+    await writeFile(join(bin, "docker"), "#!/bin/sh\nif [ \"$1\" = version ]; then echo 27.0.0-fake; exit 0; fi\nexit 0\n", { mode: 0o755 });
+    const view = await api("GET", "/computers");
+    for (const kind of ["sandbox", "desktop"]) {
+      const docker = view.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === "docker");
+      assert.equal(docker.ready, false, `${kind}: ${JSON.stringify(docker)}`);
+      assert.equal(docker.why, words, `${kind}, inside ${probeContainer.inside}: ${JSON.stringify(docker)}`);
+    }
   }
 });
 

@@ -91,8 +91,9 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
 };
 
 /**
- * A start `npx @parcha/agentrun` made (NPX_PACKAGE_ENV) that a data directory refused because an earlier version wrote it
- * (store.ts StoreFromEarlierVersion, or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
+ * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
+ * same launcher) that a data directory refused because an earlier version wrote it (store.ts StoreFromEarlierVersion,
+ * or SchemaVersionUnknown on an earlier release's store): the refusal's own first line,
  * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
  * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
  * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
@@ -115,7 +116,9 @@ export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.Pro
   const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
   const fresh = freeName(`${dir}-new`, exists);
   const aside = freeName(`${dir}-earlier`, exists);
-  const installed = exists(join(dir, "bin", "agentrun")) ? " Its bin/agentrun (the earlier installer's command) moves with it: run the installer again for this version's." : "";
+  // install.sh keeps its Node, its packages and the command in the folder beside the data (node/, lib/, bin/agentrun):
+  // that command, or the service that runs it, may be what started this. Moved, they go too, whichever version they are.
+  const installed = exists(join(dir, "bin", "agentrun")) ? " That takes the agentrun the installer put there with it (its Node in node/, lib/ and bin/agentrun): run the installer again to put this version's back." : "";
   return [
     refused.message.split("\n")[0],
     // Moved aside first: every later command (doctor, the harness commands, the service) then finds this version where it

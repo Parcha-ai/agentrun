@@ -60,10 +60,10 @@ test("a run whose final file is past what its write call shows still grades PASS
 });
 
 const GRADER = { type: "llm", file: "whole.md", rubric: 'Pass if the file "out.json" contains "LAST".' };
-const record = (calls, finalFiles) => ({ answer: "done", calls, mcpCalls: [], files: finalFiles.map((f) => f.path), finalFiles });
+const record = (calls, finalFiles) => ({ answer: "done", calls, mcpCalls: [], files: finalFiles.flatMap((f) => (f.name === undefined ? [] : [f.name])), finalFiles });
 
 test("under the prompt's cap the calls' results are cut first, each cut marked in place, and a file stays whole", () => {
-  const file = { path: "out.json", bytes: 30_000, text: `${"a".repeat(29_996)}LAST` };
+  const file = { name: "out.json", bytes: 30_000, text: `${"a".repeat(29_996)}LAST` };
   const calls = Array.from({ length: 6 }, (_, i) => ({ tool: "read", arguments: { path: `in-${i}.txt` }, status: "ok", result: `${"r".repeat(20_000)}${i}` }));
   const input = graderInput(GRADER, "Write it.", record(calls, [file]), 60_000);
   assert.ok(input.length <= 60_000, String(input.length));
@@ -74,10 +74,10 @@ test("under the prompt's cap the calls' results are cut first, each cut marked i
 });
 
 test("files past three quarters of the room are cut, the largest first, each cut marked; the calls keep a quarter", () => {
-  const big = { path: "big.txt", bytes: 200_000, text: `${"b".repeat(199_996)}LAST` };
-  const small = { path: "small.txt", bytes: 5, text: "small" };
+  const big = { name: "big.txt", bytes: 200_000, text: `${"b".repeat(199_996)}LAST` };
+  const small = { name: "small.txt", bytes: 5, text: "small" };
   const calls = [{ tool: "write", arguments: { path: "big.txt" }, status: "ok", result: "r".repeat(50_000) }];
-  const input = graderInput(GRADER, "Write it.", record(calls, [big, small, { path: "a.mp4", bytes: 9_000_000 }]));
+  const input = graderInput(GRADER, "Write it.", record(calls, [big, small, { name: "a.mp4", bytes: 9_000_000 }]));
   assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
   const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
   assert.match(files, /\(Cut to keep this prompt under its cap: each long file keeps its head and tail, its middle cut where marked\.\)/);
@@ -122,7 +122,9 @@ async function filesServer(t, answers) {
   t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
   return { api: apiOf(`http://127.0.0.1:${server.address().port}/v2`, "t"), asked, closed: () => closed };
 }
-const listedOf = (files) => files.map(([path, bytes]) => ({ path, bytes, type: null, unreadable: false }));
+// Each listed with its cut name: the path with "-cut" before its extension, so a test tells the name a grader sees from
+// the path the eval reads by.
+const listedOf = (files) => files.map(([path, bytes]) => ({ path, name: path.replace(/\./, "-cut."), bytes, type: null, unreadable: false }));
 
 test("a final file whose server stalls mid-body is cut at the read's bound, and the files after it are still read", { timeout: 30_000 }, async (t) => {
   const { api, asked, closed } = await filesServer(t, { "a-stalls.txt": "stall", "b.txt": "the next file", "c.txt": "old:raw bytes", "d.json": 415 });
@@ -130,7 +132,7 @@ test("a final file whose server stalls mid-body is cut at the read's bound, and 
   const files = await finalFilesOf(api, "r1", listedOf([["a-stalls.txt", 5], ["b.txt", 13], ["c.txt", 14], ["d.json", 15]]), undefined, 500);
   const took = Date.now() - began;
   assert.ok(took >= 450 && took < 5_000, `cut at the bound: ${took} ms`);
-  assert.deepEqual(files, [{ path: "a-stalls.txt", bytes: 5 }, { path: "b.txt", bytes: 13, text: "the next file" }, { path: "c.txt", bytes: 14 }, { path: "d.json", bytes: 15 }]);
+  assert.deepEqual(files, [{ name: "a-stalls-cut.txt", bytes: 5 }, { name: "b-cut.txt", bytes: 13, text: "the next file" }, { name: "c-cut.txt", bytes: 14 }, { name: "d-cut.json", bytes: 15 }]);
   assert.deepEqual(asked, ["a-stalls.txt", "b.txt", "c.txt", "d.json"].map((name) => `/v2/runs/r1/files/${name}?cut=run`), "every read through the run's cut");
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.ok(closed() >= 1, "the stalled read's connection is closed");
@@ -142,5 +144,54 @@ test("the files' budget is in UTF-8 bytes: a text past it in bytes is left out, 
   assert.ok(grown.length < GRADER_PROMPT_MAX && Buffer.byteLength(grown) > GRADER_PROMPT_MAX);
   const { api } = await filesServer(t, { "grown.txt": grown, "after.txt": "after" });
   const files = await finalFilesOf(api, "r1", listedOf([["grown.txt", 10], ["after.txt", 11]]));
-  assert.deepEqual(files, [{ path: "grown.txt", bytes: 10 }, { path: "after.txt", bytes: 11, text: "after" }]);
+  assert.deepEqual(files, [{ name: "grown-cut.txt", bytes: 10 }, { name: "after-cut.txt", bytes: 11, text: "after" }]);
+});
+
+// A held value in a file's name: the listing's paths are the run's own, so a run that names a file by a key (a cache keyed
+// by it, a voiceover named for it) put the key in the grader's prompt through the file's name, the text alone being cut.
+// The eval names each file by the listing's cut name (GET /runs/{id}/files?cut=run), the text file and the audio alike.
+test("a held value in a file's name never reaches a grader: the text file and the audio are each named under the run's cut", { timeout: 300_000 }, async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "held-names");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), "parameters:\n  team: blue\n");
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: Caches a reply under a held name.\n---\nCall write with {"path":"cache/{{env:AGENTRUN_TEST_FINAL_FILES_API_KEY}}.json","content":"{\\"reply\\": \\"CACHED-REPLY\\"}\\n"}\nCall write with {"path":"media/{{env:AGENTRUN_TEST_FINAL_FILES_API_KEY}}.mp3","content":"not text a grader reads\\n"}\nAnswer:\nCached it.\n\n\`\`\`json\n{"verdict": "good", "score": 80, "summary": "cached"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "cached.md"), '---\ntype: llm\n---\nPass if a file holds "CACHED-REPLY".\n');
+  const report = await evalTemplate({ dir, cases: ["held-names"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  const input = graderInputs().find((one) => one.includes("CACHED-REPLY"));
+  assert.ok(input, "the grader's input was logged");
+  assert.ok(!input.includes(HELD), "the grader's input holds no held value");
+  assert.match(input, /<file path="cache\/\[redacted\]\.json" bytes="\d+">\n\{"reply": "CACHED-REPLY"\}\n\n<\/file>/);
+  assert.match(input, /Not shown \(not text, or past what a grader is given\), by path and size in bytes: media\/\[redacted\]\.mp3 \(\d+\)/);
+  // The call that wrote the text file (its arguments cut in the timeline) points at it by its cut name.
+  assert.match(input.slice(input.indexOf("<tool-calls untrusted>")), /\[the file cache\/\[redacted\]\.json is in <files>, whole unless marked cut\]/);
+});
+
+test("a file with no cut name (a server that doesn't cut its listing's names) is never named to a grader: its text is shown unnamed, the rest counted", () => {
+  const files = [
+    { name: "out.json", bytes: 4, text: "LAST" },
+    { bytes: 9, text: "UNNAMED-1" },
+    { name: "a.mp4", bytes: 9_000_000 },
+    { bytes: 7 },
+    { bytes: 8 },
+  ];
+  const shown = fitFiles(files, 10_000);
+  assert.match(shown, /<file path="out\.json" bytes="4">\nLAST\n<\/file>/);
+  assert.match(shown, /<file bytes="9">\nUNNAMED-1\n<\/file>/);
+  assert.match(shown, /Not shown \(not text, or past what a grader is given\), by path and size in bytes: a\.mp4 \(9000000\); and 2 files not named \(this server doesn't cut file names\)/);
+  // Nothing fits but the names: the named listed, the unnamed counted.
+  assert.match(fitFiles(files, 220), /^\(Cut to keep this prompt under its cap: every file's text is left out\.\)\nBy path and size in bytes: out\.json \(4\), a\.mp4 \(9000000\); and 3 files not named \(this server doesn't cut file names\)$/);
+  // A call that writes a file is pointed at it by its cut name only.
+  const input = graderInput(GRADER, "Write it.", record([{ tool: "write", arguments: { path: "out.json" }, status: "ok" }], files));
+  assert.match(input, /1\. write \{"path":"out\.json"\} -> ok \[the file out\.json is in <files>, whole unless marked cut\]/);
+});
+
+test("a final file listed with no cut name is read by its path and given back by no name: its path is the eval's, never a grader's", { timeout: 30_000 }, async (t) => {
+  const { api, asked } = await filesServer(t, { "plain.txt": "the text" });
+  const files = await finalFilesOf(api, "r1", [{ path: "plain.txt", bytes: 8, type: null, unreadable: false }, { path: "clip.mp3", bytes: 9, type: "audio/mpeg", unreadable: false }]);
+  assert.deepEqual(files, [{ bytes: 8, text: "the text" }, { bytes: 9 }]);
+  assert.deepEqual(asked, ["/v2/runs/r1/files/plain.txt?cut=run"]);
 });

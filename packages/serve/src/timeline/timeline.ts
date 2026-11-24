@@ -81,9 +81,9 @@ export type TimelineEvent = {
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
    *  makes it where the call is first seen, cut at CAPS.text. */
   tool_input?: Obj;
-  /** On a `tool_result` row of a timeline read with `calls`: the head of the call's output, to `calls.result` characters,
-   *  as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every url, its long
-   *  texts cut to fit (CALL_RESULT_CHARS). */
+  /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
+   *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
+   *  url, its long texts cut to fit (CALL_RESULT_CHARS). */
   tool_result_text?: string | null;
 };
 
@@ -100,11 +100,17 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** The base caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
-/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): a tool's output's head, still one
- *  redaction pass of the size an answer's pieces take (key-refusal.ts ANSWER_PIECE). A web call's is not its head: a
+/** The most of a call's output a read for a grader shows (`calls`, tool_result_text): as much as a grader's whole prompt
+ *  takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
+ *  fit (fitCalls) shares that room among the calls. The run's redaction reads it in pieces of an answer's size
+ *  (key-refusal.ts redactedCall), so a long head costs no more a pass than a short one. Past it, a tool's output's head; a
+ *  web call's is not its head: a
  *  web_search's every result keeps its url, title and published date, and a web_fetch its url and title, their snippets
- *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it (25 results, long titles). */
-export const CALL_RESULT_CHARS = 8000;
+ *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
+export const CALL_RESULT_CHARS = 120_000;
+
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result may be CALL_RESULT_CHARS long. */
+export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
  *  that answered or failed has a `pi.assistant` entry; one aborted before its first content has none; a start with no
@@ -816,8 +822,11 @@ function createProjector(options: TimelineOptions) {
     const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
-  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, its
-   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut (web-calls.ts). */
+  /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its
+   *  URLs' query values elided, cut at `calls.result`; a web call's every url whole, only its long texts cut
+   *  (web-calls.ts). Every secret check reads the text as it came, never as shown: elided, a URL's query and userinfo are
+   *  cut apart, and a held value in one no longer reads as itself. The served redactor (redactedCall) elides each piece it
+   *  read after redacting it, so what it returns is already as shown and the elision here changes nothing in it. */
   const wholeRedact = options.calls?.redact ?? options.redact;
   const callShown = (text: string) => scrubUrls(wholeRedact ? wholeRedact(text) : text);
   const resultText = (tool: string, text: string): string | null => {
