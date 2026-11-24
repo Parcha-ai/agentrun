@@ -135,13 +135,16 @@ export class CallIds {
   private readonly keyOf = new Map<string, string>();
 
   /** The agent announced call `id` with `input` (undefined: it reported none), its recipe's field naming `tool` of
-   *  ours, or none (undefined). One with no tool is matched by its input alone, an object; one with
-   *  no input by its tool alone; one with neither is never matched. A tool named for an id already announced without one (a
-   *  call the agent named in a later update) keys it again. */
+   *  ours, or none (undefined). One with no tool is matched by its input alone, an object with a field at least; one
+   *  with no input by its tool alone; one with neither is never matched. A tool named for an id already announced
+   *  without one (a call the agent named in a later update) keys it again. */
   add(id: string, tool: string | undefined, input: unknown): void {
     if (this.used.has(id)) return;
     const reported = input !== undefined && input !== null;
     if (tool === undefined && !isPlain(input)) return;
+    // Named by nothing and reporting no arguments (Cursor's untitled `MCP: tool`, rawInput {}, before its late update
+    // names it): {} would tie it to any call with no arguments, of any tool, so it waits to be named.
+    if (tool === undefined && Object.keys(input as Record<string, unknown>).length === 0) return;
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
     // An announced call with input is matched only by that input (and its tool, where the field named one), so it never
     // takes an MCP call with other arguments that is waiting for its own announcement.
