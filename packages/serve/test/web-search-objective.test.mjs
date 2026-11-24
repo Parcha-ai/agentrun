@@ -94,3 +94,15 @@ test("serve builds web_search and web_fetch from @parcha/agentrun-web's export: 
     assert.deepEqual(fetchTool.parameters, web.WEB_FETCH_PARAMETERS, `web_fetch's parameters on ${fetch} are the export's`);
   }
 });
+
+test("pi checks a model's web_search call against the exported schema: {query} alone is refused before execute, naming objective; {objective, queries} passes; the query's words say the objective is required", async () => {
+  const { validateToolArguments } = await import("@earendil-works/pi-ai");
+  const web = await import("@parcha/agentrun-web");
+  const tool = { name: "web_search", description: web.WEB_SEARCH_DESCRIPTION, parameters: web.WEB_SEARCH_PARAMETERS };
+  const call = (args) => ({ type: "toolCall", id: "call-1", name: "web_search", arguments: args });
+  assert.throws(() => validateToolArguments(tool, call({ query: "acme anvils" })), /objective/, "a model's query alone is refused, naming objective");
+  assert.deepEqual(validateToolArguments(tool, call({ objective: OBJECTIVE, queries: ["acme anvils"] })), { objective: OBJECTIVE, queries: ["acme anvils"] }, "an objective and its queries pass");
+  const said = web.WEB_SEARCH_PARAMETERS.properties.query.description;
+  assert.match(said, /the objective is required/i, "the query's words say a call must give the objective");
+  assert.doesNotMatch(said, /query alone is searched/i, "and do not promise a model's query alone is searched");
+});
