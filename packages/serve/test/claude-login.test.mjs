@@ -961,7 +961,7 @@ test("the machine's id is a file of the owner's alone (0600) in the data folder,
 });
 
 // The person's home: the status check, the sign-in and a run on macOS all run in it. It is read once, where the login is
-// made (loginAt: the server's HOME when absolute, else os.homedir()), and every use takes it from the login, so a server
+// made (homeOf: the server's HOME when its user owns it, else that user's own home), and every use takes it from the login, so a server
 // handed an env whose HOME is not os.homedir()'s answer runs them all in one home.
 test("the person's home is read once, where the login is made: with the server's HOME apart from os.homedir(), the status check, the sign-in and a run's status check all run in that HOME, on AgentRun's own folder and on a CLAUDE_CONFIG_DIR folder", { skip: process.platform === "win32" ? "a sh stand-in CLI" : false, timeout: 120_000 }, async (t) => {
   const fake = await fakeCli(t);
