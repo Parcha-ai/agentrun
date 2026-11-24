@@ -147,6 +147,17 @@ export class ClaudeLoginTimedOut extends Error {
   }
 }
 
+/** A status check the CLI answered in time with nothing that reads as a status: no answer either, apart from a CLI that
+ *  never started (the spawn's own error, `ENOENT` and the like). `code` is `no_status`, for a caller that loads the
+ *  harness lazily. */
+export class ClaudeLoginNoStatus extends Error {
+  readonly code = "no_status";
+  constructor() {
+    super("the claude CLI gave no login status");
+    this.name = "ClaudeLoginNoStatus";
+  }
+}
+
 /** The name of a status check's own folder in the temporary folder, ahead of mkdtemp's six characters. */
 const STATUS_FOLDER = "agentrun-claude-status-";
 const STATUS_FOLDER_NAME = /^agentrun-claude-status-[A-Za-z0-9]{6}$/;
@@ -288,7 +299,8 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  folder's; else hashed from the login's folder, as the sign-in there named it), so the copy never renames it.
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Asks once. Throws when the CLI gives no answer that reads as one: ClaudeLoginTimedOut when it was still running at
- *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else a plain error. */
+ *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else ClaudeLoginNoStatus. A CLI that never
+ *  started throws the spawn's own error. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
@@ -323,7 +335,7 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
     });
     const status = parseLoginStatus(stdout.trim());
     // A whole answer written just before the limit still counts.
-    if (!status) throw timedOut ? new ClaudeLoginTimedOut(limitMs) : new Error("the claude CLI gave no login status");
+    if (!status) throw timedOut ? new ClaudeLoginTimedOut(limitMs) : new ClaudeLoginNoStatus();
     return status;
   } finally {
     rmSync(scratch, { recursive: true, force: true });

@@ -380,15 +380,24 @@ function noteAnswer(login: ClaudeAgentLogin, said: ClaudeLoginStatus, now: numbe
   else signedInAt.delete(loginKey(login));
 }
 
+/** The harness's codes for a status check that gave no answer (claudeLoginStatus's ClaudeLoginTimedOut and
+ *  ClaudeLoginNoStatus), read by code as the harness loads only when asked. */
+const NO_ANSWER: ReadonlySet<unknown> = new Set(["timed_out", "no_status"]);
+const gaveNoAnswer = (error: unknown): boolean => NO_ANSWER.has((error as { code?: unknown } | null | undefined)?.code);
+
+/** The run's refusal when its login's CLI could not say, with the check's own words. */
+const unknownLogin = (error: unknown): Error => new Error(`${LOGIN_UNKNOWN}: ${String((error as Error | null | undefined)?.message ?? error).slice(0, 200)}`);
+
 /** Before a run on the login: its CLI says it is signed in, or the run is refused in words (never a silent switch to a
  *  key). `cli`: the CLI that answers (loginCli); none, nothing to ask yet. `status`: the CLI's status check (the harness's
- *  claudeLoginStatus, which asks once and, on a CLI that outlasts its limit, throws with `code` "timed_out").
+ *  claudeLoginStatus, which asks once and, when the CLI gives no answer, throws with `code` "timed_out" or "no_status").
  *  A check that gives no answer (it timed out, or the CLI said nothing that reads as a status) is asked once more, since
  *  a loaded host can take past the limit with the login fine. Still none: the run goes on when this login answered
  *  signed in within LOGIN_ANSWER_STANDS_MS in this server process (a run's check here, or the Settings view's), as its
- *  own CLI still fails in words if the login is gone; else it is refused with LOGIN_UNKNOWN and why. A signed-out answer
- *  is the answer: never asked again nor overridden, refused at once, and the earlier signed-in time goes. `now`: the
- *  clock (Date.now). */
+ *  own CLI still fails in words if the login is gone; else it is refused with LOGIN_UNKNOWN and why. Any other failure (a
+ *  CLI that is not at its path, say) is refused with LOGIN_UNKNOWN and its own words at once, asked once and never
+ *  waved through by an earlier answer. A signed-out answer is the answer: never asked again nor overridden, refused at
+ *  once, and the earlier signed-in time goes. `now`: the clock (Date.now). */
 export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, options: { now?: () => number } = {}): Promise<void> {
   if (!login || !cli) return;
   const now = options.now ?? Date.now;
@@ -398,13 +407,14 @@ export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: s
     try {
       said = await status(cli, login);
     } catch (error) {
+      if (!gaveNoAnswer(error)) throw unknownLogin(error);
       lastError = error;
     }
   }
   if (said === undefined) {
     const at = signedInAt.get(loginKey(login));
     if (at !== undefined && now() - at <= LOGIN_ANSWER_STANDS_MS) return;
-    throw new Error(`${LOGIN_UNKNOWN}: ${String((lastError as Error)?.message ?? lastError).slice(0, 200)}`);
+    throw unknownLogin(lastError);
   }
   noteAnswer(login, said, now());
   if (!said.signedIn) throw new Error(LOGIN_SIGNED_OUT);
