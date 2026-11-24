@@ -3,9 +3,8 @@
 // provider's place.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { pathToFileURL } from "node:url";
-import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { createWeb, destinationsWords, type FetchProvider, type Guard, type KeyedProvider, MAX_CHARS_MIN, PAGE_CHARS, providerOf, QUERY_MAX, type SearchProvider, TEXT_CAP, type Web, type WebClient } from "@parcha/agentrun-web";
+import { createWeb, destinationsWords, type FetchProvider, type Guard, type KeyedProvider, providerOf, type SearchProvider, type Web, type WebClient } from "@parcha/agentrun-web";
 import { FAUX_PARALLEL_ENV, fauxFetch, handedKeyOf } from "./decisions.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { FAUX_ENV } from "./model.js";
@@ -37,18 +36,6 @@ export async function fetchOptions(env: NodeJS.ProcessEnv, fauxEnv: string): Pro
   if (!faux) return {};
   return ((await import(pathToFileURL(faux).href)) as { default: () => Omit<PublicFetchOptions, "maxBytes" | "signal"> }).default();
 }
-
-export const URL_PARAMETERS = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    url: { type: "string", minLength: 1, description: "An absolute http(s) URL." },
-    offset: { type: "integer", minimum: 0, description: "Where in the page's text to start, in characters (default 0). An answer that stops short of the page's end gives the offset that reads on." },
-    max_chars: { type: "integer", minimum: MAX_CHARS_MIN, maximum: TEXT_CAP, description: `About how many characters of the page's text to read (default ${PAGE_CHARS.toLocaleString("en-US")}, at least ${MAX_CHARS_MIN}, at most ${TEXT_CAP.toLocaleString("en-US")}).` },
-    objective: { type: "string", description: `What you are reading the page for, in a sentence (cut at ${QUERY_MAX} characters).` },
-  },
-  required: ["url"],
-} as unknown as TSchema;
 
 /** What a provider that takes them is told of the run (Parallel's client_model): the run's model as its bare id, the last
  *  segment of its name, lowercase; nothing where the run names none. No id of the run is given: a tool call carries none. */

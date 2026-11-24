@@ -52,7 +52,11 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   sends the objective too, which its tool requires; `native` the first query. The answer is `{ provider, objective,
   queries, results }`.
 - `client` (WebConfig) is `{ model?, session? }`: the model the run calls, as a bare id (`claude-opus-4-7`), and an id of
-  the run. Each is sent to a provider that takes it only when given; nothing is made up in their place.
+  the run. `search(ask, { session })` gives one call its own session in place of the Web's. Each is sent to a provider
+  that takes it only when given; nothing is made up in their place.
+- `WEB_SEARCH_DESCRIPTION`, `WEB_SEARCH_PARAMETERS`, `WEB_FETCH_DESCRIPTION` and `WEB_FETCH_PARAMETERS` are what a model
+  reads of the two tools: each description, and its parameters' JSON Schema. They name no provider, so every provider is
+  asked through the same words. AgentRun's server builds its `web_search` and `web_fetch` from them.
 - A search's answer is fitted to `SEARCH_MAX_CHARS`: past it, its least relevant results are left out and `omitted`
   counts them. `search(ask, { breakers })` reads and trips the given breakers instead of the Web's own (AgentRun's
   server gives a call node fresh ones each call), and `search(ask, { bounds })` holds that call to its own deadlines.

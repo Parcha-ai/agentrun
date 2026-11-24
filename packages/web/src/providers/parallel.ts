@@ -181,6 +181,6 @@ export const parallel = defineProvider(
   ({ key, send, pay, settings, client: told }): ProviderRun => {
     const asked = (settings ?? {}) as ParallelSettings;
     const client = key === undefined ? null : parallelExtract(key, send ?? fetch, pay, asked);
-    return { search: (ask, _deadline, signal) => parallelSearched(ask, client, signal, asked, told), ...parallelReads(client) };
+    return { search: (ask, _deadline, signal, _bounds, call) => parallelSearched(ask, client, signal, asked, { ...told, ...call }), ...parallelReads(client) };
   },
 );

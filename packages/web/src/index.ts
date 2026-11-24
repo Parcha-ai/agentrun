@@ -144,6 +144,7 @@ export {
   TITLE_CAP,
   URL_MAX,
 } from "./page.js";
+export { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS } from "./tool-specs.js";
 export { fetchPage, readDirect } from "./providers/direct.js";
 export { type ExaSettings, EXA_DEFAULTS } from "./providers/exa.js";
 export { type ExaLimited, exaSearch } from "./providers/exa-keyless.js";

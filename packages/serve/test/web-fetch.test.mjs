@@ -76,7 +76,7 @@ const where = (page, name = "web_fetch") => web.webFetchText(page, name).slice(J
 
 test("max_chars below its minimum (200) is refused before anything is fetched, saying the minimum, and so is an offset below 0; a smaller part read directly still advances by a whole character, never stuck at its offset", async () => {
   assert.equal(pages.MAX_CHARS_MIN, 200);
-  assert.equal(pages.URL_PARAMETERS.properties.max_chars.minimum, 200, "the tool's schema says it");
+  assert.equal(pages.WEB_FETCH_PARAMETERS.properties.max_chars.minimum, 200, "the tool's schema says it");
   for (const [part, said] of [[{ maxChars: 1 }, "max_chars must be at least 200 (it was 1)"], [{ maxChars: 199.5 }, "max_chars must be at least 200 (it was 199.5)"], [{ offset: -1 }, "offset must be a whole number, 0 or more (it was -1)"]]) {
     const net = network();
     const page = await fetchFor({}, PUBLIC, { ...net, ...part });

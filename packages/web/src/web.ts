@@ -75,8 +75,8 @@ export type WebConfig = {
  *  Web's key breakers, shared with web_fetch ("web", the default without `breakers`), or the call's own breakers
  *  ("call", the default with them). `task`: what the caller needs, which a decider judges against (a search without
  *  one is judged on its objective). `bounds`: this call's deadlines, each in place of the Web's (WebConfig.bounds)
- *  where given. */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds };
+ *  where given. `session`: this call's session, told to a provider that takes one in place of WebConfig.client's. */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds; session?: string };
 /** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `objective`: what the caller
  *  wants from the page (the tool's objective); `lookingFor`, the same under its older name, read where no objective is
  *  given. With a decider, the answer is the chunks of the whole page most likely to hold it (findInPage), `offset` and
@@ -218,7 +218,7 @@ export function createWeb(config: WebConfig): Web {
 
   return {
     destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, "search", runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, "fetch", fetchBreakers)) }),
-    async search(input, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds } = {}) {
+    async search(input, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds, session } = {}) {
       const ownOf = given ?? runBreakers;
       const breakerOf = (name: string) => toolBreaker("search", name as ProviderId, ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
@@ -230,7 +230,7 @@ export function createWeb(config: WebConfig): Web {
       // No provider is asked an empty objective.
       const found: Search = !ask.objective ? { error: "web_search needs an objective" }
         : !order.length ? { error: "web_search has no provider to ask" }
-        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds) })), breakerOf, signal, searchMs, tries));
+        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds, session ? { session } : undefined) })), breakerOf, signal, searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
       const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
