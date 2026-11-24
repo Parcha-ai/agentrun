@@ -1875,7 +1875,13 @@ test("a stop waits for a renewal already spent at OpenAI to save its pair before
   await until(() => openai.refreshes === 1, "the renewal is out at OpenAI");
   // The server's stop: the plan closed, its renewals drained, then the store closed.
   await plan.close();
-  await assert.rejects(new ChatGPTPlan({ store, sealKey }).token(), /try again in a moment/, "a stopping store starts no renewal");
+  // Another reader of this sign-in shares the renewal out; a stopped server's store starts no new one.
+  const other = mapStore();
+  await seatRow(other, sealKey, -1_000);
+  const stopped = new ChatGPTPlan({ store: other, sealKey });
+  await stopped.close();
+  await assert.rejects(stopped.token(), /try again in a moment/, "a stopping store starts no renewal");
+  assert.equal(openai.refreshes, 1, "and sends OpenAI nothing");
   let ended = false;
   const drained = plan.renewalsEnded().then(() => (ended = true));
   await new Promise((resolve) => setTimeout(resolve, 100));

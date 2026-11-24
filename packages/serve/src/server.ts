@@ -148,7 +148,7 @@ import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
@@ -285,6 +285,13 @@ const PLAN_CLOSE_MS = 2_000;
 const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+};
+/** The ChatGPT renewals this process has out against the store, ended (ChatGPTPlan.renewalsEnded), or RENEWAL_DRAIN_MS
+ *  gone: OpenAI's answer and its write back, so a refresh token OpenAI spent leaves its new pair saved before the store
+ *  closes. After planClosed, so none starts meanwhile. */
+const renewalsDrained = (plan: ChatGPTPlan): Promise<void> => {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([plan.renewalsEnded(), new Promise<void>((done) => (timer = setTimeout(done, RENEWAL_DRAIN_MS)))]).finally(() => clearTimeout(timer));
 };
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
@@ -6798,6 +6805,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // A ChatGPT renewal OpenAI is answering saves its new pair first: the plan closed above (planStopped), so none starts.
+    await renewalsDrained(plan);
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
