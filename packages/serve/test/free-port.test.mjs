@@ -27,7 +27,11 @@ test("two thousand ports handed out in one process are all different, so no test
 
 test("a listen error other than the port being in use rejects with its own code, never read as in use and every port tried", async () => {
   // 192.0.2.1 (TEST-NET-1) is no address of this machine: a listen there fails EADDRNOTAVAIL.
-  await assert.rejects(freePort({ host: "192.0.2.1" }), { code: "EADDRNOTAVAIL" });
+  const host = "192.0.2.1";
+  // A host that binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1) lets that listen succeed: the test says so.
+  const got = await freePort({ host }).then((port) => ({ port }), (error) => ({ error }));
+  assert.ok(got.error, `a listen on ${host} succeeded (port ${got.port}): this host binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1), so it can't give this test a listen error`);
+  assert.equal(got.error.code, "EADDRNOTAVAIL", `the listen error was said as ${got.error.code ?? "no code"}: ${got.error.message}`);
 });
 
 test("a port in use is passed over: under a range from 1025 the one candidate is 1024, and with 1024 held it fails by name instead of handing it out", async () => {
