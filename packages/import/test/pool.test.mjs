@@ -155,6 +155,24 @@ test("a read's strings are charged as V8 holds them: one byte a character up to 
   assert.equal(stringBytes({ firstPrompt: "日", titleText: "ab", turns: 3 }), 4, "each string on its own; numbers count nothing");
 });
 
+test("a read's strings in its objects and arrays are charged too: each object once, at any depth", () => {
+  // A session's turns (types.ts: Turn[], each with its text, its calls' ids, names and arguments) and a read's requests.
+  const turns = [
+    { role: "user", text: "日本", at: 1 },
+    { role: "assistant", text: "", calls: [{ type: "toolCall", id: "c1", name: "ls", arguments: { path: "a".repeat(100) } }], at: 2 },
+  ];
+  assert.equal(stringBytes({ session: { id: "s", turns }, requests: [] }), 1 + 4 + 4 + 9 + 8 + 2 + 2 + 100, "nested in objects and arrays");
+  const shared = { text: "a".repeat(10) };
+  assert.equal(stringBytes({ a: shared, b: [shared, shared] }), 10, "an object held twice is charged once");
+  const cycle = { text: "ab" };
+  cycle.self = cycle;
+  assert.equal(stringBytes(cycle), 2, "a cycle ends");
+  assert.equal(stringBytes({ counts: { models: ["m"], values: new Float64Array(1 << 10) } }), 1, "typed arrays hold no strings (their bytes count apart)");
+  let deep = ["z"];
+  for (let i = 0; i < 100_000; i += 1) deep = [deep];
+  assert.equal(stringBytes(deep), 1, "no depth runs the call stack out");
+});
+
 test("the default read-ahead is 1 GiB, or a sixteenth of the machine's memory when that is less", () => {
   assert.equal(readAheadBytes(8 * 2 ** 30), 512 * 2 ** 20);
   assert.equal(readAheadBytes(16 * 2 ** 30), 2 ** 30);
