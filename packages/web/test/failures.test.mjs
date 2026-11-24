@@ -44,11 +44,13 @@ test("keyed Exa with no key: refused, unsent", async () => {
   assert.equal("failure" in found.answer, false, "the search's error carries no failure");
 });
 
-test("keyless Firecrawl: its daily limit is a quota, its keyless limit a rate limit, each with its code", async (t) => {
+test("keyless Firecrawl: its daily limit is a quota and holds the key, so the same Web's search is held; its keyless limit a rate limit; each with its code", async (t) => {
   const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? dailyLimit("scrape") : refusal("KEYLESS_LIMIT_REACHED", { retryAfter: 30 })));
   const w = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => START });
   assert.deepEqual(typed((await w.fetch(PUBLIC)).receipt.tries[0]), ["quota", "DAILY_LIMIT", true]);
-  assert.deepEqual(typed((await w.search("widgets")).receipt.tries[0]), ["rate", "KEYLESS_LIMIT_REACHED", true]);
+  assert.deepEqual(typed((await w.search("widgets")).receipt.tries[0]), ["quota", "HELD", false], "the daily limit holds the key: the same Web's search is held, unsent");
+  const fresh = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => START });
+  assert.deepEqual(typed((await fresh.search("widgets")).receipt.tries[0]), ["rate", "KEYLESS_LIMIT_REACHED", true]);
   assert.deepEqual(await web.firecrawlScrape(PUBLIC, { endpoint: fc.url, now: () => START }), { error: "Keyless Firecrawl will not serve this server's fetches now (its free daily limit is spent): it is not asked again before 00:00 UTC", limit: { kind: "quota", retryAfter: "Wed, 25 Nov 2026 00:00:00 GMT" } }, "the exported scrape answers as before");
   void answers;
 });
