@@ -13,11 +13,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { AgentDoc, type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
+import { boundResult } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -177,8 +178,9 @@ async function openPi(options: PiAdapterOptions, spec: SessionSpec, io: PiSessio
   }
 }
 
-/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts). */
-export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch">;
+/** A tier's model as its proxy takes it: its route's provider, model, catalog entry, price and fetch (model-route.ts), and
+ *  its catalog's context window, which a conversation on the tier holds each tool result to (boundPiResult). */
+export type TierModel = Pick<PiAdapterOptions, "provider" | "model" | "like" | "price" | "fetch"> & { readonly contextWindow?: number };
 
 /** The tier proxies a session holds (openTierProxies): each tier's port for a side request under `label`, and their close. */
 export interface TierProxies {
@@ -376,7 +378,11 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   const touched = new Set<string>();
   // A refused nested call's words, by its id (pi's nested result keeps none of a refused call's output).
   const nestedRefusals = new Map<string, string>();
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals)), ...(options.tools ?? [])];
+  // The context window of the model a conversation runs on, when the host knows it: the session's own model's (the
+  // session's, from its catalog), or a tier's (its route's). None: the host's bound alone holds each result.
+  const tierWindows = new Map(tiers.each.map(([tier, route]) => [tierProvider(tier), route.contextWindow] as const));
+  const windowOf = (ref: { readonly provider: string } | undefined): number | undefined => (ref === undefined || ref.provider === PROVIDER ? spec.contextWindow : tierWindows.get(ref.provider));
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf)), ...(options.tools ?? [])];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -407,8 +413,17 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           });
         },
         // A call the gate refused: its result is main's words alone, an error, never pi's framing of a blocked call (its
-        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's.
-        afterTool: async (call, result) => refusals.resultOf(call.id, result, call.parent !== undefined) as never,
+        // diagnostic, which the model reads as "<harness>[error] Tool call blocked: ..."). Every other result is pi's,
+        // held to the kernel's bound for the conversation's model (boundPiResult): every tool's, a host tool's and a
+        // pi-native one's (web_fetch, web_search, the browser's, a subagent's) alike, as every bridged harness's tool
+        // bridge holds each result. This hook runs on every result pi's tool task writes, so no result reaches the model
+        // around it (MUTATION: returning `result` unbounded here fails the native tool's 16k test).
+        afterTool: async (call, result, api, hookContext: Context) => {
+          const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
+          if (refused) return refused as never;
+          const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
+          return boundPiResult(result, windowOf(agent?.model)) as never;
+        },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
       // the answer before pi stores it, so the answer, pi.usage and the live timeline carry it; unknown stays unknown.
@@ -607,12 +622,28 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
   };
 }
 
-/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, passed
- *  whole within the host's bound (HOST_TOOL_OUTPUT). Each call gets what pi's own tool task gives a tool: the calling
- *  agent's model, resolved in the session's models (its input and input limits, which a file read sizes an image by),
- *  and pi's output stream (the running tool's live slot); and its attempt (`attemptOf`: above 0 for a call the gate did
- *  not pass in this session, pi's rerun after a crash). */
-function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map()) {
+/**
+ * `result` with its text held to the kernel's bound for a model of `contextWindow` (boundResult: the window's share, under
+ * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result: within it,
+ * undefined (the result stands as it is); past it, its text parts as one text cut at the bound with its note, or refused
+ * in words for a window too small for any cut, its images kept after it. Never the oversized text.
+ */
+export function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[] }>(result: R, contextWindow: number | undefined): R | undefined {
+  const parts = result.output;
+  if (!parts) return undefined;
+  const whole = parts.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+  const { text, truncated } = boundResult(whole, contextWindow === undefined ? undefined : { contextWindow });
+  if (!truncated) return undefined;
+  return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
+}
+
+/** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, its text
+ *  held to the kernel's bound for the calling agent's model (boundResult, at `windowOf` its model: the window's share,
+ *  under the host's bound, HOST_TOOL_OUTPUT), as every bridged harness's tool bridge holds it. Each call gets what pi's
+ *  own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and input limits,
+ *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
+ *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). */
+function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -636,12 +667,16 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
         ...(attempt === undefined ? {} : { attempt }),
         ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
-      io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: answer.text });
+      // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
+      // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
+      const window = windowOf(ref);
+      const { text, truncated } = boundResult(answer.text, window === undefined ? undefined : { contextWindow: window });
+      io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
       // with it: what tools_call or a script reads (piNested). A call the model made itself keeps its result as it was.
       const value = answer.structured !== undefined && api.callId.includes("/") ? { details: { [HOST_VALUE]: answer.structured } } : {};
-      return { output: [{ type: "text" as const, text: answer.text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
+      return { output: [{ type: "text" as const, text }, ...images], ...(answer.isError ? { isError: true } : {}), ...value } as never;
     },
   });
 }

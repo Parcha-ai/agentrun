@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
@@ -101,6 +101,10 @@ export interface ClaudeAgentAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** The model's context window, in tokens: the host's bound on one tool result is its share of it (the kernel's
+   *  resultMaxChars), under HOST_RESULT_MAX_CHARS. A session's own (SessionSpec.contextWindow) wins. Absent, and none on
+   *  the session: the host's bound alone. */
+  contextWindow?: number;
   /** The most one image a tool answers with may be, as base64 (default 5 MB, `CLAUDE_AGENT_MAX_IMAGE_BYTES`; at most
    *  10 MB, Anthropic's API's own limit). A larger one is the call's error. */
   maxImageBytes?: number;
@@ -427,6 +431,8 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
         ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
+        // Each tool result held to the model's share of its window: the session's, else this adapter's (none: the host's bound).
+        ...windowBudget(spec.contextWindow ?? options.contextWindow),
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.

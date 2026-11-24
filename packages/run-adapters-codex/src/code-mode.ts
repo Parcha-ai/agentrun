@@ -11,7 +11,7 @@
 //  - gives the model the harness's note about an interrupted turn as a developer message, once per interrupted turn.
 import type { OwnCalls } from "@parcha/agentrun-kernel";
 import type { DriveContext, SessionState } from "./host/kernel.js";
-import type { SessionMachine } from "./host/process.js";
+import type { ResultBudget, SessionMachine } from "./host/process.js";
 import { boundResult, failureText, openTurn, recoveryNote, recoverySystemNote, recoveryUserTurn, toolKey, transcriptOf } from "./host/process.js";
 // cycle with harness.ts: read repairOutput only inside functions, never at module top level (pinned by "code mode and the harness
 // load in either order and the repair reads repairOutput"). A host loads harness.js first, so at that point none of its const bindings is set.
@@ -69,6 +69,9 @@ export interface CodeModeDeps {
   /** The host's record of each `exec` (SessionIO.ownCalls): its row from its rollout lines, and each nested call it makes
    *  named under it before the call reaches the gate. */
   ownCalls?: OwnCalls;
+  /** The bridge's budget (CodexHarnessOptions.resultBudget): a result handed Codex from the log is held to it as the
+   *  bridge holds one it runs. */
+  budget?: ResultBudget;
 }
 
 interface Dangling {
@@ -286,7 +289,7 @@ export function codeMode(deps: CodeModeDeps) {
     // A script's call of a tool with a value gets that value's JSON again, as the first call did (scriptAnswer): the script
     // parses it, so no words go before it.
     if (callId !== undefined && NESTED_CALL.test(callId) && again.sent !== undefined) return again.sent;
-    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`).text;
+    return boundResult(`Recorded earlier in this turn, not run again: ${again.text}`, deps.budget).text;
   }
 
   /** The cell a dangling call waited on, when it is code mode's `wait` (a function call named `wait` with a `cell_id`, and no host tool of
@@ -438,7 +441,7 @@ export function codeMode(deps: CodeModeDeps) {
         shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
-        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output).text;
+        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output, deps.budget).text;
       });
       if (resume && shown.length > 0) journal.append(SHOWN_STREAM, { since, callIds: shown });
       // Every record above is in the log before the outputs are injected.

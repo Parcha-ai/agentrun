@@ -1,0 +1,8 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex, @parcha/agentrun-harness-acp, @parcha/agentrun-serve
+kind: fix
+---
+A tool result is held to the model's context window, not only to the fixed 120,000-character bound: a model with a small window (an Ollama model at 65,536 tokens, a 16k one) is never handed a result that fills its context.
+- `boundResult(text, budget?)` takes the model's window (`{ contextWindow, baseInputTokens? }`): a result may take at most a quarter of what the window leaves (`RESULT_WINDOW_SHARE`), at three characters a token (`RESULT_CHARS_PER_TOKEN`), and never more than `HOST_RESULT_MAX_CHARS`. Past that it is cut with a note saying it was cut to fit the window and how to read on; a window too small for any cut refuses the result in words, and a result of at most 400 characters (`RESULT_ALWAYS_WHOLE_CHARS`) always stands whole, so bounding a bound changes nothing. With no window the bound is exactly as before. `resultMaxChars(budget)` gives the bound, `boundOf(text, whole)` tells whether a text is a bound of another.
+- `SessionSpec.contextWindow` carries the session model's window, and each harness adapter (Claude, Codex, ACP, OpenCode) takes a `contextWindow` option for when the host passes none; Codex and OpenCode are told that window in place of their 272,000 guess.
+- agentrun-serve puts the run's model window from its catalog on every session, and pi now holds every tool result to it too: a host tool's and a pi-native one's (web_fetch, web_search, the browser's), which before reached the model up to pi's own output limits.

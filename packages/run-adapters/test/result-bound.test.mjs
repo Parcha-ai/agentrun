@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { HOST_RESULT_MAX_CHARS } from '@parcha/agentrun-kernel';
 import { openDrive } from '@parcha/agentrun-kernel/kernel';
-import { boundOf, boundResult, RESULT_CHARS_PER_TOKEN, RESULT_WINDOW_SHARE, resultMaxChars, toolBridge } from '@parcha/agentrun-kernel/process';
+import { boundOf, boundResult, RESULT_ALWAYS_WHOLE_CHARS, RESULT_CHARS_PER_TOKEN, RESULT_WINDOW_SHARE, resultMaxChars, toolBridge } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const SMALL = { contextWindow: 16_384 };
@@ -102,6 +102,17 @@ test('a window too small for even a minimal cut refuses the result in words, nev
     assert.ok(text.length < 400, `a short refusal: ${text.length}`);
   }
   assert.deepEqual(boundResult('ok', { contextWindow: 100 }), { text: 'ok' }, 'a result that fits is whole, however small the window');
+});
+
+test('bounding a bound changes nothing: a cut or a refusal, bound again under its budget, stands as it is', () => {
+  const whole = `START ${'i'.repeat(300_000)}`;
+  for (const budget of [undefined, SMALL, { contextWindow: 9_999 }, { contextWindow: 100 }, { contextWindow: 16_384, baseInputTokens: 16_384 }]) {
+    const once = boundResult(whole, budget);
+    assert.deepEqual(boundResult(once.text, budget), { text: once.text }, JSON.stringify(budget));
+    assert.match(boundResult(once.text, budget).text, new RegExp(`${whole.length}`), 'the note still names the whole length');
+  }
+  assert.ok(boundResult('r'.repeat(RESULT_ALWAYS_WHOLE_CHARS + 1), { contextWindow: 100 }).truncated, 'past the floor a tiny window still refuses');
+  assert.deepEqual(boundResult('r'.repeat(RESULT_ALWAYS_WHOLE_CHARS), { contextWindow: 100 }), { text: 'r'.repeat(RESULT_ALWAYS_WHOLE_CHARS) }, 'a result no longer than a refusal is whole');
 });
 
 test('boundOf tells a bound of a text from a cut of another', () => {

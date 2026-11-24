@@ -17,9 +17,10 @@ import { type GateAnswer, type GateCall, HOST_RESULT_MAX_CHARS, type HostTool as
  * tools turned off, these are its only tools, so every side effect it can
  * cause has an intent in the log before it runs.
  *
- * Every result a harness gets passes here, so here it is held to the host's
- * bound: a text past HOST_RESULT_MAX_CHARS keeps its start and says where it
- * was cut (`boundResult`), the call's record keeping it whole.
+ * Every result a harness gets passes here, so here it is held to the bound:
+ * HOST_RESULT_MAX_CHARS, or less where the harness passes its model's context
+ * window (`ToolBridgeOptions.budget`, `resultMaxChars`). A longer text keeps its
+ * start and says where it was cut (`boundResult`), the call's record keeping it whole.
  */
 
 /** What a call returns to the harness. */
@@ -33,7 +34,7 @@ export interface ToolResult {
   images?: readonly ToolImage[];
   /** The answer as a value, where the tool gives one (recorded with its outcome): what a script's nested call reads. */
   structured?: JsonValue;
-  /** The text was cut at HOST_RESULT_MAX_CHARS (`boundResult`); it says so in its last line. */
+  /** The text was cut at its bound, or refused for a window too small for any cut (`boundResult`); it says so. */
   truncated?: true;
   /** The gate refused the call: the text is its words, and nothing of the call was written or run. */
   refused?: true;
@@ -75,6 +76,9 @@ export interface ToolBridgeOptions {
   live?: boolean;
   /** How much of a partial output an interrupted result quotes. Default 2000 characters. */
   partialChars?: number;
+  /** What the harness's model can take of one result (its context window): every result is held to `resultMaxChars` of
+   *  it. Absent: HOST_RESULT_MAX_CHARS alone. */
+  budget?: ResultBudget;
 }
 
 export interface ToolBridge {
@@ -185,12 +189,13 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         );
         // A tool answers in text, or in text with images (a screenshot) and its value: they come back as recorded.
         const { text: whole, images, structured } = typeof output === 'object' && output !== null ? (output as ToolOutput) : { text: String(output), images: undefined, structured: undefined };
-        const { text, truncated } = boundResult(String(whole));
+        // The bound uses the window the harness passed (MUTATION: dropping `options.budget` here fails the bridge's 16k test).
+        const { text, truncated } = boundResult(String(whole), options.budget);
         if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
       } catch (err) {
         if (err instanceof EffectFailure) {
-          const { text, truncated } = boundResult(failureText(err.error, options.partialChars));
+          const { text, truncated } = boundResult(failureText(err.error, options.partialChars), options.budget);
           if (fresh && live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
           return { text, isError: true, ...(err.error.interrupted ? { interrupted: true } : {}), ...(truncated ? { truncated } : {}) };
         }
@@ -216,12 +221,12 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           ctx.halt?.(err);
           throw err;
         }
-        const { text, truncated } = boundResult(err instanceof Error ? err.message : String(err));
+        const { text, truncated } = boundResult(err instanceof Error ? err.message : String(err), options.budget);
         if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: true, ...(truncated ? { truncated } : {}) };
       }
       const { text: whole, images, structured } = typeof output === 'object' && output !== null ? output : { text: String(output), images: undefined, structured: undefined };
-      const { text, truncated } = boundResult(String(whole));
+      const { text, truncated } = boundResult(String(whole), options.budget);
       if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
       return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
     };
@@ -261,19 +266,99 @@ export function failureText(error: EffectError, partialChars = 2000): string {
   return `${message}\nPartial output before the interruption:\n${clip(text, partialChars)}`;
 }
 
+/** What a harness's model can take of one tool result: its context window, and what every request of the session already
+ *  spends of it. Either may be absent; with no usable window the host's fixed bound (HOST_RESULT_MAX_CHARS) alone holds. */
+export interface ResultBudget {
+  /** The model's context window, in tokens. Not a positive finite number (absent, 0, NaN, Infinity): unknown. */
+  contextWindow?: number;
+  /** Tokens of the window each request spends before any tool result (its system prompt, its tool list), when the
+   *  harness knows them. Default 0: the share below leaves room for them. */
+  baseInputTokens?: number;
+}
+
+/** The most of a model's context window one tool result may take: a quarter, so a turn has room for its prompt, a few
+ *  results and the answer. Conservative on purpose: a result past it is cut, never handed to a model it would fill. */
+export const RESULT_WINDOW_SHARE = 0.25;
+
+/** Characters per token when a window becomes characters: 3, under the 4 English prose averages, so code, JSON and
+ *  non-Latin text (fewer characters a token) still fit. */
+export const RESULT_CHARS_PER_TOKEN = 3;
+
+/** The least of a result a cut keeps: below it (a window too small for its note and this much text) the result is refused
+ *  in words instead, never passed through. */
+export const RESULT_LEAST_KEPT_CHARS = 200;
+
+/** A result at most this long is never cut or refused, however small the window: a refusal's words (under 300 characters)
+ *  would cost the window about as much. It also makes the bound idempotent: a cut or a refusal, bound again under the same
+ *  budget, is unchanged (pi bounds a host tool's answer, then again in its afterTool hook). */
+export const RESULT_ALWAYS_WHOLE_CHARS = 400;
+
 /**
- * `text` within HOST_RESULT_MAX_CHARS characters, as a harness gets a call's
- * result: a longer one keeps its start, cut before a character written as a
- * surrogate pair rather than between its halves, and ends with a line saying
- * so, `[cut at N of M characters]`, counted in the bound. `truncated` when cut.
+ * The most characters one tool result reaches a model with, for `budget`: HOST_RESULT_MAX_CHARS, or less, a
+ * RESULT_WINDOW_SHARE of the window left after the base input at RESULT_CHARS_PER_TOKEN, when that is smaller. No usable
+ * window: HOST_RESULT_MAX_CHARS. A base input at or past the window: 0 (every result past its refusal's words is refused).
  */
-export function boundResult(text: string): { text: string; truncated?: true } {
-  if (text.length <= HOST_RESULT_MAX_CHARS) return { text };
-  const note = (kept: number) => `\n[cut at ${kept} of ${text.length} characters]`;
+export function resultMaxChars(budget?: ResultBudget): number {
+  const window = budget?.contextWindow;
+  if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return HOST_RESULT_MAX_CHARS;
+  const base = budget?.baseInputTokens;
+  const room = Math.max(0, window - (typeof base === 'number' && Number.isFinite(base) && base > 0 ? base : 0));
+  // The bound uses the passed window (MUTATION: returning HOST_RESULT_MAX_CHARS here fails every 16k-window test).
+  return Math.min(HOST_RESULT_MAX_CHARS, Math.floor(room * RESULT_WINDOW_SHARE * RESULT_CHARS_PER_TOKEN));
+}
+
+/** A harness's `resultBudget` option for a model of `contextWindow`, or none when no window is known (the host's bound
+ *  alone): what each adapter spreads into its harness's options, the session's window or its own. */
+export const windowBudget = (contextWindow: number | undefined): { resultBudget?: ResultBudget } => (contextWindow ? { resultBudget: { contextWindow } } : {});
+
+/** The line a cut result ends with: the host's bound's, as it always read, or the window's, which says why and how to go on. */
+function cutNote(kept: number, total: number, windowed: boolean): string {
+  return windowed
+    ? `\n[kept ${kept} of ${total} characters: the result was cut to fit this model's context window. Ask for less, or read on from character ${kept} where the tool takes an offset.]`
+    : `\n[cut at ${kept} of ${total} characters]`;
+}
+
+/** What a result too large for a window too small to cut it in reads as: none of it. */
+function refusedNote(total: number, max: number): string {
+  return `[not shown: this result is ${total} characters, and this model's context window leaves room for at most ${max} characters of a tool result. Ask for much less: a narrower query, or a small range where the tool takes an offset.]`;
+}
+
+/**
+ * `text` within `resultMaxChars(budget)` characters, as a harness gets a call's result. Within it: whole. Past it: its
+ * start, cut before a character written as a surrogate pair rather than between its halves, then a line saying so,
+ * counted in the bound: `[cut at N of M characters]` at the host's bound (no budget, or a window too large to bind: as it
+ * always read), or the window's note (kept N of M, cut to fit this model's context window; ask for less, or read on where
+ * the tool takes an offset). Where the bound leaves less than RESULT_LEAST_KEPT_CHARS beside its note, the result is
+ * refused in a short line of words instead (which may itself pass a bound that small; it carries none of the result).
+ * A text of at most RESULT_ALWAYS_WHOLE_CHARS is whole under any budget, so bounding a bound changes nothing. The
+ * original oversized text is never returned. `truncated` when cut or refused.
+ */
+export function boundResult(text: string, budget?: ResultBudget): { text: string; truncated?: true } {
+  const max = resultMaxChars(budget);
+  if (text.length <= max || text.length <= RESULT_ALWAYS_WHOLE_CHARS) return { text };
+  const windowed = max < HOST_RESULT_MAX_CHARS;
   // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
-  let kept = HOST_RESULT_MAX_CHARS - note(HOST_RESULT_MAX_CHARS).length;
+  let kept = max - cutNote(max, text.length, windowed).length;
+  if (kept < RESULT_LEAST_KEPT_CHARS) return { text: refusedNote(text.length, max), truncated: true };
   if ((text.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
-  return { text: `${text.slice(0, kept)}${note(kept)}`, truncated: true };
+  return { text: `${text.slice(0, kept)}${cutNote(kept, text.length, windowed)}`, truncated: true };
+}
+
+/**
+ * Whether `text` is `whole` as some bound left it (boundResult's, under any budget): `whole` itself, its start with a cut
+ * note of `whole`'s length, or the refusal of a result that long. A harness that compares a call's two records (the
+ * store's whole result, what its model was handed) reads them as one this way, without knowing the budget it ran under.
+ */
+export function boundOf(text: string, whole: string): boolean {
+  if (text === whole) return true;
+  // The note is the text's last line: matched at its end, so a note-like line inside the result is never read as it.
+  const cut = /\n\[(?:cut at|kept) (\d+) of (\d+) characters(?:\]|: [^\n]*\])$/.exec(text);
+  if (cut && Number(cut[2]) === whole.length) {
+    const kept = Number(cut[1]);
+    return [true, false].some((windowed) => text === `${whole.slice(0, kept)}${cutNote(kept, whole.length, windowed)}`);
+  }
+  const refused = /^\[not shown: this result is (\d+) characters, .* at most (\d+) characters of a tool result\./.exec(text);
+  return refused !== null && Number(refused[1]) === whole.length && text === refusedNote(whole.length, Number(refused[2]));
 }
 
 /** At most `max` characters, with a marker when cut. */

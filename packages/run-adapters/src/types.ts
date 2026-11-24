@@ -24,7 +24,8 @@ export interface ToolImage {
  * The most characters a host tool's result reaches a harness with: its text as the model reads it (`text.length`). The
  * kernel's tool bridge, which every host tool's result passes on its way to a harness, cuts every result past it: its
  * start, cut where a character ends, then a line saying where it was cut (`[cut at N of M characters]`), the call's end
- * flagged `truncated`; the call's record keeps it whole. Each harness tells its CLI to pass a result this long to the
+ * flagged `truncated`; the call's record keeps it whole. A model whose context window the harness knows gets less, its
+ * window's share (process/tools.ts resultMaxChars, boundResult): this is the ceiling, never raised by a large window. Each harness tells its CLI to pass a result this long to the
  * model whole: the Claude Agent CLI otherwise saves one past 50,000 characters to a file and tells the model to read it
  * (which a confined session cannot), and Codex cuts the middle of one past its truncation policy. The Claude Agent CLI
  * takes at most 500,000 here.
@@ -172,6 +173,10 @@ export interface SessionSpec {
   tier?: NodeRequest["tier"];
   effort?: NodeRequest["effort"];
   thinking?: NodeRequest["thinking"];
+  /** The session model's context window in tokens, when the host knows it (its catalog's). Each harness holds every tool
+   *  result to its share of it (process/tools.ts resultMaxChars), under HOST_RESULT_MAX_CHARS; a harness that tells its
+   *  CLI a window tells it this one. Absent: the harness's own (its adapter's option), else the host's bound alone. */
+  contextWindow?: number;
 }
 
 /** A paid model request, as the session is about to send it. */

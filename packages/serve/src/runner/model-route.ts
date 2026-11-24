@@ -57,6 +57,10 @@ export interface ModelRoute {
    *  asks its level by name (LEVELS_BY_NAME: `adaptiveThinking`), so the run's effort reaches it; Particle's also keeps
    *  its window and ceiling, and marks its Messages hop as carrying Chat Completions (`translatedChatCompletions`). */
   readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap; readonly translatedChatCompletions?: boolean };
+  /** The model's context window in tokens, from the catalog entry (an Ollama model's, its num_ctx), on every wire: the
+   *  session's window (SessionSpec.contextWindow), which each tool result is held to its share of. Absent when the
+   *  catalog names none. */
+  readonly contextWindow?: number;
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -105,7 +109,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // The settings serve registered for a gateway model, carried on either wire, so pi's session reads the same model whether
   // it speaks Messages or Responses to the gateway.
   const settings = { ...sees, ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}), ...(target.thinkingLevelMap ? { thinkingLevelMap: target.thinkingLevelMap } : {}) };
-  const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
+  const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
   // Its requests name the claim's run, turn and attempt only where that origin is serve's own gateway (gatewayHeadersAt).
   if (chosen.model.provider === "anthropic") {

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, ModelPort, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
-import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { acpHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
@@ -43,6 +43,10 @@ export interface AcpAdapterOptions {
   callIdWaitMs?: number;
   /** How long the agent may take to start and open its session. Default 60 s. */
   startMs?: number;
+  /** The model's context window, in tokens: the host's bound on one tool result is its share of it (the kernel's
+   *  resultMaxChars), under HOST_RESULT_MAX_CHARS. A session's own (SessionSpec.contextWindow) wins. Absent, and none on
+   *  the session: the host's bound alone. */
+  contextWindow?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 
@@ -109,6 +113,8 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
       const harness = acpHarness({
         recipe,
         tools: spec.tools.map((tool) => bridgeTool(tool)),
+        // Each tool result held to the model's share of its window: the session's, else this adapter's (none: the host's bound).
+        ...windowBudget(spec.contextWindow ?? options.contextWindow),
         ...(instructions ? { instructions } : {}),
         dir,
         ...(io.cwd ? { cwd: io.cwd } : {}),

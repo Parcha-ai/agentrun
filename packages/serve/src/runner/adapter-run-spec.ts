@@ -855,6 +855,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     tools: sessionTools,
     context: "fresh",
     ...(thinking ? { thinking: thinking as SessionSpec["thinking"] } : {}),
+    // The run's model's window, from its route's catalog entry: pi holds every tool result to its share (boundPiResult).
+    ...(route.contextWindow ? { contextWindow: route.contextWindow } : {}),
   };
 
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read

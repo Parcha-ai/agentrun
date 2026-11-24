@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { defersCatalog, type GateAnswer, type GateCall } from '@parcha/agentrun-kernel';
+import type { ResultBudget } from '@parcha/agentrun-kernel/process';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   askGate,
@@ -180,6 +181,9 @@ export interface ClaudeCodeHarnessOptions {
   /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
    *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
   deferCatalog?: boolean;
+  /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
+   *  it (boundResult's budget). Absent: the host's bound alone (HOST_RESULT_MAX_CHARS). */
+  resultBudget?: ResultBudget;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -584,6 +588,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const released: { callId: string; key: string }[] = [];
         const bridge = toolBridge(ctx, tools, {
           ...(gated ? { gate: gated } : {}),
+          // Each result held to the session model's share of its window, when the adapter passed it.
+          ...(options.resultBudget ? { budget: options.resultBudget } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => logged(callId),
         });

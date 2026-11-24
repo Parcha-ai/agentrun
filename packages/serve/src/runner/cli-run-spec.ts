@@ -151,6 +151,15 @@ function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awa
   return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER || !modelWire(wire));
 }
 
+/** The context window of the run's model (modelsOf), in tokens, from its catalog entry, or the entry that bills it (its
+ *  entry's priceModel) where the chosen one is not listed: the session's window (SessionSpec.contextWindow), which the
+ *  kernel's tool bridge holds each result to its share of. Undefined where neither names one: the host's bound alone. */
+function chosenWindow(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>): number | undefined {
+  const windowOf = (ref: ModelRef) => (chosen.models.getModel(ref.provider, ref.modelId) as { contextWindow?: unknown } | undefined)?.contextWindow;
+  const window = windowOf(chosen.model) ?? windowOf(entry.priceModel(env, chosen.model));
+  return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+}
+
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
  *  at here, as its run's spec prices it (modelsOf, chosenCapModel), before any run: a save's cap warning (cap-short.ts)
  *  prices its least step on it. */
@@ -494,6 +503,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     else personOnly = RECIPE_TURN_PERSON_ONLY;
   }
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  const window = chosenWindow(entry, env, chosen);
   await planBeforeRun(env, chosen.model);
   if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
     const claude = await import("@parcha/agentrun-harness-claude");
@@ -711,6 +721,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), results), ...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
+    // The run's model's window, from its catalog: the CLI adapter holds each tool result to its share (and Codex and
+    // OpenCode are told it in place of their 272,000 guess).
+    ...(window ? { contextWindow: window } : {}),
   };
 
   // A typed input's other fields follow its content as one json block (inputMessage).

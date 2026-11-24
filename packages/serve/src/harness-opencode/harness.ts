@@ -19,7 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type ResultBudget, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
 import { danglingCalls, settleCall } from "./transcript.js";
@@ -74,6 +74,9 @@ export interface OpenCodeHarnessOptions {
   price?: ModelProxyOptions["price"];
   maxOutputTokens?: number;
   contextWindow: number;
+  /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
+   *  it (boundResult's budget). Absent: the host's bound alone (HOST_RESULT_MAX_CHARS). */
+  resultBudget?: ResultBudget;
   /** How long one try of the event stream may take to open. Default EVENT_CONNECT_MS. */
   eventConnectMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -280,6 +283,7 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     const bridge = toolBridge(ctx, options.tools, {
       ...(gate ? { gate: async (call: GateCall) => (await barrier(), gate(call)) } : {}),
       beforeNever: () => barrier(),
+      ...(options.resultBudget ? { budget: options.resultBudget } : {}),
     });
     // A resumed session: each call OpenCode started and never ended goes through the shared decision before OpenCode
     // starts again. A call that never reached its intent runs through the bridge under its own id (the gate, its intent,

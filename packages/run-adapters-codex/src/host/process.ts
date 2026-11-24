@@ -7,9 +7,9 @@ import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
 export {
-  boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, resumeUnstartedCalls, toolKey, transcriptOf,
+  boundOf, boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, resumeUnstartedCalls, toolKey, transcriptOf,
 } from "@parcha/agentrun-kernel/process";
-export type { BuiltinStart, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
+export type { BuiltinStart, ResultBudget, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 
 /** What a call answered beside its text: its images, and its value (a computer tool's, its images' data left out). */
 export type CallExtras = { readonly images?: readonly ToolImage[]; readonly structured?: JsonValue };
