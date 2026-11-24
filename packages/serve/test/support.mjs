@@ -42,6 +42,12 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
 
+// Every test's server reads session files from an empty home of its own, never the runner's HOME (GET /v2/wrapped and
+// setup's import read `sessionsHome`): a long history there would make a sweep of every GET route read it all. A test
+// of those reads passes its own `sessionsHome`.
+const SESSIONS_HOME = { home: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-")) };
+process.on("exit", () => rmSync(SESSIONS_HOME.home, { recursive: true, force: true }));
+
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
 // and names its own fake (fixtures/fake-ollama.mjs).
@@ -490,7 +496,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   if (harnesses) await linkHarnesses(data, harnesses === true ? {} : harnesses);
   // mcpLoopback: a test's server is a local install, as its operator would say (its fake MCP servers are on loopback);
   // a case that wants the hosted rule passes mcpLoopback: false.
-  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, ...options });
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s", mcpLoopback: true, sessionsHome: SESSIONS_HOME, ...options });
   // A runner beside the server on the same data (the CLI start's server-and-runner): it claims and runs what the server
   // starts, so a test reads a run that runs, not one that queues forever. `runner: false` leaves it off for a test that
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
