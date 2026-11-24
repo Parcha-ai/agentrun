@@ -428,7 +428,8 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
 
 /** The check the serving promotion was decided on, as the cost summary says it: the champion (championOf) of the learned
  *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's check numbers
- *  (the share of the inputs it answered alone that were right on every field, against the agent's own 100%). `cleared`:
+ *  (the share of the inputs it answered alone that were right on every field, and the agent's share on the same inputs
+ *  against the same known answers: `agent_agreed`, 100 on a record kept before it was counted). `cleared`:
  *  that share reached its bar `agree_min` (`agreed` of `alone`), as the check's joint floor needs of every promotion it
  *  decides (learn/field-check.ts); a record kept before that floor can fall short. Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
  *  on no input (a dry run). The champion skips what `refused` names (the purge gate's). */
@@ -438,7 +439,8 @@ export function servingReplayOf(records: readonly PromotionRecord[], runs: reado
   if (!check?.n) return null;
   const agreed = check.agreed ?? 0, alone = check.alone ?? 0;
   const agreement = checkShares({ n: check.n, agreed, alone }).agreement;
-  return { n: check.n, workflow_pct: Math.round(agreement * 1000) / 10, agent_pct: 100, cleared: agreement + 1e-9 >= check.agree_min, agreed, alone, agree_min: check.agree_min };
+  const agent = alone ? (check.agent_agreed ?? alone) / alone : 1;
+  return { n: check.n, workflow_pct: Math.round(agreement * 1000) / 10, agent_pct: Math.round(agent * 1000) / 10, cleared: agreement + 1e-9 >= check.agree_min, agreed, alone, agree_min: check.agree_min };
 }
 
 /** What run `runId`'s learning spent, as its cost per run counts it, over every round a follow-up opened (roundsOf): what

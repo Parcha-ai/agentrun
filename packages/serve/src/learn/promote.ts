@@ -159,9 +159,15 @@ export interface CheckDisagreement {
   /** The decision the grader said they differ on, or why its verdict could not be had (cut to CHECK_TEXT_MAX). */
   readonly differs_on?: string;
   /** The fields the draft's answer had wrong on it, against each field's known answer (CheckRecord.fields): agree_on's
-   *  paths, or `answer` for the whole answer. */
+   *  paths, or `answer` for the whole answer and `answer.<key>` for each key of a grade's expected answer. */
   readonly fields?: readonly string[];
+  /** Of those, each one known from a label or a grade (never the agent's own answer, `agent` above): the known answer
+   *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say. */
+  readonly expected?: readonly CheckKnown[];
 }
+
+/** A known answer a draft missed on one field of one input: the field, its source, and the value as text. */
+export type CheckKnown = { readonly field: string; readonly known: "label" | "grade"; readonly value: string };
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone right
  *  on every field, `alone` answered alone (no escalate, no failed step), each field's verdict (`fields`,
@@ -173,6 +179,10 @@ export type CheckRecord = CheckBar & {
   readonly n?: number;
   readonly agreed?: number;
   readonly alone?: number;
+  /** Of `alone`, how many the agent's own answers were right on every field, against the same known answers (an answer
+   *  graded wrong is its miss): the agent's side of `agreed`. Absent on a record kept before it was counted, which was
+   *  judged against the agent's own answers only (so all of them). */
+  readonly agent_agreed?: number;
   readonly fields?: Readonly<Record<string, FieldVerdict>>;
   readonly of?: readonly string[];
   readonly cost_usd?: number | null;
@@ -205,6 +215,7 @@ export interface CheckTurns {
   readonly n: number;
   readonly agreed: number;
   readonly alone: number;
+  readonly agent_agreed?: number;
   readonly fields?: CheckTally["fields"];
   readonly of: readonly string[];
   readonly outcomes: ReplayOutcomes;
@@ -328,14 +339,16 @@ export const dropGrades = async (settings: Pick<Settings, "get" | "putIfAbsent" 
 };
 
 /** A check's disagreement with what it copied from its run blanked: its run id and which way the draft went (an answer,
- *  a hand-back, a failed step) and the fields it had wrong (the definition's names, no run text) kept, its input, the
- *  agent's answer, the draft's and the grader's words gone. */
+ *  a hand-back, a failed step) and the fields it had wrong (the definition's names, no run text) and where each known
+ *  answer came from kept, its input, the agent's answer, the draft's, the known answers' values and the grader's words
+ *  gone. */
 const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
   run: one.run, input: "", agent: null,
   ...(one.draft !== undefined ? { draft: "" } : {}),
   ...(one.escalated !== undefined ? { escalated: "" } : {}),
   ...(one.failed ? { failed: true as const } : {}),
   ...(one.fields ? { fields: one.fields } : {}),
+  ...(one.expected ? { expected: one.expected.map(({ field, known }) => ({ field, known, value: "" })) } : {}),
 });
 
 /** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
@@ -661,6 +674,13 @@ export const valueAtPath = (value: unknown, path: string): unknown => {
 
 /** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
 export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
+
+/** An answer's JSON object without `keys` (a grade's expected answer's own keys): the rest of it, which a corrected
+ *  answer still compares with the agent's. Undefined when the answer is none, or no JSON object. */
+export const answerOmitted = (answer: string | null, keys: readonly string[]): Record<string, unknown> | undefined => {
+  const value = answer === null ? undefined : valueOf(answer);
+  return isObject(value) ? Object.fromEntries(Object.keys(value).filter((key) => !keys.includes(key)).map((key) => [key, value[key]])) : undefined;
+};
 
 /** An answer's JSON object cut to `keys` (a grade's expected answer's own keys), each it holds: what that expected answer
  *  is compared with on a whole answer. Undefined when the answer is none, or no JSON object. */

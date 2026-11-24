@@ -75,7 +75,7 @@ export const cliLearningOf = (body: unknown): CliLearningBinding | undefined => 
 export function learningSettingForBody(body: unknown): LearningSetting | undefined {
   if (!isObject(body) || body.learning === undefined) return undefined;
   if (cliLearningOf(body) && body.learning === "notes") return true;
-  return learningSettingIssue(body.learning) === undefined ? body.learning as LearningSetting : undefined;
+  return learningSettingIssue(body.learning, "learning", true) === undefined ? body.learning as LearningSetting : undefined;
 }
 export type { SdkBinding } from "../sdk/runtimes.js";
 export type AgenticBody = { sourceSync?: SourceSyncBinding; cli_learning?: CliLearningBinding; sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; maxRequests?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" | "repository" };

@@ -108,19 +108,27 @@ lays it replays it on the inputs of the agent's last `compile_after` completed r
 workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
 (`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, a
 label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`, cut to the field),
-else the agent's own recorded answer to it; no teacher is read. With no agree_on, a graded input's whole answer is judged
-on the expected answer's keys alone (the rest of the answer is not judged there), though the grader's verdict on the
-pair is still read and kept. A grade with no expected answer still says something: `correct` makes the agent's answer a
-known one (from the grade); not correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any
-other answer unjudged (under agree_on it names no field, so it changes nothing). A field known from a grade passes when
-the draft is right on at least `agree_min` of those inputs and within `margin` (0.02) of the agent's own accuracy on
-them (a correction, where the agent was wrong, is no free pass); one known only from the agent passes when at least the
-agent's self-agreement on it less the margin, or `agree_min` where no self-agreement was measured (none is yet), said
-what the agent said. It serves when at least `alone_min` of the inputs were answered alone, at least `agree_min` of those
-were right on every field at once (the joint floor: misses spread over several fields add up), and every field passes;
-a hold names the failing fields (`check.fields`, each with its counts and reason) and each disagreement the fields it had
-wrong. A connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No
-agree_on path may hold a `__proto__`, `constructor` or `prototype` segment. Against the agent, the answers are compared on the fields
+else the agent's own recorded answer to it; no teacher is read. With no agree_on, a graded input's whole answer is two
+kinds of field: each key of the grade's expected answer (`answer.<key>`) judged against it, and the whole answer
+(`answer`) still judged against the agent's, as an ungraded input's is (equal, or the same decision by the grader's
+verdict); where the grade corrected the agent on a key, the rest of the answer outside the grade's keys must equal the
+agent's (or the grader call the two the same decision). A grade with no expected answer still says something: not
+correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
+agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
+grade, at the same bar: a thumbs-up never makes the check stricter). An unjudged input is never right: not on every
+field at once, and a field judged on fewer than `alone_min` of the inputs that carried it fails. A field known from a
+grade passes when the draft is right on at least `agree_min` of those inputs and within `margin` (0.02) of the agent's
+own accuracy on them (a correction, where the agent was wrong, is no free pass); one known only from the agent passes
+when at least the agent's self-agreement on it less the margin, or `agree_min` where no self-agreement was measured
+(none is yet), said what the agent said. It serves when at least `alone_min` of the inputs were answered alone, at least
+`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
+every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
+together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
+each a label or grade gave (`expected`, its value and source), which the recompile is asked to say. The record counts
+the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
+every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
+connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new
+agree_on path may hold a `__proto__` segment (a saved definition keeps its setting on read). Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
