@@ -38,10 +38,20 @@ const MOVE = "Move it to the runner";
 
 const settle = async () => { for (let i = 0; i < 40; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); }); };
 
+/** How the page's capabilities reads answer: held ones wait, unanswered, until `release`; while `failing`, one answers
+ *  500; else CAPS. */
+type CapsReads = { held: boolean; failing: boolean; waiting: (() => void)[]; release: () => void };
+const capsReads = (state: { held?: boolean; failing?: boolean } = {}): CapsReads => {
+  const reads: CapsReads = { held: false, failing: false, ...state, waiting: [], release: () => { reads.held = false; reads.waiting.splice(0).forEach((answer) => answer()); } };
+  return reads;
+};
+const capsAnswer = (reads: CapsReads) => (reads.failing ? json(500, { error: { code: "internal", message: "capabilities down", retryable: true } }) : json(200, CAPS));
+
 /** The Playground on BOXED (OTHER beside it), whose runs are refused with `details`, its request naming `revision` when
- *  given; `saved` holds each definition save the page sent and its agent, `runs` each run request's agent and body. A
- *  save makes the next revision the agent's current one, as serve does. */
-async function open(details: Record<string, unknown>, { revision }: { revision?: string } = {}) {
+ *  given, its capabilities read as `capabilities` says (each answered at once by default); `saved` holds each definition
+ *  save the page sent and its agent, `runs` each run request's agent and body. A save makes the next revision the
+ *  agent's current one, as serve does. */
+async function open(details: Record<string, unknown>, { revision, capabilities = capsReads() }: { revision?: string; capabilities?: CapsReads } = {}) {
   const saved: { agent: string; body: { definition: Record<string, unknown>; note?: string }; ifMatch: string | null }[] = [];
   const runs: { agent: string; body: Record<string, unknown> }[] = [];
   const agents: Record<string, Agent> = { boxed: BOXED, other: OTHER };
@@ -68,7 +78,10 @@ async function open(details: Record<string, unknown>, { revision }: { revision?:
     if (agent && path === `/v2/agents/${id}/revisions`) return json(200, { revisions: revisionsOf(agent), next_cursor: null });
     if (agent && path === `/v2/agents/${id}`) return json(200, agent, { etag: `"${agent.revision}"` });
     if (path === "/v2/auth/session") return json(200, { accounts: false, secrets_writable: true });
-    if (path === "/v2/capabilities") return json(200, CAPS);
+    if (path === "/v2/capabilities") {
+      if (!capabilities.held) return capsAnswer(capabilities);
+      return new Promise<Response>((answer) => capabilities.waiting.push(() => answer(capsAnswer(capabilities))));
+    }
     if (path === "/v2/settings/claude-login") return json(200, SIGNED_IN);
     if (path === "/v2/settings/chatgpt") return json(200, { state: "signed_out" });
     if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
@@ -161,6 +174,37 @@ describe("the Playground's offer to move an agent in a box to the runner, where 
     await settle();
     expect(page.saved.length, "a second move of an agent already on the runner saved a revision equal to its current one").toBe(1);
     expect(page.host.textContent).toContain("It is on the runner already: nothing to save.");
+  });
+
+  // Which tools run only in a box is the capabilities' word (sandbox_only). A move taken before they are read, or after
+  // their read failed, knows none of them: it reads them itself before it builds the edit, and saves nothing without them.
+  it("the capabilities not answered yet when the move is taken: it saves nothing until they answer, then the agent without bash", async () => {
+    const reads = capsReads({ held: true });
+    const page = await open({ unbound: [], missing: {}, login_on_runner: true }, { capabilities: reads });
+    await act(async () => page.move()!.click());
+    await settle();
+    expect(page.saved.map((s) => s.body.definition.tools), "the move saved the agent on the runner before the capabilities said which tools run only in a box").toEqual([]);
+    reads.release();
+    await settle();
+    expect(page.saved.map((s) => s.body.definition.tools), "once the capabilities answered, the move saved the agent on the runner without bash, once").toEqual([["read"]]);
+    expect(page.saved[0].body.definition.computer).toEqual({ kind: "none" });
+    expect(page.host.textContent).toContain("Moved to the runner without bash, which runs only in a box.");
+  });
+
+  it("the capabilities' read failed: the move reads them again, saves nothing while that read fails and says so, and moves the agent without bash once it answers", async () => {
+    const reads = capsReads({ failing: true });
+    const page = await open({ unbound: [], missing: {}, login_on_runner: true }, { capabilities: reads });
+    await act(async () => page.move()!.click());
+    await settle();
+    expect(page.saved.map((s) => s.body.definition.tools), "the move saved the agent though the capabilities, which say which tools run only in a box, could not be read").toEqual([]);
+    expect(page.host.textContent).toContain("The move did not save: the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
+    reads.failing = false;
+    const again = page.move();
+    expect(again, "the offer after a failed move").toBeDefined();
+    await act(async () => again!.click());
+    await settle();
+    expect(page.saved.map((s) => s.body.definition.tools), "the move taken again, the capabilities read").toEqual([["read"]]);
+    expect(page.host.textContent).toContain("Moved to the runner without bash, which runs only in a box.");
   });
 
   it("a refusal without details.login_on_runner offers no move", async () => {
