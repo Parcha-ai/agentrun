@@ -367,7 +367,7 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 600_000 }), (error) => error.name === "TimeoutError");
 	await turn();
 	t.mock.timers.tick(600_000);
-	await refusedAtBound;
+	await firedOnMockedClock(refusedAtBound);
 });
 
 test("kill is the shared pid kill of the sh's recorded pid, as root: the command and every process under it end, wait answers, and its directory goes", async (t) => {
@@ -473,6 +473,23 @@ const clockedTimeouts = (t) =>
 		setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
 		return controller.signal;
 	});
+/** The words a bound left on the real clock fails with. */
+const MOCKED_CLOCK = "the stream bound fired on the mocked clock, not real time";
+/**
+ * Waits on `settled` (the refusal at a bound just ticked past) for at most 5 s of real time. A bound still on the real
+ * clock fails here in words, not at the test's timeout. The deadline is a setInterval, which stays real while only
+ * setTimeout is mocked.
+ */
+const firedOnMockedClock = async (settled) => {
+	const started = performance.now();
+	let deadline;
+	try {
+		await Promise.race([settled, new Promise((_, fail) => (deadline = setInterval(() => fail(new Error(`${MOCKED_CLOCK}: no refusal within 5 s of real time`)), 5_000)))]);
+	} finally {
+		clearInterval(deadline);
+	}
+	assert.ok(performance.now() - started < 5_000, MOCKED_CLOCK);
+};
 
 /** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
 const within = async (promise, what, ms = 10_000) => {
@@ -1018,7 +1035,7 @@ test("a start that does not hear `started` within its bound ends the command: it
 	const refused = assert.rejects(starting, (error) => error.name === "TimeoutError");
 	await turn();
 	t.mock.timers.tick(600_000);
-	await refused;
+	await firedOnMockedClock(refused);
 	// The sandbox's late `started`, said after the bound: the socket is closed, so it reaches nothing.
 	streams.releaseStarted();
 	const [opened] = streams.opened;
