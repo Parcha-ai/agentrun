@@ -68,7 +68,7 @@ describe("the compare page", () => {
     RUNS.run_long = { run: run("run_long"), trace: { ...TRACE, spans: TRACE.spans.slice(0, 10), dropped: 14 } };
     const { host } = await shown(["run_a", "run_long"]);
     delete RUNS.run_long;
-    expect(host.querySelector("[data-partial]")!.textContent).toBe("The second run's trace holds its first 10 requests and calls; 14 later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the whole run's.");
+    expect(host.querySelector("[data-partial]")!.textContent).toBe("The second run's trace holds its first 10 requests and calls; 14 later ones are not counted. Its figures from the trace are at least what is shown, and no difference is said of them. Its cost is the run's own, not summed from the trace.");
     const figures = table(host, "The runs in figures");
     expect(figures[1]![2]).toMatch(/^at least \d+$/);
     expect(figures.filter((row) => row[0] !== "Cost").every((row) => row[3] === "–Not said")).toBe(true);
