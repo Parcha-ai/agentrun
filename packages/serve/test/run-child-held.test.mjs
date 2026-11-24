@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
 import { test } from "node:test";
@@ -27,6 +27,7 @@ const host = await import("../dist/runner/run-child-host.js");
 const live = await import("../dist/live-reach.js");
 const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
+const { settingFor } = await import("../dist/claude-login.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -240,7 +241,7 @@ function staysDeps(data, kind, login, live = []) {
     store: {
       runs: { get: async (id) => ({ id, agentId: "agent-own", revisionId: "rev-own" }), launch: async (id) => ({ sealed: id === "run-keyed" ? modelKeyed : null }) },
       agents: { revision: async () => ({ id: "rev-own", kind, body: {} }) },
-      settings: { get: async (key) => (key === "claude_login" && login ? { v: 1, place: login === true ? "agentrun" : login, host: hostname(), only_me: true } : null) },
+      settings: { get: async (key) => (key === "claude_login" && login ? settingFor(login === true ? "agentrun" : login, data) : null) },
       runners: { live: async () => live },
     },
   };
@@ -329,7 +330,7 @@ test("every token of the login the runner hands a run's process (held claudeLogi
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-cut-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   // AgentRun's own login folder, turned on for this machine, signed in: the pinned CLI's file shape, every value fake.
-  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  await store.settings.put("claude_login", settingFor("agentrun", data));
   const dir = join(data, "claude-login");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const write = (accessToken, expiresAt, refreshToken) => writeFileSync(join(dir, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken, refreshToken, expiresAt, scopes: ["user:inference"], subscriptionType: null, rateLimitTier: null } }), { mode: 0o600 });
@@ -380,7 +381,7 @@ test("where runs have users of their own, a run's login is read once, at its cla
   const deps = { store, sealKey: KEY, env: {}, data };
   const launch = { input: { content: "Hello." }, harness: "claude-agent", place: { mode: "runner" } };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision: { kind: "agentic", body: { harness: "claude-agent" } }, claimed: {} };
-  const turnOn = () => store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  const turnOn = () => store.settings.put("claude_login", settingFor("agentrun", data));
   // The claim reads the login as off; the owner's turn-on lands between that read and the run's process's ask of its
   // runner for the login.
   const claimedOff = await host.staysInRunner(deps, "claude-agent", launch, "run-own", PER_RUN_USERS);
@@ -401,7 +402,7 @@ test("the runner's reader of the login (held claudeLogin) says each renewal's ou
   const { store } = await storeOn(t);
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-log-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  await store.settings.put("claude_login", settingFor("agentrun", data));
   const dir = join(data, "claude-login");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = join(dir, ".credentials.json");
@@ -594,7 +595,7 @@ test("a run's own process never reads the login's setting itself: with the login
   t.after(() => rmSync(data, { recursive: true, force: true }));
   t.after(() => setHeld(undefined));
   // The owner turned the login on (AgentRun's own folder) after the run's claim read it as off: its runner hands none.
-  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  await store.settings.put("claude_login", settingFor("agentrun", data));
   const place = { mode: "runner" };
   const held = [];
   const hold = (values) => void held.push(...values);

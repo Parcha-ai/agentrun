@@ -1280,6 +1280,7 @@ export type Features = {
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_per_run: boolean;
   };
   tool_permissions?: boolean;
   webhooks?: {
@@ -3253,6 +3254,7 @@ export type GetClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4105,6 +4107,7 @@ export type StartClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4213,6 +4216,7 @@ export type TurnOffClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4246,6 +4250,7 @@ export type TurnOnClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";

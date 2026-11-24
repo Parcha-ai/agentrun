@@ -33,6 +33,8 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
  *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
 export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
+/** A year of the work under the machine the server runs on (GET /v2/wrapped): numbers and names only. */
+export type Wrapped = Answer<"getWrapped">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 /** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for

@@ -627,6 +627,7 @@ export interface components {
       auth: ("none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run")[];
       at_rest: "sealed";
       harnesses: string[];
+      composio_per_run: boolean;
     };
     tool_permissions?: boolean;
     webhooks?: {
@@ -2796,6 +2797,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -6919,6 +6921,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7175,6 +7178,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -7208,6 +7212,7 @@ export interface operations {
       machine: {
         folder: string;
         source: "CLAUDE_CONFIG_DIR" | "default";
+        credentials?: string;
       };
       sign_in?: {
         state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
