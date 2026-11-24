@@ -33,8 +33,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   readers of its own, reads on the calling thread.
 - `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the machine's
   memory when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
-  the rest in order; at it, the threads read only the file the import waits on. It caps the reads held, not the
-  process's memory: the reads in flight when it is reached (one a thread) land past it, and each worker has its heap.
+  the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
+  plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
 - `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
 

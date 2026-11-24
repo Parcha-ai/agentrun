@@ -89,7 +89,8 @@ export type ParseOptions = {
   /** With threads, a cap on the bytes of finished reads made ahead of the one being taken that may wait (default
    *  readAheadBytes(): 1 GiB, or a sixteenth of the machine's memory when less); at it, the threads read only the file
    *  being taken. Large files (BIG_FILE, 64 MiB, and over) are read first, the rest in the import's order. More holds
-   *  more memory and waits less behind a large file. It caps the reads held, not the process's memory. */
+   *  more memory and waits less behind a large file. A cap on finished reads waiting, plus at most one read in flight
+   *  per thread; not on the process's memory. */
   readAhead?: number;
   /** With threads, each worker's old generation in MB (default OLD_MB, 64). A worker that runs out of it gives its file
    *  back, which is read on this thread, and another takes its place; past 2 x threads such losses the rest is read here. */

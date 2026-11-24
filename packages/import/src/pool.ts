@@ -33,7 +33,8 @@ const LINE_SHARE = 8;
 export const BIG_FILE = 64 * 2 ** 20;
 
 /** The most bytes of finished reads that may wait to be taken by default; at the read-ahead, the pool reads only the one
- *  parseHome waits for. A cap on the reads held, not on the process's memory. */
+ *  parseHome waits for. A cap on finished reads waiting, plus at most one read in flight per thread; not on the process's
+ *  memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
 
 /** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of this machine's memory when that is less (512 MiB at 8 GiB). */
