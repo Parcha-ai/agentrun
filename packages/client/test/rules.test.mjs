@@ -143,7 +143,7 @@ test("the base URL is the server's address with or without /v2, as the CLI takes
   assert.equal(thrownSync(() => new AgentRun()).reason, "no_token", "an empty AGENTRUN_TOKEN is no key");
 });
 
-test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1, [::1], the CLI's hosts): any other base, a lookalike host among them, takes AGENTRUN_API_KEY or apiKey, and with neither is refused before any request, in words that name AGENTRUN_API_KEY and never the token", async (t) => {
+test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1, [::1], the CLI's hosts): any other base, a lookalike host or a loopback name behind a user part among them, takes AGENTRUN_API_KEY or apiKey, and with neither is refused before any request, in words that name AGENTRUN_API_KEY and never the token", async (t) => {
   const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
   const saved = names.map((name) => process.env[name]);
   t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
@@ -164,6 +164,13 @@ test("AGENTRUN_TOKEN goes only to a server on this machine (localhost, 127.0.0.1
     assert.ok(error instanceof AgentRunAuthError, `${baseUrl}: ${error}`);
     assert.equal(error.reason, "no_token", baseUrl);
     assert.match(error.message, /AGENTRUN_API_KEY/, baseUrl);
+    assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);
+  }
+  // A loopback name behind a user part, an encoded @ or a fragment: the base URL itself is refused (it holds a user, or is
+  // no URL), before any key is read.
+  for (const baseUrl of ["http://localhost@evil.example/", "http://localhost:8080@evil.example/", "http://127.0.0.1%40evil.example/", "http://evil.example/#@localhost"]) {
+    const error = thrownSync(() => new AgentRun({ baseUrl, fetch }));
+    assert.ok(error instanceof AgentRunUsage, `${baseUrl}: ${error}`);
     assert.equal(error.message.includes(KEY), false, `${baseUrl}: the token is in no message`);
   }
   assert.deepEqual(sent.slice(from), [], "nothing was sent");

@@ -208,7 +208,7 @@ class Rules(unittest.TestCase):
             assert isinstance(missing, AgentRunAuthError)
             self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
 
-    def test_agentrun_token_goes_only_to_a_server_on_this_machine_and_any_other_base_a_lookalike_host_among_them_takes_agentrun_api_key_or_api_key_and_with_neither_is_refused_before_any_request(self) -> None:
+    def test_agentrun_token_goes_only_to_a_server_on_this_machine_and_any_other_base_a_lookalike_host_or_a_loopback_name_behind_a_user_part_among_them_takes_agentrun_api_key_or_api_key_and_with_neither_is_refused_before_any_request(self) -> None:
         server = Listener(self)
         with mock.patch.dict(os.environ, {"AGENTRUN_TOKEN": KEY}):
             os.environ.pop("AGENTRUN_API_KEY", None)
@@ -226,6 +226,17 @@ class Rules(unittest.TestCase):
                 self.assertEqual(error.reason, "no_token", base_url)
                 self.assertIn("AGENTRUN_API_KEY", str(error), base_url)
                 self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            # A loopback name behind a user part or a fragment: the base URL itself is refused, before any key is read. An
+            # encoded @ is a host name of its own, not on this machine: no key.
+            for base_url in ("http://localhost@evil.example/", "http://localhost:8080@evil.example/", "http://evil.example/#@localhost"):
+                error = self.thrown(AgentRun, base_url=base_url)
+                assert isinstance(error, AgentRunUsage), f"{base_url}: {error!r}"
+                self.assertNotIn(KEY, str(error), f"{base_url}: the token is in no message")
+            error = self.thrown(AgentRun, base_url="http://127.0.0.1%40evil.example/")
+            assert isinstance(error, AgentRunAuthError), repr(error)
+            self.assertEqual(error.reason, "no_token")
+            self.assertIn("AGENTRUN_API_KEY", str(error))
+            self.assertNotIn(KEY, str(error))
             self.assertEqual(len(server.requests), seen, "nothing was sent")
             # There, AGENTRUN_API_KEY or api_key is the key.
             os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
