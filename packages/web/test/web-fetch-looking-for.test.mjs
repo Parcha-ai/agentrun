@@ -1,6 +1,6 @@
 // web_fetch's looking_for (FetchOptions.lookingFor): the agent says what it is looking for, the decider scores the
 // chunks of the whole page (read once a run, from the run's pages after), and the answer holds the FOUND_CHUNKS chunks
-// most likely to hold it, in page order, each at its offset in the page. The decider is asked its usual judge request,
+// most likely to hold it, in page order, each at its offset in the page with its relevance. The decider is asked its usual judge request,
 // with the agent's need as the task. Without looking_for nothing changes.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -18,7 +18,7 @@ const SCORES = { p5: 0.95, p11: 0.9, p2: 0.8, p9: 0.6, p7: { type: "refusal" } }
 const scores = (n) => ({ ...Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i + 1}`, 0.1])), ...SCORES });
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const broken = { id: "fake", needs: [], decide: async () => { throw Object.assign(new Error("down"), { code: "provider_error" }); } };
-const SHOWN = "fake showed the 8 of 12 chunks of the page most likely to hold what you are looking for, in page order; to read on from one, call web_fetch with its offset and no looking_for";
+const SHOWN = "fake showed the 8 of 12 chunks of the page most likely to hold what you are looking for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no looking_for";
 
 /** A web on the fakes whose decider scores as `table` says, reading `content` as the page; `asked` its requests, and
  *  `extracts` how many times the page was read. */
@@ -50,7 +50,8 @@ test("the answer holds the FOUND_CHUNKS likeliest chunks in page order, each at 
   const spans = chunksOf(TWELVE);
   // p5, p11, p2, p9, then four of the 0.1s in page order (p1, p3, p4, p6); p7, refused, comes after every scored one.
   const shown = [1, 2, 3, 4, 5, 6, 9, 11];
-  assert.deepEqual(answer.found, shown.map((n) => ({ offset: spans[n - 1][0], text: TWELVE.slice(...spans[n - 1]) })));
+  const relevance = { 1: 0.1, 2: 0.8, 3: 0.1, 4: 0.1, 5: 0.95, 6: 0.1, 9: 0.6, 11: 0.9 };
+  assert.deepEqual(answer.found, shown.map((n) => ({ offset: spans[n - 1][0], relevance: relevance[n], text: TWELVE.slice(...spans[n - 1]) })));
   assert.equal(answer.sift, SHOWN);
   assert.deepEqual([answer.ok, answer.url, answer.title, answer.via, answer.text], [true, PUBLIC, "Long", "parallel", undefined]);
   const record = receipt.classifier;
@@ -77,11 +78,13 @@ test("the page is read once a run: a second looking_for, and a plain part after 
   assert.deepEqual(asked.map(({ request }) => request.state.task), [NEED, "the registered agent"]);
 });
 
-test("a page of fewer chunks than FOUND_CHUNKS is shown whole in its chunks", async () => {
+test("a page of fewer chunks than FOUND_CHUNKS is shown whole in its chunks, each labelled to two places, a refused one not", async () => {
   const three = pageOf(3);
-  const { web: w } = lookingWeb(three, { p1: 0.1, p2: 0.9, p3: 0.5 });
+  const { web: w } = lookingWeb(three, { p1: { type: "refusal" }, p2: 0.876, p3: 0.5 });
   const { answer } = await w.fetch(PUBLIC, { lookingFor: NEED });
   assert.deepEqual(answer.found.map((chunk) => chunk.text).join(""), three);
+  assert.deepEqual(answer.found.map((chunk) => chunk.relevance), [undefined, 0.88, 0.5]);
+  assert.deepEqual(answer.found.map((chunk) => Object.keys(chunk)), [["offset", "text"], ["offset", "relevance", "text"], ["offset", "relevance", "text"]]);
   assert.equal(answer.sift, SHOWN.replace("the 8 of 12", "the 3 of 3"));
 });
 
@@ -118,4 +121,64 @@ test("looking_for on a page that was not read answers the failure, the step skip
   assert.equal(answer.ok, false);
   assert.equal(answer.found, undefined);
   assert.deepEqual([receipt.classifier.ran, receipt.classifier.skipped, asked.length], [false, "no page", 0]);
+});
+
+/** A page of 120 chunks; and scores whose eight likeliest lie in all three of its judge requests (p1-p50, p51-p100,
+ *  p101-p120): p51, p60, p101, p120, p50, p100, p77, p3, with p2 just short of them and p7 refused. */
+const PAGE_120 = pageOf(120);
+const ACROSS = { ...Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`p${i + 1}`, 0.1])), p51: 0.95, p60: 0.9, p101: 0.85, p120: 0.8, p50: 0.75, p100: 0.72, p77: 0.71, p3: 0.7, p2: 0.65, p7: { type: "refusal" } };
+const SHOWN_120 = SHOWN.replace("the 8 of 12", "the 8 of 120");
+/** A provider answering as `table` says that refuses a request of more than PASSAGES_MAX questions, as a proxy that
+ *  sends a large request to a backend refusing structured outputs does (403, "auth"). */
+function capped(table) {
+  const { asked, provider } = scoringProvider(table);
+  const decide = provider.decide;
+  const refused = () => Object.assign(new Error("403: structured outputs are not allowed for this model"), { code: "auth" });
+  provider.decide = async (request, ctx) => (Object.keys(request.questions).length > web.PASSAGES_MAX ? (asked.push({ request, ctx }), Promise.reject(refused())) : decide(request, ctx));
+  return { asked, provider };
+}
+/** A decider that scores every chunk in one judge call, as `table` says: what the step shows when nothing is split. */
+const oneCall = (table) => ({
+  id: "fake",
+  judge: async (_url, _task, passages) => ({
+    verdicts: passages.map((_, i) => (typeof table[`p${i + 1}`] === "object" ? null : table[`p${i + 1}`])),
+    model: "fake-1", tokens: null, cost: { usd: 0, basis: "none" }, questions_sha256: [], temperature_sent: null, temperature_applied: false,
+  }),
+});
+
+test("a page of more chunks than a part's passages is judged in requests of at most PASSAGES_MAX, so a provider that refuses a larger request still applies looking_for", async () => {
+  assert.equal(web.PASSAGES_MAX, 50);
+  assert.equal(chunksOf(PAGE_120).length, 120);
+  const { asked, provider } = capped(ACROSS);
+  const { answer, receipt } = await decideWeb({ decider: priced(provider), send: { parallel: pagesOf(PAGE_120) } }).fetch(PUBLIC, { lookingFor: NEED });
+  assert.equal(answer.sift, SHOWN_120, "looking_for applied, not the part");
+  assert.deepEqual(asked.map(({ request }) => Object.keys(request.questions)[0]), ["p1", "p51", "p101"], "ids counted across the page");
+  assert.deepEqual(asked.map(({ request }) => Object.keys(request.questions).length), [50, 50, 20]);
+  const record = receipt.classifier;
+  assert.deepEqual([record.ran, record.requests, record.items, record.questions_sha256.length, record.scored.length], [true, 3, { in: 120, kept: 8 }, 3, 120]);
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002, 0.0002], "one fee line per request");
+});
+
+test("a 120-chunk page makes 3 judge requests, and shows the same chunks as one call scoring the page alike", async () => {
+  const { asked, provider } = scoringProvider(ACROSS);
+  const split = await decideWeb({ decider: priced(provider), send: { parallel: pagesOf(PAGE_120) } }).fetch(PUBLIC, { lookingFor: NEED });
+  const whole = await decideWeb({ decider: oneCall(ACROSS), send: { parallel: pagesOf(PAGE_120) } }).fetch(PUBLIC, { lookingFor: NEED });
+  assert.equal(asked.length, 3);
+  assert.deepEqual(split.answer, whole.answer);
+  const spans = chunksOf(PAGE_120);
+  assert.deepEqual(split.answer.found.map((chunk) => chunk.offset), [3, 50, 51, 60, 77, 100, 101, 120].map((n) => spans[n - 1][0]));
+  assert.deepEqual(split.receipt.classifier.scored.map((item) => item.score), spans.map((_, i) => (i === 6 ? null : ACROSS[`p${i + 1}`])), "every chunk's score, in page order");
+});
+
+test("a page's judge request that fails, among several, falls back as one: the part asked for, one reason, no chunks found", async () => {
+  const { asked, provider } = scoringProvider(ACROSS);
+  const decide = provider.decide;
+  provider.decide = async (request, ctx) => ("p51" in request.questions ? (asked.push({ request, ctx }), Promise.reject(Object.assign(new Error("upstream 500"), { code: "provider_error" }))) : decide(request, ctx));
+  const w = decideWeb({ decider: priced(provider), send: { parallel: pagesOf(PAGE_120) } });
+  const { answer, receipt } = await w.fetch(PUBLIC, { lookingFor: NEED, maxChars: 500 });
+  const part = await decideWeb({ decider: undefined, send: { parallel: pagesOf(PAGE_120) } }).fetch(PUBLIC, { maxChars: 500 });
+  assert.deepEqual(answer, { ...part.answer, sift: "looking_for not applied (provider_error); this part is in page order" });
+  const record = receipt.classifier;
+  assert.deepEqual([record.ran, record.error.code, record.items, record.scored], [false, "provider_error", { in: 120, kept: 120 }, []]);
+  assert.match(record.error.message, /^request 2 of 3: upstream 500/);
 });

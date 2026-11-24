@@ -38,8 +38,9 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   and transport.
 
 Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, classifier, wall, injection, out, cost,
-cache? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
-`classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"`.
+cache?, unsifted? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
+`classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"` unless the page
+guard (`pageGuard`) judged the page (below).
 
 ## The classifier step
 
@@ -58,11 +59,14 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
 - `deciderFrom(provider, { price, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
   `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
   calls (`DecisionAsker`), so it depends on no provider. Each call asks noul questions, one per result or passage, in
-  fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
+  fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing. The need is only ever what the
+  call carries: a search's `task` takes its query's place when the call gives one, else the query is the need; a
+  fetch's need is its `lookingFor`, else its `task`.
 - Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
-  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100). A search over the budget has every snippet cut to the longest
-  length that fits (`trimmed: { snippets, to_chars }`; the model still reads them whole). Passages over it are asked
-  in several requests, one after another, ids counted across the part, and the verdicts merged in order.
+  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100), a judge request at most `PASSAGES_MAX` (50) passages. A
+  search over the budget has every snippet cut to the longest length that fits (`trimmed: { snippets, to_chars }`; the
+  model still reads them whole). Passages over either are asked in several requests, `REQUESTS_AT_ONCE` (4) at a time,
+  ids counted across the page, and the verdicts merged in order; one failed request fails the step.
 - The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
   step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
   keeps its item.
@@ -77,9 +81,10 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
 - `fetch(url, { lookingFor })` (the tool's `looking_for`) says what the agent is looking for in the page. The decider
   scores the chunks of the whole page (`passagesOf` again, at most `FIND_CHUNKS_MAX`, 200), asked its usual judge
   request with `lookingFor` as the task (trimmed, cut at `QUERY_MAX`). The answer holds the `FOUND_CHUNKS` (8) likeliest
-  in page order, `found: [{ offset, text }]`, in place of `text` and the part's offsets, and its `sift` reads `"jev
-  showed the 8 of 31 chunks of the page most likely to hold what you are looking for, in page order; to read on from
-  one, call web_fetch with its offset and no looking_for"`. `offset` and `maxChars` are not used. With no decider, or
+  in page order, `found: [{ offset, relevance, text }]` (`relevance` as on a labelled search result, none where
+  refused), in place of `text` and the part's offsets, and its `sift` reads `"jev showed the 8 of 31 chunks of the page
+  most likely to hold what you are looking for (relevance 0 to 1), in page order; to read on from one, call web_fetch
+  with its offset and no looking_for"`. `offset` and `maxChars` are not used. With no decider, or
   one that fails, the answer is the part asked for with `sift: "looking_for not applied (<why>); this part is in page
   order"`. The page is read once a run either way; a blank `lookingFor` is none.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
@@ -95,6 +100,20 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   place in the page. It is empty when the step did not run. `tokens` are the provider's
   when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
+- The page guard (`pageGuard: true`, off unless set; it asks the run's decider, so it throws without one): each page a
+  fetch reads is asked about once a run (`pageGuardRequest`: its
+  URL, status and first `GUARD_CHARS`, 16,000 characters; the same two questions, in pi-browser's page classifier's
+  words, for every page). `wall` is a choice between `content` and the `WALLS` (login wall, paywall, CAPTCHA, error
+  page, ...); `injection` asks whether the text holds instructions addressed to an AI reader. The receipt's `wall` is
+  `{ verdict, scores }` (`content`, or the likeliest wall, at `WALL_THRESHOLD` 0.6; between, `unjudged`) and its
+  `injection` `{ verdict: "injection" | "none", score }` (at `INJECTION_THRESHOLD` 0.75). A judged wall or injection
+  adds one plain `warning` to the answer, such as `"this looks like a login wall, not the page's own content (0.9); if
+  you need the page, try another source"`, and the page's text is kept: a hint, never a gate. A guard that fails or is
+  refused leaves the page `unjudged` (`wall.error` says why), adds nothing, and is asked again on the next fetch. It is
+  asked beside the step, and its request is a fee line of its own (`"jev's page guard"`), after the step's. Search snippets are not screened.
+- `receipt.unsifted`, in a run with a decider, is the text a web with none would have given the model for the same call
+  (a fetch's part as asked, without `lookingFor`), whether the step ran, was skipped or failed: set beside the text the
+  model read, it is what the step saved. A web with no decider writes none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
   `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
   `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the

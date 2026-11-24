@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
-import { createWeb, deciderFrom, searchText, siftSearch } from "../dist/index.js";
+import { createWeb, deciderFrom, searchText, siftSearch, webFetchText } from "../dist/index.js";
 import { A, B, decideSteps, decideWeb, LONG, pagesOf, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
 
 const golden = JSON.parse(readFileSync(new URL("./fixtures/decide-runs.golden.json", import.meta.url), "utf8"));
@@ -14,14 +14,15 @@ const URLS = ["https://registry.example/widgets", "https://result.example/2", "h
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const broken = { id: "fake", needs: [], decide: async () => { throw Object.assign(new Error("down"), { code: "provider_error" }); } };
 
-/** A receipt without the record's `scored`, the one field the split added to it. */
+/** A receipt without the two fields added since the split: the record's `scored` and the receipt's `unsifted`. */
 const unscored = (receipt) => {
   if (typeof receipt.classifier !== "object") return receipt;
   const { scored, ...classifier } = receipt.classifier;
-  return { ...receipt, classifier };
+  const { unsifted, ...rest } = receipt;
+  return { ...rest, classifier };
 };
 
-test("drop answers and writes for the model byte for byte as the step did before it was split; the receipt adds only the scores", async () => {
+test("drop answers and writes for the model byte for byte as the step did before it was split; the receipt adds only the scores and the text before the step", async () => {
   const now = await decideSteps(decideWeb());
   assert.equal(now.length, golden.length);
   for (const [i, step] of now.entries()) {
@@ -163,4 +164,67 @@ test("a search too wide to fit is ranked before it is fitted: the fit leaves out
   assert.ok(answer.omitted > 0);
   assert.equal(answer.results[0].url, "https://wide.example/25");
   assert.ok(!answer.results.some((hit) => hit.url === "https://wide.example/1"), "the least relevant is the one left out");
+});
+
+// The receipt keeps the text the model would have read with no classifier step (`unsifted`), so one record says what the
+// step saved.
+const PLAIN = { decider: undefined };
+
+test("a search's receipt keeps the text a web with no classifier gives the model, under every policy", async () => {
+  const plain = await decideWeb(PLAIN).search("widgets delaware", { n: 4, task: TASK });
+  for (const extra of [{}, LABELLED, RANKED]) {
+    const { answer, receipt } = await decideWeb(extra).search("widgets delaware", { n: 4, task: TASK });
+    assert.equal(receipt.unsifted, searchText(plain.answer), JSON.stringify(extra));
+    assert.notEqual(receipt.unsifted, searchText(answer), "the model read something else");
+  }
+});
+
+test("a search too wide to fit keeps the text of the fit with no step, not of what the step left", async () => {
+  const quoted = '"'.repeat(3_000);
+  const wide = async (url, init) => {
+    if (new URL(String(url)).pathname !== "/v1/search") return pagesOf("")(url, init);
+    const results = Array.from({ length: 25 }, (_, i) => ({ url: `https://wide.example/${i + 1}`, title: `Result ${i + 1}`, publish_date: null, excerpts: [quoted] }));
+    return new Response(JSON.stringify({ search_id: "s", results, warnings: null, usage: [], session_id: "s" }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const scores = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`r${i + 1}`, i % 2 ? 0.9 : 0.01]));
+  const plain = await decideWeb({ ...PLAIN, send: { parallel: wide } }).search("widgets", { n: 25 });
+  const { receipt } = await decideWeb({ send: { parallel: wide } }, scores).search("widgets", { n: 25 });
+  assert.ok(plain.answer.omitted > 0);
+  assert.equal(receipt.unsifted, searchText(plain.answer));
+});
+
+test("a fetch's receipt keeps the text of the part asked for as a web with no classifier gives it: judged, with looking_for, or failed", async () => {
+  const asks = [[{ task: TASK }, {}], [{ task: TASK, offset: 100, maxChars: 900 }, {}], [{ lookingFor: "the registry", offset: 100, maxChars: 900 }, {}], [{ task: TASK }, { decider: priced(broken) }]];
+  for (const [options, extra] of asks) {
+    const { lookingFor, ...plainOptions } = options;
+    const plain = await decideWeb(PLAIN).fetch(PUBLIC, plainOptions);
+    const { receipt } = await decideWeb(extra).fetch(PUBLIC, options);
+    assert.equal(receipt.unsifted, webFetchText(plain.answer), JSON.stringify(options));
+  }
+  const judged = await decideWeb().fetch(PUBLIC, { task: TASK });
+  assert.ok(judged.receipt.unsifted.length > webFetchText(judged.answer).length, "the judged part left a passage out");
+});
+
+test("every step of the fixed sequence, run, skipped or refused, keeps the text a web with no classifier writes; with none there is no unsifted", async () => {
+  const plain = await decideSteps(decideWeb(PLAIN));
+  const now = await decideSteps(decideWeb());
+  assert.deepEqual(now.map((step) => step.receipt.unsifted), plain.map((step) => step.text));
+  assert.ok(plain.every((step) => !Object.hasOwn(step.receipt, "unsifted")));
+});
+
+test("the classifier's need is only what the call passed: a search's query, or its task when it gives one; a fetch's looking_for, else its task", async () => {
+  const { asked, provider } = scoringProvider();
+  const w = decideWeb({ decider: priced(provider), policy: "label", bounds: { decideMs: 30_000 } });
+  await w.search("widgets delaware", { n: 4 });
+  await w.search("widgets delaware", { n: 4, task: TASK });
+  await w.fetch(PUBLIC, { task: TASK });
+  await w.fetch(PUBLIC, { task: TASK, lookingFor: "the registry entry" });
+  await w.fetch(PUBLIC, { lookingFor: "the registry entry", offset: 100 });
+  assert.deepEqual(asked.map(({ request }) => [request.kind, request.state.query, request.state.task]), [
+    ["sift", "widgets delaware", undefined],
+    ["sift", "widgets delaware", TASK],
+    ["judge", undefined, TASK],
+    ["judge", undefined, "the registry entry"],
+    ["judge", undefined, "the registry entry"],
+  ]);
 });

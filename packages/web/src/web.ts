@@ -2,15 +2,18 @@
 // comes in through the config. Every answer comes with a Receipt, which is never put in front of the model.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { WebDecider } from "./decide/decider.js";
-import { type DecidePolicy, decisionPay, type DecisionRecord, findInPage, type FoundPage, judgePart, policyOf, siftSearch } from "./decide/step.js";
-import { missesOf, type Pages, type Readers, type WebLog, type WebPage, webFetchText, webPart, webRead } from "./fetch.js";
+import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
+import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
+import { decisionPay, type DecisionRecord, type Sift, type StepOptions } from "./decide/record.js";
+import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
+import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
-import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
  *  run's pages. */
@@ -20,11 +23,15 @@ export type Receipt = {
   provider: ProviderId | null;
   tries: Try[];
   classifier: "off" | DecisionRecord;
-  wall: { verdict: "unjudged" };
-  injection: "unjudged";
+  /** The page guard's verdicts on a fetched page, when `pageGuard` is on; "unjudged" otherwise. */
+  wall: WallVerdict;
+  injection: InjectionVerdict;
   out: { bytes: number; chars: number };
   cost: { usd: number; lines: Fee[] };
   cache?: "hit";
+  /** With a classifier in the run: the text a web with none would have given the model for this call (a fetch's part
+   *  as asked, without looking_for), set beside what it read to see what the step saved. */
+  unsifted?: string;
 };
 
 /** `order` names the providers each tool asks, in turn, by their registry ids (providers/registry.ts); `order.fetch`
@@ -56,6 +63,9 @@ export type WebConfig = {
   /** How a search's results reach the model once the decider has scored them ("drop" by default); checked when the
    *  web is made. */
   policy?: DecidePolicy;
+  /** The page guard: with a decider, each page a fetch reads is asked once a run whether it is a wall or holds
+   *  instructions addressed to an AI reader. Off unless true; true without a decider throws. */
+  pageGuard?: boolean;
 };
 /** `breakers`: the search breakers this call reads and trips (default the Web's own). `keyLimits`: where a quota of a
  *  provider's whole key goes (search.ts Failure.covers): the Web's key breakers, shared with web_fetch ("web", the
@@ -68,7 +78,6 @@ export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name
  *  for, saying looking_for was not applied. Blank: none. */
 export type FetchOptions = Part & GuardOptions & { task?: string; lookingFor?: string };
 /** `sift`, only when a decider is given: what it did, for the model to read. */
-export type Sift = { sift?: string };
 /** A provider a Web's tool asks: its id, how it is reached (`keyed`, on the run's key; `unkeyed`, a keyed provider the
  *  run holds no key for, so never sent; `keyless`, a service's free use; `none`, neither: the model provider's own search
  *  or the guarded direct fetch), and what holds it now (the tool's breaker, else its key's), if anything. */
@@ -81,7 +90,7 @@ export type Destinations = { search: Destination[]; fetch: Destination[] };
 /** `destinations`: where each tool goes now (Destinations), for a run's start line; never a key. */
 export type Web = {
   search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
-  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: ((WebPage | Page) & Sift) | FoundPage; receipt: Receipt }>;
+  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: FetchAnswer; receipt: Receipt }>;
   destinations(): Destinations;
 };
 
@@ -111,6 +120,21 @@ export function createWeb(config: WebConfig): Web {
   for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!providerOf(id).ops.includes(op)) throw new Error(`web: ${id} gives no ${op}`);
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
+  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
+  if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
+  /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
+   *  and a page read again is asked about again, as is one whose guard failed. */
+  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
+  const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
+    const known = pageVerdicts.get(read);
+    if (known) return known;
+    const asked = guardPage(decider, url, read, step);
+    pageVerdicts.set(read, asked);
+    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
+    return asked;
+  };
+  /** A receipt's `unsifted`, only in a run with a classifier. */
+  const unsifted = (text: () => string) => (config.decider ? { unsifted: text() } : {});
   const runBreakers = breakers(now);
   const fetchBreakers = breakers(now);
   // Each provider's own across both tools: a quota of the whole key holds web_search and web_fetch alike.
@@ -199,7 +223,7 @@ export function createWeb(config: WebConfig): Web {
       const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
-      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
+      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
     async fetch(url, { offset, maxChars, task, lookingFor, ...guarded } = {}) {
@@ -211,7 +235,7 @@ export function createWeb(config: WebConfig): Web {
       if (problem) {
         const refused: Page = { ok: false, url: clip(asked, URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
         const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
-        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
+        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
       const cached = typeof url === "string" && pages.has(url);
       const whole = await feesOfCall.run(lines, () =>
@@ -228,19 +252,14 @@ export function createWeb(config: WebConfig): Web {
       );
       const part = webPart(whole, { ...(offset === undefined ? {} : { offset }), ...(maxChars === undefined ? {} : { maxChars }) });
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
-      const step = { signal: guarded.signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) };
-      const need = typeof lookingFor === "string" ? clip(lookingFor.trim(), QUERY_MAX) : "";
-      const notApplied = (why: string) => ({ ...part, sift: `looking_for not applied (${why}); this part is in page order` });
-      let answer: ((WebPage | Page) & Sift) | FoundPage = part;
-      let classifier: Receipt["classifier"] = "off";
-      if (need && whole.ok && whole.text && config.decider) {
-        const found = await findInPage(config.decider, asked, whole, need, step);
-        answer = found.answer ? { ...found.answer, ...missesOf(whole) } : notApplied(found.classifier.error!.code);
-        classifier = found.classifier;
-      } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
-      else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));
+      const { decider } = config;
+      const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
+      const decided = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal: guarded.signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      // What looking_for found names each provider asked ahead that gave no page, as the part does.
+      const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
+      const { classifier, guard: verdicts } = decided;
       // The turns a stopped call's read takes after it answered are not this receipt's.
-      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...unjudged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
+      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };

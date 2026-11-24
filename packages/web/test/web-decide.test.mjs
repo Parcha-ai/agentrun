@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { deciderFrom, judgePart, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
+import { deciderFrom, judgePart, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, REQUESTS_AT_ONCE, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
 import fakeParallel from "./fixtures/faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./fixtures/web-runs.mjs";
 
@@ -109,7 +109,7 @@ function siftQuestions() {
 test("the decider gives scores, not decisions: each verdict is the provider's p, or null where it refused", async () => {
   const { provider } = fakeProvider({ r1: 0.9, r2: { type: "refusal" } });
   const got = await priced(provider).sift("widgets delaware", URLS.slice(0, 2).map((url) => ({ url, title: "", snippet: "" })), TASK, CTX());
-  assert.deepEqual(got.verdicts, [{ score: 0.9 }, { score: null }]);
+  assert.deepEqual(got.verdicts, [0.9, null]);
 });
 
 test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT where any were dropped, the part's place in the page unchanged", async () => {
@@ -352,23 +352,59 @@ test("passages over the state budget go in several requests, each within it and 
     first += n;
   }
   assert.equal(first, 200);
-  assert.deepEqual(got.verdicts.map((v) => v.score), passages.map((_, i) => (i % 2 ? 0.9 : 0.01)));
+  assert.deepEqual(got.verdicts, passages.map((_, i) => (i % 2 ? 0.9 : 0.01)));
   assert.deepEqual(got.questions_sha256, asked.map(({ request }) => sha256(JSON.stringify(request.questions))));
   assert.deepEqual([got.tokens, got.cost], [{ in: 100 * asked.length, out: 4 * asked.length, basis: "reported" }, { usd: Math.round(0.0001 * asked.length * 1e6) / 1e6, basis: "estimate" }]);
 });
 
+test("an ask's requests go at most REQUESTS_AT_ONCE at a time, at most PASSAGES_MAX passages each, the verdicts merged in order", async () => {
+  assert.equal(REQUESTS_AT_ONCE, 4);
+  const passages = Array.from({ length: 300 }, (_, i) => `passage ${i + 1}`);
+  const score = (i) => (i % 97) / 100;
+  const { asked, provider } = fakeProvider(Object.fromEntries(passages.map((_, i) => [`p${i + 1}`, score(i)])));
+  const decide = provider.decide;
+  let open = 0;
+  let most = 0;
+  provider.decide = async (request, ctx) => {
+    most = Math.max(most, ++open);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    try {
+      return await decide(request, ctx);
+    } finally {
+      open--;
+    }
+  };
+  const got = await priced(provider).judge(PUBLIC, TASK, passages, CTX());
+  assert.deepEqual([asked.length, most], [6, 4]);
+  assert.deepEqual(got.verdicts, passages.map((_, i) => score(i)));
+  const firsts = [0, 50, 100, 150, 200, 250];
+  assert.deepEqual(got.questions_sha256, firsts.map((first) => sha256(JSON.stringify(judgeRequest(PUBLIC, TASK, passages.slice(first, first + 50), first + 1).questions))), "one hash per request, in the page's order");
+});
+
 test("a request after the first that fails keeps the step from running, at what every request sent cost", async () => {
-  const passages = Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(995)}\n\n`);
+  // 50 passages of 6 paragraphs, about 16 KB of state each: 5 a request, so 10 requests, more than REQUESTS_AT_ONCE.
+  const passages = Array(300).fill(`${"汉".repeat(900)}\n\n`);
   for (const [failure, cost] of [
     [Object.assign(new Error("upstream 500"), { code: "provider_error" }), { usd: null, basis: "unknown" }],
     [Object.assign(new Error("no route"), { code: "connection" }), { usd: 0.0001, basis: "estimate" }],
   ]) {
     const { asked, provider } = fakeProvider();
     const decide = provider.decide;
-    provider.decide = async (request, ctx) => (asked.length ? (asked.push({ request, ctx }), Promise.reject(failure)) : decide(request, ctx));
+    // Request 1 answers 5 ms late, after 2 to 4 have failed, so its worker sees the failure before it could take request 5.
+    // Answering at once would race the failures, and request 5 could go out before any failure is known.
+    provider.decide = async (request, ctx) => {
+      if (asked.length) {
+        asked.push({ request, ctx });
+        throw failure;
+      }
+      const answered = decide(request, ctx);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return answered;
+    };
     const { classifier } = await judgePart(priced(provider), PUBLIC, { ok: true, url: PUBLIC, text: passages.join("") }, { task: TASK });
-    assert.deepEqual([classifier.ran, classifier.requests, classifier.error.code, classifier.cost, classifier.questions_sha256], [false, 2, failure.code, cost, []]);
-    assert.match(classifier.error.message, /^request 2 of \d+: /);
+    assert.ok(Number(/^request 2 of (\d+): /.exec(classifier.error.message)?.[1]) > REQUESTS_AT_ONCE, `the page makes more requests than go at once: ${classifier.error.message}`);
+    // The first REQUESTS_AT_ONCE go out together: request 1 answers, 2 to 4 fail, and no more are sent.
+    assert.deepEqual([classifier.ran, classifier.requests, classifier.error.code, classifier.cost, classifier.questions_sha256], [false, REQUESTS_AT_ONCE, failure.code, cost, []]);
   }
 });
 
