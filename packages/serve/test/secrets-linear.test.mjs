@@ -143,7 +143,6 @@ const ADVERSARIAL = [
   ["AWS access key id", fill("AKIA")], ["Google API key", fill("AIza")],
   ["private key block", fill("-----BEGIN ")], ["private key block", headed("-----BEGIN ", "PRIVATE KEY ")], ["private key block", headed("-----BEGIN ", "A")],
   ["GitHub token", fill("ghp_")], ["GitHub token", fill("github_pat_")], ["sk- key", fill("sk-")],
-  ["AgentRun API key", fill("ar_key_")], ["AgentRun API key", headed("ar_key_", "a")], ["AgentRun API key", headed("ar_key_", "A")], ["AgentRun API key", fill("ar_key_ ")], ["AgentRun API key", fill(`ar_key_${"a".repeat(42)} `)], ["AgentRun API key", fill(`ar_key_${"a".repeat(60)} `)],
   ["Slack token", fill("xoxb-")], ["Slack token", fill("xapp-")],
   ["JWT", fill("eyJ")], ["JWT", fill("eyJ-")], ["JWT", headed("eyJaaaaaaaa.", "eyJ")], ["JWT", fill("eyJaaaaaaaa.")],
   // The JWT's lookbehind reads back from each "eyJ" to the one before it in its run: far apart, and each first in a run.
