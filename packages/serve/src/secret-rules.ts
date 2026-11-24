@@ -704,13 +704,20 @@ const subcommandAt =
  *  is read once, by the substitution's own read. Such re-reads share a budget of what their lex calls read
  *  (Lexed.reads, REREAD_SHARE of the text's length): past it the next command is looked for past the earlier read's end,
  *  as before, and the span scan (inside) still cuts there. The lexer's failed searches are kept across the text
- *  (`misses`): linear. */
-function commandWords(text: string, command: RegExp, how: CommandRead): Word[][] {
-  const out: Word[][] = [];
+ *  (`misses`): linear. Each list is yielded as it is read, so one command's words are held at a time, not the text's. */
+function* commandWords(text: string, command: RegExp, how: CommandRead): Generator<Word[], void, undefined> {
   const misses: Misses = new Map();
   let spare = Math.ceil(text.length * REREAD_SHARE);
-  /** The commands named in text[from, to), read; what their lex calls read. */
-  const read = (from: number, to: number, depth: number): number => {
+  /** The words handed out and not yet let go by the consumer: a list counts from its yield to the consumer's next
+   *  call, so the most held at once is one command's (lexCount.held, a test's measure) however long the text. */
+  let held = 0;
+  const hand = (words: Word[]): Word[] => {
+    held += words.length;
+    lexCount.held = Math.max(lexCount.held, held);
+    return words;
+  };
+  /** The commands named in text[from, to), read, each command's words yielded as it is read; what their lex calls read. */
+  const read = function* (from: number, to: number, depth: number): Generator<Word[], number, undefined> {
     const region = from === 0 && to === text.length ? text : text.slice(from, to);
     const re = new RegExp(command.source, command.flags);
     let subs: readonly (readonly [number, number])[] = [];
@@ -729,10 +736,10 @@ function commandWords(text: string, command: RegExp, how: CommandRead): Word[][]
       const words = argWords(text, lexed.tokens);
       const first = how.after ? how.after(text, words) : 0;
       if (first >= 0) {
-        out.push(first === 0 ? words : words.slice(first));
-        if (!how.own) reads += substitutionWords(text, lexed.subs, depth, misses, out);
+        yield hand(first === 0 ? words : words.slice(first));
+        if (!how.own) reads += yield* substitutionWords(text, lexed.subs, depth, misses, hand);
       }
-      if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of lexed.subs) reads += read(start, end, depth + 1);
+      if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of lexed.subs) reads += yield* read(start, end, depth + 1);
       if (at < readTo) spare -= reads;
       total += reads;
       subs = lexed.subs;
@@ -741,21 +748,21 @@ function commandWords(text: string, command: RegExp, how: CommandRead): Word[][]
     }
     return total;
   };
-  read(0, text.length, 0);
-  /** Every list is held until the last is read (lexCount.held, a test's measure). */
-  lexCount.held = Math.max(lexCount.held, out.reduce((sum, words) => sum + words.length, 0));
-  return out;
+  for (const words of read(0, text.length, 0)) {
+    yield words;
+    held -= words.length;
+  }
 }
 
 /** Each substitution body's words (operators inside it read through), and its own substitutions' in turn, to
- *  SUBSTITUTION_DEPTH: each body one list of `out`. What the lex calls read. */
-function substitutionWords(text: string, subs: readonly (readonly [number, number])[], depth: number, misses: Misses, out: Word[][]): number {
+ *  SUBSTITUTION_DEPTH: each body one list, yielded through `hand` (commandWords' count). What the lex calls read. */
+function* substitutionWords(text: string, subs: readonly (readonly [number, number])[], depth: number, misses: Misses, hand: (words: Word[]) => Word[]): Generator<Word[], number, undefined> {
   if (depth >= SUBSTITUTION_DEPTH) return 0;
   let reads = 0;
   for (const [start, end] of subs) {
     const body = lex(text, start, end, never, misses);
-    out.push(argWords(text, body.tokens));
-    reads += body.reads + substitutionWords(text, body.subs, depth + 1, misses, out);
+    yield hand(argWords(text, body.tokens));
+    reads += body.reads + (yield* substitutionWords(text, body.subs, depth + 1, misses, hand));
   }
   return reads;
 }
@@ -941,7 +948,7 @@ function wordValue(text: string, word: Word, skip: number, min: number, name: st
 
 /** `flag <pw>`, with `equals` `flag=<pw>` too, and with `glued` `flag<pw>` (a registry login's `-p<pw>`: its CLI reads
  *  a short flag's value glued on), in each command's words: the password, at least `min` long. */
-function flagWords(text: string, commands: readonly Word[][], flag: string, equals: boolean, min: number, glued = false): Hit[] {
+function flagWords(text: string, commands: Iterable<Word[]>, flag: string, equals: boolean, min: number, glued = false): Hit[] {
   const out: Hit[] = [];
   for (const words of commands) {
     for (let i = 0; i < words.length; i++) {
