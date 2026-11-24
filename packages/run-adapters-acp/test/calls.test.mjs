@@ -118,3 +118,39 @@ test('a title naming our tool on a native read call never sets announced: only t
   calls.announceCall(ids, { toolCallId: 'call_read', title: 'agentrun__write', kind: 'read', rawInput: { path: 'notes.md' } }, CURSOR, TOOLS);
   assert.equal(ids.announced('call_read'), undefined);
 });
+
+// Mutant guards: each fails with the check it names removed from calls.ts.
+test("the kind guard: a native execute announced first with our call's arguments never takes our MCP call's id, even one whose field names our tool", async () => {
+  const signal = new AbortController().signal;
+  // No field on either: both are matched by their arguments alone.
+  const bare = new CallIds();
+  calls.announceCall(bare, { toolCallId: 'native_0', title: 'Run lookup', kind: 'execute', rawInput: { q: 'x' } }, CURSOR, TOOLS);
+  calls.announceCall(bare, { toolCallId: 'call_1', title: 'MCP: tool', kind: 'other', rawInput: { q: 'x' } }, CURSOR, TOOLS);
+  assert.equal(await bare.take('look_up', { q: 'x' }, signal, 50), 'call_1');
+  assert.equal(bare.has('native_0'), false, 'a call with effects of its own is never kept for an MCP call');
+  // A shell whose field names our tool, announced first.
+  const named = new CallIds();
+  calls.announceCall(named, gooseCall('call_shell', 'agentrun__look_up', { q: 'x' }, 'execute'), GOOSE, TOOLS);
+  calls.announceCall(named, gooseCall('call_ours', 'agentrun__look_up', { q: 'x' }), GOOSE, TOOLS);
+  assert.equal(await named.take('look_up', { q: 'x' }, signal, 50), 'call_ours');
+  assert.equal(named.announced('call_shell'), undefined);
+});
+
+test("the update's kind: a late update with an effect kind never names its call ours, whatever its rawInput says", async () => {
+  const signal = new AbortController().signal;
+  const naming = { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } };
+  const shell = new CallIds();
+  calls.announceCall(shell, { toolCallId: 'c', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
+  calls.nameCall(shell, { toolCallId: 'c', kind: 'execute', rawInput: naming }, 'other', CURSOR, TOOLS);
+  assert.equal(shell.announced('c'), undefined, "the update's kind has effects of its own");
+  assert.equal(await shell.take('look_up', { q: 'x' }, signal, 50), undefined);
+  const announcedAsShell = new CallIds();
+  calls.nameCall(announcedAsShell, { toolCallId: 'd', rawInput: naming }, 'execute', CURSOR, TOOLS);
+  assert.equal(announcedAsShell.announced('d'), undefined, "the tool_call's kind has effects of its own");
+  // The same update with no effect kind names it, and the MCP call runs under its id.
+  const ours = new CallIds();
+  calls.announceCall(ours, { toolCallId: 'e', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
+  calls.nameCall(ours, { toolCallId: 'e', rawInput: naming }, 'other', CURSOR, TOOLS);
+  assert.equal(ours.announced('e'), 'look_up');
+  assert.equal(await ours.take('look_up', { q: 'x' }, signal, 50), 'e');
+});
