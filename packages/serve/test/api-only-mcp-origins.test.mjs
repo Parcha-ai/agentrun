@@ -5,8 +5,10 @@
 // A per_run body at another origin, a body of another auth type, or a Composio preset's name is the refused route's own
 // 404. A save over a server the token did not save, or one that seals a credential, is 403 (tokenWriteOverRefused). None
 // of these refusals sends anything to the address. The list holds past the save: drop an origin and restart, and a run
-// that grants a server the token saved there sends it nothing and says why. Fake MCP servers on loopback, fake Composio,
-// the faux MCP model. No key, no network.
+// that grants a server the token saved there sends it nothing and says why. Unset, an API-only start holds an empty list
+// (an upgrade): a per_run server the token saved on a full start is refused, and the start names it once in its log. A
+// server the owner saved is not the list's, and a full start removes the list. Fake MCP servers on loopback, fake
+// Composio, the faux MCP model. No key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -16,7 +18,8 @@ import { follow, serve, storeBytes, withEnv } from "./support.mjs";
 import { registryPin, storeOn } from "./store-helpers.mjs";
 
 const { SECRET_WRITE_REFUSAL } = await import("../dist/secret-writes.js");
-const { apiOnlyRefusal, apiOnlyMcpOriginsFrom } = await import("../dist/api-only.js");
+const { apiOnlyRefusal } = await import("../dist/api-only.js");
+const { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } = await import("../dist/env-switch.js");
 const { mcpSourceKey, ownersRecord, storedSource } = await import("../dist/mcp-sources.js");
 const { sealMcpCredential, sealRunMcpAuth } = await import("../dist/store/index.js");
 const { holdApiOnlyMcpOrigins } = await import("../dist/mcp-api-only-origins.js");
@@ -57,6 +60,12 @@ const runAdd = (s, id) => s.token("POST", "/runs", {
   input: { content: 'Call mcp__contextforge__add with {"a":2,"b":3}' },
   mcp_auth: { contextforge: { headers: { authorization: `Bearer ${RUN}` } } },
 });
+/** The words a run `ran` (runAdd's answer) was refused with: its error once it ended, or the refused start's body. */
+const refusedWords = async (s, ran) => ran.status === 202
+  ? ((await follow(s.server.api, ran.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 })), (await s.server.api("GET", `/runs/${ran.body.run_id}`)).body.error?.message)
+  : JSON.stringify(ran.body);
+/** The start's lines saying which per_run servers the token saved are off the list (server.ts). */
+const offListLines = (lines) => lines.filter((line) => line.includes("event=api_only_mcp_off_list"));
 const names = async (s) => (await s.token("GET", "/settings/mcp-server-names")).body;
 const rowOf = async (store, name) => {
   const row = await store.mcp.server(name);
@@ -263,4 +272,61 @@ test("a run already going: when the origin list can't be read before a call (a s
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "the read works: the call goes on the run's header");
   failing = true;
   await assert.rejects(call(), /the store could not be read/, "the read fails: the check throws, so the gateway refuses the call unsent");
+});
+
+test("an upgrade with the setting unset: an API-only start holds an empty list, so a per_run server the token saved on a full start is refused (a run granted it fails in the words, and nothing reaches the address), and the start says so in one log line with the count and the server's name, never its address; listed, the start says nothing", async (t) => {
+  const gw = await gateway(t);
+  // A full start, as a backend saved its gateway with API-only off: the token's per_run save, marked the token's.
+  const fullLines = [];
+  const full = await serve(t, { runner: false, log: (line) => fullLines.push(line) });
+  assert.equal((await full.api("PUT", PATH, perRun(gw.fake.url), { authorization: `Bearer ${full.token}` })).status, 200);
+  await full.stop();
+  assert.deepEqual(offListLines(fullLines), [], "a full start says nothing");
+
+  // API-only with AGENTRUN_API_ONLY_MCP_ORIGINS unset: the CLI passes no apiOnlyMcpOrigins.
+  const lines = [];
+  const unset = await setup(t, undefined, { data: full.data, log: (line) => lines.push(line) });
+  const from = gw.fake.log.length;
+  const sent = gw.sent.length;
+  const words = await refusedWords(unset, await runAdd(unset, "cf-up"));
+  assert.ok(String(words).includes(OFF_LIST.slice(0, -" Nothing was sent.".length)), `refused: ${words}`);
+  assert.deepEqual([gw.fake.log.slice(from), gw.sent.slice(sent)], [[], []], "the address got nothing, no run's token among it");
+  const said = offListLines(lines);
+  assert.equal(said.length, 1, `one line at the start naming the server: ${lines.join("\n")}`);
+  assert.match(said[0], / count=1 /);
+  assert.match(said[0], / servers=contextforge /);
+  assert.ok(said[0].includes(API_ONLY_MCP_ORIGINS_ENV), said[0]);
+  assert.ok(!said[0].includes(new URL(gw.fake.url).host), `no address: ${said[0]}`);
+  await unset.server.stop();
+
+  // Its origin listed: the same store, and the start says nothing.
+  const listedLines = [];
+  await setup(t, [gw.origin], { data: full.data, runner: false, log: (line) => listedLines.push(line) });
+  assert.deepEqual(offListLines(listedLines), [], "listed: no line");
+});
+
+test("a per_run server the owner saved by hand on a full start is not the list's: an API-only start whose list leaves its origin out runs it with the run's own header, and the start names no server", async (t) => {
+  const gw = await gateway(t);
+  // The owner's session saves it (no Authorization of the token's): its record carries no token mark.
+  const full = await serve(t, { runner: false });
+  assert.equal((await full.api("PUT", PATH, perRun(gw.fake.url))).status, 200);
+  assert.notEqual((await full.store.settings.get(mcpSourceKey("contextforge")))?.by, "token", "the owner's");
+  await full.stop();
+
+  const lines = [];
+  const s = await setup(t, ["https://other.example.com"], { data: full.data, log: (line) => lines.push(line) });
+  const ran = await runAdd(s, "cf-own");
+  assert.equal(ran.status, 202, JSON.stringify(ran.body));
+  assert.equal((await follow(s.server.api, ran.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 })).last.status, "completed", JSON.stringify((await s.server.api("GET", `/runs/${ran.body.run_id}`)).body.error));
+  assert.ok(gw.fake.log.some((entry) => entry.method === "tools/call" && entry.tool === "add"), "the run called add");
+  assert.ok(gw.sent.includes(`Bearer ${RUN}`), "with the run's own header");
+  assert.deepEqual(offListLines(lines), [], "no server named at the start");
+});
+
+test("a full start on the store an API-only start held its list in removes the list: read afterwards, mcp.api_only_origins is undefined", async (t) => {
+  const s = await setup(t, ["https://mcp.example.com"], { runner: false });
+  assert.deepEqual(await s.server.store.settings.get("mcp.api_only_origins"), { origins: ["https://mcp.example.com"] }, "API-only: held");
+  await s.server.stop();
+  const full = await serve(t, { data: s.server.data, runner: false });
+  assert.equal(await full.store.settings.get("mcp.api_only_origins"), undefined, "a full start: removed");
 });
