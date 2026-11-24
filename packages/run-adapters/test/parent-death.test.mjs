@@ -140,3 +140,40 @@ test('the shim kills a child that outlasts a TERM it passed on, a grace later, w
   assert.deepEqual(ended, { code: null, signal: 'SIGKILL' }, 'the shim ends as its child did');
   assert.equal(alive(child), false, 'the child is gone');
 });
+
+// The grace is the caller's to ask for. A session's CLI runs under the same shim, and its host ends it with TERM to the
+// whole group and a SIGKILL of its own later (the Claude Agent SDK's, 5 s after its TERM), which reaches the CLI too: a
+// shim started with no grace passes a TERM on and kills nothing after it, so that CLI keeps all the time its host gives.
+test('the shim started with no grace passes a TERM on and kills nothing after it: a child that ignores the TERM runs on until its host kills it', { skip: !linux && 'needs /proc', timeout: 30_000 }, async () => {
+  const watched = parentWatched({ command: process.execPath, args: ['-e', 'process.on("SIGTERM", () => process.stdout.write("term\\n")); process.stdout.write(process.pid + "\\n"); setInterval(() => {}, 1000);'] }, 'shim');
+  const shim = spawn(watched.command, watched.args, { stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  shim.stdout.on('data', (d) => (out += d));
+  const closed = new Promise((resolve) => shim.on('close', (code, signal) => resolve({ code, signal })));
+  /** Waits until `out` holds `n` lines, or `ms` passes; whether it does. */
+  const lines = async (n, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (out.split('\n').length > n) return true;
+    return false;
+  };
+  let child;
+  try {
+    // Its pid is written once its TERM handler is on.
+    assert.ok(await lines(1, 10_000), 'the child started and wrote its pid');
+    child = Number(out.split('\n')[0]);
+    assert.ok(alive(child), 'the child runs');
+    const asked = Date.now();
+    shim.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 3_500));
+    assert.ok(alive(child), `the child (pid ${child}) was gone ${Date.now() - asked} ms after the shim passed a TERM on, though the shim was asked for no grace`);
+    assert.ok(await lines(2, 1_000), 'the shim passed the TERM on');
+    assert.equal(out.split('\n')[1], 'term');
+    // Its host's own kill.
+    process.kill(child, 'SIGKILL');
+    let timer;
+    const ended = await Promise.race([closed, new Promise((resolve) => { timer = setTimeout(() => resolve('still running'), 4_000); })]);
+    clearTimeout(timer);
+    assert.deepEqual(ended, { code: null, signal: 'SIGKILL' }, 'the shim ends as its child did, once its host killed the child');
+  } finally {
+    for (const pid of [shim.pid, child]) if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+});
