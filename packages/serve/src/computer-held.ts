@@ -9,8 +9,8 @@
 // the run keeps its computer until the release or the lapse, then ends stopped. A cancel ends the run and lets the
 // computer go at once.
 //
-// A held run's create does not refuse it for its model (no key for it here, its harness refusing it, no price under a
-// cap): a benchmark that only calls the computer and lets it go never needs one. Those words ride its launch (hold.refused),
+// A held run's create does not refuse it for its model (no key for it here, its harness refusing it or lacking only a
+// model key here, no price under a cap): a benchmark that only calls the computer and lets it go never needs one. Those words ride its launch (hold.refused),
 // and its start and every message are refused in them (heldRefused), so its agent never runs; its computer still takes
 // calls until the release or the lapse. On pi and on every CLI harness, its model's route chooses no model and reads no
 // key: its provider is a stand-in that refuses every model request in those words, sending none (provider.ts

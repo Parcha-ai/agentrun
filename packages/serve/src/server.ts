@@ -3182,8 +3182,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
     if (revision.kind === "agentic") {
       const details = { unbound, missing, ...named };
-      // A held run kept from running by its model alone opens: its computer is its owner's to call, and these words are
-      // its start's refusal (computer-held.ts). Any other blocker refuses it here, as any run.
+      // A held run kept from running by its model alone opens (runnable.ts Blocker.model: a CLI harness that lacks only a
+      // model key here among them): its computer is its owner's to call, and these words are its start's refusal
+      // (computer-held.ts). Any other blocker refuses it here, as any run.
       if (held && blockers.every((b) => b.model)) return { message, fields, details };
       throw new ApiError("agent_not_runnable", message, { fields, details });
     }

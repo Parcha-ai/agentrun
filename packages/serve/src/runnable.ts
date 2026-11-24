@@ -43,8 +43,9 @@ export type RevisionShape =
  *  which this server does not have) and `denied` (a tool a workflow's call node calls that is set to deny) name it for a
  *  run's 409 details; `notGrantable` a tool no setup makes grantable (a known MCP meta tool, mcp-meta.ts), with why.
  *  `short`: a save's cap below what its model needs for one more step and an answer, a warning alone (cap-short.ts).
- *  `model`: an agentic revision's model is the blocker (no key for it, its harness refusing it, no price under a cap): a
- *  held run's create defers it to the run's start (server.ts runnable, computer-held.ts). */
+ *  `model`: an agentic revision's model is the blocker (no key for it, its harness refusing it or unavailable here for
+ *  want of a model key alone, no price under a cap): a held run's create defers it to the run's start (server.ts
+ *  runnable, computer-held.ts). */
 export type Blocker = InputIssue & { host: boolean; tool?: string; notGrantable?: { tool: string; reason: string }; missing?: { tool: string; vars: string[] }; adapter?: string; decision?: { provider: string; needs: string[] }; codeNodes?: true; shell?: true; tier?: string; harness?: string; box?: string; denied?: string; asks?: string; unpriced?: true; short?: true; model?: true };
 
 /**
@@ -112,8 +113,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   };
   const harness = revision.harness ?? DEFAULT_HARNESS;
   const offer = (offers ?? (await harnessOffers(env))).find((h) => h.id === harness);
-  // One the table hides (HarnessEntry.hidden: Goose before its owner installs it) has no offer: its entry says why.
-  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? harnessOf(env, harness)?.hidden?.(env) ?? `This server does not run ${harness}.`, host: true, harness });
+  // One the table hides (HarnessEntry.hidden: Goose before its owner installs it) has no offer: its entry says why. One
+  // that lacks only a model key (its offer's `keys`: harness.ts harnessOffers keeps them on no other) is its model's
+  // blocker, which a held create defers.
+  if (!offer?.available) out.push({ field: "definition.harness", reason: NOT_SET_UP, message: offer?.reason ?? harnessOf(env, harness)?.hidden?.(env) ?? `This server does not run ${harness}.`, host: true, harness, ...(offer?.keys?.length ? { model: true as const } : {}) });
   const { place } = revision;
   // A workflow's model and call nodes run on the runner here; in a box they do not run yet. Its fix names the runner: an
   // edit that leaves the place out keeps the agent's (agents-store.ts), so removing the field would change nothing.
