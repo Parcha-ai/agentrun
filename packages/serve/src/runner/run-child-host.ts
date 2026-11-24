@@ -49,7 +49,7 @@ import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, routeModelKeys, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -64,7 +64,7 @@ import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
-import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import { graderModelOf, learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
@@ -766,8 +766,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // run's grade. And never for a run that holds a key of its own (its launch's, read now): the server's keys are not
       // its to spend, whatever its process asks.
       const reads = granted.includes(SUBAGENT_TOOL) || launch.harness === "learning" || launch.sdk !== undefined;
+      // A replay's or an audit's grade (adapter-run-spec.ts graderRouteOf): its fast model may be another provider's than
+      // its agent's, its key saved alone, which the claim's own keys never hold. Least privilege: the agent's tools run in
+      // this process tree, so only that one provider's saved keys (a gateway route's: the gateway's key alone) cross the
+      // pipe, filtered here, never the rest; none when the revision has no fast model.
+      const grades = launch.replay !== undefined || launch.audit !== undefined;
       const keyed = await runKeyed();
-      return reads ? stringsOf(keyed ? {} : await savedModelKeys(keys)) : {};
+      if (!reads && !grades) return {};
+      const saved = stringsOf(keyed ? {} : await savedModelKeys(keys));
+      return reads ? saved : stringsOf(routeModelKeys(saved, keys.env ?? {}, graderModelOf(revision.body as Parameters<typeof graderModelOf>[0], keys.env ?? {})));
     },
     tierModelKeys: async (tiers) => {
       // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
