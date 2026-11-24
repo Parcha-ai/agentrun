@@ -14,6 +14,8 @@ const HOSTILE = [
   ["http://localhost/", false],
   ["http://public.example:8080/", false],
   ["http://app.localhost/", false],
+  ["http://localhost./", false],
+  ["http://metadata.internal./", false],
   ["http://169.254.169.254/latest/meta-data/", false], // key-gate: denylist a private target the guard must refuse
   ["http://10.0.0.1/", false], // key-gate: denylist a private target the guard must refuse
   ["http://172.16.0.1/", false], // key-gate: denylist a private target the guard must refuse

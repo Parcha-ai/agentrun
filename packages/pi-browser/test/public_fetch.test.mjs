@@ -279,6 +279,17 @@ test("private, loopback, link-local and v4-mapped addresses are private; ordinar
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
 });
 
+// A trailing dot names the same host (an absolute name): a local name is refused with it as without it.
+test("a local name with a trailing dot is refused before any lookup, by the check and the fetch", async () => {
+  for (const url of ["http://localhost./", "http://app.localhost./", "http://printer.local./", "http://metadata.internal./"]) {
+    const checked = network();
+    const fetched = network();
+    await assert.rejects(publicCheck(url, { lookup: checked.lookup }), refused(/^refused: \S+ is not a public host$/), url);
+    await assert.rejects(publicFetch(url, fetched), refused(/^refused: \S+ is not a public host$/), url);
+    assert.deepEqual([checked.looked, fetched.looked, fetched.dialled], [[], [], []], `${url}: nothing looked up or dialled`);
+  }
+});
+
 test("publicCheck refuses exactly the first hops publicFetch refuses, in the same words, and dials nothing", async () => {
   const PRIVATE = "10.0.0.5"; // key-gate: denylist the private address a name resolves to, which the check must refuse
   const names = { "private.example": [PRIVATE], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
@@ -290,6 +301,7 @@ test("publicCheck refuses exactly the first hops publicFetch refuses, in the sam
     "http://[::ffff:10.0.0.1]/", // key-gate: denylist a private address mapped into v6, which the check must refuse
     // Loopback written as one number, in hex, in octal and as v4-mapped v6 hex: WHATWG reads each as the address it is.
     "http://2130706433/", "http://0x7f.0.0.1/", "http://0177.0.0.1/", "http://[::ffff:7f00:1]/",
+    "http://localhost./", "http://metadata.internal./",
   ];
   for (const url of urls) {
     const fetched = network({ names });
