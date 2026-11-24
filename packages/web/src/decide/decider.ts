@@ -122,9 +122,8 @@ export function judgeRequest(url: string, task: string, passages: readonly strin
  *  provider is sent the same states. */
 export const STATE_BUDGET_BYTES = 90_000;
 /** The most questions one request asks: within the fewest any provider takes (Parallel's 100). A judge request asks
- *  at most PASSAGES_MAX, as many passages as a part has: a request of looking_for's FIND_CHUNKS_MAX chunks is large
- *  enough that a proxy may send it to a backend that refuses it (the lab's sends one to Vertex, which refuses
- *  structured outputs for partner models). */
+ *  at most PASSAGES_MAX, as many passages as a part has, so looking_for's FIND_CHUNKS_MAX chunks go in several: the
+ *  lab's proxy refuses an anthropic request of more than 72 questions (at any size). */
 export const QUESTIONS_PER_REQUEST = 100;
 /** The most requests of one ask in flight at once. */
 export const REQUESTS_AT_ONCE = 4;
