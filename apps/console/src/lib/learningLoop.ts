@@ -188,8 +188,9 @@ export function storyOf(input: {
     // The after side is the runs the workflow served (alone or handed back), never its replays: said with its count.
     const words = `${level(s.before.mean_usd)} a run by the agent, ${level(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served since`;
     const ratio = s.times_cheaper;
-    // A held revision serves no more: its own check (its promotion's) is what the card can say of it.
-    const held = newest?.decided === "hold" ? promotions.findLast((p) => p.workflow === newest.workflow && p.digest === newest.digest && p.decided === "promote" && p.check?.n)?.check : undefined;
+    // A held revision serves no more: its own check is what the card can say of it. A revision its first check held
+    // carries that check on the hold record; one its audits held after it served, on its earlier promotion.
+    const held = newest?.decided === "hold" ? (newest.check?.n ? newest.check : promotions.findLast((p) => p.workflow === newest.workflow && p.digest === newest.digest && p.decided === "promote" && p.check?.n)?.check) : undefined;
     if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio, held), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
     else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesOf(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
@@ -217,7 +218,7 @@ export function withheldWords(w: { unknown: number; at_most: number }): string {
 export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
 
 /** The tab's cheaper headline over a ratio above 1: "Nx cheaper", in the one format the cost chart says it (timesOf),
- *  and what its check showed. A held revision (`held`, its promotion's check): held, so no agreement is claimed now,
+ *  and what its check showed. A held revision (`held`, its own check): held, so no agreement is claimed now,
  *  and its check's N of M agreed against the bar. Else, when the serving champion's check cleared (the cost summary's
  *  `replay`): it passed the agreement check, N of the M inputs it answered alone agreeing with the agent against the
  *  bar, and what was served under it. Never "the same accuracy": passing the bar is all it says. Else the ratio alone,

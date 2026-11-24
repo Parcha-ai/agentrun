@@ -201,6 +201,17 @@ describe("the story", () => {
     const stage = storyOf({ ...base, corrections: 3, runs: 80, promotions, cost: cost({ ...took, times_cheaper: 7 }) }).find((s) => s.key === "cheaper")!;
     expect([stage.value, stage.detail]).toEqual(["7.0x cheaper", "agreement not claimed: it was held. Its check: 15 of 17 agreed (bar 80%)"]);
   });
+  // #3681 review: a revision held by its own first check (never promoted) has that check on its hold record.
+  it("a revision held by its own check: that check's agreement, never 'no check yet'", () => {
+    const check = { n: 20, alone: 16, agreed: 11, alone_min: 0.7, agree_min: 0.8, attempt: 1 };
+    const promotions = [
+      { workflow: "w", digest: "d1", at: "2026-11-01T00:00:00Z", decided: "promote", reason: "promoted", check: { ...check, agreed: 15, alone: 17 } },
+      { workflow: "w", digest: "d1", at: "2026-11-02T00:00:00Z", decided: "hold", reason: "held by its audits" },
+      { workflow: "w", digest: "d2", at: "2026-11-03T00:00:00Z", decided: "hold", reason: "below its bar", check },
+    ] as unknown as Promotion[];
+    const stage = storyOf({ ...base, corrections: 3, runs: 80, promotions, cost: cost({ ...took, times_cheaper: 7 }) }).find((s) => s.key === "cheaper")!;
+    expect([stage.value, stage.detail]).toEqual(["7.0x cheaper", "agreement not claimed: it was held. Its check: 11 of 16 agreed (bar 80%)"]);
+  });
   // The after side is served runs only (never a replay): its count said with its level, and no figure when none is priced.
   it("says the after side's served runs, and in words when none is served or priced", () => {
     const few = cheaper({ after: { runs: 5, mean_usd: 0.127 }, times_cheaper: null });
