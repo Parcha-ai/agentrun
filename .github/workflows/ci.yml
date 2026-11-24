@@ -217,8 +217,8 @@ jobs:
     steps: *test-steps
 
   serve-postgres:
-    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
-    # in verify's needs nor a required check, until it has run green. Four jobs, each with a database of its own and a
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. verify needs
+    # it, so a red share fails the required check as a red test shard does. Four jobs, each with a database of its own and a
     # quarter of the suite's files (`--shard`, packages/serve/scripts/test-pg-files.mjs): the suite's longest file sets
     # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
     # agree (scripts/ci-plan.test.mjs).
@@ -342,22 +342,23 @@ jobs:
         run: python -m unittest discover -s python/tests -v
 
   verify:
-    # The one required check: it passes when every test shard (both Node versions) and the console passed. It reads
-    # `needs`, not the jobs API, so an API error cannot fail a required check. `needs.test.result` is the result of
-    # every matrix instance of `test`, and `needs.test-lean.result` of every lean shard, so a red shard on either Node
-    # fails this job.
+    # The one required check: it passes when every test shard (both Node versions), the store's suite on Postgres and the
+    # console passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check.
+    # `needs.test.result` is the result of every matrix instance of `test`, `needs.test-lean.result` of every lean
+    # shard and `needs.serve-postgres.result` of every Postgres share, so a red one fails this job.
     name: verify
-    needs: [test, test-lean, console]
+    needs: [test, test-lean, serve-postgres, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every test shard and the console passed
+      - name: Every test shard, the store's suite on Postgres and the console passed
         env:
           RESULT: ${{ needs.test.result }}
           LEAN_SHARDS: ${{ needs.test-lean.result }}
+          POSTGRES: ${{ needs.serve-postgres.result }}
           CONSOLE: ${{ needs.console.result }}
-        run: test "$RESULT" = success && test "$LEAN_SHARDS" = success && test "$CONSOLE" = success
+        run: test "$RESULT" = success && test "$LEAN_SHARDS" = success && test "$POSTGRES" = success && test "$CONSOLE" = success
 
   computer-docker:
     # @parcha/agentrun-computer on real Docker: the daemon's vet and Go tests, then the live demo of a command run in a

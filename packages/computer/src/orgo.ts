@@ -15,6 +15,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { networkRefusal } from "./hosted/network.js";
+import { httpsBase } from "./hosted/rest.js";
 import { childCommands, type DaemonExpected, daemonDrift } from "./hosted/scripts.js";
 import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
@@ -316,13 +317,8 @@ export class OrgoProvider implements ComputerProvider {
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
-		let url: URL;
-		try {
-			url = new URL(apiUrl);
-		} catch {
-			throw new Error("options.apiUrl is not a URL");
-		}
-		if (url.protocol !== "https:" || url.username !== "" || url.password !== "") throw new Error("options.apiUrl must be https, with no credentials in it: the key goes to it");
+		const url = new URL(httpsBase(apiUrl, "the Orgo API URL"));
+		if (url.username !== "" || url.password !== "") throw new Error("the Orgo API URL holds no credentials: the key goes to it");
 		if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most Orgo's 720 h (${MAX_LIFETIME_MS} ms)`);
 		const ids = USER.exec(user);
 		if (ids === null) throw new Error(`the user ${JSON.stringify(user)} must be uid:gid in numbers, such as 2510:2510`);
