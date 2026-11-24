@@ -1,7 +1,7 @@
 // The guarded direct fetch: one page through the injected public-host guard. A refusal or a failure is a Page with ok
 // false, never a throw. With no guard nothing is fetched.
 import { type Guard, type GuardOptions, isRefused } from "../guard.js";
-import { clip, linksWithin, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX } from "../page.js";
+import { clip, linksWithin, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX, withoutUserinfo } from "../page.js";
 import { linksOf } from "../text-urls.js";
 
 /** The page at `url`, read once through `guard`'s fetch (an HTML page through its reader), or why it was not. `options`
@@ -35,8 +35,9 @@ export async function readDirect(url: unknown, guard: Guard | undefined, options
       ...linksWithin(page.links),
     };
   } catch (error) {
-    if (isRefused(error)) return failed({ refused: (error as Error).message });
-    return failed({ error: (error as Error)?.message ?? String(error) });
+    // Never a URL's user name or password: undici's refusal of a redirect to a URL holding them quotes it whole.
+    const message = withoutUserinfo((error as Error)?.message ?? String(error));
+    return failed(isRefused(error) ? { refused: message } : { error: message });
   }
 }
 

@@ -1,7 +1,7 @@
 // Keyless Firecrawl: search and scrape through Firecrawl's public MCP endpoint, no key, under a free daily limit. A
 // refusal is read by its code alone (quota: off for the run; limit: held for its wait), never by Firecrawl's words. A
 // call is never retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
-import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP } from "../page.js";
+import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
 import { type Hit, type Limit, type Search, snippetOf, waitOf } from "../search.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
@@ -84,7 +84,7 @@ async function firecrawlCall<T>(name: string, args: Record<string, unknown>, wha
     // Firecrawl's own bound, or the caller's: its deadline (a search's, spent) or its stop.
     if (own.aborted) return { error: `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s` };
     const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
-    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    return { error: reason === "TimeoutError" ? `Firecrawl's ${what} did not answer before the ${what}'s time ran out` : reason === "AbortError" ? `the ${what} was stopped` : `Firecrawl's ${what} failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 300)}` };
   }
 }
 

@@ -1,7 +1,7 @@
 // Parallel on the run's key: Extract for web_fetch, Search for web_search. Every request is paid through the injected
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
-import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
+import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutUserinfo } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
 import { linksOf } from "../text-urls.js";
 
@@ -58,7 +58,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
       } catch (error) {
         if (error instanceof PaidRefused) return error.message;
         const name = (error as Error)?.name;
-        return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
+        return name === "TimeoutError" ? "timed out" : name === "AbortError" ? "was stopped" : `failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 200)}`;
       }
     },
   };

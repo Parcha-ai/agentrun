@@ -37,6 +37,10 @@ export const HTML_READ_CHARS = 1_000_000;
 export const PAGE_MAX_BYTES = 5 * 1024 * 1024;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
+ *  a URL that holds them (undici's refusal of a redirect to one quotes it whole). Run it on the whole text, before any
+ *  cut: a cut can end inside them, leaving no "@" for it to find. */
+export const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#@]*@/g, "//");
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */

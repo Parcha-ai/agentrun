@@ -1,7 +1,7 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
+import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutUserinfo } from "./page.js";
 import { readDirect } from "./providers/direct.js";
 import type { KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Extract } from "./providers/parallel.js";
@@ -47,12 +47,17 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
   return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
 }
 
-/** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
- *  a URL that holds them (undici's refusal of a redirect to one quotes it whole); a receipt and the model read it. */
-const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#@]*@/g, "//");
-/** The direct fetch's `read` with withoutUserinfo's errors. */
-const unquoted = (read: Read | Unread): Read | Unread =>
-  read.ok ? read : { ...read, ...(read.refused === undefined ? {} : { refused: withoutUserinfo(read.refused) }), ...(read.error === undefined ? {} : { error: withoutUserinfo(read.error) }) };
+/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a provider's may hold an "@" it left
+ *  unencoded, and a URL reads the last "@" as their end), else withoutUserinfo's. A provider that followed a redirect
+ *  names the URL it ended at, which may hold them. */
+function withoutCredentials(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return withoutUserinfo(url);
+  if (!parsed.username && !parsed.password) return url;
+  parsed.username = "";
+  parsed.password = "";
+  return clip(parsed.href, URL_MAX);
+}
 
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound, the log,
  *  `tried` (told each turn as it ends) and `noParallel` (why the order's Parallel has no client, where the caller knows). */
@@ -66,17 +71,21 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
   let firecrawlSaid: string | undefined;
   let why: string | undefined;
   // Each turn told where it ends, so every provider asked is told, whichever answers the page or none does. What a
-  // provider says goes on with no URL's user name or password in it (withoutUserinfo).
+  // provider says reaches it with no URL's user name or password in it: scrubbed whole as it is read, before any cut
+  // (withoutUserinfo; readDirect scrubs its own).
   const turn = (provider: FetchProvider, read: Read | Unread | string) =>
-    tried?.(typeof read === "string" ? { provider, outcome: "error", error: withoutUserinfo(read) } : read.ok ? { provider, outcome: "ok" } : { provider, outcome: "error", error: withoutUserinfo(read.refused ?? read.error ?? "") });
+    tried?.(typeof read === "string" ? { provider, outcome: "error", error: read } : read.ok ? { provider, outcome: "ok" } : { provider, outcome: "error", error: read.refused ?? read.error ?? "" });
   for (const provider of order) {
     if (provider === "firecrawl-keyless") {
       const sent = firecrawl?.live() ? await passes(url, guard, options, checkMs) : null;
       if (firecrawl && sent && "href" in sent) {
         const read = await firecrawl.read(sent.href, options.signal);
-        turn("firecrawl-keyless", typeof read === "string" ? read.slice(0, 300) : read);
-        if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
+        if (typeof read !== "string") {
+          turn("firecrawl-keyless", read);
+          return { ...read, url: withoutCredentials(read.url), via: "firecrawl-keyless" };
+        }
         firecrawlSaid = withoutUserinfo(read);
+        turn("firecrawl-keyless", firecrawlSaid.slice(0, 300));
       }
     } else if (provider === "parallel") {
       const sent = parallel?.live() ? await passes(url, guard, options, checkMs) : null;
@@ -88,17 +97,17 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
         const read = await parallel.read(sent.href, options.signal);
         if (typeof read !== "string") {
           turn("parallel", read);
-          return { ...read, via: "parallel" };
+          return { ...read, url: withoutCredentials(read.url), via: "parallel" };
         }
         why = withoutUserinfo(read);
       }
       if (why !== undefined) turn("parallel", why);
     } else {
-      const direct = unquoted(await readDirect(url, guard, options));
+      const direct = await readDirect(url, guard, options);
       turn("direct", direct);
       // Why Firecrawl gave no page goes to the log, never to the model (the page is the direct fetch's); never the URL.
       if (firecrawlSaid !== undefined) log?.("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" });
-      return { ...direct, via: "direct", ...(why ? { parallel: why } : {}) };
+      return { ...direct, url: withoutCredentials(direct.url), via: "direct", ...(why ? { parallel: why } : {}) };
     }
   }
   return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
