@@ -1,6 +1,7 @@
 // The docker CLI's environment: each docker call the Docker provider makes is started with the names docker reads (where
-// the daemon is, its config and credential helpers, PATH and HOME) and none of the rest of this process's environment,
-// so a key the server holds never reaches a docker child. Against the fake docker programs (fake-docker.mjs,
+// the daemon is, its config and credential helpers, PATH and HOME) of the environment its host passes (the `env`
+// option), and none of the rest, so a key the server holds never reaches a docker child. The key is in this process's
+// environment as well, so a docker call that inherits it is caught too. Against the fake docker programs (fake-docker.mjs,
 // fake-image-docker.mjs), which record each call's environment; no Docker is reached.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -35,6 +36,9 @@ after(() => {
 	rmSync(config, { recursive: true, force: true });
 });
 
+/** The environment the host passes: this process's, the key and the plain name included. */
+const hostEnv = () => ({ ...process.env });
+
 /** Each recorded call holds no key and no unlisted name, and holds what docker reads: PATH, HOME, DOCKER_HOST and
  *  DOCKER_CONFIG, as this process has them. */
 function onlyWhatDockerReads(envs, what) {
@@ -47,7 +51,7 @@ function onlyWhatDockerReads(envs, what) {
 }
 
 test("list(): docker ps and inspect are started with what docker reads alone, never a key", async () => {
-	const { provider, envs } = fakeDocker();
+	const { provider, envs } = fakeDocker({ env: hostEnv() });
 	const listed = await provider.list({});
 	assert.equal(listed.ok, true, JSON.stringify(listed));
 	assert.ok(envs().some((e) => e.args[0] === "ps"), "list ran docker ps");
@@ -55,7 +59,7 @@ test("list(): docker ps and inspect are started with what docker reads alone, ne
 });
 
 test("create(): docker info, run and inspect are started with what docker reads alone, never a key", async () => {
-	const { provider, envs } = fakeDocker();
+	const { provider, envs } = fakeDocker({ env: hostEnv() });
 	const made = await provider.create({ image: "debian:bookworm-slim", lifetimeMs: 600_000, network: "none" }, { requestId: "docker-env-create" });
 	assert.equal(made.ok, true, JSON.stringify(made));
 	assert.ok(envs().some((e) => e.args[0] === "run"), "create ran docker run");
@@ -63,7 +67,7 @@ test("create(): docker info, run and inspect are started with what docker reads 
 });
 
 test("connect(): docker exec of the daemon is started with what docker reads alone, never a key", async () => {
-	const { provider, envs } = fakeDocker();
+	const { provider, envs } = fakeDocker({ env: hostEnv() });
 	const connected = await provider.connect({ id: "f".repeat(64), name: "computer-0123456789ab" });
 	assert.equal(connected.ok, true, JSON.stringify(connected));
 	await connected.value.close();
@@ -73,7 +77,7 @@ test("connect(): docker exec of the daemon is started with what docker reads alo
 
 test("dockerArch(): docker version is started with what docker reads alone, never a key", async () => {
 	const { program, envs } = fakeDocker();
-	assert.equal(await dockerArch({ docker: program }), "amd64");
+	assert.equal(await dockerArch({ docker: program, env: hostEnv() }), "amd64");
 	assert.deepEqual(envs().map((e) => e.args[0]), ["version"]);
 	onlyWhatDockerReads(envs(), "dockerArch");
 });
@@ -81,7 +85,18 @@ test("dockerArch(): docker version is started with what docker reads alone, neve
 test("ensureImage(): docker image inspect and pull, which read the credential helpers through DOCKER_CONFIG, HOME and PATH, are started with what docker reads alone, never a key", async () => {
 	const fake = fakeImageDocker();
 	const image = "registry.example.com/team/box:1";
-	assert.deepEqual(await ensureImage({ image }, { docker: fake.docker }), { ok: true, value: image });
+	assert.deepEqual(await ensureImage({ image }, { docker: fake.docker, env: hostEnv() }), { ok: true, value: image });
 	assert.ok(fake.envs().some((e) => e.args[0] === "pull"), "the image was pulled");
 	onlyWhatDockerReads(fake.envs(), "ensureImage");
+});
+
+test("given no env, the provider, dockerArch() and ensureImage() start docker with none of this process's environment", async () => {
+	const { provider, program, envs } = fakeDocker();
+	assert.equal((await provider.list({})).ok, true);
+	assert.equal(await dockerArch({ docker: program }), "amd64");
+	const fake = fakeImageDocker();
+	assert.deepEqual(await ensureImage({ image: "registry.example.com/team/box:1" }, { docker: fake.docker }), { ok: true, value: "registry.example.com/team/box:1" });
+	for (const { args, names } of [...envs(), ...fake.envs()]) {
+		assert.deepEqual(names, [], `no env: docker ${args.slice(0, 2).join(" ")} was started with this process's environment`);
+	}
 });
