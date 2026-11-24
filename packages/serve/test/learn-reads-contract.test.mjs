@@ -221,7 +221,7 @@ async function served(t, seen) {
   assert.equal(serving?.state, "serving", JSON.stringify(reads.promotions.serving));
   assert.ok(serving.champion?.nodes?.length > 0, `the champion's steps: ${JSON.stringify(serving)}`);
   assert.deepEqual(reads.promotions.promotions.map((one) => one.decided), ["promote"]);
-  const grade = reads.audits.audits.find((one) => one.agreed === false && one.workflow === "answer" && one.digest === DIGEST);
+  const grade = reads.audits.audits.find((one) => one.source === VALUES["grade audit source"] && one.agreed === false && one.workflow === "answer" && one.digest === DIGEST);
   assert.ok(grade, `the grade's audit row: ${JSON.stringify(reads.audits)}`);
   saw(seen, "grade audit source", grade.source);
   assert.deepEqual(reads.cost.runs.filter((one) => one.run_id === alone || one.run_id === back).map((one) => [one.run_id, one.path, one.workflow, one.digest]), [[alone, "workflow", "answer", DIGEST], [back, "handed_back", "answer", DIGEST]]);
