@@ -81,8 +81,8 @@ export function placeOf(at: string, bundle: Pick<ShareBundle, "files">): string 
 /** One read of the bundle: the bundle, or the status that refused it (never the refusal's words: a page that failed
  *  shows its own). A status of 0 is a server that could not be reached. */
 export type ShareLoad = { ok: true; bundle: ShareBundle } | { ok: false; status: number };
-/** Where the page reads its bundle. The owner's preview reads the export with restores; a share host (beta 2) will read
- *  the stored bundle, with none. */
+/** Where the page reads its bundle. The owner's preview reads the export with restores; a share host's page reads the
+ *  stored bundle (storedSource), with none. */
 export type ShareSource = { load(restore: readonly string[], signal: AbortSignal): Promise<ShareLoad> };
 
 /** Whether `value` is a share bundle the page can draw: the format it knows and the parts it reads. */
@@ -108,6 +108,33 @@ export function exportSource({ runId, base = "" }: { runId: string; base?: strin
       return isBundle(body) ? { ok: true, bundle: body } : { ok: false, status: 500 };
     },
   };
+}
+
+/** A share host's stored bundle of share `shareId` (GET /r/<id>/bundle.json, the bytes the host scanned), with no
+ *  credential: the one read a public share page makes. */
+export function storedSource({ shareId, base = "" }: { shareId: string; base?: string }): ShareSource {
+  return {
+    async load(_restore, signal) {
+      let res: Response;
+      try {
+        res = await fetch(`${base}/r/${encodeURIComponent(shareId)}/bundle.json`, { method: "GET", credentials: "omit", headers: { accept: "application/json" }, signal });
+      } catch (error) {
+        if ((error as Error)?.name === "AbortError") throw error;
+        return { ok: false, status: 0 };
+      }
+      if (!res.ok) return { ok: false, status: res.status };
+      const body: unknown = await res.json().catch(() => undefined);
+      return isBundle(body) ? { ok: true, bundle: body } : { ok: false, status: 500 };
+    },
+  };
+}
+
+/** A share's id as a share host's address names it (serve's share-host.ts SHARE_ID): 26 base32 letters. */
+const SHARE_ID = /^[a-z2-7]{26}$/;
+/** The share `/r/<id>` names, or null for any other address. */
+export function shareIdOf(pathname: string): string | null {
+  const m = /^\/r\/([^/]+)\/?$/.exec(pathname);
+  return m && SHARE_ID.test(m[1]!) ? m[1]! : null;
 }
 
 /** A run id as a page address names it: one segment of letters, digits, `_`, `-` and `.`, never a dot segment. */

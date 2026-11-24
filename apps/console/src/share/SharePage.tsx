@@ -19,6 +19,49 @@ function refusal(status: number, runId: string): { title: string; why: string } 
   }
 }
 
+/** Why a share host's read of a share failed, for whoever opened its link. */
+function hostedRefusal(status: number): { title: string; why: string } {
+  switch (status) {
+    case 0: return { title: "Can't reach this share host.", why: "Try again in a moment." };
+    case 404: return { title: "There is no share at this address.", why: "Check the link you were given." };
+    case 410: return { title: "This share was deleted.", why: "Its owner deleted it, and nothing of it is kept here." };
+    default: return { title: "This share can't be shown.", why: "Try again in a moment." };
+  }
+}
+
+/** A share host's public page of one share (/r/<id>): its stored bundle, read once, drawn by ShareView with no cuts panel
+ *  and no publish command. A refusal shows nothing of the run. */
+export function HostedSharePage({ source }: { source: ShareSource }) {
+  const [attempt, setAttempt] = useState(0);
+  const [load, setLoad] = useState<ShareLoad | null>(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    setLoad(null);
+    source.load([], abort.signal).then(setLoad, (error: unknown) => {
+      if ((error as Error)?.name !== "AbortError") setLoad({ ok: false, status: 0 });
+    });
+    return () => abort.abort();
+  }, [source, attempt]);
+  if (!load) return <main className="flex min-h-dvh items-center justify-center"><p className="font-mono text-body text-muted-foreground" role="status">Loading the share…</p></main>;
+  if (load.ok) return <ShareView bundle={load.bundle} />;
+  const { title, why } = hostedRefusal(load.status);
+  return (
+    <main className="flex min-h-dvh items-start justify-center px-5 py-16">
+      <section className="flex max-w-xl gap-3 border bg-card px-5 py-4" role="alert">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive-text" aria-hidden />
+        <div className="min-w-0">
+          <p className="caps text-label text-muted-foreground">AgentRun · shared run</p>
+          <p className="mt-2 text-prose font-semibold">{title}</p>
+          <p className="mt-1 text-lead leading-relaxed">{why}</p>
+          {load.status !== 404 && load.status !== 410 && (
+            <div className="mt-3"><Button type="button" size="sm" onClick={() => setAttempt((n) => n + 1)}>Try again</Button></div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 /** The owner's share preview of one run: its export, drawn by ShareView; each restore switch exports it again with the
  *  ids switched on (the server keeps those cuts' values in place), so the page always shows the bundle the server made.
  *  Any refusal takes the run off the page: an earlier bundle is not the one that would ship. */

@@ -36,7 +36,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -116,6 +116,7 @@ import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
+import { shareHost } from "./share-host.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -366,6 +367,11 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The share host (`--share-host`, AGENTRUN_SHARE_HOST=1, share-host.ts): serve shares under /r/ alone (a share's page,
+   *  its stored bundle, the page's assets, /r/v2/shares and /r/v2/health) and refuse every other address with a 404
+   *  before anything reads the request. No runner beside it, no owner (accounts and open setup are off), and its share
+   *  URLs on `publicUrl` (AGENTRUN_PUBLIC_URL): a start on an address other than loopback without one is refused. */
+  shareHost?: boolean;
   /** The MCP origins an API-only server's token may save a per_run MCP server at through the generic save
    *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave), normalized as the environment's are (a bad entry
    *  stops the start). None, that save is refused as any route outside the profile's. Read only with apiOnly. */
@@ -518,7 +524,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
-  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), in place of secret-cut.ts scrub. */
+  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), and a share host scrubs an upload with
+   *  (share-host.ts), in place of secret-cut.ts scrub. */
   shareScrub?: CutScrub;
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
@@ -1263,6 +1270,12 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
 export async function startServe(options: ServeOptions): Promise<Serve> {
   // API-only: no console, so no owner to sign in to it (and no setup code printed for a page that is refused).
   if (options.apiOnly) options = { ...options, accounts: false, openSetup: false };
+  // The share host: no console, owner or runner either, and its share URLs on its public address alone.
+  if (options.shareHost) {
+    if (options.apiOnly) throw new Error(`a server is a share host (--share-host) or API-only (${API_ONLY_ENV}=1), not both`);
+    if (!options.publicUrl && !isLoopback(options.host ?? DEFAULT_HOST)) throw new Error("a share host on an address other than loopback names its shares' address in AGENTRUN_PUBLIC_URL (the origin people open its /r/ links at): a request's Host header never names it");
+    options = { ...options, accounts: false, openSetup: false, runnerApart: true };
+  }
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
@@ -2338,6 +2351,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key !== undefined && req) keyUsed.set(req, key);
     return started || key !== undefined;
   };
+  // The share host's routes (share-host.ts), with its own store under DIR/shares: a token's id owns each share, and the
+  // values it holds (its keys, its tokens) refuse an upload that carries one.
+  const shareRoute = options.shareHost ? shareHost({
+    data,
+    who: (req) => (bearer(req.headers.authorization, req) ? tokenUsed.get(req) : undefined),
+    authFailed,
+    held: () => [...serverSecrets(), ...tokens.map((entry) => entry.token)],
+    // AGENTRUN_PUBLIC_URL, else (a loopback start alone, as the start checked) the address this server listens at.
+    origin: () => options.publicUrl ?? urlOf(server, host),
+    console: options.console,
+    version: VERSION,
+    ...(options.shareScrub ? { scrub: options.shareScrub } : {}),
+  }) : undefined;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
@@ -6549,6 +6575,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
+    // The share host (share-host.ts): /r/ alone, before the page, the owner's routes, the MCP endpoint, the token-less
+    // hooks or the token check read anything of the request; every other address is its 404.
+    if (shareRoute) return void shareRoute(req, res, raw).catch(fail);
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
     if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
@@ -6580,6 +6609,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
+    // A share host takes no upgrade: it has no live view, computer or paired machine.
+    if (options.shareHost) return deny("404 Not Found");
     // API-only: paired computers are the console's (Settings), and refused with it, whose tokens the attach socket takes as
     // unknown there (machinesOnly). A run's hosted machine that dials still reaches it, and a run's computer live view takes
     // its viewer credential (below); a browser's live view stays the console's.

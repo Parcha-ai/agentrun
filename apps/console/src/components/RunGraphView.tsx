@@ -53,7 +53,7 @@ export type GraphActions = { onPause?: () => void; onResume?: () => void; busy?:
 
 /** A workflow run as a live graph: the totals, pause and resume, the graph with each node's and item's state, and the
  *  drawer for the node or item picked. */
-export function RunGraphView({ data, actions = {}, fileUrl, initial = null, lastRead }: { data: RunGraph; actions?: GraphActions; fileUrl: (ref: string) => string; initial?: Selection; lastRead?: number }) {
+export function RunGraphView({ data, actions = {}, fileUrl, initial = null, lastRead, offline = false }: { data: RunGraph; actions?: GraphActions; fileUrl: (ref: string) => string; initial?: Selection; lastRead?: number; offline?: boolean }) {
   const [selected, setSelected] = useState<Selection>(initial);
   const marks = useMemo(() => runMarks(data, selected), [data, selected]);
   const final = isFinal(data.run.status);
@@ -80,7 +80,7 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
         </div>
         {selected && (
           <div className="flex min-h-0 shrink-0 flex-col border-t lg:w-[460px] lg:border-l lg:border-t-0">
-            <NodeDrawer data={data} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} fileUrl={fileUrl} />
+            <NodeDrawer data={data} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} fileUrl={fileUrl} offline={offline} />
           </div>
         )}
       </div>
