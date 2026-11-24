@@ -676,6 +676,23 @@ const CASES = [
       ["holding é and a quote, written with é as a \\u escape", `${H}é"${R}`, `{"k": "${H}${B}u00e9${B}"${R}"}`],
     ].map(([what, value, text]) => ({ name: `one family's view: a held value ${what} withholds the text`, text, values: [value], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
+  // A held value that holds a "," or a ":", split there by JSON: a login written as a name and its value, two halves
+  // written as an array's two strings. The join view drops the punctuation between strings, so it reads the held value
+  // without it; a needle of the held value with its "," and ":" gone, read only in the join view, withholds each. A short
+  // object beside it whose join is no such needle shows as it came, and the held value whole in one string, or in prose
+  // beside a quote, is cut in place (controls).
+  ...(() => {
+    const [H, R] = P24;
+    const LOGIN = login("alice", "s3cretpass");
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    return [
+      { name: "a held value's own : split as a JSON name and its value withholds the text", text: JSON.stringify({ alice: "s3cretpass" }), values: [LOGIN], hides: ["s3cretpass"], exact: all("[redacted]") },
+      { name: "a held value's own , split as two strings of a JSON array withholds the text", text: JSON.stringify([H, R]), values: [`${H},${R}`], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all("[redacted]") },
+      { name: "a short object beside a held value with a : whose join is not that value shows as it came (control)", text: JSON.stringify({ alice: "bob" }), values: [LOGIN], hides: [], exact: all(JSON.stringify({ alice: "bob" })) },
+      { name: "a held value with a : whole in one JSON string is cut in place (control)", text: JSON.stringify({ note: LOGIN }), values: [LOGIN], hides: ["s3cretpass"], exact: all(JSON.stringify({ note: "[redacted]" })) },
+      { name: "a held value with a : whole in prose beside a quote is cut in place (control)", text: `say "hi" ${LOGIN} ok`, values: [LOGIN], hides: ["s3cretpass"], exact: all('say "hi" [redacted] ok') },
+    ];
+  })(),
   // A combining mark (P2-B): NFKC composes a letter and the mark after it into one character, so a held value with a
   // mark after its first or last letter, written as it is, escaped or percent-encoded, lost that letter. The squeeze
   // decomposes and drops every combining mark, on the held value's side and the text's, so each withholds the text. A
