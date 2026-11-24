@@ -106,34 +106,22 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     // stream's start): the last line's usage is the request's.
     const key = keyOf(message, value);
     const usage = normalizeUsage("anthropic", message.usage);
-    if (counts) {
-      // A totals read: the request's model, usage and time alone, its later lines' usage over it, as below.
-      // Started small: a session's file often holds a request or two, and its cursor keeps the index.
-      const indexes = (own.indexes ??= recordIndex(2));
-      const packed = key ? packInto(key, PACKED) : undefined;
-      const index = packed ? ownerOf(indexes, packed) : -1;
-      if (index !== -1) {
-        if (usage) setUsage(counts, index, usage);
-        return;
-      }
-      if (key && (seen.has(`m:${key}`) || (str(message.id) && seen.has(`l:${message.id}`)))) {
-        for (const call of calls) own.copied.add(call.id);
-        return false;
-      }
-      if (!key && !text && calls.length === 0) return;
-      const added = addRequest(counts, session.model, usage, at);
-      if (packed) {
-        addRecord(indexes, packed, added);
-        seen.add(`m:${key}`);
-      }
-      return;
-    }
-    const held = key ? own.keyed.get(key) : undefined;
+    // A request this file holds already, by its key: as its Answer, or a totals read's as its index in its counts (its
+    // model, usage and time alone), by its key packed. Started small: a session's file often holds a request or two, and
+    // its cursor keeps the index.
+    const indexes = counts ? (own.indexes ??= recordIndex(2)) : undefined;
+    const packed = indexes && key ? packInto(key, PACKED) : undefined;
+    const index = packed ? ownerOf(indexes!, packed) : -1;
+    const held = key && !counts ? own.keyed.get(key) : undefined;
     if (held) {
       if (keep) held.text = [held.text, text].filter(Boolean).join("\n");
       held.calls.push(...calls);
       if (uuid) held.uuids = [...(held.uuids ?? []), uuid];
       if (usage) held.usage = usage;
+      return;
+    }
+    if (index !== -1) {
+      if (usage) setUsage(counts!, index, usage);
       return;
     }
     // A request an earlier file of the import holds: counted there, never again; its calls' results are copies too. A
@@ -143,14 +131,17 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       return false;
     }
     if (!key && !text && calls.length === 0) return;
-    const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
-    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
-    if (key) {
-      own.keyed.set(key, turn);
-      seen.add(`m:${key}`);
+    if (counts) {
+      const added = addRequest(counts, session.model, usage, at);
+      if (packed) addRecord(indexes!, packed, added);
+    } else {
+      const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
+      // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
+      const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
+      if (key) own.keyed.set(key, turn);
+      add(turn);
     }
-    add(turn);
+    if (key) seen.add(`m:${key}`);
     return;
   }
   if (typeof message.content === "string") {

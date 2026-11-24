@@ -106,6 +106,47 @@ test("Claude Code: a totals read's requests are a turns: false read's, its copie
   assert.deepEqual([...seen.totals].sort(), [...seen.plain].sort());
 });
 
+test("Claude Code: a request copied under uuids of its own, and a line with no message id, are read alike by a totals read and a turns: false read", async (t) => {
+  const home = await tempHome(t);
+  const first = [
+    claudeAnswer({ uuid: "k-a1", msg: "msg_k1", req: "req_k1", usage: anthropicUsage(10, 1), i: 1, block: { type: "tool_use", id: "toolu_k1", name: "Bash", input: {} } }),
+    claudeAnswer({ uuid: "k-a2", msg: "msg_k1", req: "req_k1", usage: anthropicUsage(10, 9), i: 2 }),
+    claudeAnswer({ uuid: "k-a3", msg: "msg_k2", usage: anthropicUsage(20, 2), i: 3 }),
+  ];
+  // A resumed session's file: the first's requests again, each line under a uuid of its own (a copy by its request's key
+  // alone), a line with no message id and nothing in it (no request), one with no message id and text (a request), then
+  // a request of its own.
+  const second = [
+    ...first.map((line, k) => ({ ...line, uuid: `k-b${k}` })),
+    claudeAnswer({ uuid: "k-b3", usage: anthropicUsage(5, 5), i: 4, block: { type: "text", text: "" } }),
+    claudeAnswer({ uuid: "k-b4", usage: anthropicUsage(6, 6), i: 5 }),
+    claudeAnswer({ uuid: "k-b5", msg: "msg_k3", req: "req_k3", usage: anthropicUsage(7, 7), i: 6 }),
+  ];
+  const a = await writeJsonl(claudeFile(home, "00000000-0000-4000-8000-00000000000c"), first);
+  const b = await writeJsonl(claudeFile(home, "00000000-0000-4000-8000-00000000000d"), second);
+  const reader = READERS["claude-code"];
+  const seen = await same(reader, [a, b]);
+  assert.deepEqual([...seen.totals].sort(), [...seen.plain].sort());
+  // And what each holds: the first file's two requests, the second's three copies and two requests of its own.
+  const kept = new Set();
+  const reads = [];
+  for (const file of [a, b]) reads.push((await reader.read({ file }, undefined, { turns: false, totals: true, seen: kept })).sessions[0]);
+  assert.deepEqual(
+    reads.map(({ counts, session }) => [counts.n, session.copies]),
+    [
+      [2, 0],
+      [2, 3],
+    ],
+  );
+  assert.deepEqual(
+    reads.map((read) => fromCounts(read).map(({ usage }) => usage.output)),
+    [
+      [9, 2],
+      [6, 7],
+    ],
+  );
+});
+
 /** Codex lines: turns that change the model, calls and their results (the open request's and others'), usage after the
  *  results, token counts that repeat their total, token_usage_records with a response twice, an aborted turn. */
 function codexRecords(rnd, records) {
@@ -138,6 +179,36 @@ test("Codex: a totals read's requests are a turns: false read's, by token counts
   const counted = await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-00-a.jsonl"), codexRecords(random(11), false));
   const recorded = await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-00-b.jsonl"), codexRecords(random(12), true));
   await same(READERS.codex, [counted, recorded]);
+});
+
+test("Codex: a late result of an earlier request's call leaves the open request open, in every kind of read and from a cursor", async (t) => {
+  const home = await tempHome(t);
+  const records = [
+    codexMeta("thread-late"),
+    codexContext(1),
+    codexUser("Go.", 2),
+    { type: "response_item", timestamp: at(3), payload: { type: "function_call", name: "shell", arguments: "{}", call_id: "call_a" } },
+    codexTokens(openaiUsage(100, 0, 10), openaiUsage(100, 0, 10), 4),
+    { type: "response_item", timestamp: at(5), payload: { type: "reasoning", summary: [] } },
+    // The first request's call's result, after its usage: the second request, open, is no request of that call's.
+    { type: "response_item", timestamp: at(6), payload: { type: "function_call_output", call_id: "call_a", output: "ok" } },
+    codexAnswer("Done.", 7),
+    codexTokens(openaiUsage(200, 0, 20), openaiUsage(300, 0, 30), 8),
+  ];
+  const file = await writeJsonl(codexFile(home, "rollout-2026-01-01T00-00-00-late.jsonl"), records);
+  const reader = READERS.codex;
+  const outputs = (read) => (read.counts ? fromCounts(read) : fromRequests(read)).map(({ usage }) => usage?.output);
+  for (const options of [{}, { turns: false }, { turns: false, totals: true }]) assert.deepEqual(outputs((await reader.read({ file }, undefined, options)).sessions[0]), [10, 20], JSON.stringify(options));
+  // Two passes, the first ending after each line in turn: the second goes on from its cursor.
+  const text = jsonl(records);
+  for (let cut = text.indexOf("\n") + 1; cut < text.length; cut = text.indexOf("\n", cut) + 1) {
+    await writeFile(file, text.slice(0, cut));
+    const first = await reader.read({ file }, undefined, { turns: false, totals: true });
+    await appendFile(file, text.slice(cut));
+    const next = await reader.read({ file }, first.cursor, { turns: false, totals: true });
+    assert.equal(next.resumed, true);
+    assert.deepEqual(outputs(next.sessions[0]), [10, 20], `from byte ${cut}`);
+  }
 });
 
 test("a totals read goes on from its cursor as it read, and no read of another kind goes on from it", async (t) => {
