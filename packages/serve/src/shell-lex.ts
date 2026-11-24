@@ -13,9 +13,10 @@
  * Linear by count: `lexCount.read` counts each character a search reads. A search for a construct's closer that fails
  * is remembered (Misses), so a later opener of that kind inside the span it read fails at once, without reading it
  * again (it would read the same characters, paired the same; failing reads on, so it never ends a command earlier).
- * That holds only for an opener a read saw as one and that did not close: one that closed (`$(b)` in `$(a $(b) c`),
- * or that the failed read took as quoted text (`$(c)` in `$(a 'b $(c) d'`, read again from a command named inside
- * the quotes), is searched again.
+ * A flat search (a single quote, `$'`, a backtick, `$((`) reads its whole span alike, so that always holds. A nested
+ * one (a double quote, `${`, a group) pairs quotes inside its span, so it holds only for an opener the read saw as one
+ * and that did not close. One that closed (`$(b)` in `$(a $(b) c`), or that the failed read took as quoted text
+ * (`$(c)` in `$(a 'b $(c) d'`, read again from a command named inside the quotes), is searched again.
  * Callers read a command to commandLimit, which the commands named in one stretch share, so a search that failed at
  * the limit is not read again by the next command (`curl $(a; curl $(a; …`).
  */
@@ -51,6 +52,8 @@ type Miss = { readonly from: number; readonly to: number; readonly limit: number
 /** A failed closer search per construct kind: an opener of that kind in [from, to) fails without a search, unless
  *  the search that failed stopped at a limit nearer than this one's. Shared by every lex over one text. */
 export type Misses = Map<string, Miss>;
+/** The kinds whose closer search reads its span flat, pairing nothing inside it. */
+const FLAT = new Set(["sq", "ansi", "tick", "arith"]);
 /** The openers each Misses' reads saw as openers, true once one closed: only one seen and not closed fails from a span
  *  (a quote that hid it from the failed read, or a group around it that failed where it closed, says nothing of it). */
 const seenOf = new WeakMap<Misses, Map<number, boolean>>();
@@ -104,15 +107,19 @@ class Reader {
     return i < this.limit ? this.text.charCodeAt(i) : END;
   }
 
-  /** Whether the opener at `open` fails without a search; the first read to see it records it as seen. */
+  /** Whether the opener at `open` fails without a search. A flat search (a single quote, `$'`, a backtick, `$((`)
+   *  reads every character of its span alike, so the span decides. A nested one (`"`, `${`, a group) can hold an
+   *  opener in its quotes that it never read as one: that opener is searched until a read has seen it. */
   private missed(kind: string, open: number): boolean {
+    const miss = this.misses.get(kind);
+    const inSpan = miss !== undefined && miss.from <= open && open < miss.to && miss.limit >= Math.min(this.limit, miss.to + 1);
     const seen = this.seen.get(open);
+    if (FLAT.has(kind)) return inSpan && seen !== true;
     if (seen === undefined) {
       this.seen.set(open, false);
       return false;
     }
-    const miss = this.misses.get(kind);
-    return !seen && miss !== undefined && miss.from <= open && open < miss.to && miss.limit >= Math.min(this.limit, miss.to + 1);
+    return !seen && inSpan;
   }
 
   /** `end`, the index past the closer of the construct at `open`, remembered as closed. */
