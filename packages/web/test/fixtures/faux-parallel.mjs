@@ -1,7 +1,7 @@
 // Under --faux only: the fetch serve's Parallel provider, web_fetch and web_search send their requests through, in place
 // of Parallel's API (the tests' fake). It answers every question, and each extract with the URL's full content, or as
 // AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT says: "errors" lists the URL in `errors`, a number answers that HTTP status. A
-// search answers `max_results` results (search()), or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names, and a list
+// search answers `max_results` results (search()), "long" ones, or the HTTP status AGENTRUN_TEST_FAUX_PARALLEL_SEARCH names, and a list
 // of monitors (GET /v1/monitors, a saved key's check) answers none; "slow:<ms>" answers a search after that long. That
 // mode may be a `;`-separated list, one entry for each search this process sends in turn (the last stands for every one
 // after it), and a status may carry its Retry-After after `@`: `429@2;ok` is a 429 with Retry-After 2, then results. It counts
@@ -73,6 +73,9 @@ async function search(body, modes, signal) {
   });
   if (/^\d+$/.test(mode)) return json({ type: "error", error: { ref_id: "ref-faux-2", message: `faux status ${mode}` } }, Number(mode));
   const count = body.advanced_settings?.max_results ?? 10;
+  // "long": every result with a 2,000-character URL, a 500-character title and a long excerpt, so 25 of them pass the
+  // 100,000 characters an answer is held to.
+  if (mode === "long") return json({ search_id: "search-faux-long", results: Array.from({ length: count }, (_, i) => ({ url: `https://long.example/${i + 1}/${"p".repeat(2_000)}`, title: "T".repeat(500), publish_date: null, excerpts: [LONG_EXCERPT] })), warnings: null, usage: [{ name: "sku_search", count: 1 }], session_id: "session-faux-1" });
   const results = Array.from({ length: count }, (_, i) => i === 0
     ? { url: "https://registry.example/widgets", title: null, publish_date: "2026-10-01", excerpts: ["See the [registry entry](https://registry.example/widgets/1234567) for\n\nWidgets, Inc.", LONG_EXCERPT] }
     : { url: `https://result.example/${i + 1}`, title: `Result ${i + 1} for ${body.search_queries[0]}`, publish_date: null, excerpts: [`Excerpt ${i + 1}.`] });

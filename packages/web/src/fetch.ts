@@ -3,7 +3,7 @@
 import type { FoundPage } from "./decide/fetch.js";
 import { unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
+import { askedUrl, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutCredentials, withoutUserinfo } from "./page.js";
 import { HELD_CODE, holdingWords, type Reader } from "./provider.js";
 import { AHEAD, type AheadProvider, type FetchProvider, providerName, providerOf } from "./providers/registry.js";
 import { type Failure, failure, type Limit, type Try } from "./search.js";
@@ -36,14 +36,22 @@ export const FETCH_ORDER: readonly FetchProvider[] = ["firecrawl-keyless", "para
  *  characters) and, logged at once, its `provider` and the `limit` it met, as JSON, if any; logged once a provider that
  *  ends the order answered, whether that one `direct`ly "read" the page or "failed". */
 export type WebLog = (event: string, fields: Record<string, string>) => void;
+/** One provider a read asked, as it answered, or one passed over with why (its "not tried: ..."), or held: a turn of a
+ *  fetch's receipt (search.ts Try). */
+export type FetchTry = Try & { provider: FetchProvider };
 
-/** Whether `url` may go to a provider: readDirect's own refusals (port, length, a user name or password) pass it, and so
- *  does the guard's check within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
-async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<boolean> {
-  const target = URL.parse(url);
-  if (!guard || !target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return false;
+/** The URL a provider is sent for `url`, as parsed (its `href`), so the provider reads the host the guard checked; or
+ *  `why` it may not go: readDirect's own refusals, in its words (not a URL, the href's length, the port, a user name or
+ *  password), no guard, or the guard's check failing within `ms` and the caller's signal (a check out of time too). */
+async function passes(url: unknown, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<{ href: string } | { why: string }> {
+  const target = typeof url === "string" ? URL.parse(url) : null;
+  if (!target) return { why: "url is not an absolute URL" };
+  if (target.href.length > URL_MAX) return { why: `url is longer than ${URL_MAX.toLocaleString("en-US")} characters` };
+  if (!PORTS.has(target.port)) return { why: `port ${target.port} is not 80 or 443` };
+  if (target.username || target.password) return { why: "the URL holds a user name or password" };
+  if (!guard) return { why: "no public-host guard was given" };
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
-  return guard.check(url, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => true, () => false);
+  return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
 }
 
 /** What one read is given: the readers, the order they are asked in, the guard, the check's bound, the log, and where its
@@ -52,8 +60,8 @@ type ReadWith = { readers: Readers; order: readonly FetchProvider[]; guard?: Gua
 
 /** The page at `url` read once, by the providers of `order` in turn, each turn recorded in `tries` as it is taken. A
  *  provider that ends the order (the guarded direct fetch) answers whatever it reads. Any other is asked where its reader
- *  is given and not held and the guard passes the URL within `checkMs`; why a read gave no page, or why a turn was not
- *  asked, is said on the page, and logged or recorded as its FetchShape says. */
+ *  is given and not held and the guard passes the URL within `checkMs`, and is sent the URL as the guard checked it; why
+ *  a read gave no page, or why a turn was not asked, is said on the page, and logged or recorded as its FetchShape says. */
 async function readOnce(url: unknown, { readers, order, guard, checkMs, options, log, tries }: ReadWith): Promise<WebRead | WebUnread> {
   const said: Partial<Record<AheadProvider, string>> = {};
   const logged: { event: string; said: string }[] = [];
@@ -67,10 +75,15 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
       // Why a provider ahead gave no page is logged as well as said, never with the URL.
       for (const miss of logged) log?.(miss.event, { said: miss.said, direct: read.ok ? "read" : "failed" });
       tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }), ...(failure ? { failure } : {}) });
-      return { ...read, via: id, ...said };
+      // A second scrub behind readDirect's own, kept on purpose: it covers a url readDirect did not clear and has not cut.
+      return { ...read, url: withoutCredentials(read.url), via: id, ...said };
     }
-    const held = reader.held();
-    const why = held ?? (typeof url === "string" && (await passes(url, guard, options, checkMs)) ? undefined : failure("refused", "GUARD", "not tried: the URL did not pass the public-host guard"));
+    // A provider is sent the URL the guard checked, as parsed (passes), or not asked, saying why in readDirect's words.
+    const before = reader.held();
+    const checked = before ? undefined : await passes(url, guard, options, checkMs);
+    // Asked again after the check: a refusal while it ran (its key's, by the other tool) holds it for this read too.
+    const held = before ?? reader.held();
+    const why = held ?? (checked && "why" in checked ? failure("refused", "GUARD", `not tried: ${checked.why}`) : undefined);
     if (why !== undefined) {
       if (shape.miss === "said" || held) said[id as AheadProvider] = why.message;
       // A turn its breaker holds is on the receipt as search's is; a said provider's other unasked turns are failed ones.
@@ -78,15 +91,18 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
       else if (shape.miss === "said") tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
       continue;
     }
-    const read = await reader.read(url, options);
+    const read = await reader.read((checked as { href: string }).href, options);
     if ("ok" in read && read.ok) {
       tries.push({ provider: id, outcome: "ok" });
       // A reason is said only beside the direct fetch's answer or none's: webFetchText's line says it was fetched directly.
-      return { ...read, via: id };
+      // A second scrub behind the client's own, kept on purpose: it covers a url the client did not clear and has not cut.
+      return { ...read, url: withoutCredentials(read.url), via: id };
     }
-    const error = read.error ?? "";
+    // What a provider says reaches the page, the receipt and the log with no URL's user name or password in it: scrubbed
+    // whole as it is read, before any cut (a second scrub behind the client's own, kept on purpose).
+    const error = withoutUserinfo(read.error ?? "");
     const limit: Limit | undefined = "limit" in read ? read.limit : undefined;
-    const typed = "failure" in read && read.failure ? { failure: read.failure } : {};
+    const typed = "failure" in read && read.failure ? { failure: { ...read.failure, message: withoutUserinfo(read.failure.message) } } : {};
     // A read that met a limit is said by what holds the provider now, never by the provider's words for it.
     const holding = limit ? reader.holding?.() : undefined;
     const words = holding ? holdingWords(holding) : error;
@@ -100,7 +116,7 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     if (shape.miss.when === "failed") log?.(shape.miss.log, { provider: id, said: error.slice(0, 300), ...(limit ? { limit: JSON.stringify(limit) } : {}) });
     else logged.push({ event: shape.miss.log, said: error.slice(0, 300) });
   }
-  return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...said };
+  return { ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...said };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -123,7 +139,7 @@ function trim(pages: Pages): void {
 function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signal?: AbortSignal): Promise<WebRead | WebUnread> {
   if (!signal) return reading;
   // No page came for this call, by any path: never "direct", which says the host was fetched.
-  const stopped = (): WebUnread => ({ ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
+  const stopped = (): WebUnread => ({ ok: false, url: askedUrl(url), status: 0, title: "", text: "", links: [], error: "the call was stopped before the page arrived", via: "stopped" });
   if (signal.aborted) return Promise.resolve(stopped());
   return new Promise((resolve, reject) => {
     const onStop = () => resolve(stopped());

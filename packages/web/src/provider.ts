@@ -34,12 +34,13 @@ export type SearchAsk = { query: string; n: number };
 export type ReadFailed = { error: string; failure?: Failure; limit?: Limit };
 
 /** A provider made for one Web. `search`: one search, ended by `deadline` (the call's one deadline for every provider it
- *  asks) or kept on the caller's `signal` and the provider's own bound, as the provider says. `read`: one read of a page
+ *  asks) or kept on the caller's `signal` and the provider's own bound, as the provider says; `bounds`, the call's own,
+ *  each in place of the Web's (ProviderParts.bounds) where given. `read`: one read of a page
  *  (one that passed the guard's check, unless the provider ends the order and reads through the guard itself).
  *  `unready`: why a read is not asked now, unsent (its key refused, or none where none means no turn), typed, or
  *  undefined. */
 export type ProviderRun = {
-  search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal): Promise<Searched>;
+  search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal, bounds?: SearchBounds): Promise<Searched>;
   read?(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed>;
   unready?(): Failure | undefined;
 };

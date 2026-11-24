@@ -93,7 +93,7 @@ test("Parallel picked: a URL holding a user name or password is never sent to Pa
   const parallel = { live: () => true, read: async (url) => { asked.push(url); return "should not be asked"; }, post: async () => { throw new Error("not posted"); } };
   for (const url of CREDENTIALED) {
     const page = await webFetch(url, { ...network(), parallel });
-    assert.deepEqual([page.ok, page.via, page.parallel, page.refused], [false, "direct", "not tried: the URL did not pass the public-host guard", "refused: the URL holds a user name or password"], url);
+    assert.deepEqual([page.ok, page.via, page.parallel, page.refused], [false, "direct", "not tried: the URL holds a user name or password", "refused: the URL holds a user name or password"], url);
   }
   assert.deepEqual(asked, [], "Parallel was sent none of them");
 });

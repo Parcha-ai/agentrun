@@ -141,6 +141,24 @@ test("Exa alone in the fetch order: a page it could not read is no page, the tur
   assert.equal(exa.got.length, 1, "the private host never reached Exa");
 });
 
+// Exa names the URL it read, and its read cuts that url at URL_MAX. A password running past the cut leaves no "@" for a
+// later scrub to find, and the cut url no longer parses: Exa's read clears them before its cut.
+test("Exa's page url whose password runs past where a url is cut: the page web_fetch returns names it without any part of them", async (t) => {
+  // Synthetic, built in code: a user name and a password padded past the cut.
+  const at = new URL(`${PUBLIC}landed`);
+  at.username = "web-user";
+  at.password = `not-a-secret${"x".repeat(web.URL_MAX)}`;
+  const landed = at.href;
+  assert.ok(landed.indexOf("not-a-secret") < web.URL_MAX && landed.indexOf("@") > web.URL_MAX, "the cut of the url ends inside them");
+  const { w, logs } = await exaWeb(t, (path) => (path === "/contents" ? exaPage(landed, "Read after a redirect.") : undefined), { order: { search: [], fetch: ["exa", "direct"] } });
+  const { answer, receipt } = await w.fetch(PUBLIC);
+  assert.deepEqual([answer.ok, answer.via], [true, "exa"], "Exa read the page");
+  const where = { "exa: the receipt turns": receipt.tries, "exa: the page": answer, "exa: the text the model reads": receipt.out, "exa: the log": logs };
+  const leaks = Object.entries(where).filter(([, what]) => /web-user|not-a-secr/.test(typeof what === "string" ? what : JSON.stringify(what))).map(([name]) => name);
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.equal(answer.url, `${PUBLIC}landed`, "the page's url, without them");
+});
+
 test("Exa's answer of something other than its results is a failed turn, never thrown", async (t) => {
   const { w } = await exaWeb(t, () => ok({ unexpected: true }));
   const { answer, receipt } = await w.search("widgets");

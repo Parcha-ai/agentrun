@@ -37,6 +37,26 @@ export const HTML_READ_CHARS = 1_000_000;
 export const PAGE_MAX_BYTES = 5 * 1024 * 1024;
 
 export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
+ *  a URL that holds them (undici's refusal of a redirect to one quotes it whole). Run it on the whole text, before any
+ *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
+ *  does: a password may hold an "@" left unencoded. */
+export const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#]*@/g, "//");
+/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
+ *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
+ *  followed a redirect names the URL it ended at, which may hold them. Run it before a url is cut: a cut can end inside
+ *  them, leaving a url that does not parse and no "@" for withoutUserinfo to find. */
+export function withoutCredentials(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return withoutUserinfo(url);
+  if (!parsed.username && !parsed.password) return url;
+  parsed.username = "";
+  parsed.password = "";
+  return clip(parsed.href, URL_MAX);
+}
+/** The URL a call asked for, as a page names it: with no user name or password, and cut. One that does not parse is no
+ *  URL, and a scrub of its text can stop short of them (at a space), so a page names none: "". */
+export const askedUrl = (url: unknown) => (typeof url === "string" && URL.canParse(url) ? clip(withoutCredentials(url), URL_MAX) : "");
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
@@ -140,7 +160,6 @@ export function partOfRead({ text, beyond, length, links, links_omitted, html_ch
   return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
 }
 
-/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape, keyless Exa's fetch), as a
- *  Read: its url, title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it
- *  holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(url, URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+/** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape), as a Read: its url,
+ *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds. */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });

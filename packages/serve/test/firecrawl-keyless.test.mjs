@@ -14,7 +14,7 @@ import { FAUX_FIRECRAWL_ENV, ordersOf, RATE_LIMITED } from "../dist/web-run.js";
 import { firecrawlFetch, firecrawlScrape, firecrawlSearch } from "@parcha/agentrun-web";
 import { fetchFor, webFetchTool } from "../dist/web-fetch.js";
 import { webFetch } from "./fixtures/serve-web.mjs";
-import { webSearchTool } from "../dist/web-search.js";
+import { searchFor, webSearchTool } from "../dist/web-search.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { withoutFaux } from "../dist/model.js";
 import { firecrawlServer, FIRECRAWL_SIGNUP, PAGE, refusal, answers } from "./fixtures/fake-firecrawl.mjs";
@@ -192,6 +192,20 @@ test("one deadline for a whole search: a Firecrawl that never answers and spends
   const answer = said(await searchRun(env, Date.now, { searchMs: 50 })("widgets"));
   assert.equal(await exaSearches(), 0, "the search's one deadline was spent: Exa is not started on it");
   assert.equal(typeof answer.error, "string", JSON.stringify(answer));
+});
+
+// A search deadline belongs to the binding given it. Firecrawl answers in 500 ms here: past a 50 ms deadline, far inside
+// the default's 60 s. The test fails on a deadline not applied, or applied to a search that was not given it.
+test("a binding's search deadline is its own, whichever binding made the run's Web: a bound binding gives up within it, and the run's other searches are not held to it", { timeout: 15_000 }, async (t) => {
+  const fc = await firecrawlServer(t, async (name) => (await new Promise((resolve) => setTimeout(resolve, 500)), answers(name)));
+  const { env } = await keyless(t, fc.url);
+  webSearchTool(env);
+  const bound = said(await searchRun(env, Date.now, { searchMs: 50 })("widgets"));
+  assert.equal(typeof bound.error, "string", `a binding bound after the run's Web was made still gives up within its deadline: ${JSON.stringify(bound)}`);
+  const other = { ...env };
+  said(await searchRun(other, Date.now, { searchMs: 50 })("widgets"));
+  const node = await searchFor(other, { query: "widgets" });
+  assert.equal(node.provider, "firecrawl-keyless", `a call node of the run is not held to a binding's deadline: ${JSON.stringify(node)}`);
 });
 
 // The test's own timeout is far past the bound it injects and far short of the default's 30 s: it fails on a bound not

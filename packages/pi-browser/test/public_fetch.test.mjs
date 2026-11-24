@@ -279,9 +279,31 @@ test("private, loopback, link-local and v4-mapped addresses are private; ordinar
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
 });
 
+// A trailing dot names the same host (an absolute name): a local name is refused with one or more as without any. The
+// host parser turns %2E and the ideographic full stop into dots, so those trail too.
+test("a local name with one or more trailing dots is refused before any lookup, by the check and the fetch", async () => {
+  for (const url of ["http://localhost./", "http://app.localhost./", "http://printer.local./", "http://metadata.internal./", "http://localhost../", "http://printer.local../", "http://localhost.../", "http://localhost%2E%2E%2E/", "http://localhost。。/"]) {
+    const checked = network();
+    const fetched = network();
+    await assert.rejects(publicCheck(url, { lookup: checked.lookup }), refused(/^refused: \S+ is not a public host$/), url);
+    await assert.rejects(publicFetch(url, fetched), refused(/^refused: \S+ is not a public host$/), url);
+    assert.deepEqual([checked.looked, fetched.looked, fetched.dialled], [[], [], []], `${url}: nothing looked up or dialled`);
+  }
+});
+
 test("publicCheck refuses exactly the first hops publicFetch refuses, in the same words, and dials nothing", async () => {
-  const names = { "private.example": ["10.0.0.5"], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
-  const urls = ["http://public.example/", "https://public.example:443/x", "http://public.example:8080/", "ftp://public.example/", "file:///etc/passwd", "http://localhost/", "http://app.localhost/", "http://printer.local/", "http://metadata.internal/", "http://private.example/", "http://mixed.example/", "http://none.example/", "http://127.0.0.1/", "http://[::1]/", "http://169.254.169.254/latest/meta-data/", "http://[::ffff:10.0.0.1]/"];
+  const PRIVATE = "10.0.0.5"; // key-gate: denylist the private address a name resolves to, which the check must refuse
+  const names = { "private.example": [PRIVATE], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
+  const urls = [
+    "http://public.example/", "https://public.example:443/x", "http://public.example:8080/", "ftp://public.example/", "file:///etc/passwd",
+    "http://localhost/", "http://app.localhost/", "http://printer.local/", "http://metadata.internal/",
+    "http://private.example/", "http://mixed.example/", "http://none.example/", "http://127.0.0.1/", "http://[::1]/",
+    "http://169.254.169.254/latest/meta-data/", // key-gate: denylist the metadata address the check must refuse
+    "http://[::ffff:10.0.0.1]/", // key-gate: denylist a private address mapped into v6, which the check must refuse
+    // Loopback written as one number, in hex, in octal and as v4-mapped v6 hex: WHATWG reads each as the address it is.
+    "http://2130706433/", "http://0x7f.0.0.1/", "http://0177.0.0.1/", "http://[::ffff:7f00:1]/",
+    "http://localhost./", "http://metadata.internal./",
+  ];
   for (const url of urls) {
     const fetched = network({ names });
     const checked = network({ names });
@@ -291,6 +313,14 @@ test("publicCheck refuses exactly the first hops publicFetch refuses, in the sam
     assert.deepEqual(checked.dialled, [], `${url}: the check dials nothing`);
     assert.deepEqual(checked.looked, fetched.looked, `${url}: the same names looked up`);
   }
+  // A v6 zone id is no URL to WHATWG: the check and the fetch both throw the parser's error, with nothing looked up.
+  const zoned = "http://[fe80::1%25eth0]/"; // key-gate: denylist a link-local address with a zone id, which no URL may name
+  const zonedFetch = network();
+  const zonedCheck = network();
+  const fetchError = await publicFetch(zoned, zonedFetch).then(() => "passed", (error) => error.message);
+  assert.equal(await publicCheck(zoned, { lookup: zonedCheck.lookup }).then(() => "passed", (error) => error.message), fetchError);
+  assert.notEqual(fetchError, "passed");
+  assert.deepEqual([zonedFetch.looked, zonedFetch.dialled, zonedCheck.looked], [[], [], []]);
   // A signal stopped before the check asks no resolver.
   const stopped = network();
   await assert.rejects(publicCheck("http://public.example/", { lookup: stopped.lookup, signal: AbortSignal.abort() }), { name: "AbortError" });

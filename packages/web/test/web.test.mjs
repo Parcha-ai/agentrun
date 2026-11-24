@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE, searchBusy } from "../dist/search.js";
 import { answers, dailyLimit, FIRECRAWL_DAILY_INJECTION, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import fakeExa, { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import fakeParallel, { CANARY, resetFauxParallel } from "./fixtures/faux-parallel.mjs";
@@ -146,7 +147,7 @@ test("keyless Exa alone: its free limit answers the caller's words and holds it 
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "ok"]], by: "exa-keyless" },
     { query: "gadgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: (answer) => assert.deepEqual(answer, { error: WORDS.rateLimited }) },
-    { query: "sprockets", at: 10_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: (answer) => assert.equal(answer.error, web.searchBusy(20)) },
+    { query: "sprockets", at: 10_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: (answer) => assert.equal(answer.error, searchBusy(20)) },
     { query: "widgets", at: 31_000, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null },
   ], "exa-keyless");
 });
@@ -172,9 +173,9 @@ test("Parallel on the run's key, each search sent through the cap at its price: 
   await run(f, w, [
     { query: "widgets", at: 0, asks: ["parallel"], tries: [["parallel", "ok"]], by: "parallel", usd: price },
     { query: "gadgets", at: 0, asks: ["parallel"], tries: [["parallel", "error"]], by: null, usd: price },
-    { query: "sprockets", at: 5_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, web.searchBusy(15)) },
+    { query: "sprockets", at: 5_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, searchBusy(15)) },
     { query: "widgets", at: 21_000, asks: ["parallel"], tries: [["parallel", "error"]], by: null, usd: price },
-    { query: "gadgets", at: 22_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, web.SEARCH_UNAVAILABLE) },
+    { query: "gadgets", at: 22_000, asks: [], tries: [["parallel", "held"]], by: null, usd: 0, check: (answer) => assert.equal(answer.error, SEARCH_UNAVAILABLE) },
   ], "parallel");
   assert.deepEqual(f.cap.fees.map((fee) => fee.usd), [price, price, price], "the cap was asked once for each search sent");
 });
@@ -273,6 +274,46 @@ test("Parallel in the order with no key: the page is fetched directly and says P
   await run(f, w, [{ url: PUBLIC, asks: ["direct"], tries: [["parallel", "error"], ["direct", "ok"]], by: "direct", usd: 0, check: (answer) => assert.equal(answer.parallel, "not tried: this run holds no Parallel key") }], "no key");
 });
 
+test("a fetch's receipt names every provider it asked: Firecrawl failing ahead of Parallel's page, and Firecrawl failing with nothing behind it", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const both = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  await run(f, both, [{ url: PUBLIC, set: { AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT: "" }, asks: ["firecrawl-keyless", "parallel"], tries: [["firecrawl-keyless", "error"], ["parallel", "ok"]], by: "parallel" }], "firecrawl then parallel");
+  const alone = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless"] } });
+  await run(f, alone, [{ url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "error"]], by: null }], "firecrawl alone");
+});
+
+test("a fetch's receipt lists its turns in the order they were taken: Firecrawl failing ahead of Parallel's page with the direct fetch behind them, and Parallel then Firecrawl failing ahead of the direct fetch", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const mode = (value) => ({ AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT: value });
+  const firecrawlFirst = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  await run(f, firecrawlFirst, [{ url: PUBLIC, set: mode(""), asks: ["firecrawl-keyless", "parallel"], tries: [["firecrawl-keyless", "error"], ["parallel", "ok"]], by: "parallel" }], "firecrawl, parallel, direct");
+  const parallelFirst = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "firecrawl-keyless", "direct"] } });
+  await run(f, parallelFirst, [{ url: PUBLIC, set: mode("errors"), asks: ["parallel", "firecrawl-keyless", "direct"], tries: [["parallel", "error"], ["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" }], "parallel, firecrawl, direct");
+});
+
+test("Parallel in the order with no key, behind a Firecrawl that reads the page: the page and its receipt are Firecrawl's alone, with no word of Parallel or of a direct fetch", async (t) => {
+  const f = await fakes(t);
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  await run(f, w, [{ url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless", check: (answer) => {
+    assert.equal(answer.parallel, undefined, "no Parallel note on Firecrawl's page");
+    assert.doesNotMatch(web.webFetchText(answer), /fetched directly/);
+  } }], "no key, firecrawl reads");
+});
+
+test("Parallel in the order with no key and Firecrawl refused, nothing behind them: the failed page never says it was fetched directly, and its receipt names both", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  const { answer, receipt } = await w.fetch(PUBLIC);
+  const text = web.webFetchText(answer);
+  assert.doesNotMatch(text, /fetched directly/, "nothing was fetched directly");
+  assert.match(text, /\nParallel was picked for web_fetch and gave no page \(not tried: this run holds no Parallel key\); no provider after it read the page\.$/);
+  assert.equal(answer.via, "none");
+  assert.deepEqual(receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["firecrawl-keyless", "error"], ["parallel", "error"]]);
+  assert.equal(receipt.tries[1]?.error, "not tried: this run holds no Parallel key");
+  assert.equal(receipt.provider, null);
+  assert.deepEqual(await f.asked(), { firecrawl: 1, exa: 0, parallel: 0, native: 0, dialled: 0 });
+});
+
 test("the direct fetch alone: a public page read, a private host refused undialled, and a part no call may ask for refused before anything is fetched", async (t) => {
   const f = await fakes(t);
   const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
@@ -290,4 +331,121 @@ test("with no guard given nothing is fetched and no URL goes to a provider", asy
   const { answer } = await w.fetch(PUBLIC);
   assert.equal(answer.ok, false);
   assert.deepEqual(await f.asked(), { firecrawl: 0, exa: 0, parallel: 0, native: 0, dialled: 0 });
+});
+
+test("a fetch call brings no guard of its own: one passed with the call (a check that passes everything, its bound, an order) is never asked, and the Web with none fetches nothing", async (t) => {
+  const f = await fakes(t);
+  const { guard: _none, ...unguarded } = f.config;
+  const w = web.createWeb({ ...unguarded, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  const asked = [];
+  const permissive = { fetch: async (url) => (asked.push(["fetch", url]), { url, status: 200, contentType: "text/plain", body: "read anyway" }), check: async (url) => void asked.push(["check", url]) };
+  const { answer } = await w.fetch(PUBLIC, { guard: permissive, checkMs: 60_000, order: ["direct"] });
+  assert.equal(answer.ok, false, JSON.stringify(answer));
+  assert.deepEqual(asked, [], "the call's guard is never asked");
+  assert.deepEqual(await f.asked(), { firecrawl: 0, exa: 0, parallel: 0, native: 0, dialled: 0 });
+});
+
+// WHATWG reads a backslash in an http URL as a slash, so the guard checks public.example; a parser that does not would
+// read "public.example\" as a user name and evil.example (a private address here) as the host.
+test("a provider is sent the URL the guard checked, as parsed, never the string as asked", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  const asked = "http://public.example\\@evil.example/";
+  const checked = "http://public.example/@evil.example/";
+  assert.equal(new URL(asked).href, checked);
+  const { receipt } = await w.fetch(asked);
+  assert.deepEqual(f.fc.toolCalls().map((one) => one.body.params.arguments.url), [checked], "Firecrawl is sent the parsed URL");
+  assert.deepEqual(receipt.tries.map((one) => [one.provider, one.outcome]), [["firecrawl-keyless", "error"], ["parallel", "ok"]], "the receipt names both providers asked");
+  const extracts = (await lines(process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS)).filter((call) => call.urls);
+  assert.deepEqual(extracts.map((call) => call.urls), [[checked]], "Parallel is sent the parsed URL");
+});
+
+test("a URL short as asked but longer than 4,096 characters as sent (its href) is refused unsent, by the providers and by the direct fetch", async (t) => {
+  const f = await fakes(t);
+  const url = `${PUBLIC}${"\u00e9".repeat(1_500)}`;
+  assert.ok(url.length < web.URL_MAX && new URL(url).href.length > web.URL_MAX, "short as asked, long as sent");
+  const providers = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  await run(f, providers, [{ url, asks: [], tries: [["parallel", "error"]], by: null }], "providers");
+  const direct = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
+  await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
+});
+
+test("Parallel passed over for a URL it may not be sent says the real reason, in the direct fetch's words: an href too long, a port, a user name and password", async (t) => {
+  const f = await fakes(t);
+  const credentialed = new URL(PUBLIC);
+  credentialed.username = "u";
+  credentialed.password = "p";
+  const cases = [
+    [`${PUBLIC}${"é".repeat(1_500)}`, "url is longer than 4,096 characters"],
+    ["http://public.example:8080/", "port 8080 is not 80 or 443"],
+    [credentialed.href, "the URL holds a user name or password"],
+  ];
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "direct"] } });
+  for (const [url, why] of cases) {
+    const at = why.split(" ").slice(0, 2).join(" ");
+    await run(f, w, [{ url, asks: [], tries: [["parallel", "error"], ["direct", "error"]], by: null, usd: 0, check: (answer, receipt) => {
+      assert.equal(answer.parallel, `not tried: ${why}`, `${at}: the page says why Parallel was not tried`);
+      assert.equal(receipt.tries[0].error, `not tried: ${why}`, `${at}: the receipt says why Parallel was not tried`);
+      assert.doesNotMatch(web.webFetchText(answer), /public-host guard/, `${at}: no word of the guard, which was never asked`);
+    } }], at);
+  }
+});
+
+// undici's fetch builds a Request for each hop, and Request refuses a URL holding a user name or password with an error
+// that quotes the URL whole. The transport here builds one too (Node's Request is undici's), so the refusal and its
+// words are undici's own.
+test("a public page redirecting to a URL that holds a user name and password: neither the receipt's turns nor the page the model reads quote them", async (t) => {
+  const f = await fakes(t);
+  const moved = "http://public.example/moved";
+  const target = new URL(PUBLIC);
+  target.username = "web-user";
+  target.password = "not-a-secret";
+  const fetchImpl = async (url, init) => {
+    new Request(url);
+    if (String(url) === moved) return new Response(null, { status: 302, headers: { location: target.href } });
+    return f.net.fetchImpl(url, init);
+  };
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
+  const { answer, receipt } = await w.fetch(moved, { fetchImpl });
+  const text = web.webFetchText(answer);
+  assert.match(text, /includes credentials/, "the page says undici refused the redirect's URL");
+  assert.deepEqual(receipt.tries.map((one) => [one.provider, one.outcome]), [["direct", "error"]]);
+  for (const one of receipt.tries) assert.doesNotMatch(one.error ?? "", /web-user|not-a-secret/, "the receipt's turn quotes no user name or password");
+  assert.doesNotMatch(text, /web-user|not-a-secret/, "the page the model reads quotes no user name or password");
+});
+
+// A call stops waiting at its signal; the read it started is the run's and goes on. Here the read waits on the guard's
+// name lookup for Parallel (released by hand) when the call is stopped, then Parallel reads the page and is paid.
+test("a fetch stopped while the guard checks its URL for Parallel: the receipt it returned stays as it was, though the read goes on and pays", async (t) => {
+  const f = await fakes(t);
+  process.env.AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT = "";
+  let reached;
+  const atLookup = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const lookup = async (host) => (reached(), await released, f.net.lookup(host));
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "direct"] } });
+  const stop = new AbortController();
+  const calling = w.fetch(PUBLIC, { lookup, signal: stop.signal });
+  await atLookup;
+  stop.abort();
+  const { answer, receipt } = await calling;
+  assert.equal(answer.via, "stopped");
+  assert.deepEqual([receipt.provider, receipt.tries, receipt.cost], [null, [], { usd: 0, lines: [] }], "nothing answered or was paid before the call returned");
+  const atReturn = structuredClone(receipt);
+  release();
+  const later = await w.fetch(PUBLIC);
+  assert.equal(later.answer.via, "parallel", "the read went on, and Parallel read the page");
+  assert.equal(f.cap.fees.length, 1, "Parallel's read was paid, after the stopped call returned");
+  assert.deepEqual(receipt.cost.lines, atReturn.cost.lines, "the stopped call's receipt: cost.lines as at its return");
+  assert.equal(receipt.cost.usd, atReturn.cost.usd, "the stopped call's receipt: cost.usd as at its return");
+  assert.deepEqual(receipt.tries, atReturn.tries, "the stopped call's receipt: tries as at its return");
+  assert.deepEqual(receipt, atReturn, "the stopped call's receipt, as at its return");
+});
+
+test("the package's root entry is its named API: none of the internals it is built from", async () => {
+  const names = Object.keys(await import("../dist/index.js"));
+  const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
+  assert.deepEqual(internal.filter((name) => names.includes(name)), []);
+  for (const name of ["createWeb", "webFetch", "webFetchText", "fetchPage", "searchInTurn", "breakers", "linksOf", "parallelExtract", "parallelSearched", "exaSearch", "firecrawlSearch", "firecrawlScrape", "firecrawlFetch", "PaidRefused"]) assert.ok(names.includes(name), name);
 });

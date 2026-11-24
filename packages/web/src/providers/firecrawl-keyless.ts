@@ -2,7 +2,7 @@
 // refusal is read by its code (quota: off for the run; limit: held for its wait), and a spent daily limit by the one
 // plain-text answer Firecrawl gives for it (off until 00:00 UTC). Firecrawl's words are never passed on. A call is never
 // retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
-import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP } from "../page.js";
+import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP, withoutUserinfo } from "../page.js";
 import { defineProvider, type ProviderRun, type Reader, readerOf } from "../provider.js";
 import { bare, type Failed, failed, type Hit, keyWide, type Limit, type Search, searchBreaker, searchFailed, snippetOf } from "../search.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
@@ -117,7 +117,7 @@ async function firecrawlCall<T>(name: string, args: Record<string, unknown>, wha
     if (own.aborted) return failed("infra", "TIMEOUT", `Firecrawl's ${what} did not answer within ${timeoutMs / 1000} s`);
     const reason = signal?.aborted ? (signal.reason as Error)?.name : (error as Error)?.name;
     if (reason === "TimeoutError") return failed("infra", "DEADLINE", `Firecrawl's ${what} did not answer before the ${what}'s time ran out`);
-    return reason === "AbortError" ? failed("infra", "STOPPED", `the ${what} was stopped`) : failed("infra", "CONNECT", `Firecrawl's ${what} failed: ${String((error as Error)?.message ?? error).slice(0, 300)}`);
+    return reason === "AbortError" ? failed("infra", "STOPPED", `the ${what} was stopped`) : failed("infra", "CONNECT", `Firecrawl's ${what} failed: ${withoutUserinfo(String((error as Error)?.message ?? error)).slice(0, 300)}`);
   }
 }
 
@@ -163,15 +163,17 @@ export function firecrawlFetch(options: Omit<FirecrawlOptions, "signal" | "now">
 }
 
 /** Keyless Firecrawl: search and scrape on its public MCP endpoint (or `endpoint`). Its search ends at the call's deadline
- *  or its own bound (`bounds.firecrawlMs`, default FIRECRAWL_MS); why a fetch gave no page is said on the page in our
- *  words (Firecrawl's own are never passed on) and logged once the direct fetch has answered. */
+ *  or its own bound (`bounds.firecrawlMs`: the call's where it gives one, else the Web's; default FIRECRAWL_MS); why a
+ *  fetch gave no page is said on the page in our words (Firecrawl's own are never passed on) and logged once the direct
+ *  fetch has answered. */
 export const firecrawlKeyless = defineProvider(
   { id: "firecrawl-keyless", label: "Firecrawl", keyless: true, ops: ["search", "fetch"], fetch: { miss: { log: "web_fetch_firecrawl_failed", when: "ends" } } },
   ({ endpoint, send, words, now, bounds }): ProviderRun => {
     const options: Omit<FirecrawlOptions, "signal"> = { ...(endpoint ? { endpoint } : {}), ...(send ? { send } : {}), ...(words ? { words } : {}), now };
     return {
-      async search({ query, n }, deadline) {
-        const found = await searchTyped(query, n, { ...options, signal: deadline, ...(bounds?.firecrawlMs === undefined ? {} : { timeoutMs: bounds.firecrawlMs }) });
+      async search({ query, n }, deadline, _signal, called) {
+        const firecrawlMs = called?.firecrawlMs ?? bounds?.firecrawlMs;
+        const found = await searchTyped(query, n, { ...options, signal: deadline, ...(firecrawlMs === undefined ? {} : { timeoutMs: firecrawlMs }) });
         // Which limit Firecrawl met is the breaker's to read, never the model's.
         return "error" in found ? searchFailed(found as Typed) : { answer: found };
       },

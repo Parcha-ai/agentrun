@@ -2,7 +2,7 @@
 // (fees.ts exaFeeOf) through the run's Pay, on the x-api-key header. Its settings are typed, each with a default
 // (EXA_DEFAULTS); a setting it does not take is refused when the Web is made. A 401 or 403 refuses the key for the run.
 import { EXA_SEARCH_TYPE_USD, type ExaSearchType, exaFeeOf, type Pay } from "../fees.js";
-import { clip, linksWithin, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
+import { clip, linksWithin, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutCredentials } from "../page.js";
 import { failed, failure, type Hit, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { linksOf } from "../text-urls.js";
@@ -118,7 +118,8 @@ export async function exaRead(url: string, client: Keyed | null, settings: ExaSe
   const row = (Array.isArray(results) ? results : []).find((one: { text?: unknown } | null) => typeof one?.text === "string" && one.text.trim() !== "") as { url?: unknown; title?: unknown; text: string } | undefined;
   if (!row) return failed("not_text", "NO_TEXT", "Exa's fetch answered no page text");
   const asked = PAGE_READ_MAX_CHARS + 1;
-  return { ok: true, url: clip(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(row.text, row.text.length < asked), ...linksWithin(linksOf(row.text)) };
+  // The page's url names no user name or password: cleared first, then cut, as every client's page url is.
+  return { ok: true, url: clip(withoutCredentials(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(row.text, row.text.length < asked), ...linksWithin(linksOf(row.text)) };
 }
 
 /** Exa on the run's key, both tools on one client. Its search keeps the caller's signal and its own bound (a paid request

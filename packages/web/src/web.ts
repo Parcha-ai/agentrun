@@ -9,7 +9,7 @@ import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
+import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
@@ -70,8 +70,9 @@ export type WebConfig = {
 /** `breakers`: the search breakers this call reads and trips (default the Web's own). `keyLimits`: where a quota of a
  *  provider's whole key goes (search.ts Failure.covers): the Web's key breakers, shared with web_fetch ("web", the
  *  default without `breakers`), or the call's own breakers ("call", the default with them). `task`: what the caller
- *  needs, which a decider judges against (a search without one is judged on its query). */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string };
+ *  needs, which a decider judges against (a search without one is judged on its query). `bounds`: this call's
+ *  deadlines, each in place of the Web's (WebConfig.bounds) where given. */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string; bounds?: SearchBounds };
 /** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `lookingFor`: what the caller
  *  is looking for on the page (the tool's looking_for). With a decider, the answer is the chunks of the whole page most
  *  likely to hold it (findInPage), `offset` and `maxChars` aside; without one, or when the step fails, the part asked
@@ -208,17 +209,18 @@ export function createWeb(config: WebConfig): Web {
 
   return {
     destinations: () => ({ search: config.order.search.map((id) => destinationOf(id, "search", runBreakers)), fetch: config.order.fetch.map((id) => destinationOf(id, "fetch", fetchBreakers)) }),
-    async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task } = {}) {
+    async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task, bounds } = {}) {
       const ownOf = given ?? runBreakers;
       const breakerOf = (name: string) => toolBreaker("search", name as ProviderId, ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
       const tries: Try[] = [];
       const ask = searchArgs({ query, ...(n === undefined ? {} : { n }) });
       const order = config.order.search;
+      const searchMs = bounds?.searchMs ?? config.bounds?.searchMs;
       // No provider is asked an empty query.
       const found: Search = !ask.query ? { error: "web_search needs a query" }
         : !order.length ? { error: "web_search has no provider to ask" }
-        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal) })), breakerOf, signal, config.bounds?.searchMs, tries));
+        : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds) })), breakerOf, signal, searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
       const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
@@ -226,21 +228,25 @@ export function createWeb(config: WebConfig): Web {
       const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines }, ...unsifted(() => searchText(fitSearch(found))) };
       return { answer, receipt };
     },
-    async fetch(url, { offset, maxChars, task, lookingFor, ...guarded } = {}) {
+    // Only the call's part, resolver, transport, signal, task and looking_for are read: the guard, its bound, the order
+    // and the readers stay the Web's.
+    async fetch(url, { offset, maxChars, task, lookingFor, lookup, fetchImpl, signal } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
       // A part a call may not ask for is refused before anything is fetched.
       const problem = partProblem({ offset, maxChars });
       if (problem) {
-        const refused: Page = { ok: false, url: clip(asked, URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
+        const refused: Page = { ok: false, url: askedUrl(asked), status: 0, title: "", text: "", links: [], error: problem };
         const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
         return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
       const cached = typeof url === "string" && pages.has(url);
       const whole = await feesOfCall.run(lines, () =>
         webRead(url, {
-          ...guarded,
+          ...(lookup ? { lookup } : {}),
+          ...(fetchImpl ? { fetchImpl } : {}),
+          ...(signal ? { signal } : {}),
           readers: readersOf(),
           pages,
           order: config.order.fetch,
@@ -254,12 +260,13 @@ export function createWeb(config: WebConfig): Web {
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
       const { decider } = config;
       const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
-      const decided = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal: guarded.signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      const decided = await decideFetch(decider, asked, whole, part, { task, lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
       // What looking_for found names each provider asked ahead that gave no page, as the part does.
       const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
       const { classifier, guard: verdicts } = decided;
-      // The turns a stopped call's read takes after it answered are not this receipt's.
-      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
+      // Copies: a read this call stopped waiting for goes on, and its later turns and fees are not on this receipt.
+      const spent = [...lines];
+      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], classifier, ...(verdicts ? { wall: verdicts.wall, injection: verdicts.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };
     },
   };
