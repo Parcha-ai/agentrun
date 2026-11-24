@@ -200,6 +200,19 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
   assert.equal(read, 0);
 });
 
+test("files: a run whose cut is its census's carries no file and names none, reading none; a file whose read fails is left out as unreadable", async () => {
+  let reads = 0;
+  const counted = (file) => ({ ...file, read: async (limit) => ((reads += 1), file.read(limit)) });
+  const { doc } = await build({ filesUncounted: true, files: inputOf().files.map(counted) });
+  assert.deepEqual(doc.files, []);
+  assert.deepEqual(doc.omitted, [{ what: "files", why: "uncounted" }, { what: "recordings", why: "never" }]);
+  assert.equal(reads, 0, "no file read");
+  const gone = { path: "out/gone.txt", size: 4, read: async () => { throw Object.assign(new Error("refused"), { code: "REFUSED" }); } };
+  const { doc: left } = await build({ files: [gone, textFile("out/kept.txt", "kept\n")] });
+  assert.deepEqual(left.files.map((file) => file.path), ["out/kept.txt"]);
+  assert.deepEqual(left.omitted.filter((one) => one.what === "file"), [{ what: "file", path: "out/gone.txt", why: "unreadable" }]);
+});
+
 test("a document over its cap is refused 413 export_too_large, never truncated", async () => {
   await assert.rejects(build({ caps: { documentBytes: 2048 } }), (error) => error instanceof ApiError && error.status === 413 && error.code === "export_too_large");
   assert.ok(EXPORT_CAPS.documentBytes === 8 * 1024 * 1024 && EXPORT_CAPS.fileBytes === 256 * 1024 && EXPORT_CAPS.filesBytes === 4 * 1024 * 1024 && EXPORT_CAPS.files === 200);
