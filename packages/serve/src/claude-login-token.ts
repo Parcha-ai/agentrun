@@ -12,7 +12,8 @@
 // holder took over (this one paused past the stale time) is never touched, removed or posted under. The answer is written back only to the file it came from, atomically (a temp file at mode
 // 0600 in the same folder before any byte is in it, synced, then renamed over it), every other field kept as it was. A
 // pair whose write fails is held in this process's memory until it is saved: every ask hands its token and tries the
-// write again, and one whose token nears its own end still unsaved is refused in LOGIN_NOT_SAVED's words. A refresh
+// write again, under the same refresh lock with the file read again under it, so it never lands over a newer pair, and
+// one whose token nears its own end still unsaved is refused in LOGIN_NOT_SAVED's words. A refresh
 // token Anthropic took (a 200 that rotated it) or refused for good (`invalid_grant`) is never posted again by this
 // process. A renewal that fails is refused after one more read of the file (another holder may have renewed meanwhile),
 // in LOGIN_REFUSED_NOT_RENEWED's words when Anthropic refused the token, else LOGIN_RUNNING_OUT's, and nothing retries
@@ -218,7 +219,7 @@ const heldPairs = new Map<string, HeldPair>();
  *  the refresh token it spent (or one the CLI cleared), the fields it gives over the file's, the rest kept as they are.
  *  "saved" once written, "held" while the write fails (kept in heldPairs), and "dropped" when the file holds another
  *  holder's pair (or no longer holds a login the runner reads): the file wins, as the CLI's own check lets it. */
-async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions): Promise<"saved" | "held" | "dropped"> {
+async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions, owned?: () => Promise<boolean>): Promise<"saved" | "held" | "dropped"> {
   const say = options.log ?? (() => undefined);
   const forget = () => {
     if (heldPairs.get(file) === held) heldPairs.delete(file);
@@ -228,6 +229,13 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
     forget();
     say({ claude_login: "renewed", saved: "no", reason: "newer" });
     return "dropped";
+  }
+  // `owned`: the refresh lock this save holds, asked after the read and before the write. One lost since (taken over)
+  // means another holder may write now: the pair stays held, and a later ask tries again.
+  if (owned && !(await owned())) {
+    heldPairs.set(file, held);
+    say({ claude_login: "renewed", saved: "no", reason: "lock_lost" });
+    return "held";
   }
   try {
     await replaceFile(file, JSON.stringify({ ...current.json, claudeAiOauth: { ...current.oauth, ...held.fields } }));
@@ -239,6 +247,41 @@ async function saveHeld(file: string, held: HeldPair, options: RenewLoginOptions
   forget();
   say({ claude_login: "renewed", saved: "yes" });
   return "saved";
+}
+
+/** A held pair's save as renewLogin makes it at an ask: under the CLI's refresh locks on the login's folder, as a
+ *  renewal is, so it takes its turn with every renewal of that file (the CLI's, another runner's, this process's own),
+ *  and saveHeld's read and check are made while it holds them. A save that read the file before a renewal wrote a newer
+ *  pair, and writes after, would put the held pair back over it, its refresh token spent. While another holder has the
+ *  locks it waits, as a renewal does, then the pair stays held for a later ask; so it does when the locks cannot be
+ *  made at all (a full disk refuses a mkdir too). */
+async function saveHeldUnderLock(dir: string, file: string, held: HeldPair, options: RenewLoginOptions): Promise<"saved" | "held" | "dropped"> {
+  const say = options.log ?? (() => undefined);
+  const fs = options.lockFs ?? LOCK_FS;
+  const updateMs = options.lockUpdateMs ?? loginRefresh.lockUpdateMs;
+  const giveUp = Date.now() + (options.lockWaitMs ?? LOCK_WAIT_MS);
+  for (;;) {
+    let locks: HeldLock | undefined;
+    try {
+      locks = await takeRefreshLocks(dir, fs, updateMs);
+    } catch {
+      say({ claude_login: "renewed", saved: "no", reason: "held" });
+      return "held";
+    }
+    if (locks) {
+      try {
+        return await saveHeld(file, held, options, locks.owned);
+      } finally {
+        await locks.release().catch(() => undefined);
+      }
+    }
+    // Another holder renews now: its write lands first, and the check under the locks then drops the held pair.
+    if (Date.now() > giveUp) {
+      say({ claude_login: "renewed", saved: "no", reason: "locked" });
+      return "held";
+    }
+    await sleep(LOCK_POLL_MS);
+  }
 }
 
 /** The login's credentials file as it is now, in the pinned CLI's shape: its parsed object and its `claudeAiOauth`,
@@ -263,11 +306,12 @@ export function renewLogin(options: RenewLoginOptions = {}): Renew {
   const now = options.now ?? Date.now;
   return async (login, seen) => {
     const file = join(login.dir, LOGIN_FILE);
-    // A pair renewed here and not saved yet: its token is handed and its write tried again, and nothing is posted, for
-    // the file's refresh token is spent. Once saved, a token near its own end is renewed from the file as any other.
+    // A pair renewed here and not saved yet: its token is handed and its write tried again (under the refresh locks, read
+    // again there: saveHeldUnderLock), and nothing is posted, for the file's refresh token is spent. Once saved, a token
+    // near its own end is renewed from the file as any other.
     const held = heldPairs.get(file);
     if (held) {
-      const kept = await saveHeld(file, held, options);
+      const kept = await saveHeldUnderLock(login.dir, file, held, options);
       if (kept === "dropped") return undefined;
       if (held.renewed.expiresAt - now() >= LOGIN_MARGIN_MS) return held.renewed;
       if (kept === "held") throw new LoginNotSaved();
