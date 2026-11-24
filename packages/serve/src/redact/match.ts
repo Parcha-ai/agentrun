@@ -16,7 +16,8 @@ export type Span = [start: number, end: number];
 /** The characters the redaction pipeline has visited in this process: the text each prefix search passes over, each
  *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
  *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
- *  stretches squeezed, each cut its cover passes), lowered and flattened; the finds merged and the text cut; and
+ *  stretches squeezed, each cut its cover passes), lowered and flattened; each covered stretch a find in a view is
+ *  checked against (inside); the finds merged and the text cut; and
  *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
  *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
@@ -1003,11 +1004,13 @@ function flatOf(view: View): View {
   return { text: parts.join(""), covered };
 }
 
-/** Whether [start, end) of a view lies in one of its covered stretches. */
+/** Whether [start, end) of a view lies in one of its covered stretches: a binary search, each stretch it visits
+ *  counted. */
 function inside(covered: readonly Span[], start: number, end: number): boolean {
   let lo = 0;
   let hi = covered.length - 1;
   while (lo <= hi) {
+    scanned.chars++;
     const mid = (lo + hi) >> 1;
     if (covered[mid]![0] <= start) lo = mid + 1;
     else hi = mid - 1;
