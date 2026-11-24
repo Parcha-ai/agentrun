@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { agent, serve } from "./support.mjs";
 
 const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
-const { promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
+const { answersPair, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
 const { learningSettingIssue, learningSettingOf, loopOf } = await import("../dist/learning-setting.js");
 const { secretsShown } = await import("../dist/learning.js");
 
@@ -57,6 +57,35 @@ test("check on live-shaped answers: same mcc and riskTier, other rationale, evid
   assert.equal(whole.stored.check.agree_on, undefined);
   assert.deepEqual(Object.entries(whole.stored.check.fields).map(([name, one]) => [name, one.workflow_right, one.n, one.pass]), [["answer", 0, 5, false]]);
   assert.ok(whole.record.reason.includes(NEVER_WORD_FOR_WORD), `compared whole and never once the same: the owner is told to name the fields: ${whole.record.reason}`);
+});
+
+test("a connected agent's turns counted before per-field tallies existed: each field counts from the same turns as alone does", async () => {
+  // 19 turns kept with numbers only (no per-field tally), 10 of them agreeing, then one more that agrees: 11 of 20.
+  const before = { n: 19, agreed: 10, alone: 19, of: Array.from({ length: 19 }, (_, i) => `t-${i}`), outcomes: { answered: 19, handed_back: 0, failed: 0, skipped_write: 0 } };
+  const held = await decide({ compile_after: 20 }, { ...readOf(() => agentSays(AGENT), 1), before });
+  assert.equal(held.record.decided, "hold", held.record.reason);
+  const { answer } = held.stored.check.fields;
+  assert.deepEqual([answer.n, answer.workflow_right, held.stored.check.alone, held.stored.check.agreed], [20, 11, 20, 11]);
+});
+
+test("graded inputs on the whole answer: judged against each grade's expected answer, the fast model's verdict on the pair still kept", async () => {
+  const agent = JSON.stringify({ answer: 42, note: "six sevens" });
+  const draft = JSON.stringify({ answer: 41, note: "a guess" });
+  const rows = Array.from({ length: 5 }, (_, i) => ({ of: `r-${i}`, input: `Question ${i}`, agent, outcome: "answered", answer: draft, expected: { answer: 41 }, compared: { same: false, grader: "fast-model", differs_on: "the number", pair: answersPair(draft, agent) } }));
+  const decided = await decide({}, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 });
+  assert.equal(decided.record.decided, "promote", decided.record.reason);
+  assert.deepEqual(decided.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
+  assert.equal(decided.stored.check.grader, "fast-model", "the grader's verdict is read on graded inputs too");
+});
+
+test("a grade with no expected answer: graded wrong, a draft that repeats the agent's answer is wrong on it", async () => {
+  const read = readOf(() => agentSays(AGENT));
+  const rows = read.rows.map((row) => ({ ...row, correct: false }));
+  const held = await decide({}, { ...read, rows });
+  assert.equal(held.record.decided, "hold", held.record.reason);
+  assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } });
+  const confirmed = await decide({}, { ...read, rows: read.rows.map((row) => ({ ...row, correct: true })) });
+  assert.deepEqual([confirmed.record.decided, confirmed.stored.check.fields.answer.by], ["promote", { grade: { n: 5, workflow_right: 5, agent_right: 5, pass: true } }], "graded right: the agent's answer is a known one");
 });
 
 test("check on dotted paths: verdict.decision agrees though the rationale differs; a draft that differs on it disagrees, counted per input", async () => {
@@ -118,6 +147,9 @@ test("agree_on's shape: 1 to 16 distinct dotted paths, each up to 128 characters
     ["verdict.", "an empty segment"],
     ["a.b.c.d.e.f.g.h.i", "more than 8 segments"],
     ["x".repeat(129), "over 128 characters"],
+    ["__proto__", "a reserved segment (__proto__, constructor or prototype)"],
+    ["verdict.constructor", "a reserved segment (__proto__, constructor or prototype)"],
+    ["prototype.decision", "a reserved segment (__proto__, constructor or prototype)"],
   ]) {
     assert.equal(learningSettingIssue({ agree_on: ["mcc", path] }), `learning.agree_on[1] is not a dotted path into the answer's JSON object (e.g. verdict.decision): ${why}`, JSON.stringify(path));
   }
