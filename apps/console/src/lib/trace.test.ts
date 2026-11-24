@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_MACHINES, USAGE_REDO } from "@/components/RunTrace.sample";
-import { attemptWords, between, budgetStop, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, since, spanMs, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, between, budgetStop, byModel, callSpanIds, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, since, spanMs, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -435,5 +435,22 @@ describe("what was up beside the run's calls: its computers and browser sessions
     expect([since(-2400), since(0), since(56_600)]).toEqual(["2.4 s before the first request", "+0:00.0", "+0:56.6"]);
     // A run with no request measures from its own start.
     expect(since(-500, "the run's start")).toBe("500 ms before the run's start");
+  });
+});
+
+describe("the span a tool call's timeline row is", () => {
+  it("is named by its conversation and its call id, and by its turn among calls of that id in the conversation", () => {
+    const use = (id: string, tool_use_id: string | null, conversation_id?: number, kind = "tool_use") => ({ id, kind, tool_use_id, ...(conversation_id === undefined ? {} : { conversation_id }) }) as Parameters<typeof callSpanIds>[0][number];
+    const ids = callSpanIds([
+      use("r1", "call_a"),
+      use("r2", "call_a", 0, "tool_result"),
+      // A subagent's conversation makes a call of the same id: a span of its own.
+      use("r3", "call_a", 1),
+      // The run's own conversation makes a call of that id again: its second, a span of its own too.
+      use("r4", "call_a", 0),
+      use("r5", "call_b"),
+      use("r6", null),
+    ]);
+    expect([...ids]).toEqual([["r1", "t:0:call_a"], ["r3", "t:1:call_a"], ["r4", "t:0:call_a#2"], ["r5", "t:0:call_b"]]);
   });
 });

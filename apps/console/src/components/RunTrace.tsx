@@ -1,4 +1,4 @@
-import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowDown, ChevronLeft, ChevronRight, Download, Maximize2, Play, X, ZoomIn, ZoomOut } from "lucide-react";
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
@@ -243,7 +243,7 @@ function Timing({ span, trace, now, onPick }: { span: TraceSpan; trace: Trace; n
 
 /** The panel of one span: what it cost and used, when it ran, what called it and what it called, and a call's arguments
  *  and the head of its output. */
-function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { span: TraceSpan; trace: Trace; run: Run; from: number; now: number; reveal: boolean; onPick: (id: string) => void; onClose: () => void }) {
+function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose, onRecording }: { span: TraceSpan; trace: Trace; run: Run; from: number; now: number; reveal: boolean; onPick: (id: string) => void; onClose: () => void; onRecording?: () => void }) {
   const [text, setText] = useState<"input" | "output">("input");
   // The text shown, copied: the button says so for a moment. A browser that refuses the clipboard leaves it as it was.
   const [copied, setCopied] = useState(false);
@@ -301,6 +301,9 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
           </div>
         ))}
       </dl>
+
+      {/* The run's screen was recorded while this call ran: the Screen tab plays the recording from the call's time. */}
+      {onRecording && <p className="mt-3"><Button size="xs" onClick={onRecording}><Play aria-hidden />Show on the recording</Button></p>}
 
       <Timing span={span} trace={trace} now={now} onPick={onPick} />
 
@@ -730,8 +733,10 @@ const TH = "relative bg-card px-3 py-2 after:absolute after:inset-x-0 after:bott
  *  network panel does: an overview of the whole run, a row a call with its bar, and a panel for the open one.
  *  `version` moves when the run does (its rows, its status), so the trace is read again. `panel`: what ties the tab's
  *  body to its tab (tabPanelProps). For a story or a test: `now`, its own clock; `open`, the span open at first; `view`,
- *  the view shown at first. */
-export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls" }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown" }) {
+ *  the view shown at first. `openCall`: a tool call to open once the trace is read, by its span's id, asked for from the
+ *  Screen tab's recording (`n` tells one ask from the next). `recorded`: for a call's span id, what shows the call on the
+ *  run's recording, where one was made while it ran; a call's panel then offers it. */
+export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls", openCall, recorded }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown"; openCall?: { span: string; n: number }; recorded?: (spanId: string) => (() => void) | undefined }) {
   const { trace, error, retry } = useRunTrace(read, version);
   // The run's cost line by line, read beside the trace and again as it moves. A read that fails leaves the trace's own split.
   // Lines are shown only as read at the run's version now: a follow-up reopens a run, and a reread that failed after it must
@@ -761,6 +766,22 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const uid = useId();
 
   const spans = trace?.spans ?? [];
+  // A call asked for from the recording: opened once, when the trace is read, as a call opened from the table is (on a
+  // narrow screen its panel comes into view). One the trace does not hold (a read serves a run's first spans, and a
+  // recording's step can be past them) is said, never passed over in silence.
+  const asked = useRef<number | null>(null);
+  const [missing, setMissing] = useState<number | null>(null);
+  useEffect(() => {
+    if (!openCall || !trace || asked.current === openCall.n) return;
+    asked.current = openCall.n;
+    const span = trace.spans.find((s) => s.id === openCall.span);
+    if (!span) { setMissing(openCall.n); return; }
+    setMissing(null);
+    setView("calls");
+    setReveal(true);
+    setPicked(span.id);
+    setCursor(span.id);
+  }, [openCall, trace]);
   const window = useMemo(() => traceWindow(spans, now), [spans, now]);
   const totals = useMemo(() => (trace ? traceTotals(trace, now) : null), [trace, now]);
   const lanes = useMemo(() => ({ model: lane(spans.filter((s) => s.kind === "model"), window, now), tool: lane(spans.filter((s) => s.kind === "tool"), window, now) }), [spans, window, now]);
@@ -867,6 +888,9 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
       <section aria-label="Trace" className="relative min-w-0 space-y-4 px-5 py-6 @container md:px-8 xl:min-h-0 xl:flex-1 xl:overflow-auto">
         {trace.model_requests === "not_recorded" && (
           <Banner tone="info" title="This run's harness keeps no record of each model request">The trace shows its tool calls. The run's cost and how many requests it made are on its Timeline's usage line.</Banner>
+        )}
+        {missing !== null && missing === openCall?.n && !selected && (
+          <Banner tone="info" title="That step's call is not in this trace">{trace.dropped > 0 ? `The trace shows the run's first ${spans.length.toLocaleString("en-US")} requests and calls, and that call came after them.` : "The trace has no call for that step of the recording."}</Banner>
         )}
         {trace.dropped > 0 && <Banner tone="warning">This is the run's first {spans.length.toLocaleString("en-US")} requests and calls. {trace.dropped.toLocaleString("en-US")} later ones are not shown.</Banner>}
 
@@ -1018,7 +1042,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
         {/* The panel opens beside or under the table, away from where the keyboard is: a screen reader is told. */}
         <p role="status" className="sr-only">{selected ? `Details shown for ${selected.name}. Escape closes them.` : ""}</p>
       </section>
-      {selected && <SpanPanel key={selected.id} span={selected} trace={trace} run={run} from={window.from} now={now} reveal={reveal} onPick={pick} onClose={close} />}
+      {selected && <SpanPanel key={selected.id} span={selected} trace={trace} run={run} from={window.from} now={now} reveal={reveal} onPick={pick} onClose={close} onRecording={selected.kind === "tool" ? recorded?.(selected.id) : undefined} />}
     </div>
   );
 }
