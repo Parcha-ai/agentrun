@@ -387,8 +387,9 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
- *  its search asks (the one the resolution read). */
-export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
+ *  its search asks (the one the resolution read); and `jev: "off"` where the server resolving it has Jev turned off for
+ *  the web tools (AGENTRUN_WEB_JEV_OFF), on a plane with a web tool, so the switch reaches a runner on another host. */
+export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string; jev?: "off" };
 /** The facts of a pinned revision its run's tools resolve from. */
 /** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
 export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true; approvals?: "never" };
@@ -416,7 +417,14 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
   if (plane.web_search === "native" && model) plane.model = model;
-  return plane;
+  return withJevSwitch(plane, env);
+}
+
+/** `plane` with the server's Jev switch as `env` holds it now: `jev: "off"` where it is on and the plane has a web tool,
+ *  else no `jev` field. */
+function withJevSwitch(plane: Plane, env: NodeJS.ProcessEnv): Plane {
+  const { jev: _was, ...rest } = plane;
+  return webJevOff(env) && (rest.web_search !== undefined || rest.web_fetch !== undefined) ? { ...rest, jev: "off" } : rest;
 }
 
 /** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
@@ -426,11 +434,13 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
  *  sessions it has: only a deny it was kept with is lifted. */
 export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh: Plane; permission: (name: Pickable) => Permission }): Plane {
   const keyed = served(env).parallelKey;
-  return Object.fromEntries(Object.entries(plane).map(([name, value]) => {
+  const { jev: _kept, ...resolved } = plane;
+  // The Jev switch is the server's at this launch, never the kept plane's.
+  return withJevSwitch(Object.fromEntries(Object.entries(resolved).map(([name, value]) => {
     const fresh = name === "model" ? undefined : now?.fresh[name as Pickable];
     if (fresh !== undefined && (value === DENIED || (name !== "browser" && now!.permission(name as Pickable) !== "allow"))) return [name, fresh];
     return [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
-  })) as Plane;
+  })) as Plane, env);
 }
 
 /** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
@@ -481,12 +491,13 @@ export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => 
  *  search's results. */
 const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: ["parallel", "native", "firecrawl-keyless", "exa-keyless"], web_fetch: ["parallel", "firecrawl-keyless", DIRECT_FETCH] };
 /** Whether a run on `harness` is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of
- *  them is served by its own Web (web-run.ts webOf), and Jev is not turned off in the server's `env`
- *  (AGENTRUN_WEB_JEV_OFF). web_fetch always is where it runs; web_search is where it resolves to Parallel or a keyless
- *  provider, or to native where that is the model provider's hosted search (pi's), never a harness's own search inside
- *  its CLI (codex's, claude-agent's: its facts' webSearch), where no Jev call can happen. */
+ *  them is served by its own Web (web-run.ts webOf), and Jev is turned off neither by the plane (the server's switch at
+ *  launch, planeFor) nor in `env` (AGENTRUN_WEB_JEV_OFF: a runner's own switch adds "off", never removes it).
+ *  web_fetch always is where it runs; web_search is where it resolves to Parallel or a keyless provider, or to native
+ *  where that is the model provider's hosted search (pi's), never a harness's own search inside its CLI (codex's,
+ *  claude-agent's: its facts' webSearch), where no Jev call can happen. */
 export const handsJevWeb = (plane: Plane, env: NodeJS.ProcessEnv, harness: string | undefined): boolean =>
-  !webJevOff(env) && (searchesOwn(plane.web_search ?? "", tableFactsOf(env, harness)) || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
+  plane.jev !== "off" && !webJevOff(env) && (searchesOwn(plane.web_search ?? "", tableFactsOf(env, harness)) || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
 
 /** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each settings key (a tool of the
  *  table, a catalog tool, an MCP server's wildcard) to `{provider?, permission?}`, a provider only for a capability that

@@ -87,10 +87,11 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
 
 /** Jev for the run's web tools (web's jevWebDecider: jev-1.14.0, rerank+label): on the TypeSafe key the run's process
  *  holds as it was handed (handedKeyOf: its pipe, else `env`, the claim's own environment; never process.env), unless
- *  AGENTRUN_WEB_JEV_OFF is on in `env`. None on an OpenRouter key: the web decider runs on TypeSafe's route alone. Its
- *  requests go through `env`'s faux Jev under --faux, priced at Jev's published price for the run's cap. */
+ *  Jev is off, in the run's plane (the server's switch at launch, tool-plane.ts planeFor) or by AGENTRUN_WEB_JEV_OFF in
+ *  `env`. None on an OpenRouter key: the web decider runs on TypeSafe's route alone. Its requests go through `env`'s
+ *  faux Jev under --faux, priced at Jev's published price for the run's cap. */
 export function jevWebOf(env: NodeJS.ProcessEnv): ReturnType<typeof jevWebDecider> {
-  const key = webJevOff(env) ? undefined : handedKeyOf(env, JEV_KEY_ENV);
+  const key = planeOf(env).jev === "off" || webJevOff(env) ? undefined : handedKeyOf(env, JEV_KEY_ENV);
   if (key === undefined) return jevWebDecider(null);
   return jevWebDecider({ key, jevProvider, price: JEV_PUBLISHED_PRICING, fetch: async (...args: Parameters<typeof fetch>) => ((await fauxFetch(env, FAUX_JEV_ENV)) ?? fetch)(...args) });
 }

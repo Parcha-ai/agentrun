@@ -1912,8 +1912,9 @@ results are scored by Jev (`jev-1.14.0`) against the query and reordered by that
 provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa, pi's hosted
 search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at Jev's
 published price and booked at the cost Jev reported, never above that hold. `web_fetch` is never judged: a fetch asks
-Jev nothing and its page is whole. A server with only an OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` turns
-it off. `GET /capabilities`' `why` for `web_search` says which: `…; Jev (jev-1.14.0) ranks results …`,
+Jev nothing and its page is whole. A server with only an OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the
+server turns it off for every run it launches, on whatever runner host claims it (the run's plane carries the switch);
+set on a runner host, it turns Jev off for the runs that host claims too, and never back on. `GET /capabilities`' `why` for `web_search` says which: `…; Jev (jev-1.14.0) ranks results …`,
 `…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
 
 | | `claude-agent` | `codex` | pi |
