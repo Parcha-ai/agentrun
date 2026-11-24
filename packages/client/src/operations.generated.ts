@@ -7239,6 +7239,7 @@ export type GetWrappedResponse = {
     sessions: number;
     requests: number;
     tokens: number;
+    sources: Array<string>;
   }>;
   models: Array<{
     model: string;
