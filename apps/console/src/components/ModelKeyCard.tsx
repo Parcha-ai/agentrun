@@ -11,7 +11,7 @@ import { withoutRoutePrefix } from "@/lib/routePrefix";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ChatGPTView, ToolKey } from "@/lib/v2";
 
-/** What names a gateway's model (serve's own words for it, chooseModel). */
+/** What names a gateway's model: serve's own words for it (chooseModel), which ModelKeyCard.chatgpt.test holds them to. */
 const GATEWAY_NAMES_NONE = "Name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
@@ -43,13 +43,14 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
   const planDefault = isPlanModel(withoutRoutePrefix(model, routePrefix));
   // Behind a gateway, a default that isn't the plan's runs on the gateway alone: signing in gives no default there (serve's
   // settingsModel) and the provider keys are not used, so neither is offered. What stops it is the gateway's: an address
-  // serve refuses (GET /v2/settings/model-gateway's `problem`, in its words), or no model named.
+  // serve refuses (GET /v2/settings/model-gateway's `problem`, a run's words), or no model named. Until that view is read
+  // (undefined, also when the read fails) the two look alike, so the card names no fix.
   const onGateway = source === "gateway" && needs === "key" && !planDefault;
-  const [gateway, setGateway] = useState<{ problem: string | null; fromEnv: boolean } | null>(null);
+  const [gateway, setGateway] = useState<{ problem: string | null; fromEnv: boolean } | undefined>(undefined);
   useEffect(() => {
     if (!onGateway) return;
     let live = true;
-    v2.modelGateway().then((v) => { if (live) setGateway({ problem: v.problem, fromEnv: v.source === "env" }); }, () => { if (live) setGateway(null); });
+    v2.modelGateway().then((v) => { if (live) setGateway({ problem: v.problem, fromEnv: v.source === "env" }); }, () => { if (live) setGateway(undefined); });
     return () => { live = false; };
   }, [v2, onGateway]);
   const load = () => {
@@ -94,7 +95,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
       <div className="flex gap-3">
         <KeyRound className="mt-1 size-4 shrink-0 text-warning-text" aria-hidden />
         <div className="min-w-0 flex-1 space-y-3">
-          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : onGateway ? (gateway?.problem ? "This server's model gateway is refused" : model ? "This server's model gateway runs no model yet" : "Name the gateway's model to run agents") : planOffered ? "Sign in with ChatGPT or add a model key to run agents" : "Add a model key to run agents"}</h2>
+          <h2 className="text-prose font-semibold">{needs === "model" ? "This server's default model doesn't run" : onGateway ? (gateway?.problem ? "This server's model gateway is refused" : gateway && !model ? "Name the gateway's model to run agents" : "This server's model gateway runs no model yet") : planOffered ? "Sign in with ChatGPT or add a model key to run agents" : "Add a model key to run agents"}</h2>
           {needs === "model"
             ? <p className="text-body text-muted-foreground">The server's AGENT_MODEL names a model it doesn't know, so an agent that names no model can't run. Set AGENT_MODEL to a provider/model-id where the server starts, or name a model in each agent.</p>
             : onGateway
@@ -104,9 +105,9 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
                   <p className="font-mono text-small text-warning-text" role="status">{gateway.problem}</p>
                   <p className="text-body text-muted-foreground">{gateway.fromEnv ? "It is set where AgentRun starts (AGENT_MODEL_BASE_URL): change it there." : "Change it in Settings → Model keys → Use a model gateway."}</p>
                 </>
-              : model
-              ? <p className="text-body text-muted-foreground">This server sends its models to a gateway, and an agent that names no model can't run there yet. Settings → Model keys → Use a model gateway says why.</p>
-              : <p className="text-body text-muted-foreground">This server sends its models to a gateway and names none of them, so an agent that names no model can't run. {GATEWAY_NAMES_NONE}</p>
+              : gateway && !model
+              ? <p className="text-body text-muted-foreground">This server sends its models to a gateway and names none of them, so an agent that names no model can't run. {GATEWAY_NAMES_NONE}</p>
+              : <p className="text-body text-muted-foreground">This server sends its models to a gateway, and an agent that names no model can't run there yet. Settings → Model keys → Use a model gateway says why.</p>
             : required
             ? <p className="text-body text-muted-foreground">This server's default model is <span className="font-mono">{model}</span>, and no {required.label} key is set, so an agent that names no model can't run. Save the {required.label} key: such an agent then runs on that model.</p>
             : planOffered

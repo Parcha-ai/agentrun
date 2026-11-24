@@ -80,9 +80,10 @@ export function gatewayBase(setting: string, value: string): string {
 }
 
 /** The generic gateway must speak HTTP Responses (or Messages). Particle exposes Chat Completions
- * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. */
-export function modelGatewayBase(value: string): string {
-  const base = gatewayBase("AGENT_MODEL_BASE_URL", value);
+ * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. `setting`: the name the
+ * address rule's words give it (the model-gateway view's saved `base_url`). */
+export function modelGatewayBase(value: string, setting = "AGENT_MODEL_BASE_URL"): string {
+  const base = gatewayBase(setting, value);
   if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
     throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
   }

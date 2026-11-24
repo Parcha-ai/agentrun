@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelKeyCard } from "./ModelKeyCard";
 import { NoModelBanner } from "./NoModelBanner";
@@ -129,7 +130,7 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
 
   // The card's fix for no model named is serve's own sentence (chooseModel's), so the two never drift apart.
   it("says serve's own words for a gateway that names no model", () => {
-    const serve = readFileSync(new URL("../../../../packages/serve/src/model.ts", import.meta.url), "utf8");
+    const serve = readFileSync(resolve(process.cwd(), "../../packages/serve/src/model.ts"), "utf8");
     expect(serve).toContain(GATEWAY_NAMES_NONE.replace(/^N/, "n"));
   });
 

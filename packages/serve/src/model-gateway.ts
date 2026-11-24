@@ -28,7 +28,7 @@
 // it on only with an address of that origin. The address row and the key row are written one after the other, and a
 // runner in another process may read them between the two writes, or after a write that failed: a pair that does not
 // match is read as a gateway with no key, so a key never goes to an address it was not saved for.
-import { gatewayBase, HarnessUnavailable } from "./provider.js";
+import { gatewayBase, HarnessUnavailable, modelGatewayBase } from "./provider.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv } from "./key-meta.js";
 import { GATEWAY_KEY_ENV, type Tier, TIERS } from "./model.js";
@@ -179,7 +179,7 @@ export function withSavedGateway<E extends NodeJS.ProcessEnv>(env: E, saved: Sav
 
 /** GET /v2/settings/model-gateway. `source`: the gateway in force, the environment's (`env`), the console's (`console`),
  *  or none (`null`: the provider keys are). `set_at_start`: the variables of these fields set where AgentRun starts, which
- *  win, read-only here. `problem`: why the gateway in force runs no model (an address the one rule refuses), else null. */
+ *  win, read-only here. `problem`: why the gateway in force runs no model (an address a run refuses: the one rule, or an API that is no gateway's, modelGatewayBase), else null. */
 export type GatewayView = {
   source: "env" | "console" | null;
   base_url: string | null;
@@ -217,6 +217,18 @@ function baseProblem(field: string, value: string): string | undefined {
   }
 }
 
+/** Why a run refuses `value` as the gateway (modelGatewayBase: the one rule, and an API that is no gateway's, Particle's),
+ *  in a run's words, or null: the view's `problem`, which the console's first screen shows. */
+function runProblem(field: string, value: string): string | null {
+  try {
+    modelGatewayBase(value, field);
+    return null;
+  } catch (error) {
+    if (error instanceof HarnessUnavailable) return error.message;
+    throw error;
+  }
+}
+
 const originOf = (base: string): string => new URL(gatewayBase("base_url", base)).origin;
 
 export async function gatewayView({ store, env }: Pick<ModelGatewayDeps, "store" | "env">): Promise<GatewayView> {
@@ -231,7 +243,7 @@ export async function gatewayView({ store, env }: Pick<ModelGatewayDeps, "store"
       models: Object.fromEntries(TIERS.map((tier) => [tier, envValue(env, TIER_VARS[tier]) ?? null])) as Record<Tier, string | null>,
       set_at_start,
       secret: secretMeta(GATEWAY_SECRET, key ? { set: true, source: "env", changedAt: null } : { set: false }),
-      problem: baseProblem(BASE_VAR, base) ?? null,
+      problem: runProblem(BASE_VAR, base),
     };
   }
   const saved = await gatewaySettingOf(store.settings);
@@ -245,7 +257,7 @@ export async function gatewayView({ store, env }: Pick<ModelGatewayDeps, "store"
     models: Object.fromEntries(TIERS.map((tier) => [tier, envValue(env, TIER_VARS[tier]) ?? saved?.models[tier] ?? null])) as Record<Tier, string | null>,
     set_at_start,
     secret,
-    problem: saved ? (baseProblem("base_url", saved.base_url) ?? null) : null,
+    problem: saved ? runProblem("base_url", saved.base_url) : null,
   };
 }
 
