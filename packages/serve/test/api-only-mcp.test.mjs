@@ -400,7 +400,7 @@ for (const [shape, arrange] of ACCOUNT_SHAPES) {
   });
 }
 
-test("API-only: an account the token's own earlier save connected (its record holds the id) still backs the token's second save for that user (200), found, and stays the first server's", async (t) => {
+test("API-only: an account the token's own earlier save connected (its record holds the id) still backs the token's second save for that user (200), found with no connect link, and the first server's record is unchanged", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const accounts = {};
   const s = await setup(t, { fake: { accounts } });
@@ -414,7 +414,8 @@ test("API-only: an account the token's own earlier save connected (its record ho
   const second = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
   assert.equal(second.status, 200, JSON.stringify(second.body));
   assert.equal(second.body.connect_url, undefined, "no connect link: the account is ACTIVE");
-  assert.deepEqual((await s.server.store.settings.get(composioMadeKey("notes"))).accounts, [{ id: linked, made: false }], "found, not made");
+  // Found, and still marked made here, as the first server's record says (composio-made.ts madeToWrite): a delete hands it on.
+  assert.deepEqual((await s.server.store.settings.get(composioMadeKey("notes"))).accounts, [{ id: linked, made: true }], "the first save's account, found");
   assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), mine, "the first server's record is unchanged");
 });
 
