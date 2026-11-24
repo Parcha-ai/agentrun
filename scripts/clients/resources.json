@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "listComposioToolkits", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
@@ -113,6 +113,7 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "releaseTriggerFiring": ["triggers", "release-firing"],
     "listTemplates": ["template", "list"],
     "getTemplate": ["template", "get"],
     "applyTemplate": ["template", "apply"],
@@ -121,6 +122,7 @@
     "listToolKeys": ["tool-keys", "list"],
     "saveToolKey": ["tool-keys", "save"],
     "deleteToolKey": ["tool-keys", "delete"],
+    "listHarnessKeys": ["harness-keys", "list"],
     "listMcpServers": ["mcp-servers", "list"],
     "previewMcpServer": ["mcp-servers", "preview"],
     "getMcpServer": ["mcp-servers", "get"],
@@ -131,6 +133,7 @@
     "getMcpPrivateHosts": ["mcp-servers", "private-hosts"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],
+    "listApiKeys": ["api-keys", "list"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
     "rotateWebhookSecret": ["webhook", "rotate-secret"],
@@ -146,6 +149,7 @@
     "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
-    "getStats": ["stats"]
+    "getStats": ["stats"],
+    "getWrapped": ["wrapped"]
   }
 }

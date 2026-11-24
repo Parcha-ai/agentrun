@@ -26,7 +26,7 @@ import { KINDS } from "../runner/journal-kinds.js";
 import type { LoopRow } from "../learned-nodes.js";
 import { promotedOf, sinceReset } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
-import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
+import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf, type Refused, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
 
 /** A run's learning end: the Learning fields its end sets. */
@@ -232,8 +232,10 @@ export async function agentLearningOverStore(store: Store, agentId: string): Pro
  *  out. A run that learns whose record names no path (its end's patch was late or failed, or no runner wrote its end) is
  *  left out too and counted (`unknown_path_runs`): its path and cost are not known, never `agent` at $0. `limit`: the
  *  latest runs shown, each keeping its number; the summary is over every run; `bill` is the owner's bill over all of
- *  them (billOf, with the revision ledger: agentLedgerOf). */
-export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; unknown_path_runs: number; workflows: ReturnType<typeof workflowCostsOf>; bill: Bill }> {
+ *  them (billOf, with the revision ledger: agentLedgerOf). Its champion skips what `refused` names of the agent's
+ *  promotion records (purged-workflow.ts refusedOf, the purge gate's), as a run's claim does; absent, none. */
+export type RefusedFor = (agentId: string, records: readonly PromotionRecord[]) => Promise<Refused>;
+export async function agentCostOverStore(store: Store, agentId: string, limit = Infinity, refused?: RefusedFor): Promise<{ runs: CostRun[]; summary: CostSummary; total_runs: number; unknown_cost_runs: number; unknown_path_runs: number; workflows: ReturnType<typeof workflowCostsOf>; bill: Bill }> {
   const kinds = new Map<string, string | undefined>();
   const listed = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId);
   // Every run's launch and learning in a few reads (agentRecordsOf), never a read a run.
@@ -242,6 +244,8 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const rows: Omit<CostRun, "took_over">[] = [];
   let unknownPath = 0;
+  // The hand-backs a restart cut (metrics.workflow_cut: pathMetrics), counted apart from the workflow's own (costSummary).
+  const cut = new Set<string>();
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
   for (const run of ended) {
@@ -253,22 +257,24 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
       unknownPath += 1;
       continue;
     }
+    if (placed.path === "handed_back" && (run.metrics as { workflow_cut?: unknown } | null | undefined)?.workflow_cut === true) cut.add(run.id);
     rows.push(await costRunOf(records, run, JOB_PATHS.includes(placed.path) ? (jobs += 1) : null, placed));
   }
   // Where each revision took over, over every run before the limit cuts the read (the first is the summary's takeover).
   const runs = tookOverOf(rows);
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
-  // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
+  // the runs the run's launch reads (pastRunsOverStore) at the all-in it reads (moneyAllInOf): a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
   const promotions = await promotionsOf(store.settings, agentId);
-  const replay = servingReplayOf(promotions, runs);
+  const skip = refused ? await refused(agentId, promotions) : undefined;
+  const replay = servingReplayOf(promotions, runs, skip);
   // The owner's bill: booked $, every run of the series (billOf), from the series' first run on a served path (the
   // summary's takeover: read from the run rows by their place, as the promotion feed is trimmed and its oldest record need
   // not be the first promotion), and each revision's compile and check over the served runs that carry it: runs on no
   // named disk alone, as a run on one learns nothing and serves nothing (learn/learning-of.ts).
-  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId));
-  const summary = costSummary(runs, replay);
+  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId), skip);
+  const summary = costSummary(runs, replay, cut);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
   // feed lands here, never nowhere: unknown while any run's figures are.
@@ -342,14 +348,14 @@ function allInV2Of(run: Pick<CostRun, "run_id" | "cost_usd" | "learning_usd">, c
 
 /** The agent's revision ledger (revisionLedgerOf) over `listed` (its runs, as runs.list read them): its ended runs that do
  *  a job or check one (no shadow, no imported or archived run), and the compile turns their rounds asked, by run. */
-async function agentLedgerOf(records: RunRecords, promotions: readonly PromotionRecord[], listed: readonly RunRecord[], reset: readonly ResetRevision[]): Promise<ReturnType<typeof revisionLedgerOf> & { compiles: Map<string, CompileSpend[]> }> {
+async function agentLedgerOf(records: RunRecords, promotions: readonly PromotionRecord[], listed: readonly RunRecord[], reset: readonly ResetRevision[], refused?: Refused): Promise<ReturnType<typeof revisionLedgerOf> & { compiles: Map<string, CompileSpend[]> }> {
   const rows = listed.filter((one) => FINAL_STATES.includes(one.state) && !one.importedFrom && one.archivedAt === null && !isShadowRun(one.id));
   const compiles = new Map<string, CompileSpend[]>();
   for (const row of rows) {
     const asked = await compilesOf(records, row.id);
     if (asked.length) compiles.set(row.id, asked);
   }
-  return { ...revisionLedgerOf(promotions, rows, [...compiles.values()].flat(), reset), compiles };
+  return { ...revisionLedgerOf(promotions, rows, [...compiles.values()].flat(), reset, refused), compiles };
 }
 
 /** Each revision of the agent's learned workflows (one per workflow and digest its promotion records name, in the order
@@ -362,8 +368,9 @@ async function agentLedgerOf(records: RunRecords, promotions: readonly Promotion
  *  (the bill's unattributed does). It is spread over its first K served runs (`workflow` or `handed_back` of its workflow
  *  at its digest), K its check's compile_after; `state` from its newest record. A revision an earlier reset of the agent's
  *  learning deleted (`reset`, learn/promote.ts keepResetLedger) is one too, first, stopped, at the K it was kept with,
- *  unless the records name it again. */
-export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = [], reset: readonly ResetRevision[] = []): ReturnType<typeof amortize> {
+ *  unless the records name it again. Serving is the champion's (championOf), skipping what `refused` names (the purge
+ *  gate's), so a purged run's revision is never said to serve. */
+export function revisionLedgerOf(records: readonly PromotionRecord[], rows: readonly LedgerRow[], compiles: readonly CompileSpend[] = [], reset: readonly ResetRevision[] = [], refused?: Refused): ReturnType<typeof amortize> {
   const ordered = [...rows].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const newest = new Map<string, PromotionRecord>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, record);
@@ -378,7 +385,7 @@ export function revisionLedgerOf(records: readonly PromotionRecord[], rows: read
   const revisions = [
     ...reset.filter((one) => !newest.has(`${one.workflow}\0${one.digest}`)).map((one) => spendOf(one.workflow, one.digest, one.k ?? COMPILE_AFTER_DEFAULT, "stopped")),
     ...[...newest.values()].map((record) => spendOf(record.workflow, record.digest, record.check?.compile_after ?? COMPILE_AFTER_DEFAULT,
-      record.decided === "replaying" ? "checking" : championOf(records, record.workflow)?.digest === record.digest ? "serving" : "stopped")),
+      record.decided === "replaying" ? "checking" : championOf(records, record.workflow, refused)?.digest === record.digest ? "serving" : "stopped")),
   ];
   const served = ordered.flatMap((row) => {
     const at = revisionOfRow(row);
@@ -396,8 +403,8 @@ export function revisionLedgerOf(records: readonly PromotionRecord[], rows: read
  *  spend is on the runs it serves, so its `learning_usd` and `all_in_usd` are 0, and the sum of every run's `all_in_usd`
  *  and the bill's `unattributed_usd` is the booked total. While the run is at work `usd` is `rowUsd` and the rest null;
  *  null while unknown (its shadow still at work, a compile's or a check's cost unknown), never $0. Undefined for an
- *  unknown run. */
-export async function runAllInOverStore(store: Store, runId: string, rowUsd?: number | null): Promise<{ path: RunPath | null; usd: number | null; learning_usd: number | null; all_in_usd: number | null } | undefined> {
+ *  unknown run. Its revision's champion skips what `refused` names of the agent's promotion records (agentCostOverStore). */
+export async function runAllInOverStore(store: Store, runId: string, rowUsd?: number | null, refused?: RefusedFor): Promise<{ path: RunPath | null; usd: number | null; learning_usd: number | null; all_in_usd: number | null } | undefined> {
   const run = await store.runs.get(runId);
   if (!run) return undefined;
   const row = rowUsd === undefined ? (typeof run.costAtMostUsd === "number" ? null : run.costUsd) : rowUsd;
@@ -413,7 +420,9 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
   if (path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run)) {
     // Over the agent's runs on no named disk, as the cost page's ledger reads (learn/learning-of.ts).
     const listed = (await store.runs.list({ agentId: run.agentId, disk: null })).filter((one) => one.agentId === run.agentId);
-    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, run.agentId), listed, await resetLedgerOf(store.settings, run.agentId))).shares;
+    const promotions = await promotionsOf(store.settings, run.agentId);
+    const skip = refused ? await refused(run.agentId, promotions) : undefined;
+    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), promotions, listed, await resetLedgerOf(store.settings, run.agentId), skip)).shares;
   }
   const figures = { run_id: run.id, ...cost };
   const compiles = await compilesOf(store, run.id);
@@ -424,10 +433,10 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
  *  workflow the newest run a learned workflow ran first on ran (`workflow` or `handed_back`), its record's check numbers
  *  (the share of the inputs it ran on that said what the agent said, against the agent's own 100%). `cleared`: it passed
  *  (a champion is promoted), with the agreement check it passed (`agreed` of `alone`, its bar `agree_min`). Null when no run was served, nothing serves now (held, or never promoted), or it was promoted
- *  on no input (a dry run). */
-export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[]): CostReplay | null {
+ *  on no input (a dry run). The champion skips what `refused` names (the purge gate's). */
+export function servingReplayOf(records: readonly PromotionRecord[], runs: readonly CostRun[], refused?: Refused): CostReplay | null {
   const name = runs.findLast((run) => (run.path === "workflow" || run.path === "handed_back") && run.workflow !== null)?.workflow;
-  const check = name ? championOf(records, name)?.check : undefined;
+  const check = name ? championOf(records, name, refused)?.check : undefined;
   if (!check?.n) return null;
   const agreed = check.agreed ?? 0, alone = check.alone ?? 0;
   return { n: check.n, workflow_pct: Math.round(checkShares({ n: check.n, agreed, alone }).agreement * 1000) / 10, agent_pct: 100, cleared: true, agreed, alone, agree_min: check.agree_min };
@@ -513,8 +522,9 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number | n
  *  and the cost page: of its newest PAST_RUNS runs on no named disk (learn/learning-of.ts: one on a named disk learns
  *  nothing), each that ended (ended, stopped or failed) since its learning's reset (learn/compile.ts sinceReset: a
  *  workflow before it is not the one it learned after, whatever its name), is neither imported nor archived nor a
- *  workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id (the cost
- *  page's series), read again for no run; `records`, where any other's rows are read (the store's by default). */
+ *  workflow revision's run, with its all-in cost as the money rule reads it (moneyAllInOf). `known`: all-in costs already
+ *  read (allInOf), by run id (the cost page's series), read again for no served run; `records`, where any other's rows
+ *  are read (the store's by default). */
 export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
@@ -540,9 +550,18 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
   const past: PastRun[] = [];
   for (let at = 0; at < kept.length; at += 16) {
-    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(paged, run)).total_usd })))));
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: await moneyAllInOf(paged, run, known) })))));
   }
   return past;
+}
+
+/** A run's all-in as the money rule reads it (runner/workflow-first.ts PastRun): a run a learned workflow served
+ *  (SERVED_PATHS) at its all-in (allInOf, or `known`'s); any other as the run view reads it (runAllInOverStore's
+ *  allInV2Of), its compile turns its revision's, never the agent's by-hand cost, and no revision's share (only a served
+ *  run carries one). Its recurring learning (a follow-up's rounds, its audit shadow) stays on it. */
+async function moneyAllInOf(records: RunRecords, run: RunRecord, known?: ReadonlyMap<string, number | null>): Promise<number | null> {
+  if (SERVED_PATHS.includes(metricOf(run).path as RunPath)) return known?.has(run.id) ? known.get(run.id)! : (await allInOf(records, run)).total_usd;
+  return allInV2Of({ run_id: run.id, ...(await allInOf(records, run)) }, await compilesOf(records, run.id), new Map());
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
@@ -557,8 +576,9 @@ export const costStopOverStore = async (store: Store, agentId: string) => costSt
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
- *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
+ *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. `cut` on a
+ *  hand-back a restart cut (servedOf: the workflow's call ended `interrupted`), never one the workflow made itself. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
@@ -572,7 +592,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
     const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
-    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}) };
+    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.

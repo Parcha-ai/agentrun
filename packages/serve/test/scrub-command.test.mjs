@@ -14,6 +14,8 @@ import { ROOT_CONVERSATION_ID, UserEntry } from "@earendil-works/pi-durable";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
+const { countCuts, countTable, couldNotCount, shareTexts, stringsOf } = await import("../dist/scrub-command.js");
+const { sealRunLaunch } = await import("../dist/store/seal.js");
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
 /** Fresh synthetic secrets: an sk- key (a known format), a PGPASSWORD= value (a label), an email (personal) and a value
@@ -186,4 +188,148 @@ test("no run id, or two, exits 2 with the command's usage", async (t) => {
     assert.equal(ran.status, 2, ran.stderr);
     assert.match(ran.stderr, /usage: agentrun-serve scrub RUN/);
   }
+});
+
+test("P2 14 (ruling F): a share's strings include object keys, so a key holding a secret is counted", async () => {
+  const s = planted();
+  const strings = stringsOf({ [`PGPASSWORD=${s.pg}`]: 1, list: ["x", { inner: "y" }], n: 3, none: null });
+  for (const each of [`PGPASSWORD=${s.pg}`, "list", "x", "inner", "y", "n", "none"]) assert.ok(strings.includes(each), each);
+  const count = await countCuts("r", "agentic", strings, []);
+  assert.equal(count.rules.find((rule) => rule.rule === "secret-assign")?.count, 1, JSON.stringify(count));
+});
+
+test("ruling F: count mode reports blocked when a share would fail closed, and the table says the share would be refused", async () => {
+  const s = planted();
+  // One character mid-value percent-encoded: no held form (nor its hex run) stands in place, the final check's decoded
+  // view sees it.
+  const split = `token ${s.held.slice(0, 20)}%${s.held.charCodeAt(20).toString(16).toUpperCase()}${s.held.slice(21)}`;
+  const count = await countCuts("r", "agentic", ["fine", split], [s.held]);
+  assert.equal(count.blocked, true);
+  assert.match(countTable(count), /a share of this run would be refused/);
+  assertNoValue(countTable(count) + JSON.stringify(count), s, "blocked count");
+  const fine = await countCuts("r", "agentic", ["fine"], [s.held]);
+  assert.equal(fine.blocked, false);
+  assert.doesNotMatch(countTable(fine), /refused/);
+});
+
+test("P2 13 (ruling H): the error path cuts the run's held values out of the error's words too", async () => {
+  const s = planted();
+  const line = await couldNotCount("r", new Error(`read failed near ${s.held} in row 3`), [s.held]);
+  assert.match(line, /could not be counted/);
+  assertNoValue(line, s, "error line");
+});
+
+/** An imported session whose one tool call (`name` with `input`) printed `output`, that output alone in its result. */
+async function oneCallRun(store, id, name, input, output) {
+  const at = Date.now();
+  const C = ROOT_CONVERSATION_ID;
+  const n = Number(C);
+  await store.importRun({
+    id, agentId: "a1", revisionId: "r1", importedFrom: { source: "claude-code", session: `synthetic-${id}` },
+    launch: { body: { input: { content: "Look at it." }, title: "Look", place: { mode: "runner" } } }, state: "ended", summary: "Looked.", startedAt: at, endedAt: at,
+    transcript: [[
+      { type: "conversation", value: { id: C } },
+      { type: "entry", value: { id: n + 1, conversationId: C, kind: UserEntry.kind, model: [{ role: "user", content: [{ type: "text", text: "Look at it." }], timestamp: at }] } },
+      { type: "entry", value: { id: n + 2, conversationId: C, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "toolu_01", name, arguments: input }], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } }, timestamp: at }] } },
+      { type: "entry", value: { id: n + 3, conversationId: C, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "toolu_01", toolName: name, content: [{ type: "text", text: output }], isError: false, timestamp: at }] } },
+    ]],
+  });
+  return id;
+}
+
+test("LVI: a tool's output is scrubbed with its call's context, so a read of a credential file or a dump command is a dump cut", async (t) => {
+  const { dir, store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const counted = async (id) => {
+    const gathered = await shareTexts(store, id, deps);
+    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
+  };
+  // Each output stands alone in its result field: only the call that printed it says what it is.
+  const cases = [
+    ["read-pgpass", "Read", { file_path: "~/.pgpass" }, pgpass, "credential-file"],
+    ["read-netrc", "Read", { file_path: "~/.netrc" }, `machine api.sample-host.zz login svc password ${pw}`, "credential-file"],
+    ["read-env", "Read", { file_path: ".env" }, `APP_REGION=north\nAPP_SEED=${pw}`, "env-file"],
+    ["read-ssh", "Read", { file_path: "~/.ssh/id_ed25519" }, `Host build\n  HostName 10.0.0.1\n  User svc\n  # seed ${pw}`, "ssh-file"],
+    ["shell-pgpass", "Bash", { command: "cat ~/.pgpass", description: "Show the pgpass file" }, pgpass, "credential-file"],
+    ["shell-env", "Bash", { command: "env | sort", description: "List the environment" }, `APP_REGION=north\nAPP_SEED=${pw}`, "env-dump"],
+  ];
+  for (const [id, name, input, output, rule] of cases) {
+    await oneCallRun(store, id, name, input, output);
+    const count = await counted(id);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, rule, id);
+  }
+  // The same outputs read from an unrelated file, or printed by a command that is no read or dump, are not cut.
+  for (const [id, name, input, output] of [["read-notes", "Read", { file_path: "notes.txt" }, pgpass], ["shell-notes", "Bash", { command: "cat notes.txt" }, pgpass], ["shell-echo", "Bash", { command: "echo ok" }, `APP_REGION=north\nAPP_SEED=${pw}`], ["read-notes-env", "Read", { file_path: "notes.txt" }, `APP_REGION=north\nAPP_SEED=${pw}`]]) {
+    await oneCallRun(store, id, name, input, output);
+    const count = await counted(id);
+    assert.equal(count.cuts, 0, `${id}: ${JSON.stringify(count.rules)}`);
+  }
+  // The CLI counts it the same way, and prints no piece of the value.
+  await store.close();
+  const ran = scrubCli(dir, { held: `held${randomBytes(16).toString("hex")}` }, "shell-pgpass", "--json");
+  assert.equal(ran.status, 0, ran.stderr);
+  assertNoValue(ran.stdout + ran.stderr, { pw }, "json");
+  assert.equal(JSON.parse(ran.stdout).by_kind.dump, 1, ran.stdout);
+});
+
+test("LXIV: Gemini CLI's read_file (`absolute_path` in v0.1.18, `file_path` now) and Cursor's (`target_file`) are reads: a ~/.pgpass read is one dump", async (t) => {
+  // target_file is in no published Cursor schema found; Cursor CLI's published `args.path` is already read (pi's form).
+  const { store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  for (const [id, input] of [["gemini-read", { absolute_path: "~/.pgpass" }], ["gemini-read-now", { file_path: "~/.pgpass" }], ["cursor-read", { target_file: "~/.pgpass" }]]) {
+    await oneCallRun(store, id, "read_file", input, `db:5432:app:svc:${pw}`);
+    const gathered = await shareTexts(store, id, deps);
+    const count = await countCuts(id, gathered.kind, gathered.texts, gathered.held);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", id);
+  }
+  // The same read of an unrelated file: no cut.
+  await oneCallRun(store, "cursor-notes", "read_file", { target_file: "notes.txt" }, `db:5432:app:svc:${pw}`);
+  const gathered = await shareTexts(store, "cursor-notes", deps);
+  assert.equal((await countCuts("cursor-notes", gathered.kind, gathered.texts, gathered.held)).cuts, 0);
+});
+
+test("LXXVII: a shell call naming a credential file through quotes, $PGPASSFILE or a newly listed file (~/.aws/credentials) is one dump", async (t) => {
+  const { store } = await dataDir(t);
+  const pw = `Cu${randomBytes(9).toString("hex")}`;
+  const pgpass = `db:5432:app:svc:${pw}`;
+  const deps = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const counted = async (id) => {
+    const gathered = await shareTexts(store, id, deps);
+    return countCuts(id, gathered.kind, gathered.texts, gathered.held);
+  };
+  for (const [id, command, output] of [["quoted-pgpass", "cat ~/'.pgpass'", pgpass], ["pgpassfile", "cat $PGPASSFILE", pgpass], ["aws-credentials", "cat ~/.aws/credentials", `[default]\naws_secret_access_key = ${pw}`]]) {
+    await oneCallRun(store, id, "Bash", { command }, output);
+    const count = await counted(id);
+    assert.equal(count.by_kind.dump, 1, `${id}: ${JSON.stringify(count.rules)}`);
+    assert.equal(count.rules.find((line) => line.kind === "dump")?.rule, "credential-file", id);
+  }
+  // A path that only holds pgpass in a longer name: no cut.
+  await oneCallRun(store, "pgpass-notes", "Bash", { command: "cat docs/pgpass-setup.md" }, pgpass);
+  assert.equal((await counted("pgpass-notes")).cuts, 0);
+});
+
+test("a run whose launch holds keys sealed is counted under the store's seal key, its keys held; without that key it is withheld", async (t) => {
+  const s = planted();
+  const { dir, store } = await dataDir(t);
+  const key = randomBytes(32);
+  const handed = `hk${randomBytes(16).toString("hex")}`;
+  const id = "sealed-1";
+  await store.runs.create({ id, agentId: "a1", revisionId: "r1" }, { body: { input: { content: `Use ${handed} for the call.` }, title: "Call the API", place: { mode: "runner" } }, sealed: sealRunLaunch(key, id, { keys: { CALL_API_KEY: handed } }) });
+  const base = { serverSecrets: () => [], keyEnv: () => ({}) };
+  const gathered = await shareTexts(store, id, { ...base, sealKey: key });
+  assert.ok(typeof gathered === "object", String(gathered));
+  assert.ok(gathered.held.includes(handed), "the key sealed with its launch is a held value");
+  assert.equal(await shareTexts(store, id, { ...base, sealKey: undefined }), "withheld", "no seal key: what it was handed can't be read");
+  await store.close();
+  // The command reads the store's seal key as the import boots it (handed here) and counts the run: without the key it would be withheld (exit 1).
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !["AGENTRUN_STORE_URL", "AGENTRUN_SEAL_KEY"].includes(name)));
+  const ran = spawnSync(process.execPath, [CLI, "scrub", "--data", dir, id, "--json"], { env: { ...env, SCRUBTEST_SECRET: s.held, AGENTRUN_SEAL_KEY: key.toString("base64"), AGENTRUN_TELEMETRY: "0" }, encoding: "utf8", timeout: 120_000 });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.equal(JSON.parse(ran.stdout).run_id, id, "counted, not withheld: its sealed launch opened under the key");
+  assertNoValue(ran.stdout + ran.stderr, { ...s, handed }, "sealed");
 });

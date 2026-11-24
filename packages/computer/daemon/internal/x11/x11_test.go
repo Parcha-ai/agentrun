@@ -1,6 +1,7 @@
 package x11_test
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"image/color"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -242,7 +244,7 @@ func TestGetImageReadsZPixmapIntoRGBA(t *testing.T) {
 			return out
 		}
 	})
-	img, err := c.GetImage(5, 7, 3, 2)
+	img, err := c.GetImage(context.Background(), 5, 7, 3, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,11 +258,69 @@ func TestGetImageReadsZPixmapIntoRGBA(t *testing.T) {
 
 func TestQueryPointerAndRootSize(t *testing.T) {
 	_, c := xtestConn(t, func(f *x11fake.Server) { f.Pointer = [2]int{31, 9} })
-	if x, y, err := c.QueryPointer(); err != nil || x != 31 || y != 9 {
+	if x, y, err := c.QueryPointer(context.Background()); err != nil || x != 31 || y != 9 {
 		t.Fatalf("QueryPointer = %d, %d, %v", x, y, err)
 	}
-	if w, h, err := c.RootSize(); err != nil || w != x11fake.Width || h != x11fake.Height {
+	if w, h, err := c.RootSize(context.Background()); err != nil || w != x11fake.Width || h != x11fake.Height {
 		t.Fatalf("RootSize = %d, %d, %v", w, h, err)
+	}
+}
+
+// A call whose context ends while the server sits on its request answers the context's error then, and leaves the
+// connection open. What the server answers the request later (here an error) goes to no one: the next Sync does not
+// take it for an error of a request with no reply, and the next call reads its own answer.
+func TestACancelledCallAnswersAtOnceAndItsLateAnswerGoesToNoOne(t *testing.T) {
+	reached, resume := make(chan struct{}), make(chan struct{})
+	images := 0
+	_, c := xtestConn(t, func(f *x11fake.Server) {
+		f.Pointer = [2]int{4, 6}
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == 73 { // GetImage
+				if images++; images == 1 {
+					close(reached)
+					<-resume
+				}
+			}
+		}
+		f.ErrorFor = func(r x11fake.Request) (byte, bool) { return 8, r.Opcode == 73 } // BadMatch
+	})
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(resume) }) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.GetImage(ctx, 0, 0, 2, 2)
+		done <- err
+	}()
+	select {
+	case <-reached:
+	case err := <-done:
+		t.Fatalf("GetImage ended before the fake held it: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the fake never got the GetImage")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the cancelled GetImage answered %v; want context.Canceled", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the cancelled GetImage did not end while the server sat on it")
+	}
+	if err := c.Err(); err != nil {
+		t.Fatalf("the cancel closed the connection: %v", err)
+	}
+	release.Do(func() { close(resume) })
+	if errs, err := c.Sync(); err != nil || len(errs) != 0 {
+		t.Fatalf("Sync after the cancelled GetImage's late error = %v, %v; want no error", errs, err)
+	}
+	if x, y, err := c.QueryPointer(context.Background()); err != nil || x != 4 || y != 6 {
+		t.Fatalf("QueryPointer after the cancelled GetImage = %d, %d, %v", x, y, err)
+	}
+	if _, err := c.GetImage(ctx, 0, 0, 2, 2); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetImage with an ended context = %v; want context.Canceled before anything is sent", err)
 	}
 }
 
@@ -319,7 +379,7 @@ func TestALostConnectionFailsEveryCallInWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
-	if _, _, err := c.QueryPointer(); err == nil {
+	if _, _, err := c.QueryPointer(context.Background()); err == nil {
 		t.Fatal("QueryPointer on a closed connection succeeded")
 	}
 	if c.Err() == nil || !errors.Is(c.Err(), x11.ErrClosed) {
@@ -566,13 +626,13 @@ func TestEachRepliesLengthIsBoundedByItsRequest(t *testing.T) {
 		opcode byte
 		call   func(c *x11.Conn) error
 	}{
-		"QueryPointer": {38, func(c *x11.Conn) error { _, _, err := c.QueryPointer(); return err }},
-		"GetGeometry":  {14, func(c *x11.Conn) error { _, _, err := c.RootSize(); return err }},
+		"QueryPointer": {38, func(c *x11.Conn) error { _, _, err := c.QueryPointer(context.Background()); return err }},
+		"GetGeometry":  {14, func(c *x11.Conn) error { _, _, err := c.RootSize(context.Background()); return err }},
 		"GetKeyboardMapping": {101, func(c *x11.Conn) error {
 			_, err := c.KeyboardMapping()
 			return err
 		}},
-		"GetImage": {73, func(c *x11.Conn) error { _, err := c.GetImage(0, 0, 2, 2); return err }},
+		"GetImage": {73, func(c *x11.Conn) error { _, err := c.GetImage(context.Background(), 0, 0, 2, 2); return err }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, conn := x11fake.Start(t, func(f *x11fake.Server) {

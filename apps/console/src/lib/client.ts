@@ -5,10 +5,10 @@ import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnec
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, Corrections, LearningChange, LearningDiff, LearningFile, LearningProblem, RunLearningResultData, Page } from "./learning";
-import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioToolkit, ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunCreateInline, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 // The refusal type lives in its own module (clientError.ts), so a page that only reads a refusal (the share page, through
 // the Timeline) loads none of the client's routes.
@@ -34,15 +34,16 @@ export type ImportState = { state: "running" } | { state: "done"; agents: number
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
-/** A runs list's filter (GET /v2/runs's `status` and `archived`): runs in one status, and the archived runs in place of
- *  the others. */
-export type RunsFilter = { status?: RunStatus; archived?: boolean };
+/** A runs list's filter (GET /v2/runs's `status`, `archived` and `label`): runs in one status, the archived runs in place
+ *  of the others, and runs holding one `<key>:<value>` label (one per request, as the route takes it). */
+export type RunsFilter = { status?: RunStatus; archived?: boolean; label?: string };
 
-const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived }: RunsFilter = {}) => {
+const runsQuery = (limit: number, cursor: string | null | undefined, { status, archived, label }: RunsFilter = {}) => {
   const q = new URLSearchParams({ limit: String(limit) });
   if (cursor) q.set("cursor", cursor);
   if (status) q.set("status", status);
   if (archived) q.set("archived", "true");
+  if (label) q.set("label", label);
   return `?${q}`;
 };
 
@@ -237,6 +238,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Grades an ended run's answer right or wrong (PUT /v2/runs/{id}/grade): a later grade replaces it. The answer says
      *  the feedback round it opened the run again on (`feedback`), if any. */
     gradeRun: (id: string, body: GradeBody) => call<GradeAnswer>("PUT", `${run(id)}/grade`, { body }),
+    /** Starts a run of an agent the body carries whole (POST /v2/runs, a race's lane): 202 with the run; the same key with
+     *  the same body answers with that same run. */
+    startInlineRun: (body: RunCreateInline, idempotencyKey: string) => call<Run>("POST", "/runs", { body, headers: { "idempotency-key": idempotencyKey } }),
     /** Starts a run. The server answers 202 with the run; the same key with the same body answers with that same run. */
     startRun: async (agentId: string, body: { input: unknown; revision?: string; effort?: string; max_cost_usd?: number; file_ids?: string[] }, idempotencyKey: string) => {
       const r = await callTagged<Run>("POST", `${agent(agentId)}/runs`, { body, headers: { "idempotency-key": idempotencyKey } });
@@ -282,6 +286,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  state, and the server keeps no record of a body that holds the values. */
     saveToolKey: (id: string, values: Record<string, string>) => call<unknown>("PUT", `/settings/tool-keys/${encodeURIComponent(id)}`, { body: { values } }),
     removeToolKey: (id: string) => call<unknown>("DELETE", `/settings/tool-keys/${encodeURIComponent(id)}`),
+    /** Each plan-billed recipe's keys and which are saved, never a value (a serve extension; 404 on a server without it). */
+    listHarnessKeys: () => call<HarnessKeys>("GET", "/settings/harness-keys"),
+    /** Saves one key of a plan-billed recipe for that harness alone (204). The owner's session alone; no Idempotency-Key,
+     *  as a tool key's save has none. */
+    saveHarnessKey: (harness: string, key: string, value: string) => call<unknown>("PUT", `/settings/harness-keys/${encodeURIComponent(harness)}/${encodeURIComponent(key)}`, { body: { value } }),
+    removeHarnessKey: (harness: string, key: string) => call<unknown>("DELETE", `/settings/harness-keys/${encodeURIComponent(harness)}/${encodeURIComponent(key)}`),
     /** This server's ChatGPT sign-in, never a token (a serve extension; 404 on a server without it). */
     chatGPT: () => call<unknown>("GET", "/settings/chatgpt"),
     /** Starts a sign-in: OpenAI's page to open. A new start cancels the one waiting. */
@@ -309,6 +319,7 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
+    runningComputers: () => call<RunningComputers>("GET", "/computers/running"),
     /** Saves a provider's keys, declared names only; null removes one. No Idempotency-Key: the same PUT twice is the same
      *  state. The answer is the provider, never a value. */
     saveComputerKeys: (provider: string, keys: ComputerKeysBody) => call<ComputerProvider>("PUT", `/computers/${encodeURIComponent(provider)}/keys`, { body: keys }),
@@ -330,6 +341,13 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     archilOff: () => call<Archil>("DELETE", "/workspace/archil"),
     /** One listing of the disk's root with the saved key. */
     testArchil: () => call<ArchilTest>("POST", "/workspace/archil/test"),
+    /** The API keys made for this server's apps, never a key (a serve extension). */
+    apiKeys: () => call<ApiKeys>("GET", "/settings/api-keys"),
+    /** Makes a key named `name`: its value is in the answer (`api_key`), this once. No Idempotency-Key: its record would
+     *  keep the key, and a second POST is a second key. */
+    createApiKey: (name: string) => call<ApiKeyMade>("POST", "/settings/api-keys", { body: { name } }),
+    /** Revokes a key (204): it opens nothing from now on. */
+    revokeApiKey: (id: string) => call<unknown>("DELETE", `/settings/api-keys/${encodeURIComponent(id)}`),
     /** The webhook, never its secret (a serve extension). */
     webhook: () => call<Webhook>("GET", "/settings/webhook"),
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
@@ -384,6 +402,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
      *  nothing; a save with no credential in `auth` keeps the sealed one. */
     /** The templates this server offers. */
     listTemplates: () => call<{ templates: TemplateView[] }>("GET", "/templates"),
+    /** The marketplace's templates, as the server read them: always 200, its `state` saying whether it could. */
+    listMarketplaceTemplates: () => call<MarketplaceList>("GET", "/marketplace/templates"),
     /** Makes a template's agent (and its triggers) under one Idempotency-Key: the same request again answers what it did. */
     applyTemplate: (name: string, body: TemplateApply, idempotencyKey: string) =>
       call<TemplateApplied>("POST", `/templates/${encodeURIComponent(name)}/apply`, { body, headers: { "idempotency-key": idempotencyKey } }),
@@ -402,6 +422,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
     composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    /** The Composio preset's toolkit picker: the toolkits Composio offers, by name (the owner's session alone). */
+    composioToolkits: (api_key: string) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key } }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
@@ -426,7 +448,20 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     githubConnection: () => call<GitHubStatus>("GET", "/integrations/github"),
     /** Starts connecting one: the form the browser posts to GitHub. 409 github_already_connected, github_no_public_url or
      *  github_no_seal_key, in the server's words. */
-    connectGitHub: (org?: string) => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: org ? { org } : {} }),
+    connectGitHub: (org?: string, contents?: "write") => call<GitHubConnectStart>("POST", "/integrations/github/connect", { body: { ...(org ? { org } : {}), ...(contents ? { contents } : {}) } }),
+    /** The repositories the App is installed on, as GitHub lists them now. 409 github_not_connected with no App. */
+    githubRepositories: () => call<GitHubRepositories>("GET", "/integrations/github/repositories"),
+    /** Suggested agents: each scanned repository and its suggestions (open and created). */
+    listSuggestions: (repo?: string) => call<SuggestionsList>("GET", `/suggestions${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),
+    /** Starts a scan of a repository (or answers the one still running). */
+    scanRepository: (repo: string) => call<ScanStarted>("POST", "/suggestions/scans", { body: { repo } }),
+    /** `name`: the agent's name a create would be sent; the files come rendered with it. */
+    getSuggestion: (id: string, name?: string) => call<SuggestionDetail>("GET", `/suggestions/${encodeURIComponent(id)}${name ? `?name=${encodeURIComponent(name)}` : ""}`),
+    discardSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/discard`, { body: {} }),
+    restoreSuggestion: (id: string) => call<Suggestion>("POST", `/suggestions/${encodeURIComponent(id)}/restore`, { body: {} }),
+    /** Pushes the agent's package and client on a new branch, makes the agent here and opens the pull request. 409
+     *  github_permission_missing (details: missing, permissions_url, installation_url) before anything is written. */
+    createSuggestedAgent: (id: string, name?: string) => call<SuggestionCreated>("POST", `/suggestions/${encodeURIComponent(id)}/create`, { body: name ? { name } : {} }),
     /** Disconnects it: every GitHub trigger turns off; the note says what to delete on GitHub. */
     disconnectGitHub: () => call<GitHubDisconnected>("DELETE", "/integrations/github"),
     toolSettings: () => call<ToolSettings>("GET", "/settings/tools"),

@@ -9,7 +9,7 @@ import { DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
 import { orThrow } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts } from "./hosted/provider.js";
-import { jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
+import { httpsBase, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dateOf } from "./hosted/values.js";
 import type { CallContext, ComputerSpec, Refusal } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
@@ -198,9 +198,10 @@ export class CloudflareProvider extends HostedProvider {
 	constructor(options: CloudflareProviderOptions) {
 		const { relayUrl, relayToken, fetch: fetcher = globalThis.fetch, timeouts = {}, ...rest } = options ?? ({} as CloudflareProviderOptions);
 		if (typeof relayToken !== "string" || relayToken === "") throw new Error("options.relayToken, the relay's RELAY_TOKEN, is required: the provider reads no environment, so the caller passes it");
-		if (typeof relayUrl !== "string" || !URL.canParse(relayUrl) || new URL(relayUrl).protocol !== "https:") throw new Error(`options.relayUrl is the relay Worker's https address, as wrangler deploy printed it, not ${JSON.stringify(relayUrl)}`);
+		if (typeof relayUrl !== "string" || relayUrl === "") throw new Error("options.relayUrl, the relay Worker's https address as wrangler deploy printed it, is required");
+		const base = httpsBase(relayUrl, "the Cloudflare relay URL");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
-		const host = new CloudflareHost({ relayUrl, relayToken, fetch: fetcher });
+		const host = new CloudflareHost({ relayUrl: base, relayToken, fetch: fetcher });
 		super(host, { ...rest, timeouts: { ...CLOUDFLARE_TIMEOUTS, ...timeouts } });
 		this.#relay = host;
 	}

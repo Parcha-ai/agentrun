@@ -38,6 +38,11 @@ control plane on top of your favorite agent harness. Your agents become smarter,
 tokens with every run.
 
 <p align="center">
+  <a href="https://discord.gg/qj6AqruHEn"><img alt="Join our Discord" src="https://img.shields.io/badge/Join%20our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white"></a>
+  <br>Show what you’re building, swap workflows, and get help debugging a run.
+</p>
+
+<p align="center">
   <a href="https://agentrun.ai"><img alt="An agent's Learning tab in the AgentRun console: since it learned, answers take 2 seconds instead of 10 and a run costs $0.0077 instead of $0.05, with the two notes it kept" src="docs/assets/readme/learning.png" width="100%"></a>
   <br><sub>An agent's Learning tab: what it kept, and what changed since. Demo data from the console's recorded fixtures.</sub>
 </p>
@@ -117,7 +122,8 @@ start a new agent from a template.
    npx @parcha/agentrun
    ```
 
-   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
+   It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun` (not the
+   folder you run it in: `--data DIR` names another, and a new folder alone is not a new install), and
    opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
@@ -323,12 +329,13 @@ step is never run again; a write a crash cut off mid-call is marked interrupted 
 
 ## Templates
 
-Five ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
+Six ready-made agents. Apply one in one screen, make it yours, and measure it with its own eval cases. Each template is
 one folder: the agent's instructions, its skills, its rules and its eval cases. **Templates → Apply** grants nothing
 until you tick each MCP tool yourself.
 
 | Template | What it does |
 | --- | --- |
+| `agent-scout` | Reads a GitHub repository on a read-only checkout and suggests up to five agents its app could call, each with the lines of code that show why. The **Suggested agents** page shows them: Create opens a pull request that adds the agent and a client to your repository; Discard hides it for good |
 | `code-review` | Reviews a pull request with eight independent reviewers on a read-only checkout (or a pasted diff), merges and verifies their findings, quotes the line behind each, and returns them as JSON. It sets up its own GitHub trigger |
 | `kyb` | Due diligence on one company: registries, owners, sanctions lists, dated adverse media, and a verdict with every claim cited |
 | `market-monitor` | Every Monday, a digest of what changed at the companies you watch, each item dated and linked |
@@ -337,6 +344,10 @@ until you tick each MCP tool yourself.
 
 `npx @parcha/agentrun template eval DIR` runs a template's eval cases as real runs on a throwaway server and grades
 them. [Template packages](packages/serve/templates/README.md) has the folder format.
+
+**Agents → Suggested** connects a repository and runs `agent-scout` for you. A scan reads with a token for that one
+repository, contents read-only. Opening a pull request needs the GitHub App's Contents write, asked for only when you
+tick it at Connect GitHub ([Suggested agents](packages/serve/README.md#suggested-agents)).
 
 Want a template to know your code? [Tune a template on your own code](docs/tutorials/tune-a-template.md) walks
 through the loop we ran on `code-review`.
@@ -602,8 +613,10 @@ your first agent. Or add a model key in the console, or in `.env` before `docker
 
 The port is published on this machine's loopback only; put a TLS proxy in front before you open it to anyone else.
 This compose file has no Docker socket, so its agents get file tools and `web_fetch` but no shell. For a Docker
-sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), run the server on
-the host.
+sandbox, use the single-server `compose.yaml` at the repository's root (Docker Engine 26 or later), which gives the
+server the host's Docker socket (that socket is root on the host: give it only where you would give AgentRun root), or
+run the server on the host with `npx @parcha/agentrun`. The start's `Boxes:` line
+and the agent editor's place say which one a container lacks: the socket, or its group (`DOCKER_GID`).
 
 </details>
 

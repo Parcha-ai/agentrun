@@ -1,7 +1,8 @@
-// Rewrites scripts/ci-timings.json, the weights scripts/ci-plan.mjs shards by, from CI job logs (GitHub-hosted runners).
+// Rewrites scripts/ci-timings.json, the weights scripts/ci-plan.mjs shards by, from CI job logs (Blacksmith runners).
 //   node scripts/ci-timings.mjs <job log>...
 // A log is a job's raw log (`gh api repos/<owner>/<repo>/actions/jobs/<id>/logs`): test shards and pi parts, from runs
-// on GitHub's runners (pull requests run every job there). For each suite a log runs, it reads node --test's TAP or spec
+// in the merge queue (every test, on the Blacksmith runners a pull request's shards also run on; a log from GitHub's runners
+// would weigh the files for a runner the plan is not balanced for). For each suite a log runs, it reads node --test's TAP or spec
 // reporter (each top-level test's time, credited to the file that declares a test of that name) or vitest's per-file
 // lines, and the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each
 // workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
@@ -152,7 +153,7 @@ if (isMain(import.meta)) {
   const previousPath = join(root, 'scripts', 'ci-timings.json');
   const previous = existsSync(previousPath) ? JSON.parse(readFileSync(previousPath, 'utf8')).files : undefined;
   timings.files = carriedOver(previous, timings.files, (path) => existsSync(join(root, path)));
-  const about = 'Seconds on a GitHub-hosted runner, medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time; walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
+  const about = 'Seconds on a Blacksmith runner (the merge queue\'s), medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time; walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
   writeFileSync(join(root, 'scripts', 'ci-timings.json'), `${JSON.stringify({ about, ...timings }, null, 1)}\n`);
   console.log(`scripts/ci-timings.json: ${Object.keys(timings.files).length} files, ${Object.keys(timings.parallelism).length} suites, ${Object.keys(timings.typecheck).length} type-checks, from ${logs.length} logs`);
 }

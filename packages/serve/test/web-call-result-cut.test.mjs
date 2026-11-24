@@ -10,7 +10,7 @@ import { answersCut } from "../dist/runner/adapter-run-spec.js";
 import { secretRedactor } from "../dist/runner/redact.js";
 import { CALL_RESULT_CHARS, webShownOf, webWithin } from "../dist/timeline/index.js";
 import { graderInput } from "../dist/template-eval.js";
-import { webFetchText } from "../dist/web-fetch.js";
+import { webFetchText } from "@parcha/agentrun-web";
 
 const URL = "https://github.com/vitejs/vite/releases.atom";
 // A held value, made at runtime: no credential-shaped literal for the source export.

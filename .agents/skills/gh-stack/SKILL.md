@@ -6,9 +6,8 @@ description: "Manage AgentRun's native GitHub PR stacks with gh-stack: inspect, 
 # Native PR stacks
 
 Use GitHub's native stack membership and actual PR base refs as authority. A stack comment
-is not native membership. This framework is adapted from the maintained
-[Parcha gh-stack skill at 37fc1a0a24d374abda3c136a36b6d5998c9ff1ea](https://github.com/Parcha-ai/parcha/blob/37fc1a0a24d374abda3c136a36b6d5998c9ff1ea/.agents/skills/gh-stack/SKILL.md),
-whose upstream metadata names github/gh-stack v0.1.0. Verify the installed CLI's version,
+is not native membership. This framework is adapted from a maintained
+gh-stack skill whose upstream metadata names github/gh-stack v0.1.0. Verify the installed CLI's version,
 help and implementation for the operation; the command's side effects vary by version.
 Use [ship](../ship/SKILL.md) for proof, approval and landing policy.
 

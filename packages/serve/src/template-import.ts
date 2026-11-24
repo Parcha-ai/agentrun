@@ -8,7 +8,8 @@ import { packageSha256 } from "./agent-package.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
-import { MANIFEST, manifestName, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
+import { manifestOf } from "./manifest.js";
+import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
 /** The settings key that holds the GitHub accounts this server's owner trusts as publishers, lower-cased. */
@@ -37,8 +38,8 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 /** A path part that is not plain, or a character no package path holds (a control character, a backslash). */
 const NOT_PLAIN = (path: string) => /[\0-\x1f\x7f\\]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..");
 
-/** An upload's files ({path, encoding, content}) as the package's bytes by path: 422 under files.<i> for one that is not
- *  that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
+/** An upload's files ({path, encoding, content}) as the package's bytes by path, each hidden path left out: 422 under
+ *  files.<i> for one that is not that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
  *  over its count and over the bytes it keeps. */
 function uploadFiles(raw: unknown): Map<string, Buffer> {
   const shape = "files is a list of {path, encoding, content}: each file of the package, its encoding utf8 or base64";
@@ -58,6 +59,9 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   let kept = 0;
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
+    // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
+    // before anything is counted, stored or hashed, so a client's .env is never kept.
+    if (path.split("/").some((part) => part.startsWith("."))) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
@@ -153,16 +157,23 @@ function bodyOf(body: Json, apiOnly: boolean): { source: GithubSource; dryRun: b
 
 /** An upload: its files checked as an import's are, its id `upload:<name>` (its manifest's name), its sha the package's
  *  sha256; a dry run answers it, storing nothing; else it is stored and served (201), in place of the one of its name. */
-async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
-  let pkg: Package;
-  let files: Map<string, Buffer>;
+/** An upload's files ({files} of POST /v2/templates/import) checked as the import checks them, storing nothing: the
+ *  package's bytes by path (each hidden path left out) and the package read from them; else the refusal the route answers
+ *  (422). `agentrun deploy` runs this on the body it is about to send (agentrun-serve check-upload), so a package a target
+ *  refuses is refused before anything is sent, by this one check. */
+export function checkUpload(raw: unknown): { files: Map<string, Buffer>; pkg: Package } {
   try {
-    files = uploadFiles(raw);
-    const id = `${UPLOAD_PREFIX}${manifestName(files.get(MANIFEST)?.toString("utf8") ?? "") ?? ""}`;
-    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
+    const files = uploadFiles(raw);
+    const name = manifestOf(files.get(MANIFEST)?.toString("utf8") ?? "")?.name;
+    const id = `${UPLOAD_PREFIX}${typeof name === "string" ? name : ""}`;
+    return { files, pkg: importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files) };
   } catch (error) {
     refusalOf(error);
   }
+}
+
+async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
+  const { files, pkg } = checkUpload(raw);
   const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
   await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
@@ -199,6 +210,43 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
   await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
   deps.registry.put(pkg);
   return { status: 201, pkg, trusted: true, replaced };
+}
+
+/** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,
+ *  suggestions.ts): checked, kept, then applied. Once `apply` has made the agent nothing after it can fail (the registry
+ *  is in memory), so a thrown error always means no agent was made, which is what Suggestions.create reads it as. An
+ *  apply refused (a missing model key, say) takes the kept package back as it was before (removed, or the earlier one),
+ *  but only while the row is still the one this call kept: an import of the same id meanwhile (POST /v2/templates/import)
+ *  stands. */
+export async function applyImported<T>(
+  deps: { registry: Pick<TemplateRegistry, "put">; store: { importedTemplates: Pick<Store["importedTemplates"], "list" | "put" | "remove"> }; apply: (pkg: Package) => Promise<T> },
+  id: string,
+  origin: { source: string; sha: string; publisher: string },
+  files: ReadonlyMap<string, Buffer>,
+): Promise<T> {
+  const pkg = importedPackage(id, origin, files);
+  const templates = deps.store.importedTemplates;
+  const row = async () => (await templates.list()).find((one) => one.id === pkg.id);
+  const before = await row();
+  await templates.put({ id: pkg.id, source: origin.source, sha: origin.sha, publisher: origin.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  // The row as this call kept it, stamped by the store: the undo below touches it only while it is still this one.
+  const kept = await row();
+  let made: T;
+  try {
+    made = await deps.apply(pkg);
+  } catch (error) {
+    const now = await row().catch(() => undefined);
+    const ours = kept !== undefined && now !== undefined && now.importedAt === kept.importedAt && now.sha === kept.sha && now.source === kept.source;
+    if (ours) {
+      const undo = before
+        ? templates.put({ id: before.id, source: before.source, sha: before.sha, publisher: before.publisher, files: before.files })
+        : templates.remove(pkg.id).then(() => undefined);
+      await undo.catch(() => {});
+    }
+    throw error;
+  }
+  deps.registry.put(pkg);
+  return made;
 }
 
 /** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of

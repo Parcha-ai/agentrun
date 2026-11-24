@@ -4,6 +4,11 @@
 // package or test file is tested without editing this file. `node scripts/ci-shard.mjs --list` prints each shard's
 // commands.
 //
+// A pull request's run sets CI_AFFECTED_BASE to a commit (ci.yml: HEAD^1, the merge commit's first parent). A pool
+// scripts/ci-shards.json marks `"affected": true` then runs only the tests the changes since it reach, shared out by time
+// (scripts/ci-affected.mjs), or every test where that cannot be trusted, and a shard of it with nothing to run passes. The
+// merge queue and main set none and run every test.
+//
 // Two limits make a stall fail by name, its log kept, before the test job's 30 minutes (ci.yml) cancel it:
 // - A `node --test` a shard runs gets --test-timeout, 10 min (CI_SHARD_TEST_TIMEOUT_MS), unless its script sets its own.
 //   On Node 24 a test still running then fails, named; Node 22 applies the flag to each test file instead, and names the
@@ -16,7 +21,7 @@
 import { spawnArgv } from './npm-command.mjs';
 import { once } from 'node:events';
 import { constants } from 'node:os';
-import { commandsOf, testShards, timingDrift } from './ci-plan.mjs';
+import { commandsOf, readConfig, testShards, timingDrift } from './ci-plan.mjs';
 
 const limit = (name, fallback) => {
   const value = process.env[name] ?? String(fallback);
@@ -26,20 +31,51 @@ const limit = (name, fallback) => {
 const TEST_TIMEOUT_MS = limit('CI_SHARD_TEST_TIMEOUT_MS', 10 * 60_000);
 const SHARD_TIMEOUT_MS = limit('CI_SHARD_TIMEOUT_MS', 24 * 60_000);
 
+const root = process.cwd();
+const [wanted] = process.argv.slice(2);
+let config, timings;
+try { ({ config, timings } = readConfig(root)); } catch (error) { console.error(`ci-shard: ${error.message}`); process.exit(1); }
+const base = process.env.CI_AFFECTED_BASE || undefined;
+let affected;
+// Only a shard of an affected pool reads the changes (--list shows every shard): another runs every test of its own.
+if (base && (wanted === '--list' || config.pools?.[String(wanted).replace(/-\d+$/, '')]?.affected === true)) {
+  // Every shard job works the selection out on its own. One that fell back to every test would run its share of a
+  // different plan, and could leave unrun a test the others' plan gave it, so a failure here fails the shard.
+  try { affected = (await import('./ci-affected.mjs')).affectedSince(root, base); } catch (error) {
+    console.error(`ci-shard: the tests the changes since ${base} reach cannot be worked out: ${error.message}`);
+    process.exit(1);
+  }
+}
 let shards;
-try { shards = testShards(process.cwd()); } catch (error) { console.error(`ci-shard: ${error.message}`); process.exit(1); }
+try { shards = testShards(root, { config, timings, affected: affected?.full ? undefined : affected }); } catch (error) { console.error(`ci-shard: ${error.message}`); process.exit(1); }
 const commands = (shard) => commandsOf(shard.suites, shard.units, { timeoutMs: TEST_TIMEOUT_MS }).map(({ command }) => command);
 // A command as the log shows it, one a shell runs as it is.
 const shown = (command) => command.map((arg) => (arg === process.execPath ? 'node' : /\s/.test(arg) ? JSON.stringify(arg) : arg)).join(' ');
 
-const [wanted] = process.argv.slice(2);
 if (wanted === '--list') {
   for (const [name, shard] of Object.entries(shards)) console.log(`${name} (${shard.seconds} s modelled): ${commands(shard).map(shown).join('; ')}`);
   process.exit(0);
 }
 const shard = shards[wanted];
 if (!shard) { console.error(`usage: node scripts/ci-shard.mjs <${Object.keys(shards).join('|')}> | --list`); process.exit(2); }
-if (!commands(shard).length) { console.error(`shard ${wanted} has nothing to run`); process.exit(1); }
+if (affected?.full) console.log(`ci-shard: every test runs: ${affected.full}`);
+else if (shard.affected) {
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  console.log(`::group::ci-shard: what the ${count(affected.changed.length, 'path', 'paths')} changed since ${base} reach`);
+  for (const { path, kinds, note, widened } of affected.paths) {
+    const parts = [...Object.entries(kinds).map(([kind, n]) => `${n} by ${kind}`), ...(widened ? [widened] : note ? [note] : [])];
+    console.log(`  ${path}: ${parts.join('; ')}`);
+  }
+  console.log('::endgroup::');
+  for (const warning of affected.warnings) console.log(`::warning::ci-shard: ${warning}`);
+  const picked = Object.values(shards).filter((other) => other.pool === shard.pool).reduce((sum, other) => sum + other.units.length, 0);
+  console.log(`ci-shard: the ${shard.pool} pool runs the ${count(picked, 'test file or suite', 'test files and suites')} these changes reach, not every one; the merge queue runs every test`);
+}
+if (!commands(shard).length) {
+  if (shard.affected) { console.log(`ci-shard: ${wanted} has nothing to run: the plan gave it none of the tests these changes reach`); process.exit(0); }
+  console.error(`shard ${wanted} has nothing to run`);
+  process.exit(1);
+}
 console.log(`ci-shard: ${wanted} runs ${shard.units.length} test files and suites, ${shard.seconds} s modelled`);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,9 +129,10 @@ for (const command of commands(shard)) {
   else if (status !== 0) console.log(`::error::ci-shard: ${shown(command)} exited with status ${status}`);
   if (status !== 0) failed.push(shown(command));
 }
-// Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale.
+// Its time against its model, whatever the result: a shard far over it means scripts/ci-timings.json is stale. ci.yml sets
+// CI_SHARD_UNTIMED_RUNNER on GitHub's runners, which the weights were not measured on.
 const took = Math.round((Date.now() - shardStarted) / 1000);
 console.log(`ci-shard: ${wanted} ran ${took} s, modelled ${shard.seconds} s`);
-const drift = timingDrift(wanted, shard.seconds, took);
+const drift = timingDrift(wanted, shard.seconds, took, { untimedRunner: Boolean(process.env.CI_SHARD_UNTIMED_RUNNER) });
 if (drift) console.log(drift);
 if (failed.length) { console.error(`failed: ${failed.join(', ')}`); process.exit(1); }

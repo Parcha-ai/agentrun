@@ -41,8 +41,8 @@
           "binary",
           "ok",
           "pinnedBy",
-          "sha256",
-          "starts"
+          "starts",
+          "tree"
         ]
       },
       "side_requests": {
@@ -140,8 +140,8 @@
           "binary",
           "ok",
           "pinnedBy",
-          "sha256",
-          "starts"
+          "starts",
+          "tree"
         ]
       },
       "side_requests": {
@@ -245,8 +245,8 @@
           "binary",
           "ok",
           "pinnedBy",
-          "sha256",
-          "starts"
+          "starts",
+          "tree"
         ]
       },
       "side_requests": {

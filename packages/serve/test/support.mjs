@@ -22,6 +22,7 @@ import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
 import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
+import { runCensus } from "../dist/run-census.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
@@ -41,6 +42,11 @@ import { stranger } from "./fixtures/stranger.mjs";
   process.env.XDG_CONFIG_HOME = config;
   process.on("exit", () => rmSync(config, { recursive: true, force: true }));
 }
+
+// No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
+// whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
+// and names its own fake (fixtures/fake-ollama.mjs).
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
 
 /** The secret writes (secret-writes.ts registers them on the server) the client sends from the owner's session, as the
  *  console does: the token can't make one. A plane's tests add theirs with secretWritePath, and need no client of their
@@ -359,7 +365,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
  *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -422,7 +428,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   let runner;
   let beats = 0;
   try {
-    const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
+    const deps = { env, data: ownData ?? data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(composioMcpOrigin ? { composioMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
     // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
     // stand-in helper's), its lines on `childRuns.log`.
@@ -431,6 +437,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
+      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
+      census: runCensus(store, { data: deps.data, sealKey, env }),
       loops: maxRunsOf(process.env, switches.maxRuns),
       // And by memory, as the CLI's runners claim (memory-claim.ts): each waiting run weighed by its harness against this
       // host's memory, read now (a test's process.constrainedMemory stand-in, set before serve(), is its container limit).
@@ -439,7 +447,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
       ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
-      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. Its
+      // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. A
+      // fake Composio's MCP origin, the server's composioMcpOrigin seam: the one a key read from the environment goes to. Its
       // GitHub site (githubWeb, the runner's alone): where a run's pull request is checked out from (pr-checkout.ts). The
       // locks of a test's fake registry, the server's harnessLocks seam: a claim's first-use install takes the same.
       createLoop: (deps) => {
@@ -490,7 +499,10 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
   // `evalFakes`: a template eval's fakes by agent id (runner/beside.ts evalFakes), for the runner alone.
   // `mcpOwn`: the server's own addresses (Serve.own), as the CLI's runner beside it is told them (runner/beside.ts).
-  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
+  // A --faux-github server's fake GitHub (Serve.fauxGitHub), its API and its repository's site, given to this test's runner
+  // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
+  // githubWeb wins.
+  const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];
@@ -902,6 +914,12 @@ export function call(port, { method = "GET", path = "/", headers = {}, body } = 
 
 /** The Cookie header for the cookies an answer set. */
 export const cookieOf = (res) => (res.headers["set-cookie"] ?? []).map((line) => line.split(";")[0]).join("; ");
+/** The cookies a browser holds at `host` (`name:port`): the same sessions, each http per-port cookie (`agentrun-<port>…`)
+ *  named for the port it opened there, as a sign-in through that port (a tunnel) sets them (page.ts). */
+export const cookieAt = (cookie, host) => {
+  const port = /:(\d+)$/.exec(host)?.[1];
+  return port ? cookie.replace(/(^|; )agentrun-\d+(-session)?=/g, `$1agentrun-${port}$2=`) : cookie;
+};
 
 /** Whether the server took run `runId` back: its row's claim is the server's, and its WAL is checkpointed. */
 function takenBack(data, runId) {

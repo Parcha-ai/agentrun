@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { stringify } from "yaml";
 import { LOOPBACK } from "./mcp-oauth.js";
-import { MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage } from "./templates.js";
+import { INPUT_KEYS, ITEM_KEYS, MANIFEST, memoryFiles, onServerNames, type Package, PackageError, readPackage, uncappedTriggers } from "./templates.js";
 import { isMcpName, isMonidName, mcpToolName, parseToolName } from "./tool-names.js";
 import { isPinKeys, permissionKeys, SHELL_FAMILY } from "./tool-gate.js";
 import { toolOf } from "./tools.js";
@@ -34,7 +34,7 @@ export type ExportInput = {
   /** The revision's skill files, by path under the agent's skills folder. */
   skills: Readonly<Record<string, string>>;
   /** The package the agent was applied from (agentView's `template`) with the key names its apply kept (absent on a
-   *  revision applied before they were kept), and that package as this server holds it now. */
+   *  revision applied before an apply kept them), and that package as this server holds it now. */
   template: { id: string; version: string; secrets?: readonly string[] } | null;
   origin: Package | undefined;
   servers: ReadonlyMap<string, SavedServer>;
@@ -67,9 +67,8 @@ const REMADE_TRIGGERS: Record<string, string> = {
   email: "An email trigger receives at an address the target gives it: point the sender at the new one.",
 };
 
-/** The input fields' keys in the order a package writes them (templates.ts INPUT_KEYS), and a list's items'. */
-const FIELD_KEYS = ["type", "title", "description", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum", "examples", "default"];
-const ITEM_KEYS = ["type", "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "enum"];
+/** An input field's own keys, in the order a package writes them: `required` and `items` are written after them. */
+const FIELD_KEYS = INPUT_KEYS.filter((key) => key !== "required" && key !== "items");
 const pick = (from: Json, keys: readonly string[]): Json => Object.fromEntries(keys.flatMap((key) => (from[key] !== undefined ? [[key, from[key]]] : [])));
 
 /** Each field of `value`, a part of the agent an export copies as it is, that holds a credential in the clear, as its
@@ -102,7 +101,6 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const remade: ExportNote[] = [];
   // Its name: the template's it was applied from, else the agent's own as a package name.
   const pkgName = origin?.name || (template ? slug(template.id.split(/[/:]/).at(-1) ?? "") : "") || slug(agent.name) || slug(agent.id) || "agent";
-  const sameVersion = !!origin && !!template && origin.version === template.version;
   const settings = (isObject(definition.tool_settings) ? definition.tool_settings : {}) as Record<string, Json>;
   // Denied as the gate reads the agent's own settings: a shell tool by bash's, then the most specific key set (the tool's
   // own, else its MCP server's or monid provider's wildcard).
@@ -289,26 +287,29 @@ export function agentPackage(input: ExportInput): AgentPackage {
   const inputSchema = isObject(definition.input_schema) ? definition.input_schema : undefined;
   const inputs = inputSchema && inputsOf(inputSchema);
   if (inputSchema && !inputs) blocked.push({ kind: "input_schema", name: "inputs", reason: "Its input schema is not a closed object of fields, which is what a package's inputs are." });
-  // The keys its package declared, as its apply kept them; for a revision applied before they were kept, the package as
-  // this server holds it, which names them only while it is the same version.
-  const declared = template?.secrets ?? (sameVersion ? origin!.secrets : []);
-  const secrets = [...new Set([...declared, ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
-  // Such a revision of a package updated or removed since its apply: the keys it was applied with are unknown here.
-  if (template && !template.secrets && !sameVersion) remade.push({ kind: "secrets", name: template.id, reason: `The keys version ${template.version} of ${template.id} names are not known here: ${origin ? `this server holds version ${origin.version}` : "this server no longer holds it"}. Save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
+  // The keys its package declared, as its apply kept them. A revision applied before an apply kept them names none here,
+  // so the package says none, and the note says the target sets them up.
+  const secrets = [...new Set([...(template?.secrets ?? []), ...((plain ?? []).some(isMonidName) ? ["MONID_API_KEY"] : [])])].sort();
+  if (template && !template.secrets) remade.push({ kind: "secrets", name: template.id, reason: `The key names version ${template.version} of ${template.id} declares were not kept when it was applied here, so the package names none: save the keys the agent uses on the target, and name them under secrets in ${MANIFEST}.` });
   const bash = settings.bash?.policy;
   // Bash's policy holds every shell tool, and a package writes it only beside bash: a shell tool kept without bash would
   // run there what the policy refuses here.
   const shellKept = (plain ?? []).filter((tool) => Object.hasOwn(SHELL_FAMILY, tool));
   if (typeof bash === "string" && shellKept.length && !shellKept.includes("bash")) blocked.push({ kind: "tool_policy", name: "bash", reason: `Its bash policy (${bash}) holds ${shellKept.join(", ")}, and a package writes that policy only beside bash: grant bash too, or take ${shellKept.length === 1 ? "it" : "them"} out of the agent.` });
   const description = (agent.description?.trim() || agent.name).slice(0, 1024);
-  // A package's budget is a spend cap per run first, and one with triggers has one: what fires runs nobody watches.
+  // A package's budget is a spend cap per run first. Every run a package's trigger starts is capped, what fires runs
+  // nobody watches: by the budget (the agent's max_cost_usd), else by the trigger's own cap, as readPackage holds it
+  // (uncappedTriggers). A trigger with neither is blocked, and left out, so the read-back does not name it again.
   const cost = typeof definition.max_cost_usd === "number" ? definition.max_cost_usd : undefined;
   const requests = typeof definition.max_requests === "number" ? definition.max_requests : undefined;
   if (cost === undefined && requests !== undefined) blocked.push({ kind: "budget", name: "max_requests", reason: "It caps each run's requests and not its spend, and a package's budget is a spend cap per run: set the agent's max_cost_usd." });
-  if (cost === undefined && triggers.length) {
-    blocked.push({ kind: "budget", name: "max_cost_usd", reason: "It has triggers and no spend cap per run, and a package with triggers caps what each run they fire may spend: set the agent's max_cost_usd." });
-    triggers.length = 0;
-    remade.splice(0, remade.length, ...remade.filter((note) => note.kind !== "trigger"));
+  const uncapped = cost === undefined ? uncappedTriggers(triggers) : [];
+  if (uncapped.length) {
+    const names = new Set(uncapped.map((one) => one.name));
+    for (const name of names) blocked.push({ kind: "trigger", name, reason: "It has no spend cap of its own and the agent has no max_cost_usd, and every run a package's trigger starts is capped: give the trigger's target a max_cost_usd, or set the agent's max_cost_usd." });
+    const left = triggers.filter((_, index) => !uncapped.some((one) => one.index === index));
+    triggers.splice(0, triggers.length, ...left);
+    remade.splice(0, remade.length, ...remade.filter((note) => !(note.kind === "trigger" && names.has(note.name))));
   }
 
   // The manifest, in the order templates.ts reads its fields.
@@ -319,7 +320,7 @@ export function agentPackage(input: ExportInput): AgentPackage {
     ...(plain ? { tools: plain } : {}), ...(mcp.length ? { mcp } : {}),
     ...(typeof bash === "string" && plain?.includes("bash") ? { tool_policy: { bash } } : {}),
     ...(computers ? { computer: computers } : {}), ...(needs ? { needs } : {}),
-    ...(definition.checkout === "pull_request" ? { checkout: "pull_request" } : {}),
+    ...(definition.checkout === "pull_request" || definition.checkout === "repository" ? { checkout: definition.checkout } : {}),
     ...(inputs ? { inputs } : {}), ...(secrets.length ? { secrets } : {}),
     ...(cost !== undefined ? { budget: { per_run_usd: cost, ...(requests !== undefined ? { max_requests: requests } : {}) } } : {}),
     ...(learning !== undefined ? { learning } : {}),

@@ -24,7 +24,7 @@ export function banner(o: { url: string; baseUrl: string; data: string; token: s
     o.shareHost
       ? `Share host (--share-host): shares at ${o.publicUrl ?? o.url}/r/<id>; uploads to /r/v2/shares take a token and are re-scrubbed; every other address is a 404, and no runner, model key or computer runs here.`
       : o.apiOnly
-      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes are served; the console, sign-in, setup, settings, MCP, triggers and hooks are refused."
+      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."
       : o.accounts || o.launchCode === undefined ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?launch=${o.launchCode}`,
     ...(o.boxes ? [o.boxes] : []),
   ];

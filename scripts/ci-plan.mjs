@@ -7,8 +7,9 @@
 //
 // `plan(units, n)` assigns units to n shards, longest first, each to the shard it lengthens least, with a shard's time
 // modelled as each suite's longest file or its files' total over the suite's measured parallelism, whichever is more. The
-// weights come from scripts/ci-timings.json (seconds on a GitHub-hosted runner, from CI's own logs: `node
-// scripts/ci-timings.mjs`). A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
+// weights come from scripts/ci-timings.json (seconds on the Blacksmith runners that run the merge queue's shards and this
+// repository's own pull requests', from CI's own logs: `node scripts/ci-timings.mjs`). GitHub's runners, where main and
+// a fork's pull request run, take the same files in other proportions, so the plan is balanced for Blacksmith. A file it does not list weighs its suite's median; nothing is dropped for a missing weight.
 // The plan is a pure function of the checkout, so every job of a run computes the same one.
 //   node scripts/ci-plan.mjs [--pool <name>]   prints the test shards and their modelled seconds
 import { existsSync, globSync, readdirSync, readFileSync } from 'node:fs';
@@ -135,10 +136,11 @@ const groupSeconds = (group) => (group.count ? COMMAND_SECONDS + Math.max(group.
  * The ::warning line for a shard that ran more than a quarter and more than a minute over its model, else undefined. Its
  * weights are CI's own times, and a file that grows (release-preflight.test.mjs went 152 s to 257 s in a day) makes its
  * shard the run's slowest while the plan still reads balanced; the warning says so in the run that shows it. A minute
- * is a hosted runner's noise; a faster runner (Blacksmith, in the merge queue) is never a drift.
+ * is a runner's noise. `untimedRunner` is a runner the weights were not measured on (GitHub's, for main and a fork's pull
+ * request): a shard over its model there says nothing about the weights, so it never warns.
  */
-export function timingDrift(name, modelled, seconds) {
-  if (seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
+export function timingDrift(name, modelled, seconds, { untimedRunner = false } = {}) {
+  if (untimedRunner || seconds - modelled <= 60 || seconds <= modelled * 1.25) return undefined;
   return `::warning title=ci-timings.json is stale::${name} ran ${seconds} s, modelled ${modelled} s: refresh scripts/ci-timings.json from CI's job logs (node scripts/ci-timings.mjs <job log>...), and split a test file that alone is near a shard's time`;
 }
 
@@ -207,8 +209,17 @@ export function pools(suites, config) {
   return Object.fromEntries(entries.map(([pool, { shards, suites: names }]) => [pool, { shards, suites: suites.filter((suite) => (names ? names.includes(suite.name) : !named.has(suite.name))) }]));
 }
 
-/** The test shards: `{ '<pool>-<k>': { pool, suites, units, seconds } }`, every pool planned, the cover checked. */
-export function testShards(root, { config, timings } = readConfig(root)) {
+/**
+ * The test shards: `{ '<pool>-<k>': { pool, suites, units, seconds, affected } }`, every pool planned, the cover checked.
+ * With `affected` (scripts/ci-affected.mjs: `{ files, suites }`, the test files a pull request reaches and the suites they
+ * are in), a pool ci-shards.json marks `"affected": true` keeps only those units (a whole suite when it has a picked file)
+ * before it is planned, so its shards share them by time; every other pool keeps all of its own.
+ */
+export function testShards(root, { config, timings, affected } = {}) {
+  if (!config || !timings) { const read = readConfig(root); config ??= read.config; timings ??= read.timings; }
+  for (const [pool, { affected: flag }] of Object.entries(config.pools ?? {})) {
+    if (flag !== undefined && typeof flag !== 'boolean') throw new Error(`the pool ${pool}'s "affected" is true or false, not ${JSON.stringify(flag)}`);
+  }
   const byPool = pools(readSuites(root, { config }), config);
   // A file a named pool's suite lists (a root suite pins serve's workflow tests to lean) is that pool's alone: the pool that
   // takes the rest drops it from its own suite, so the shards run it once.
@@ -221,10 +232,11 @@ export function testShards(root, { config, timings } = readConfig(root)) {
   }
   const shards = {};
   for (const [pool, { shards: n, suites }] of Object.entries(byPool)) {
-    const units = unitsOf(suites, timings);
+    const only = Boolean(affected && config.pools[pool].affected);
+    const units = unitsOf(suites, timings).filter((unit) => !only || (unit.kind === 'whole' ? affected.suites.has(unit.suite) : affected.files.has(unit.path)));
     const planned = plan(units, n);
     checkCover(units, planned);
-    planned.forEach((shard, index) => { shards[`${pool}-${index + 1}`] = { pool, suites, ...shard }; });
+    planned.forEach((shard, index) => { shards[`${pool}-${index + 1}`] = { pool, suites, affected: only, ...shard }; });
   }
   return shards;
 }

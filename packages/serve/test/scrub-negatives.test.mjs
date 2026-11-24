@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SCRUB_RULES, scrub } from "../dist/secret-cut.js";
+import { POSITIVES } from "./scrub-positives.mjs";
 
 const DIR = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "scrub-negatives");
 
@@ -29,7 +30,11 @@ const CATEGORIES = {
   "code.txt": 40,
   "prose.txt": 20,
   "addresses.txt": 30,
+  "sweep-shapes.txt": 74,
 };
+
+/** Fixture files written one case a line (`# ` lines comments, `# class X` naming the class of the lines under it). */
+const LINE_FILES = new Set(["sweep-shapes.txt"]);
 
 /** The cases of one fixture file, each with the line it starts on. A `.jsonl` file is one `{"id","text"}` a line; a
  *  `.txt` file is cases each opened by a `### <id>` line and running to the next (the newline before it is not part of
@@ -38,7 +43,18 @@ function casesOf(file) {
   const body = readFileSync(join(DIR, file), "utf8");
   const lines = body.split("\n");
   const cases = [];
-  if (file.endsWith(".jsonl")) {
+  if (LINE_FILES.has(file)) {
+    let group = "case";
+    const seen = new Map();
+    lines.forEach((line, at) => {
+      const header = /^# class (\S+)/.exec(line);
+      if (header) group = `class-${header[1]}`;
+      if (!line.trim() || line.startsWith("#")) return;
+      const n = (seen.get(group) ?? 0) + 1;
+      seen.set(group, n);
+      cases.push({ file, line: at + 1, id: `${group}-${n}`, text: line });
+    });
+  } else if (file.endsWith(".jsonl")) {
     lines.forEach((line, at) => {
       if (!line.trim()) return;
       const parsed = JSON.parse(line);
@@ -78,7 +94,7 @@ const excerpt = (text, start, end) => {
 };
 
 /** The fixture line a span starts on: a `.txt` case's own line for its text as written, else the case's line. */
-const lineOf = (c, offset, form) => (c.file.endsWith(".txt") && !form ? c.line + 1 + (c.text.slice(0, offset).match(/\n/g)?.length ?? 0) : c.line);
+const lineOf = (c, offset, form) => (c.file.endsWith(".txt") && !LINE_FILES.has(c.file) && !form ? c.line + 1 + (c.text.slice(0, offset).match(/\n/g)?.length ?? 0) : c.line);
 
 /** Every way scrub cut or counted something in `text`, as lines naming the case, rule, kind and span. scrub may
  *  answer at once or with a promise; both are awaited. */
@@ -152,4 +168,37 @@ describe("scrub", () => {
       assert.equal(problems.length, 0, `${problems.length} cut(s) on known negatives:\n${problems.join("\n")}`);
     });
   }
+});
+
+/** What scrub decides of a text, in a form two spellings of one text can share: each cut's rule, kind and shape, in
+ *  order (a shape is a prefix class and a length of the value as it reads, so a JSON string's escapes do not change it). */
+const decisionsOf = async (text, held) => (await scrub(text, { mode: "count", held })).cuts.map((cut) => `${cut.rule}/${cut.kind}/${cut.shape}`);
+
+describe("as written and as a JSON string (a transcript keeps text in JSON)", () => {
+  test("every negative and every positive gets the same cut decisions in both spellings", async () => {
+    const problems = [];
+    const cases = [...Object.values(corpus).flat().map((c) => ({ where: `${c.file}:${c.line} [${c.id}]`, text: c.text })), ...POSITIVES.map((p) => ({ where: `positive [${p.id}]`, text: p.text, held: p.held }))];
+    for (const c of cases) {
+      const written = await decisionsOf(c.text, c.held);
+      const json = await decisionsOf(JSON.stringify(c.text), c.held);
+      if (JSON.stringify(written) !== JSON.stringify(json)) problems.push(`${c.where}: as written ${JSON.stringify(written)}, as JSON ${JSON.stringify(json)}`);
+    }
+    assert.equal(problems.length, 0, `${problems.length} case(s) decided differently:\n${problems.join("\n")}`);
+  });
+
+  test("every positive is cut in both spellings: its rules fire, and what it holds is gone (a JSON-escaped secret is still a secret)", async () => {
+    const problems = [];
+    for (const p of POSITIVES) {
+      for (const [form, text, gone] of [["as written", p.text, p.gone], ["as JSON", JSON.stringify(p.text), p.gone.map((each) => JSON.stringify(each).slice(1, -1))]]) {
+        const out = await scrub(text, { mode: "cut", held: p.held });
+        if (out.ok !== true) {
+          problems.push(`${p.id} (${form}): failed closed`);
+          continue;
+        }
+        for (const rule of p.rules) if (!out.cuts.some((cut) => cut.rule === rule)) problems.push(`${p.id} (${form}): no ${rule} cut, cuts ${JSON.stringify(out.cuts.map((cut) => cut.rule))}`);
+        for (const part of gone) if (out.text.includes(part)) problems.push(`${p.id} (${form}): ${JSON.stringify(part)} left in ${JSON.stringify(out.text)}`);
+      }
+    }
+    assert.equal(problems.length, 0, problems.join("\n"));
+  });
 });

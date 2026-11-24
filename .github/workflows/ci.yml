@@ -33,8 +33,10 @@ jobs:
     # about 10 MB. Those jobs still run their own `npm ci`: node_modules is 1.3 GB, and npm's cache restores it in about
     # 10 s, faster than an artifact of that size moves. Each refuses an output built from another tree or on another Node.
     name: build (${{ matrix.node }})
-    # Blacksmith in the merge queue, as the test shards that wait for it.
-    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # On Blacksmith for a merge-queue candidate and for a pull request from a branch of this repository, as the test
+    # shards that wait for it. A fork's pull request, and main, run on GitHub's runners: a fork's code is not the
+    # project's, and it gets neither the paid runners nor the caches they keep between runs.
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -76,13 +78,16 @@ jobs:
     # consumers, which took 2 and 2.5 min one after the other in `checks`. The rest are test shards
     # (scripts/ci-shard.mjs): each suite's files assigned by time to the shards of its pool (scripts/ci-shards.json), and
     # every shard job fails unless the shards cover every test file once, so a new package or test file is tested without
-    # an edit here. A shard's name is its pool and number; the pools' counts there and the list below must agree
-    # (scripts/ci-plan.test.mjs).
+    # an edit here. A shard's name is its pool and number; the pools' counts there and the lists here and in test-lean must
+    # agree (scripts/ci-plan.test.mjs). The lean pool's shards run in test-lean, on these same steps, so the lean job waits
+    # for them alone. On a pull request the any pool's shards run only the tests its changes reach
+    # (scripts/ci-affected.mjs), or every test when it changes a shared root such as scripts/ or this file; the merge queue
+    # and main run every test, so a test that selection misses fails there.
     name: test (${{ matrix.node }}, ${{ matrix.shard }})
     needs: [build]
-    # Merge-queue candidates run on Blacksmith (shards took 127 to 227 s there, 230 to 390 s here); pull requests, forks
-    # included, stay on GitHub's runners.
-    runs-on: ${{ github.event_name == 'merge_group' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    # The build job's runner: Blacksmith for the merge queue and for this repository's own pull requests (a shard takes
+    # about half as long there as on GitHub's runners), GitHub's for a fork's pull request and for main.
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -90,11 +95,13 @@ jobs:
         # One Node: the supported floor (engines, .nvmrc) is the current pin, 24.22.3, the November 2026 security
         # release. An older 24 is not supported, so no leg tests one.
         node: ['24.22.3']
-        shard: [checks, packages, source, lean-1, lean-2, any-1, any-2, any-3, any-4, any-5, any-6, any-7]
-    steps:
+        shard: [checks, packages, source, any-1, any-2, any-3, any-4, any-5, any-6, any-7, any-8, any-9, any-10, any-11, any-12, any-13, any-14]
+    steps: &test-steps
       - uses: actions/checkout@v4
         with:
-          fetch-depth: ${{ matrix.shard == 'checks' && '0' || '1' }}
+          # A pull request's any shards also fetch the merge commit's parents: the first is the base its changes are
+          # read from.
+          fetch-depth: ${{ matrix.shard == 'checks' && '0' || (github.event_name == 'pull_request' && startsWith(matrix.shard, 'any-')) && '2' || '1' }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -171,14 +178,23 @@ jobs:
           # The lean pool's shards record every workflow their DSL, serve workflow and example tests validate or run
           # (spec/lean/sweep, preloaded above), for the lean job's validator sweep. Empty elsewhere: no hook.
           LEAN_SWEEP_DIR: ${{ startsWith(matrix.shard, 'lean-') && format('{0}/lean-sweep', runner.temp) || '' }}
-      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard.
+          # A pull request's merge commit's first parent, the base as GitHub merged it: a pool ci-shards.json marks
+          # affected runs only the tests the changes since it reach. Empty in the merge queue and on main: every test.
+          CI_AFFECTED_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+          # scripts/ci-timings.json is measured on Blacksmith: on GitHub's runners a shard over its model does not mean the
+          # weights are stale, and ci-shard does not warn of it.
+          CI_SHARD_UNTIMED_RUNNER: ${{ runner.environment == 'github-hosted' && '1' || '' }}
+      # The lean job reads these and fails on a missing one; a shard with none marks this step red, never the shard. The capture
+      # hook's marker, reached, uploads too: a shard whose files validate no workflow has it and no capture.
       - name: Keep the workflows the tests validated, for the lean job
         if: startsWith(matrix.shard, 'lean-')
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: lean-sweep-${{ matrix.shard }}
-          path: ${{ runner.temp }}/lean-sweep/*.json
+          path: |
+            ${{ runner.temp }}/lean-sweep/*.json
+            ${{ runner.temp }}/lean-sweep/reached
           if-no-files-found: error
           retention-days: 7
           overwrite: true
@@ -191,12 +207,34 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  test-lean:
+    # The lean pool's test shards: the test job's steps, runner and name, in a job of their own. `needs` names a whole
+    # job, never one matrix instance, so the lean job, which reads only these shards' captures, would otherwise wait
+    # for every shard of `test`. verify needs this job as it needs `test`.
+    name: test (${{ matrix.node }}, ${{ matrix.shard }})
+    needs: [build]
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24.22.3']
+        shard: [lean-1, lean-2]
+    steps: *test-steps
+
   serve-postgres:
-    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. Advisory: not
-    # in verify's needs nor a required check, until it has run green.
-    name: serve store on Postgres
+    # @parcha/agentrun-serve's store on Postgres (`npm run test:pg`), against a Postgres service container. verify needs
+    # it, so a red share fails the required check as a red test shard does. Four jobs, each with a database of its own and a
+    # quarter of the suite's files (`--shard`, packages/serve/scripts/test-pg-files.mjs): the suite's longest file sets
+    # how long a job's tests take, so a fifth job would not shorten them. The count here and in the step below must
+    # agree (scripts/ci-plan.test.mjs).
+    name: serve store on Postgres (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     # The service container's own throwaway login, made for this job and gone with it; the test's URL is built from
     # these in its step, so no connection string with a password is written anywhere.
     env:
@@ -249,7 +287,7 @@ jobs:
       - run: node scripts/npm-ci-retry.mjs --ignore-scripts
       - run: npm run build
       - name: The store's suite on Postgres
-        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve
+        run: AGENTRUN_TEST_PG_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/${PGDATABASE}" npm run test:pg -w packages/serve -- --shard=${{ matrix.shard }}/4
 
   console:
     # apps/console, the server's console: a private app with its own lockfile (React, Vite, Storybook), outside the
@@ -310,20 +348,23 @@ jobs:
         run: python -m unittest discover -s python/tests -v
 
   verify:
-    # The one required check: it passes when every test shard (both Node versions) and the console passed. It reads
-    # `needs`, not the jobs API, so an API error cannot fail a required check. `needs.test.result` is the result of
-    # every matrix instance of `test`, so a red shard on either Node fails this job.
+    # The one required check: it passes when every test shard (both Node versions), the store's suite on Postgres and the
+    # console passed. It reads `needs`, not the jobs API, so an API error cannot fail a required check.
+    # `needs.test.result` is the result of every matrix instance of `test`, `needs.test-lean.result` of every lean
+    # shard and `needs.serve-postgres.result` of every Postgres share, so a red one fails this job.
     name: verify
-    needs: [test, console]
+    needs: [test, test-lean, serve-postgres, console]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Every test shard and the console passed
+      - name: Every test shard, the store's suite on Postgres and the console passed
         env:
           RESULT: ${{ needs.test.result }}
+          LEAN_SHARDS: ${{ needs.test-lean.result }}
+          POSTGRES: ${{ needs.serve-postgres.result }}
           CONSOLE: ${{ needs.console.result }}
-        run: test "$RESULT" = success && test "$CONSOLE" = success
+        run: test "$RESULT" = success && test "$LEAN_SHARDS" = success && test "$POSTGRES" = success && test "$CONSOLE" = success
 
   computer-docker:
     # @parcha/agentrun-computer on real Docker: the daemon's vet and Go tests, then the live demo of a command run in a
@@ -653,9 +694,9 @@ jobs:
     # The Lean model of the workflow language (spec/lean): proofs, axiom audit, the model's
     # side of the conformance corpus, and the validator sweep. The TypeScript side of the
     # conformance corpus runs in `npm test` above. The sweep's workflows come from the lean
-    # pool's test shards, so it waits for them; it runs when one failed too, and the sweep fails
-    # if a shard's captures are missing. verify does not need it.
-    needs: [test]
+    # pool's test shards (test-lean), so it waits for them and for no other shard; it runs when
+    # one failed too, and the sweep fails if a shard's captures are missing. verify does not need it.
+    needs: [test-lean]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

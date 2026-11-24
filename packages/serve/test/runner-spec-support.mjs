@@ -41,10 +41,12 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *            then the seal key and the run's data dir (where a test lands what the claim reads, e.g. a learning seed)
  *   computer the claim-time computer, as the runner composes it: given { store, sealKey }, it returns { computerForClaim,
  *            computerDeps } (computerDepsFrom's); none by default (a runner place makes no computer)
+ *   journal  called with the claim's Harness once the run's root is made, before the spec is built: what an earlier claim of
+ *            the run left in its journal, written there as that claim wrote it
  */
 export async function specFor(t, options = {}) {
-  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer"]);
-  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer } = options;
+  strictOptions("specFor", options, ["body", "kind", "monidPin", "skills", "launch", "settings", "routeOf", "uploads", "env", "keys", "ledger", "redact", "before", "computer", "journal"]);
+  const { body = {}, kind = "agentic", monidPin, skills, launch = {}, settings, routeOf = stubRoute, uploads = [], env = {}, keys = {}, ledger, redact, before, computer, journal } = options;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-spec-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -86,6 +88,7 @@ export async function specFor(t, options = {}) {
   // The run's root conversation (ROOT_CONVERSATION_ID), as the adapter loop makes it when the session opens: a host tool's
   // paid mark commits there (paid-calls.ts), so a test that runs a tool needs it, as a claim on the loop has it.
   await harness.commit((tx) => tx.createRootConversation(), ctx);
+  if (journal) await journal(harness);
   const run = { harness, registry, setModels: (given) => (models = given), ...(ledger ? { ledger } : {}), ...(redact ? { redact } : {}) };
   // The one shared claim-time computer (none for a runner place); a test gives its own, as the runner would.
   const composed = computer?.({ store, sealKey: SEAL_KEY });

@@ -1,22 +1,28 @@
-// `agentrun login --to URL` signs in with a device code (RFC 8628) when the target's GET /v2/capabilities offers it, and
-// reads a token from stdin as before when it does not. Each sign-in runs against a loopback device server of its own;
-// the stdin path also runs against a real server started with a faux model.
+// `agentrun login` signs in with a device code (RFC 8628) when the target's GET /v2/capabilities offers it (--to, or a
+// server named otherwise from a terminal), and reads a token from stdin as before when it does not. One sign-in runs
+// end to end through the CLI; the flow's waits and refusals run in this process on a fake clock, each against a loopback
+// device server of its own.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
+import { main } from "../lib/cli.mjs";
+import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn, elsewhereOf, retryAfterMs } from "../lib/device.mjs";
+import { CLOUD_CONSOLE, CLOUD_URL } from "../lib/target.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
-const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
-const DEVICE = new URL("../lib/device.mjs", import.meta.url).pathname;
+const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_CLOUD_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
 const TOKEN = "device-issued-token-0123456789";
 const DEVICE_CODE = "device-code-never-shown-abcdef";
 const VERIFY = "https://console.agentrun.example/device";
+/** A device server at 127.0.0.2 is one off this machine to the CLI, which takes only localhost, 127.0.0.1 and [::1]. */
+const LINUX_ONLY = process.platform === "linux" ? false : "127.0.0.2 answers as loopback on Linux alone";
 
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), "agentrun-signin-"));
@@ -26,8 +32,8 @@ function scratch() {
 }
 
 /** The CLI in a child process (a server in this one answers it), killed after `timeout` ms, its code then null. */
-const cli = (env, args, { input = "", timeout = 30_000, cwd } = {}) => new Promise((resolve) => {
-  const child = spawn(process.execPath, [BIN, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
+const cli = (env, args, { input = "", timeout = 30_000 } = {}) => new Promise((resolve) => {
+  const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
   const timer = setTimeout(() => child.kill("SIGKILL"), timeout);
   let out = "";
   let err = "";
@@ -40,75 +46,114 @@ const cli = (env, args, { input = "", timeout = 30_000, cwd } = {}) => new Promi
 const json = (status, body, headers = {}) => [status, { "content-type": "application/json", ...headers }, typeof body === "string" ? body : JSON.stringify(body)];
 const pending = json(400, { error: "authorization_pending" });
 const issued = json(200, { access_token: TOKEN, token_type: "Bearer", expires_in: 3600 });
+const metadataOf = (at) => ({ client_id: "agentrun-cli", device_authorization_endpoint: `${at}/auth/device/code`, token_endpoint: `${at}/auth/device/token`, resource: "https://api.agentrun.example", verification_uri: VERIFY });
+const GRANT = { device_code: DEVICE_CODE, user_code: "KQ7-4MZ", verification_uri: VERIFY, verification_uri_complete: `${VERIFY}?code=KQ7-4MZ`, expires_in: 600, interval: 1 };
 
-/** A device server on loopback: capabilities that offer device sign-in, its metadata, the authorization endpoint and the
- *  token endpoint, which answers `tokens` in turn (the last one again once they run out). `routes` replaces any answer
- *  by "METHOD /path", given the origin. Every request is recorded, with the time it came. */
-async function deviceServer(t, { tokens = [issued], routes = () => ({}) } = {}) {
+/** A device server on loopback: capabilities that offer device sign-in, its metadata (no issuer and no scope: the flow
+ *  reads neither), the authorization endpoint and the token endpoint, which answers `tokens` in turn (the last one again
+ *  once they run out; each may be a function of the request). `routes` replaces any answer by "METHOD /path", given the
+ *  origin. It answers and records its own routes alone: anything else (a local tool may GET / on any new loopback
+ *  listener) is a bare 404, never recorded. `host` is the address it listens on. */
+async function deviceServer(t, { tokens = [issued], routes = () => ({}), host = "127.0.0.1" } = {}) {
   const requests = [];
   let polls = 0;
   const server = createServer((req, res) => {
+    const table = { ...defaults(origin), ...routes(origin) };
+    const route = table[`${req.method} ${req.url.split("?")[0]}`];
+    if (!route) return void req.resume().on("end", () => res.writeHead(404).end());
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
-      const request = { method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString("utf8"), at: Date.now() };
+      const request = { method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString("utf8") };
       requests.push(request);
-      const table = { ...defaults(origin), ...routes(origin) };
-      const route = table[`${req.method} ${req.url.split("?")[0]}`];
-      const [status, headers, body] = route ? route(request) : [404, {}, ""];
+      const answer = route(request);
+      // A token endpoint that drops the connection: a request that fails.
+      if (answer === "drop") return void req.socket.destroy();
+      const [status, headers, body] = answer;
       res.writeHead(status, headers).end(body);
     });
   });
   const defaults = (at) => ({
     "GET /v2/capabilities": () => json(200, { version: "test", sign_in: { device: { metadata: `${at}/auth/device`, scope: "agentrun:deploy" } } }),
-    "GET /auth/device": () => json(200, { issuer: at, client_id: "agentrun-cli", device_authorization_endpoint: `${at}/auth/device/code`, token_endpoint: `${at}/auth/device/token`, scope: "research:read research:write", resource: "https://api.agentrun.example", verification_uri: VERIFY }),
-    "POST /auth/device/code": () => json(200, { device_code: DEVICE_CODE, user_code: "KQ7-4MZ", verification_uri: VERIFY, verification_uri_complete: `${VERIFY}?code=KQ7-4MZ`, expires_in: 600, interval: 1 }),
-    "POST /auth/device/token": () => tokens[Math.min(polls++, tokens.length - 1)],
+    "GET /auth/device": () => json(200, metadataOf(at)),
+    "POST /auth/device/code": () => json(200, GRANT),
+    "POST /auth/device/token": (request) => {
+      const answer = tokens[Math.min(polls++, tokens.length - 1)];
+      return typeof answer === "function" ? answer(request) : answer;
+    },
     "GET /v2/agents/notes": () => json(200, { agent_id: "notes" }),
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve) => server.listen(0, host, resolve));
+  const origin = `http://${host}:${server.address().port}`;
   t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
   const of = (method, path) => requests.filter((r) => r.method === method && r.url.split("?")[0] === path);
   return { origin, base: `${origin}/v2`, requests, of, polls: () => of("POST", "/auth/device/token") };
 }
 
-/** What every sign-in that fails holds to: its exit code, its words, nothing written, no stack trace, no secret shown. */
-function refusedClean(result, code, words, config) {
-  assert.equal(result.code, code, `exit ${result.code}: ${result.err}`);
-  assert.match(result.err, words);
-  assert.match(result.err, /nothing was written/);
-  assert.doesNotMatch(result.err, /\n\s+at \S+ \(|TypeError|SyntaxError/, "no crash");
-  assert.equal(existsSync(config), false, "no config written");
-  for (const text of [result.out, result.err]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
+/** A clock whose `wait` settles at once and moves `now` on by what it waited: each wait is recorded, none is real. */
+function fakeClock(start = Date.parse("2026-11-22T04:00:00Z")) {
+  const waits = [];
+  let at = start;
+  return { waits, now: () => at, wait: async (ms) => void (waits.push(ms), (at += ms)) };
 }
 
-test("login --to: the device flow asks the capabilities' scope, shows the code, polls past authorization_pending at the interval, keeps the token where a pasted one goes, and the next command sends it", async (t) => {
+/** The device sign-in against `server`, in this process on `clock`: the token, or the SignInError it stopped with, and
+ *  what it said to the person. */
+async function signIn(server, clock = fakeClock()) {
+  const said = [];
+  const io = { stderr: { write: (chunk) => void said.push(String(chunk)) } };
+  try {
+    const offer = deviceOffer(await capabilitiesOf(server.base), server.base);
+    return { token: await deviceSignIn(server.base, offer, io, clock), said: said.join(""), waits: clock.waits };
+  } catch (error) {
+    if (!(error instanceof SignInError)) throw error;
+    return { error, said: said.join(""), waits: clock.waits };
+  }
+}
+
+/** What every sign-in that fails holds to: its exit code, its words, that nothing was written, no secret shown. */
+function refusedClean(result, code, words) {
+  assert.ok(result.error, `refused, not ${result.token}`);
+  assert.equal(result.error.code, code, result.error.message);
+  assert.match(result.error.message, words);
+  assert.match(result.error.message, /nothing was written/);
+  for (const text of [result.error.message, result.said]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
+}
+
+/** The CLI in this process with stdin a terminal: its exit code and what it wrote, and the config's path. */
+async function onTerminal(args, extra = {}) {
   const { env, config } = scratch();
-  const server = await deviceServer(t, { tokens: [pending, pending, issued] });
-  // The address with no /v2: login adds it, as it adds it for cloud.
-  const login = await cli(env, ["login", "--to", server.origin]);
+  let out = "";
+  let err = "";
+  const io = { stdin: Object.assign(Readable.from([]), { isTTY: true }), stdout: { isTTY: false, write: (c) => ((out += c), true), on() {} }, stderr: { isTTY: false, write: (c) => ((err += c), true) } };
+  return { code: await main(args, { ...env, ...extra }, io), out, err, config };
+}
+
+test("login --to cloud: the device flow asks the capabilities' scope, names this CLI and its version, shows the code, keeps the token where a pasted one goes, and the next command sends it", async (t) => {
+  assert.equal(CLOUD_URL, "https://api.agentrun.ai");
+  const { env, config } = scratch();
+  const server = await deviceServer(t);
+  // Cloud's address (AGENTRUN_CLOUD_URL's here) with no /v2: login adds it.
+  const login = await cli({ ...env, AGENTRUN_CLOUD_URL: server.origin }, ["login", "--to", "cloud"]);
   assert.equal(login.code, 0, login.err);
   assert.deepEqual(JSON.parse(login.out), { base_url: server.base, config_file: config });
-  assert.match(login.err, new RegExp(`${VERIFY.replace(/[.]/g, "\\.")}`));
-  assert.match(login.err, /KQ7-4MZ/);
+  assert.ok(login.err.startsWith(`Signing in to ${server.origin}.\n`), login.err);
+  assert.ok(login.err.includes(`Open ${VERIFY} and enter the code KQ7-4MZ`), login.err);
   for (const text of [login.out, login.err]) assert.ok(!text.includes(TOKEN) && !text.includes(DEVICE_CODE), "no token or device code shown");
   assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: TOKEN });
   assert.equal(statSync(config).mode & 0o777, 0o600);
 
+  assert.deepEqual(server.requests.map((r) => [`${r.method} ${r.url}`, r.headers["user-agent"]]), [
+    ["GET /v2/capabilities", `agentrun-cli/${VERSION}`],
+    ["GET /auth/device", `agentrun-cli/${VERSION}`],
+    ["POST /auth/device/code", `agentrun-cli/${VERSION}`],
+    ["POST /auth/device/token", `agentrun-cli/${VERSION}`],
+  ]);
   const [authorize] = server.of("POST", "/auth/device/code");
   assert.deepEqual(Object.fromEntries(new URLSearchParams(authorize.body)), { client_id: "agentrun-cli", scope: "agentrun:deploy", audience: "https://api.agentrun.example" });
   assert.equal(authorize.headers.authorization, undefined, "the authorization request carries no token");
-  const polls = server.polls();
-  assert.equal(polls.length, 3);
-  for (const poll of polls) {
-    const form = Object.fromEntries(new URLSearchParams(poll.body));
-    assert.equal(form.grant_type, "urn:ietf:params:oauth:grant-type:device_code");
-    assert.equal(form.device_code, DEVICE_CODE);
-    assert.equal(form.client_id, "agentrun-cli");
-  }
-  assert.ok(polls[0].at - authorize.at >= 900, "the first poll waits the interval");
-  for (let i = 1; i < polls.length; i++) assert.ok(polls[i].at - polls[i - 1].at >= 900, `poll ${i + 1} waits the interval after authorization_pending`);
+  const [poll] = server.polls();
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(poll.body)), { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: DEVICE_CODE, client_id: "agentrun-cli", audience: "https://api.agentrun.example" });
 
   // No flag, no data directory: the config's server and the token the device flow got.
   const next = await cli(env, ["agents", "get", "notes", "--data", join(env.HOME, "nowhere")]);
@@ -117,77 +162,99 @@ test("login --to: the device flow asks the capabilities' scope, shows the code, 
   assert.equal(server.of("GET", "/v2/agents/notes").at(-1).headers.authorization, `Bearer ${TOKEN}`);
 });
 
-test("login --to: slow_down adds 5 s to the interval, and the code's expiry stops the wait with nothing written", async (t) => {
-  const { env, config } = scratch();
-  // Interval 1 s, 4 s to live: after slow_down the next poll would be 6 s on, past the expiry, so there is one poll only.
-  const server = await deviceServer(t, {
-    tokens: [json(400, { error: "slow_down" })],
-    routes: () => ({ "POST /auth/device/code": () => json(200, { device_code: DEVICE_CODE, user_code: "KQ7-4MZ", verification_uri: VERIFY, expires_in: 4, interval: 1 }) }),
-  });
-  const began = Date.now();
-  const result = await cli(env, ["login", "--to", server.base]);
-  refusedClean(result, 4, /expired/, config);
-  assert.equal(server.polls().length, 1, "no poll after slow_down until the raised interval");
-  assert.ok(Date.now() - began >= 3500, "it waited until the code expired");
+test("the poll waits the interval before each poll, again after authorization_pending, and ends with the token", async (t) => {
+  const server = await deviceServer(t, { tokens: [pending, pending, issued] });
+  const result = await signIn(server);
+  assert.equal(result.token, TOKEN);
+  assert.deepEqual(result.waits, [1000, 1000, 1000]);
+  assert.equal(server.polls().length, 3);
+  assert.match(result.said, /the code expires in 10 min/);
 });
 
-test("login --to: the server's expired_token and access_denied each stop the wait, exit 4, with nothing written", async (t) => {
+test("slow_down adds 5 s to the interval, cut at the code's expiry, which stops the wait, exit 4", async (t) => {
+  const slow = json(400, { error: "slow_down" });
+  const raised = await signIn(await deviceServer(t, { tokens: [slow, issued] }));
+  assert.equal(raised.token, TOKEN);
+  assert.deepEqual(raised.waits, [1000, 6000]);
+  // 4 s to live: after slow_down the next poll would be 6 s on, so the wait ends at the expiry, with no second poll.
+  const short = await deviceServer(t, { tokens: [slow], routes: () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, expires_in: 4 }) }) });
+  const cut = await signIn(short);
+  refusedClean(cut, 4, /expired/);
+  assert.deepEqual(cut.waits, [1000, 3000]);
+  assert.equal(short.polls().length, 1);
+});
+
+test("the code's expiry before approval, the server's expired_token and its access_denied each stop the wait, exit 4", async (t) => {
+  const lapsing = await deviceServer(t, { tokens: [pending], routes: () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, expires_in: 3 }) }) });
+  const lapsed = await signIn(lapsing);
+  refusedClean(lapsed, 4, /expired before the sign-in was approved/);
+  assert.deepEqual(lapsed.waits, [1000, 1000, 1000]);
+  assert.equal(lapsing.polls().length, 2, "no poll at the expiry");
   for (const [error, words] of [["expired_token", /expired/], ["access_denied", /denied/]]) {
-    const { env, config } = scratch();
     const server = await deviceServer(t, { tokens: [json(400, { error })] });
-    const result = await cli(env, ["login", "--to", server.base]);
-    refusedClean(result, 4, words, config);
+    const result = await signIn(server);
+    refusedClean(result, 4, words);
     assert.equal(server.polls().length, 1, error);
   }
 });
 
-test("login --to: a URL off the target's origin, a redirect, or a malformed answer is refused before any code is shown or token kept", async (t) => {
+test("a 503 waits as long as its Retry-After asks, in seconds or as an HTTP date, past the doubled interval, then polls on", async (t) => {
+  // Interval 1 s: doubled, the next poll would come 2 s on; the server asks 4 s, or a date 10 s on from its answer.
+  for (const [header, wait] of [[() => "4", 4000], [(now) => new Date(now + 10_000).toUTCString(), 10_000]]) {
+    const clock = fakeClock();
+    const server = await deviceServer(t, { tokens: [() => json(503, "", { "retry-after": header(clock.now()) }), issued] });
+    const result = await signIn(server, clock);
+    assert.equal(result.token, TOKEN);
+    assert.deepEqual(result.waits, [1000, wait]);
+  }
+});
+
+test("429s, 5xx and requests that fail double the wait up to 60 s; an answer of the flow's own goes back to the interval", async (t) => {
+  const failed = (status) => json(status, { error: "server_error" });
+  const server = await deviceServer(t, { tokens: [failed(500), failed(429), failed(503), failed(502), failed(500), () => "drop", failed(500), pending, issued] });
+  const result = await signIn(server);
+  assert.equal(result.token, TOKEN);
+  assert.deepEqual(result.waits, [1000, 2000, 4000, 8000, 16000, 32000, 60000, 60000, 1000]);
+});
+
+test("a URL off the target's origin, a redirect, or a malformed answer is refused before any code is shown or token kept", async (t) => {
   const other = await deviceServer(t);
-  const ok = (at) => ({ issuer: at, client_id: "agentrun-cli", device_authorization_endpoint: `${at}/auth/device/code`, token_endpoint: `${at}/auth/device/token`, scope: "research:read research:write", resource: "https://api.agentrun.example" });
-  const grant = { device_code: DEVICE_CODE, user_code: "KQ7-4MZ", verification_uri: VERIFY, expires_in: 600, interval: 1 };
   const cases = {
-    // The metadata URL the capabilities name, on another host (localhost for 127.0.0.1), another port, or https.
-    "metadata on another host": (at) => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: { metadata: `${at.replace("127.0.0.1", "localhost")}/auth/device`, scope: "agentrun:deploy" } } }) }),
-    "metadata on another port": () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: { metadata: `${other.origin}/auth/device`, scope: "agentrun:deploy" } } }) }),
-    "metadata relative": () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: { metadata: "/auth/device", scope: "agentrun:deploy" } } }) }),
-    "metadata with a user": (at) => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: { metadata: at.replace("//", "//someone@") + "/auth/device", scope: "agentrun:deploy" } } }) }),
-    "scope not a scope": (at) => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: { metadata: `${at}/auth/device`, scope: "agentrun:deploy\nx" } } }) }),
-    "device not an object": () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }),
-    // The metadata's endpoints and issuer, on another origin.
-    "token endpoint elsewhere": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), token_endpoint: `${other.origin}/auth/device/token` }) }),
-    "authorization endpoint elsewhere": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), device_authorization_endpoint: `${other.origin}/auth/device/code` }) }),
-    "issuer elsewhere": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), issuer: other.origin }) }),
-    "endpoint over https on a loopback target": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), token_endpoint: `${at.replace("http:", "https:")}/auth/device/token` }) }),
+    // The metadata's endpoints, on another origin, or over https while the target is on loopback over http.
+    "token endpoint elsewhere": (at) => ({ "GET /auth/device": () => json(200, { ...metadataOf(at), token_endpoint: `${other.origin}/auth/device/token` }) }),
+    "authorization endpoint elsewhere": (at) => ({ "GET /auth/device": () => json(200, { ...metadataOf(at), device_authorization_endpoint: `${other.origin}/auth/device/code` }) }),
+    "endpoint over https on a loopback target": (at) => ({ "GET /auth/device": () => json(200, { ...metadataOf(at), token_endpoint: `${at.replace("http:", "https:")}/auth/device/token` }) }),
     // Redirects, even to the same origin, are never followed.
-    "metadata redirects": (at) => ({ "GET /auth/device": () => [302, { location: `${at}/auth/device2` }, ""], "GET /auth/device2": () => json(200, ok(at)) }),
-    "authorization redirects": (at) => ({ "POST /auth/device/code": () => [307, { location: `${at}/auth/device/code2` }, ""], "POST /auth/device/code2": () => json(200, grant) }),
+    "metadata redirects": (at) => ({ "GET /auth/device": () => [302, { location: `${at}/auth/device2` }, ""], "GET /auth/device2": () => json(200, metadataOf(at)) }),
+    "authorization redirects": (at) => ({ "POST /auth/device/code": () => [307, { location: `${at}/auth/device/code2` }, ""], "POST /auth/device/code2": () => json(200, GRANT) }),
     // Malformed answers.
     "metadata not JSON": () => ({ "GET /auth/device": () => [200, { "content-type": "application/json" }, "{not json"] }),
-    "metadata missing its token endpoint": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), token_endpoint: undefined }) }),
-    "metadata too large": (at) => ({ "GET /auth/device": () => json(200, { ...ok(at), padding: "x".repeat(70_000) }) }),
+    "metadata missing its token endpoint": (at) => ({ "GET /auth/device": () => json(200, { ...metadataOf(at), token_endpoint: undefined }) }),
+    "metadata too large": (at) => ({ "GET /auth/device": () => json(200, { ...metadataOf(at), padding: "x".repeat(70_000) }) }),
     "grant not JSON": () => ({ "POST /auth/device/code": () => [200, { "content-type": "application/json" }, "{not json"] }),
-    "grant an array": () => ({ "POST /auth/device/code": () => json(200, [grant]) }),
-    "grant too large": () => ({ "POST /auth/device/code": () => json(200, { ...grant, padding: "x".repeat(70_000) }) }),
-    "grant with no expiry": () => ({ "POST /auth/device/code": () => json(200, { ...grant, expires_in: 0 }) }),
-    "grant interval a string": () => ({ "POST /auth/device/code": () => json(200, { ...grant, interval: "5" }) }),
-    "grant user code with a control character": () => ({ "POST /auth/device/code": () => json(200, { ...grant, user_code: "KQ7\u001b[2J" }) }),
-    "grant verification over http elsewhere": () => ({ "POST /auth/device/code": () => json(200, { ...grant, verification_uri: "http://console.agentrun.example/device" }) }),
+    "grant an array": () => ({ "POST /auth/device/code": () => json(200, [GRANT]) }),
+    "grant too large": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, padding: "x".repeat(70_000) }) }),
+    "grant with no expiry": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, expires_in: 0 }) }),
+    "grant interval a string": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, interval: "5" }) }),
+    "grant user code with a control character": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7\u001b[2J" }) }),
+    // The code is printed right after the cross-origin line: a server's own words there could talk over it.
+    "grant user code with a space": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "KQ7-4MZ. This server is safe, approve it" }) }),
+    "grant user code past 32 characters": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, user_code: "K".repeat(33) }) }),
+    "grant verification over http elsewhere": () => ({ "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: "http://console.agentrun.example/device" }) }),
     "grant refused": () => ({ "POST /auth/device/code": () => json(400, { error: "invalid_client" }) }),
   };
   for (const [name, routes] of Object.entries(cases)) {
-    const { env, config } = scratch();
     const server = await deviceServer(t, { routes });
-    const result = await cli(env, ["login", "--to", server.base]);
-    refusedClean(result, 1, /./, config);
+    const result = await signIn(server);
+    refusedClean(result, 1, /./);
     assert.equal(server.polls().length, 0, `${name}: no poll`);
-    assert.doesNotMatch(result.err, /KQ7/, `${name}: no code shown`);
+    assert.equal(result.said, `Signing in to ${server.origin}.\n`, `${name}: the server named, no code shown`);
     assert.equal(server.of("GET", "/auth/device2").length + server.of("POST", "/auth/device/code2").length, 0, `${name}: no redirect followed`);
   }
-  // Its own paths only: a local tool that lists dev servers may GET / on any new loopback listener.
-  assert.deepEqual(other.requests.filter((r) => /^\/(?:v2|auth)\//.test(r.url)).map((r) => `${r.method} ${r.url}`), [], "nothing was sent to the other origin");
+  assert.deepEqual(other.requests, [], "nothing was sent to the other origin");
 });
 
-test("login --to: a token answer that redirects or is malformed is refused, exit 1, with nothing written", async (t) => {
+test("a token answer that redirects or is malformed is refused, exit 1", async (t) => {
   const cases = {
     redirect: [302, { location: "/auth/device/token2" }, ""],
     "token type mac": json(200, { access_token: TOKEN, token_type: "mac" }),
@@ -196,34 +263,15 @@ test("login --to: a token answer that redirects or is malformed is refused, exit
     "not JSON": [200, { "content-type": "application/json" }, "<html>"],
   };
   for (const [name, answer] of Object.entries(cases)) {
-    const { env, config } = scratch();
-    const server = await deviceServer(t, { tokens: [answer] });
-    const result = await cli(env, ["login", "--to", server.base]);
-    refusedClean(result, 1, /./, config);
+    const server = await deviceServer(t, { tokens: [answer], routes: () => ({ "POST /auth/device/token2": () => issued }) });
+    const result = await signIn(server);
+    refusedClean(result, 1, /./);
     assert.equal(server.polls().length, 1, name);
     assert.equal(server.of("POST", "/auth/device/token2").length, 0, `${name}: no redirect followed`);
   }
 });
 
-test("login --to: a 503 waits as long as its Retry-After asks, as an HTTP date too, past the doubled interval, then polls on", async (t) => {
-  const { env, config } = scratch();
-  let n = 0;
-  const answers = [
-    // Interval 1 s: doubled, the next poll would come 2 s on; the date asks 3 s or more (it is whole seconds).
-    () => json(503, "", { "retry-after": new Date(Math.ceil((Date.now() + 4000) / 1000) * 1000).toUTCString() }),
-    () => issued,
-  ];
-  const server = await deviceServer(t, { routes: () => ({ "POST /auth/device/token": () => answers[Math.min(n++, answers.length - 1)]() }) });
-  const result = await cli(env, ["login", "--to", server.base]);
-  assert.equal(result.code, 0, result.err);
-  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: TOKEN });
-  const polls = server.polls();
-  assert.equal(polls.length, 2);
-  assert.ok(polls[1].at - polls[0].at >= 3900, `the date's wait was kept: ${polls[1].at - polls[0].at} ms`);
-});
-
-test("Retry-After: delay seconds or an HTTP date, in ms from now, never cut short; anything else, or a time past, is none", async () => {
-  const { retryAfterMs } = await import(DEVICE);
+test("Retry-After: delay seconds or an HTTP date, in ms from now, never cut short; anything else, or a time past, is none", () => {
   const now = Date.parse("2026-11-22T04:00:00Z");
   assert.equal(retryAfterMs("4", now), 4000);
   assert.equal(retryAfterMs("600", now), 600_000, "a wait past 300 s is the server's to ask; the code's expiry bounds it");
@@ -231,8 +279,7 @@ test("Retry-After: delay seconds or an HTTP date, in ms from now, never cut shor
   for (const value of [null, "", "0", "-5", "1.5", "4s", "soon", "Sun, 22 Nov 2026 03:59:00 GMT", "9".repeat(400)]) assert.equal(retryAfterMs(value, now), 0, String(value));
 });
 
-test("the device checks: an http target or URL off loopback is refused, and so is every URL off the target's origin", async () => {
-  const { deviceOffer } = await import(DEVICE);
+test("the device offer: an http target or URL off loopback is refused, and so is every URL off the target's origin, a relative one, and an offer that is no object", () => {
   const offer = (metadata, scope = "agentrun:deploy") => ({ sign_in: { device: { metadata, scope } } });
   assert.equal(deviceOffer({ version: "x" }, "https://api.agentrun.example/v2"), undefined, "no sign_in: no offer");
   assert.equal(deviceOffer({ sign_in: {} }, "https://api.agentrun.example/v2"), undefined, "no sign_in.device: no offer");
@@ -243,72 +290,137 @@ test("the device checks: an http target or URL off loopback is refused, and so i
     // http off loopback, the target's own origin or not.
     [offer("http://api.agentrun.example/auth/device"), "http://api.agentrun.example/v2"],
     [offer("http://api.agentrun.example/auth/device"), "https://api.agentrun.example/v2"],
-    // Another origin: host, port, scheme.
+    // Another origin: host (localhost is not 127.0.0.1), port, scheme; or no origin at all.
     [offer("https://evil.example/auth/device"), "https://api.agentrun.example/v2"],
+    [offer("http://localhost:7340/auth/device"), "http://127.0.0.1:7340/v2"],
     [offer("https://api.agentrun.example:8443/auth/device"), "https://api.agentrun.example/v2"],
+    [offer("/auth/device"), "https://api.agentrun.example/v2"],
     // A user, a fragment, a query, a backslash, port 0.
     [offer("https://someone@api.agentrun.example/auth/device"), "https://api.agentrun.example/v2"],
     [offer("https://api.agentrun.example/auth/device#x"), "https://api.agentrun.example/v2"],
     [offer("https://api.agentrun.example/auth/device?x=1"), "https://api.agentrun.example/v2"],
     [offer("https://api.agentrun.example\\@evil.example/auth/device"), "https://api.agentrun.example/v2"],
     [offer("https://api.agentrun.example:0/auth/device"), "https://api.agentrun.example:0/v2"],
-    // A scope that is no scope.
+    // A scope that is no scope, and an offer that is no object.
     [offer("https://api.agentrun.example/auth/device", ""), "https://api.agentrun.example/v2"],
     [offer("https://api.agentrun.example/auth/device", "a\"b"), "https://api.agentrun.example/v2"],
+    [offer("https://api.agentrun.example/auth/device", "agentrun:deploy\nx"), "https://api.agentrun.example/v2"],
+    [{ sign_in: { device: "yes" } }, "https://api.agentrun.example/v2"],
   ];
   for (const [capabilities, base] of refused) assert.throws(() => deviceOffer(capabilities, base), (error) => error.code === 1 || error.code === 2, JSON.stringify(capabilities));
 });
 
-test("login --to: a target with no sign_in.device takes the token from stdin as before, against a real server and a fake one", async (t) => {
-  const { dir, env, config } = scratch();
-  const faux = join(dir, "faux.mjs");
-  writeFileSync(faux, 'export default (context, faux) => faux.message("The answer is 42.");\n');
-  const data = join(dir, "data");
-  const child = spawn(process.execPath, [SERVE, "--data", data, "--port", "0", "--faux", faux], { stdio: ["ignore", "pipe", "pipe"], env: { ...env, AGENTRUN_ACCOUNTS: "0" } });
-  t.after(() => child.exitCode === null && child.kill("SIGKILL"));
-  let err = "";
-  child.stdout.resume();
-  child.stderr.on("data", (chunk) => (err += chunk));
-  for (let i = 0; !existsSync(join(data, ".server.json")); i++) {
-    assert.ok(i < 600 && child.exitCode === null, `the server started: ${err}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const base = JSON.parse(readFileSync(join(data, ".server.json"), "utf8")).base_url;
-  const token = readFileSync(join(data, ".token"), "utf8").trim();
-  // On a terminal it would ask for the token as before: stdin is read, so a wrong one is refused and nothing written.
-  const wrong = await cli(env, ["login", "--to", base], { input: "fake-test-key\n" });
+test("login reads the token from stdin off a terminal: --to a server with no sign_in.device, and --base-url whatever the server offers", async (t) => {
+  // The fake's agents list takes the one token it knows, as a token check does.
+  const agents = (request) => (request.headers.authorization === "Bearer fake-test-key" ? json(200, { agents: [], next_cursor: null }) : json(401, { error: { code: "unauthorized", message: "Unknown token." } }));
+  const plain = await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: {} }), "GET /v2/agents": agents }) });
+  const { env, config } = scratch();
+  const wrong = await cli(env, ["login", "--to", plain.base], { input: "another-key\n" });
   assert.equal(wrong.code, 4, wrong.err);
   assert.match(wrong.err, /refused the token; nothing was written/);
   assert.equal(existsSync(config), false);
-  const done = await cli(env, ["login", "--to", base], { input: `${token}\n` });
-  assert.equal(done.code, 0, done.err);
-  assert.deepEqual(JSON.parse(done.out), { base_url: base, config_file: config });
-  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: base, api_key: token });
-  const listed = await cli(env, ["agents", "list", "--data", join(dir, "nowhere")]);
-  assert.equal(listed.code, 0, listed.err);
-  assert.ok(Array.isArray(JSON.parse(listed.out).agents));
-  assert.ok(!(done.out + done.err + listed.out + listed.err).includes(token), "no output holds the token");
-
-  // A target whose capabilities name sign_in but no device: stdin as well, its check the agents list.
-  const fake = scratch();
-  const server = await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: {} }), "GET /v2/agents": () => json(200, { agents: [], next_cursor: null }) }) });
-  const taken = await cli(fake.env, ["login", "--to", server.base], { input: "fake-test-key\n" });
+  const taken = await cli(env, ["login", "--to", plain.base], { input: "fake-test-key\n" });
   assert.equal(taken.code, 0, taken.err);
-  assert.equal(server.of("GET", "/auth/device").length, 0, "no device flow");
-  assert.equal(server.of("GET", "/v2/agents").at(-1).headers.authorization, "Bearer fake-test-key");
-  assert.deepEqual(JSON.parse(readFileSync(fake.config, "utf8")), { base_url: server.base, api_key: "fake-test-key" });
+  assert.equal(plain.of("GET", "/auth/device").length, 0, "no device flow");
+  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: plain.base, api_key: "fake-test-key" });
+
+  // --base-url off a terminal reads stdin, as a script gives it, though the server offers a device sign-in.
+  const offering = await deviceServer(t, { routes: () => ({ "GET /v2/agents": agents }) });
+  const scripted = scratch();
+  const piped = await cli(scripted.env, ["login", "--base-url", offering.base], { input: "fake-test-key\n" });
+  assert.equal(piped.code, 0, piped.err);
+  assert.deepEqual(offering.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/agents?limit=1"], "no capabilities asked, no device flow");
+  assert.deepEqual(JSON.parse(readFileSync(scripted.config, "utf8")), { base_url: offering.base, api_key: "fake-test-key" });
 
   // --to and --base-url name the server twice: refused.
-  const both = await cli(fake.env, ["login", "--to", server.base, "--base-url", server.base], { input: "fake-test-key\n" });
+  const both = await cli(env, ["login", "--to", plain.base, "--base-url", plain.base], { input: "fake-test-key\n" });
   assert.equal(both.code, 2, both.err);
 });
 
-test("login --to cloud names AgentRun cloud's address, or AGENTRUN_CLOUD_URL's", async (t) => {
-  const { env, config } = scratch();
-  const server = await deviceServer(t);
-  const result = await cli({ ...env, AGENTRUN_CLOUD_URL: server.origin }, ["login", "--to", "cloud"]);
-  assert.equal(result.code, 0, result.err);
-  assert.deepEqual(JSON.parse(readFileSync(config, "utf8")), { base_url: server.base, api_key: TOKEN });
-  const { CLOUD_URL } = await import(new URL("../lib/target.mjs", import.meta.url).pathname);
-  assert.equal(CLOUD_URL, "https://api.agentrun.ai");
+test("login --base-url or AGENTRUN_BASE_URL on a terminal takes the device sign-in when the server offers one; offering none, it refuses a typed token; a probe it can't take exits as --to does", async (t) => {
+  // Offered: the device flow runs (the person denies it here, before any wait).
+  const offering = await deviceServer(t, { routes: () => ({ "POST /auth/device/code": () => json(400, { error: "access_denied" }) }) });
+  const denied = await onTerminal(["login", "--base-url", offering.base]);
+  assert.equal(denied.code, 4, denied.err);
+  assert.ok(denied.err.startsWith(`Signing in to ${offering.origin}.\n`), denied.err);
+  assert.match(denied.err, /The sign-in was denied; nothing was written\./);
+  assert.deepEqual(offering.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities", "GET /auth/device", "POST /auth/device/code"]);
+  assert.equal(existsSync(denied.config), false);
+  // Not offered: the refusal of a token typed on a terminal, exit 2, as before.
+  const plain = await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: {} }) }) });
+  const refused = await onTerminal(["login"], { AGENTRUN_BASE_URL: plain.base });
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /read from stdin, never typed on a terminal/);
+  assert.deepEqual(plain.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(refused.config), false);
+  // The probe redirected: refused as --to refuses it, exit 1, with no word about typing.
+  const redirecting = await deviceServer(t, { routes: (at) => ({ "GET /v2/capabilities": () => [302, { location: `${at}/elsewhere` }, ""] }) });
+  const redirected = await onTerminal(["login", "--base-url", redirecting.base]);
+  assert.equal(redirected.code, 1, redirected.err);
+  assert.match(redirected.err, /redirect.*nothing was written/);
+  assert.doesNotMatch(redirected.err, /read from stdin/);
+  assert.deepEqual(redirecting.requests.map((r) => `${r.method} ${r.url}`), ["GET /v2/capabilities"]);
+  assert.equal(existsSync(redirected.config), false);
 });
+
+test("an address to open on another origin than the server's is said on a line of its own before the code, naming both origins; on the server's origin, no such line", async (t) => {
+  // The line that names both origins, the server's and the one elsewhere, and where it sits: before the code's.
+  const crossed = (said, at, elsewhere) => {
+    const lines = said.split("\n");
+    const line = lines.findIndex((one) => one.includes(elsewhere) && one.includes(at) && !one.startsWith("Open "));
+    return { line, code: lines.findIndex((one) => one.includes("enter the code")) };
+  };
+  // The metadata's verification_uri and the grant's complete one, on another origin.
+  const away = await deviceServer(t);
+  const shown = await signIn(away);
+  assert.equal(shown.token, TOKEN);
+  const at = crossed(shown.said, away.origin, "https://console.agentrun.example");
+  assert.ok(at.line > 0 && at.line < at.code, shown.said);
+  // Only the complete address elsewhere: that origin is named.
+  const split = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device` }) }) });
+  const half = await signIn(split);
+  const named = crossed(half.said, split.origin, "https://console.agentrun.example");
+  assert.ok(named.line > 0 && named.line < named.code, half.said);
+  // Every address on the server's own origin: no such line.
+  const home = await deviceServer(t, { routes: (o) => ({ "GET /auth/device": () => json(200, { ...metadataOf(o), verification_uri: `${o}/device` }), "POST /auth/device/code": () => json(200, { ...GRANT, verification_uri: `${o}/device`, verification_uri_complete: `${o}/device?code=KQ7-4MZ` }) }) });
+  const quiet = await signIn(home);
+  assert.equal(quiet.token, TOKEN);
+  assert.ok(quiet.said.includes(`Open ${home.origin}/device and enter the code KQ7-4MZ`), quiet.said);
+  assert.doesNotMatch(quiet.said, /approved at/);
+});
+
+test("the origins the cross-origin line names: AgentRun cloud's API with its device page on its console is the one pair it names none of; every other pair is named", () => {
+  assert.equal(CLOUD_CONSOLE, "https://console.agentrun.ai");
+  const cloudPage = [`${CLOUD_CONSOLE}/device`, `${CLOUD_CONSOLE}/device?code=KQ7-4MZ`];
+  // Cloud's own sign-in: the metadata's verification_uri and the grant's complete one, both on its console.
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), cloudPage), []);
+  // Cloud's console handed out by any other target: a hostile one (the case the line is for), cloud's host on another
+  // port, or a server AGENTRUN_CLOUD_URL names in cloud's place.
+  for (const target of ["https://evil.example/v2", "https://api.agentrun.ai:8443/v2", "https://staging.agentrun.example/v2"]) {
+    assert.deepEqual(elsewhereOf(new URL(target), cloudPage), [CLOUD_CONSOLE], target);
+  }
+  // Cloud's API with its code page on any other origin, and the pair the other way round.
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_URL}/v2`), ["https://console.agentrun.example/device", undefined]), ["https://console.agentrun.example"]);
+  assert.deepEqual(elsewhereOf(new URL(`${CLOUD_CONSOLE}/v2`), [`${CLOUD_URL}/device`]), [CLOUD_URL]);
+  // The server's own origin: none. Two other origins: both, each once.
+  assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://api.example/device", "https://api.example/device?code=KQ7-4MZ"]), []);
+  assert.deepEqual(elsewhereOf(new URL("https://api.example/v2"), ["https://a.example/device", "https://b.example/device?code=x", "https://a.example/other"]), ["https://a.example", "https://b.example"]);
+});
+
+// A server named by --base-url, from a terminal, whose device sign-in the CLI does not take: refused as --to refuses it,
+// with the sign-in's own exit code and nothing about typing a token.
+for (const [name, targetOf, code, why, skip = false] of [
+  // The capabilities request's connection dropped: Node 24's fetch gives the cause UND_ERR_SOCKET.
+  ["a server not reached", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => "drop" }) })).base, 3, /UND_ERR_SOCKET/],
+  ["a server offering it over http off this machine", async (t) => (await deviceServer(t, { host: "127.0.0.2" })).base, 2, /over http/, LINUX_ONLY],
+  ["a server whose offer is malformed", async (t) => (await deviceServer(t, { routes: () => ({ "GET /v2/capabilities": () => json(200, { sign_in: { device: "yes" } }) }) })).base, 1, /sign_in\.device/],
+]) {
+  test(`login --base-url on a terminal, to ${name}: exit ${code}, as --to, and nothing written`, { skip }, async (t) => {
+    const refused = await onTerminal(["login", "--base-url", await targetOf(t)]);
+    assert.equal(refused.code, code, refused.err);
+    assert.match(refused.err, why);
+    assert.match(refused.err, /nothing was written/);
+    assert.doesNotMatch(refused.err, /read from stdin/);
+    assert.equal(existsSync(refused.config), false);
+  });
+}

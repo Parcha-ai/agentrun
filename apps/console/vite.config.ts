@@ -22,8 +22,10 @@ const workers = wanted === "" ? undefined : Number(wanted);
 const alias = {
   "@dsl": fileURLToPath(new URL("../../packages/dsl/src", import.meta.url)),
   // The timeline library's tool names, pi-browser's tool list and serve's tool-name grammar, from their sources (each
-  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it).
+  // imports nothing of Node; tool-names.ts imports nothing at all, as serve's test/tool-names.test.mjs holds it). The
+  // timeline reads URLs in text through web's text-urls.ts, which imports nothing either.
   "@timeline": fileURLToPath(new URL("../../packages/serve/src/timeline", import.meta.url)),
+  "@parcha/agentrun-web/text-urls": fileURLToPath(new URL("../../packages/web/src/text-urls.ts", import.meta.url)),
   "@pi-browser": fileURLToPath(new URL("../../packages/pi-browser/src/core", import.meta.url)),
   "@agentrun/tool-names": fileURLToPath(new URL("../../packages/serve/src/tool-names.ts", import.meta.url)),
   "@":fileURLToPath(new URL("./src", import.meta.url)),
