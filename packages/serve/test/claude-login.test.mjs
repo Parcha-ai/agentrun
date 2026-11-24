@@ -466,8 +466,8 @@ test("this machine's login on the CLI's default folder is asked as the person's 
   assert.equal(on.account?.email, "person@example.com", JSON.stringify(on));
   assert.equal(on.folder, join(home, ".claude"));
   // The line a person runs is their own claude's, so what it signs in is what AgentRun then reads: it clears both folder
-  // variables, which their terminal may export while the server has neither, in a subshell of their own shell.
-  assert.equal(on.command, `(unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR; ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login)`);
+  // variables, which their terminal may export while the server has neither, under env, which any shell runs.
+  assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
   // The status check runs in their home on a copy of ~/.claude.json (its own config dir, outside the home, which the
   // CLI's startup writes then reach in place of theirs), with the tokens where a run reads them: on macOS an empty
   // credentials dir (the item with no suffix), elsewhere ~/.claude.
@@ -539,7 +539,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(before.machine, { folder: join(home, ".claude"), source: "default", credentials: secure }, JSON.stringify(before));
   const on = (await api("PUT", "/settings/claude-login", { only_me: true, place: "machine" })).body;
   assert.equal(on.state, "signed_out", JSON.stringify(on));
-  assert.equal(on.command, `(unset CLAUDE_CONFIG_DIR; CLAUDE_SECURESTORAGE_CONFIG_DIR=${secure} ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login)`);
+  assert.equal(on.command, `env -u CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR=${secure} ANTHROPIC_CONFIG_DIR=${join(home, ".config", "anthropic")} ${fake.cli} auth login`);
   assert.equal((await api("POST", "/settings/claude-login/login")).status, 200);
   await until(() => existsSync(fake.ended), "the CLI's sign-in ended");
   assert.ok(existsSync(join(secure, ".credentials.json")), "the sign-in kept the tokens where the person's own claude with that variable does");

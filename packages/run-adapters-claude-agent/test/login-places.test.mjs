@@ -11,7 +11,7 @@
 // Stand-in CLIs note what they were started with beside themselves.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -92,19 +92,24 @@ test("this machine's login on the CLI's default folder: the sign-in and the show
   assert.deepEqual(folderVars(signIn), { ANTHROPIC_CONFIG_DIR: login.profiles });
   assert.equal(signIn.HOME, home);
   assert.deepEqual(shown, { ANTHROPIC_CONFIG_DIR: login.profiles });
-  // The line clears both folder variables, which a person's terminal may export, in a subshell of that terminal's shell.
-  assert.equal(line, `(unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR; ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login)`);
+  // The line clears both folder variables, which a person's terminal may export, under env, a program every shell runs.
+  assert.equal(line, `env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=${login.profiles} claude auth login`);
 });
+
+/** The shells the shown line is run in here, where this machine has them: sh and bash always; zsh, fish and tcsh, which
+ *  a person's terminal may run, when installed. */
+const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh', '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish', '/bin/tcsh', '/usr/bin/tcsh'].filter((shell) => existsSync(shell));
+/** A terminal that exports both folder variables, with `path` as its PATH. */
+const terminal = (home, path) => ({ PATH: path, HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' });
 
 test("the shown line on the CLI's default folder, run in a terminal that exports CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR, starts the CLI with neither, its profiles quoted whole", () => {
   const home = scratch();
   // A folder name the shell must quote: a space and a quote.
   const login = { dir: join(home, '.claude'), profiles: join(home, "it's here", 'anthropic'), home };
-  const shells = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh'].filter((shell) => existsSync(shell));
-  assert.ok(shells.length >= 1);
-  for (const shell of shells) {
+  assert.ok(SHELLS.includes('/bin/sh') && SHELLS.includes('/bin/bash'), `sh and bash run the line: ${SHELLS}`);
+  for (const shell of SHELLS) {
     const cli = fakeCli();
-    const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' } });
+    const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: terminal(home, process.env.PATH ?? '/usr/bin:/bin') });
     const seen = cli.seen();
     assert.ok(seen, `${shell} started the CLI: ${ran.stderr}`);
     assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
@@ -112,17 +117,12 @@ test("the shown line on the CLI's default folder, run in a terminal that exports
   }
 });
 
-/** The shells the shown line is run in here: sh, bash and zsh, where this machine has them. */
-const SHELLS = ['/bin/sh', '/bin/bash', '/bin/zsh', '/usr/bin/zsh'].filter((shell) => existsSync(shell));
-/** A terminal that exports both folder variables, with `path` as its PATH. */
-const terminal = (home, path) => ({ PATH: path, HOME: home, CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDE_SECURESTORAGE_CONFIG_DIR: '/elsewhere' });
-
 test("the shown line on the CLI's default folder starts a CLI kept in a folder whose name holds '=' (a data folder such as /data/a=b), with neither folder variable", () => {
   const home = scratch();
   const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
-  assert.ok(SHELLS.length >= 1);
+  assert.ok(SHELLS.includes('/bin/sh') && SHELLS.includes('/bin/bash'), `sh and bash run the line: ${SHELLS}`);
   for (const shell of SHELLS) {
-    // env reads any word holding '=' as a variable, so a CLI there never starts under it; a shell reads it as the path.
+    // env reads any word holding '=' as a variable, so such a CLI path must not be a word env reads.
     const cli = fakeCli('a=b');
     const ran = spawnSync(shell, ['-c', claude.claudeLoginCommand(login, cli.cli)], { env: terminal(home, process.env.PATH ?? '/usr/bin:/bin') });
     const seen = cli.seen();
@@ -132,24 +132,21 @@ test("the shown line on the CLI's default folder starts a CLI kept in a folder w
   }
 });
 
-test("the shown line on the CLI's default folder runs in the person's own shell, never under env, so a `claude` alias there is the CLI it starts (the CLI's local install is one), with neither folder variable", () => {
+/** `line` with every single-quoted part taken out, and each `'\''` (a quote inside one, which sh, fish and tcsh all read
+ *  as a quote): what a shell reads as its own syntax. */
+const unquoted = (line) => line.replace(/'\\''/g, '').replace(/'[^']*'/g, '');
+
+// fish has no `( ... )` subshell (a syntax error there) and no `NAME=value cmd` before 3.1; tcsh has neither. A line
+// that is env's from its first word, with nothing else a shell reads as syntax outside its quotes, is read alike by sh,
+// bash, zsh, fish and tcsh. What it does not cover: a `claude` alias or function, which env skips (the shown CLI is the
+// pinned one, or `claude` on PATH).
+test("the shown line on the CLI's default folder is one sh, bash, zsh, fish and tcsh all read alike: env's from its first word, with no subshell, `;`, `&`, `|`, redirection, `$`, glob or history mark outside its quotes, a CLI path holding '=' included", () => {
   const home = scratch();
-  const login = { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home };
-  const line = claude.claudeLoginCommand(login);
-  assert.doesNotMatch(line, /(^|[\s;(])env\s/, 'no word of the line runs the CLI under env, which skips the shell\'s aliases and functions');
-  // A PATH with env on it and no claude: only the alias can start the CLI.
-  const bin = scratch();
-  symlinkSync(['/usr/bin/env', '/bin/env'].find((file) => existsSync(file)), join(bin, 'env'));
-  for (const shell of SHELLS) {
-    const cli = fakeCli();
-    // A terminal reads the line itself, so its aliases expand there, inside ( ) too; a shell run with -c expands them
-    // where told to (bash's expand_aliases; sh and zsh do by default).
-    const script = `alias claude='${cli.cli.replace(/'/g, `'\\''`)}'\n${line}`;
-    const ran = spawnSync(shell, [...(shell.endsWith('bash') ? ['-O', 'expand_aliases'] : []), '-c', script], { env: terminal(home, bin) });
-    const seen = cli.seen();
-    assert.ok(seen, `${shell} started the CLI its alias named claude: ${ran.stderr}`);
-    assert.deepEqual(folderVars(seen.env), { ANTHROPIC_CONFIG_DIR: login.profiles }, shell);
-    assert.deepEqual(seen.argv, ['auth', 'login'], shell);
+  const login = { dir: join(home, '.claude'), profiles: join(home, "it's here", 'anthropic'), home };
+  const secure = { ...login, secure: join(home, 'creds') };
+  for (const [what, line] of [['the bare CLI', claude.claudeLoginCommand(login)], ['a CLI path', claude.claudeLoginCommand(login, '/opt/claude/bin/claude')], ['a CLI path holding =', claude.claudeLoginCommand(login, '/data/a=b/claude')], ['a credentials folder set apart', claude.claudeLoginCommand(secure, '/opt/claude/bin/claude')]]) {
+    assert.match(line, /^env -u CLAUDE_CONFIG_DIR /, `${what}: the line is env's from its first word: ${line}`);
+    assert.doesNotMatch(unquoted(line), /[()`;&|<>$*?[\]{}~!\\"]/, `${what}: nothing outside its quotes is syntax fish or tcsh reads apart: ${line}`);
   }
 });
 
