@@ -197,8 +197,8 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const row = settingFor("agentrun", own);
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
-  // On, a runner place goes on the login and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, {}, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic") });
+  // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
+  assert.deepEqual(await loginForRun(saved, own, { HOME: "/u/p" }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: "/u/p" });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
