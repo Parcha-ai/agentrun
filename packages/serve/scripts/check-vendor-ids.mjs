@@ -22,17 +22,12 @@ export const BASELINE = {
 	// S7, DEL-03: the old box stack (its Docker, Daytona and Modal boxes, and bwrap), its ids in the API.
 	"place.ts": { ids: { docker: 4, daytona: 1, modal: 1 }, why: "DEL-03 (S7): the old box stack's places" },
 	"place-offers.ts": { ids: { docker: 7, daytona: 2, modal: 2 }, why: "DEL-03 (S7): the box providers' names and offers, moved here from boxes.ts" },
-	"server.ts": { ids: { docker: 1, browserbase: 4, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the browser plane's default vendor, Browserbase, for a run kept from before the pick" },
-	// The browser plane's default vendor, Browserbase (a run kept from before the pick, or a plane that names none); its
-	// vendors are the registry's browser providers that need a key. `kernel` in tool-plane.ts is web_fetch's guarded
-	// fetch, not the provider, named once (DIRECT_FETCH).
-	"tool-plane.ts": { ids: { browserbase: 3, kernel: 1 }, why: "the browser plane's default vendor; web_fetch's guarded fetch named kernel, a false positive" },
-	"tools.ts": { ids: { browserbase: 1 }, why: "the browser plane's default vendor, for a plane that names none" },
-	// S6, CP-4's follow-up: sign-in profiles over the browser vendors' REST (the computer package's profiles take their
-	// place), and the browser tool's keys, key checks and list prices by vendor, beside the descriptors.
-	"sign-ins.ts": { ids: { kernel: 3 }, why: "CP-4's follow-up (S6): sign-in profiles over the browser vendors' REST" },
-	"handed-values.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser vendors that keep a sign-in, for a learning read's cut" },
-	"sign-ins-store.ts": { ids: { browserbase: 4, kernel: 3 }, why: "CP-4's follow-up (S6): sign-in profiles over the browser vendors' REST" },
+	"server.ts": { ids: { docker: 1, browserbase: 2, kernel: 2 }, why: "DEL-03 (S7): the box stack's wiring; the faux key checks' fakes, by vendor (twice each)" },
+	// The browser plane's vendors are the registry's browser providers that need a key, and its default the first of
+	// them (DEFAULT_BROWSER_VENDOR). `kernel` in tool-plane.ts is web_fetch's guarded fetch, not the provider, named once
+	// (DIRECT_FETCH); `browserbase` is a member of the Resolution type, the plane's answers.
+	"tool-plane.ts": { ids: { browserbase: 1, kernel: 1 }, why: "Resolution's browserbase member; web_fetch's guarded fetch named kernel, a false positive" },
+	// S6, CP-4's follow-up: the browser tool's keys, key checks and list prices by vendor, beside the descriptors.
 	"key-words.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's keys by vendor" },
 	"key-check.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's key checks by vendor" },
 	"browser-cost.ts": { ids: { browserbase: 1, kernel: 1 }, why: "CP-4's follow-up (S6): the browser tool's list prices by provider" },
