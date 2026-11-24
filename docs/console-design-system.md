@@ -129,7 +129,7 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
   Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
-- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
+- The integrated build composer uses `!rounded-composer` (`--radius-composer: 0.875rem`, 14px). Keep this softer shape scoped
   to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.

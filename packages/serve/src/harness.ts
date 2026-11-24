@@ -71,7 +71,8 @@ async function withoutModelKeys(env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessE
 export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability[]> {
   let offers = offered.get(env);
   if (!offers) {
-    offers = (async () => {
+    // A reading no run waits on (ollamaReading): each Ollama model is the kept listing's, at any age, never an /api/show.
+    offers = import("./ollama-provider.js").then(({ ollamaReading }) => ollamaReading(async () => {
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const { harnessInstalled } = await import("./adapters.js");
@@ -126,6 +127,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { FAUX_ENV } = await import("./model.js");
           const { factsOf } = await import("./harness-table.js");
           const facts = factsOf(env, offer.id);
+          const { OLLAMA_PROVIDER, ollamaToolsModels } = await import("./ollama-provider.js");
+          const toolsModels = ollamaToolsModels(env);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
@@ -140,7 +143,10 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
               }
             }
             models.push(id);
-            if (!lacksKey) runsOne = true;
+            // A model of the Ollama here that takes no tools stays pickable, and a run on it gets its tools as text, but
+            // text tools are unreliable on small models: it is no model a run of this harness has now, as the host's
+            // default never is one (model.ts localDefault).
+            if (!lacksKey && (!id.startsWith(`${OLLAMA_PROVIDER}/`) || toolsModels.includes(id))) runsOne = true;
           }
         }
         // One that runs nothing here for want of a key (unavailable with `keys`, or available with no default model for
@@ -151,7 +157,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const needs: HarnessNeed[] = wantsKey ? ["key", ...(planWouldRun(env, offer.id) ? (["chatgpt"] as const) : [])] : [];
         return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}), ...(offer.available && needs.length && !runsOne ? { noModelRuns: true as const } : {}) };
       }));
-    })();
+    }));
     offered.set(env, offers);
   }
   return offers;

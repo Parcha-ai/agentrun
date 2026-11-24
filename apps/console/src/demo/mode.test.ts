@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { ClientError } from "@/lib/client";
-import { DEMO_REFUSAL, demoOn, demoUpload, onDemoChange, setDemo } from "./mode";
+import { demoOn, demoUpload, onDemoChange, setDemo } from "./mode";
 
 const store = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) }; };
 
@@ -31,14 +31,23 @@ it("holds the choice on the page when the browser's storage refuses it", () => {
   setDemo(false, store());
 });
 
-it("refuses a picked file in the page: no request is made, and the person reads why", async () => {
+it("keeps a picked file in the page, as an upload the server took, and sends no request", async () => {
   const open = vi.spyOn(XMLHttpRequest.prototype, "open");
   const sent = vi.spyOn(globalThis, "fetch");
-  const refusal = await demoUpload(new File(["x"], "notes.md"), () => {}, new AbortController().signal).catch((e: unknown) => e);
-  expect(refusal).toBeInstanceOf(ClientError);
-  expect(refusal).toMatchObject({ status: 403, code: "demo_mode", message: DEMO_REFUSAL });
+  const progress: number[] = [];
+  const file = await demoUpload(new File(["# Notes\n"], "notes.md", { type: "text/markdown" }), (f) => progress.push(f), new AbortController().signal);
+  expect(file).toMatchObject({ path: "notes.md", size_bytes: 8, content_type: "text/markdown", status: "ready" });
+  expect(file.file_id).toMatch(/^file_demo_/);
+  expect(progress.at(-1)).toBe(1);
   expect(open).not.toHaveBeenCalled();
   expect(sent).not.toHaveBeenCalled();
   open.mockRestore();
   sent.mockRestore();
+});
+
+it("stops a picked file's upload when its picker lets go of it", async () => {
+  const stop = new AbortController();
+  const going = demoUpload(new File(["x"], "x.md"), () => {}, stop.signal);
+  stop.abort();
+  await expect(going).rejects.toBeInstanceOf(ClientError);
 });
