@@ -8296,6 +8296,7 @@ class _CapabilitiesHarnessesItemRequired(TypedDict):
     label: str
     promises: CapabilitiesHarnessesItemPromises
     available: bool
+    ready_models: list[str]
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
     run_memory_mib: int
