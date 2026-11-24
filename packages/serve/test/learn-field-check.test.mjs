@@ -253,3 +253,31 @@ test("a check that collects its inputs over time adds the next rows to what it c
   assert.deepEqual(split.misses, whole.misses, "the one miss is in the later rows");
   assert.deepEqual(before.fields.x.agent.n, 6, "the earlier tally is not changed");
 });
+
+test("a value equal to the agent's, where a grade marked the agent's answer wrong, is never right on that input, whatever `agrees` says", () => {
+  const said = { decision: "approve", amount: 100 };
+  const repeat = check([answered("in-0", { answer: { workflow: { ...said }, agent: said, grade: { amount: 120 }, agrees: true, agent_correct: false } })], BAR);
+  assert.deepEqual([repeat.fields.answer.workflow_right, repeat.tally.agreed, repeat.verdict], [0, 0, "hold"]);
+  assert.deepEqual(repeat.misses, [{ field: "answer", input_id: "in-0", workflow: said, expected: { amount: 120 }, known: "grade" }]);
+  const other = check([answered("in-0", { answer: { workflow: { decision: "approve", amount: 120 }, agent: said, grade: { amount: 120 }, agrees: true, agent_correct: false } })], BAR);
+  assert.equal(other.fields.answer.workflow_right, 1, "another answer the verdict calls the known one's decision stays right");
+});
+
+test("agree_min is the field's, over all its known inputs pooled across sources: 19 agent-known inputs right and 1 graded one missed (the agent wrong there too) serve at 19 of 20; the margin stays on the graded inputs alone", () => {
+  const agentKnown = ids(19).map((id) => answered(id, { x: { workflow: "a", agent: "a" } }));
+  const pooled = check([...agentKnown, answered("in-19", { x: { workflow: "b", agent: "c", grade: "d" } })], BAR);
+  assert.deepEqual([pooled.verdict, pooled.fields.x.pass, pooled.failing], ["serve", true, []], pooled.fields.x.reason);
+  assert.deepEqual([pooled.fields.x.n, pooled.fields.x.workflow_right], [20, 19]);
+  assert.match(pooled.fields.x.reason, /in all: 19 of 20 right \(95\.0%, the bar 80\.0%\)/);
+  const under = check([...agentKnown, answered("in-19", { x: { workflow: "b", agent: "d", grade: "d" } })], BAR);
+  assert.deepEqual([under.verdict, under.fields.x.pass, under.failing], ["hold", false, ["x"]], "the agent right on its graded input and the draft wrong: under the agent by more than the margin");
+  const short = check([...ids(19).map((id, i) => answered(id, { x: { workflow: i < 15 ? "a" : "z", agent: "a" } })), answered("in-19", { x: { workflow: "d", agent: "c", grade: "d" } })], BAR);
+  assert.deepEqual([short.fields.x.workflow_right, short.fields.x.pass], [16, true], "16 of 20 pooled is agree_min");
+  const shorter = check([...ids(19).map((id, i) => answered(id, { x: { workflow: i < 14 ? "a" : "z", agent: "a" } })), answered("in-19", { x: { workflow: "d", agent: "c", grade: "d" } })], BAR);
+  assert.deepEqual([shorter.fields.x.workflow_right, shorter.fields.x.pass], [15, false], "15 of 20 pooled is under it");
+});
+
+test("an agent-known field the agent's answer lacks is not the agent's right answer there: agent_agreed leaves that input out", () => {
+  const tally = tallyOf([answered("in-0", { x: { workflow: "a", agent: undefined } }), answered("in-1", { x: { workflow: "a", agent: "a" } })]);
+  assert.deepEqual([tally.agent_agreed, tally.fields.x.agent.agent_right], [1, 1]);
+});

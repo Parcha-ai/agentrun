@@ -15,7 +15,9 @@
 //   (9) a graded source run's replay is compared with the grade's expected answer written over the agent's: the same
 //       decision worded apart promotes, another decision holds with the grade's answer shown;
 //   (10) a partial grade: the replay asks about the draft and the agent's answer with the grade's keys written over it,
-//       never the grade's keys alone, and a draft that says that answer promotes.
+//       never the grade's keys alone, and a draft that says that answer promotes;
+//   (11) a grade given after the replays ended and before the check settled: each input is judged on what its grader
+//       was asked, so the verdict is not stale.
 // Plus the pieces alone: the verdict's parse, the one retry, the comparison, the check's words, the request's ends (its
 // stop and its deadline among them).
 // The agent's runs are real runs of the store on a pi run of the faux gateway, whose faux grader (fixtures/faux-grader.mjs)
@@ -354,6 +356,22 @@ test("(10) a partial grade ({answer: 42} of the agent's {answer, sure, why}): ea
   const users = w.graderRequests().map((request) => JSON.stringify(request.body));
   assert.equal(users.length, 3, "one grader request per replay");
   assert.ok(users.every((one) => one.includes(JSON.stringify(`The agent's answer:\n<<<\n${corrected}\n>>>`).slice(1, -1))), `each asks against the corrected answer: ${users[0]}`);
+});
+
+test("(11) a grade given between the replays' end and the check's settle: each input is judged on what its fast model was asked (no grade then), so the verdict stands and the revision promotes; the grade counts from the next check", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3 });
+  const ids = undrawn("graded-late");
+  await landRevision(w.dir, answerFlow(REVISED), ids[0]);
+  await w.start(ids[0], "Question 10");
+  const replays = await w.replaysEnded(3);
+  for (const row of replays) assert.equal(row.metrics?.replay?.compared?.graded, null, `${row.id}: its verdict says no grade was there when it was asked`);
+  for (let i = 0; i < 3; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "agent" });
+  await w.start(ids[1], "Question 11");
+  const record = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
+  assert.ok(record, "the revision's check decided");
+  assert.equal(record.decided, "promote", record.reason);
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.ok(!record.reason.includes(COMPARE_STALE), record.reason);
 });
 
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {

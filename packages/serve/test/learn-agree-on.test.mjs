@@ -311,3 +311,29 @@ test("a record written with agree_on reads back with it (the promotions read kee
   await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", check }, () => true);
   assert.deepEqual((await promotionsOf(settings, "a")).at(-1).check, check);
 });
+
+test("a draft that repeats the answer a grade marked wrong is never right on that input, whatever the fast model says: byte for byte, or the same JSON in another dress", async () => {
+  const agentSaid = '{"decision":"approve","amount":100}';
+  const expected = { amount: 120 };
+  const corrected = knownAnswerText(agentSaid, expected);
+  const repeat = await decide({}, partialRead(agentSaid, expected, agentSaid, { same: true }, corrected));
+  assert.equal(repeat.record.decided, "hold", repeat.record.reason);
+  assert.deepEqual([repeat.stored.check.fields.answer.workflow_right, repeat.stored.check.agreed], [0, 0]);
+  assert.deepEqual(repeat.stored.check.disagreements[0].expected, [{ field: "answer", known: "grade", value: JSON.stringify(expected) }]);
+  const dressed = '```json\n{"amount": 100, "decision": "approve"}\n```';
+  const again = await decide({}, partialRead(agentSaid, expected, dressed, { same: true }, corrected));
+  assert.equal(again.record.decided, "hold", again.record.reason);
+  assert.equal(again.stored.check.fields.answer.workflow_right, 0);
+});
+
+test("an edit that leaves learning out carries the saved agree_on forward, a `__proto__` segment included; a write naming one is still refused", async (t) => {
+  const { api, store } = await serve(t);
+  const learning = { agree_on: ["__proto__.decision", "mcc"] };
+  await store.agents.create({ id: "kept", name: "kept" }, { id: "rev-kept", kind: "agentic", body: { instructions: "Classify the merchant.", skills: {}, tools: [], learning }, skills: {} });
+  assert.deepEqual((await api("GET", "/agents/kept")).body.definition.learning, learning);
+  const put = await api("PUT", "/agents/kept/definition", { definition: { name: "kept", instructions: "Classify the merchant again.", skills: [], tools: [] } });
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.deepEqual((await api("GET", "/agents/kept")).body.definition.learning, learning, "carried, not dropped");
+  const wrote = await api("PUT", "/agents/kept/definition", { definition: { name: "kept", instructions: "Classify the merchant.", skills: [], tools: [], learning } });
+  assert.equal(wrote.status, 422, JSON.stringify(wrote.body));
+});
