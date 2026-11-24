@@ -246,6 +246,48 @@ test("a run purged after the firing checked it but before its message lands turn
   assert.deepEqual(told, [], "no trigger.failed: nothing failed");
 });
 
+test("a trigger moved to another run while its message to the old one is on its way stays on when the old run is then purged: only that firing is skipped", async (t) => {
+  const messages = [];
+  const said = [];
+  const told = [];
+  const { store, triggers } = await engine(t, {
+    message: () => {
+      const next = held();
+      messages.push(next);
+      return next.promise;
+    },
+    say: (fields) => said.push(fields),
+    notify: (failed) => (told.push(failed), "queued"),
+  });
+  await run9(store);
+  await store.runs.create({ id: "run-10", agentId: "a", revisionId: "rev-a" });
+  const made = await triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 });
+
+  const firing = triggers.fire(made.id, "one");
+  await until(() => messages.length === 1, "the message to run-9 on its way");
+  await triggers.update(made.id, { target: { ...toRun9, run_id: "run-10" } });
+  await purgedRun9(store);
+  // The message to run-9 then fails as the server's message() fails for a purged run (trigger-targets.ts).
+  messages[0].reject(new ApiError("not_found", "The run run-9 was deleted."));
+
+  const fired = await firing;
+  assert.deepEqual([fired.firing.status, fired.firing.reason], ["skipped", "its run was deleted"], JSON.stringify(fired.firing));
+  const kept = await triggers.get(made.id);
+  assert.deepEqual([kept.enabled, kept.target.run_id, kept.disabled ?? null, kept.failures_in_a_row], [true, "run-10", null, 0], JSON.stringify(kept));
+  assert.deepEqual(said.filter((one) => one.condition === "trigger_source_unreadable"), [], "no turn-off said");
+  assert.deepEqual(told, [], "no trigger.failed: nothing failed");
+});
+
+test("a trigger update on the target it was read with (ifTarget) is refused once the target moved, compared in the update's own statement", async (t) => {
+  const { store } = await shared(t, "2026-06-01T00:00:00Z");
+  await store.triggers.create({ id: "trg-t", agentId: "a", name: "t", enabled: true, source: { kind: "webhook" }, target: toRun9, nextAt: null, catchupWindowS: 0 });
+  const read = await store.triggers.get("trg-t");
+  const moved = await store.triggers.update("trg-t", { target: { ...toRun9, run_id: "run-10" } });
+  assert.equal(await store.triggers.update("trg-t", { enabled: false }, undefined, { ifTarget: read.target }), undefined, "the old target's write is refused");
+  assert.equal((await store.triggers.get("trg-t")).enabled, true, "and nothing is written");
+  assert.equal((await store.triggers.update("trg-t", { enabled: false }, undefined, { ifTarget: moved.target }))?.enabled, false, "one on the target it holds lands");
+});
+
 test("a message_run trigger is not made, nor moved, onto a purged run: 422 not_found under target.run_id", async (t) => {
   const { store, triggers } = await engine(t, {});
   await run9(store);
