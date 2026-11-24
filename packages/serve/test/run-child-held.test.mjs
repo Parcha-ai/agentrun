@@ -239,13 +239,15 @@ test("a replay's grader on the runner reads the saved key of its fast tier's mod
   const cases = [
     { words: "the host's fast tier, its revision naming no tier model", body: {}, keys: { XAI_API_KEY: XAI_DUMMY } },
     { words: "its revision's fast tier over the host's", body: { modelTiers: { fast: "anthropic/claude-sonnet-5-5" } }, keys: { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY } },
+    // A strong tier beside the fast one: the grader routes the fast tier alone, so the strong tier's key stays unread.
+    { words: "the host's fast tier, with a strong tier on Anthropic beside it", body: {}, env: { ...FAST_ON_XAI, AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, keys: { XAI_API_KEY: XAI_DUMMY } },
   ];
-  for (const { words, body, keys } of cases) {
+  for (const { words, body, env = FAST_ON_XAI, keys } of cases) {
     // As a replay that stays in the runner makes it (adapter-run-spec.ts, launch.replay): the runner's seal key, a run
     // with no key of its own, its claim opening none here.
     const routed = [];
     const routeOf = async (ref, routeEnv, tier) => (routed.push({ tier, ref, keys: modelKeysIn(routeEnv) }), { model: { id: "grader" } });
-    const route = await spec.graderRouteOf(body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env: FAST_ON_XAI, routeOf });
+    const route = await spec.graderRouteOf(body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf });
     assert.ok(route, `${words}: a grader route`);
     assert.deepEqual(routed, [{ tier: "fast", ref: body.modelTiers?.fast, keys }], `${words}: the grader's route holds its fast tier's model's key alone`);
   }
@@ -273,6 +275,20 @@ test("a runner with no seal key gives its subagent tiers the keys of their model
   assert.deepEqual(await subagentTierKeys(deps, ["strong"], {}), { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, "a runner with no seal key: the host's strong tier's key alone");
   assert.deepEqual(await subagentTierKeys(deps, ["fast"], { fast: "xai/grok-5" }), { XAI_API_KEY: XAI_DUMMY }, "a runner with no seal key: the revision's fast tier's key alone");
   assert.deepEqual(await subagentTierKeys(deps, [], {}), {}, "a runner with no seal key: no tier, no key");
+});
+
+test("in a run's own process, with no seal key, the subagent tiers' keys are its runner's answer (held subagentTierKeys) and nothing read from its environment; no tier asks nothing", async (t) => {
+  const { setHeld } = await import("../dist/runner/held.js");
+  const asked = [];
+  // Its learned tiers' seam beside it answers nothing: the subagent tiers must ask their own.
+  setHeld({ subagentTierKeys: async () => (asked.push("subagentTierKeys"), { XAI_API_KEY: XAI_DUMMY }), tierModelKeys: async () => (asked.push("tierModelKeys"), { keys: {} }) });
+  t.after(() => setHeld(undefined));
+  // The process's environment holds other model keys (TIERED): none of them is read here.
+  const deps = { store: undefined, sealKey: undefined, env: TIERED };
+  assert.deepEqual(await subagentTierKeys(deps, ["fast"], {}), { XAI_API_KEY: XAI_DUMMY }, "a run's process: its runner's answer alone");
+  assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: its runner asked once");
+  assert.deepEqual(await subagentTierKeys(deps, [], {}), {}, "a run's process: no tier, nothing asked");
+  assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: no tier, its runner not asked again");
 });
 
 test("the settings a run's process reads are the server's shared configuration and its own run's and agent's rows: another run's SDK record is refused unread, and a listing holds only the readable rows", async () => {
