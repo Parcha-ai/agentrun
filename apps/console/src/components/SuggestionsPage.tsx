@@ -475,7 +475,7 @@ function CreatedCard({ s, agent, onRetry }: { s: Suggestion; agent: CreatedAgent
             : <Step tone="problem" label="Pull request"><span className="text-warning-text">{made?.pull_error ?? "Not opened yet."}</span></Step>}
           {here && here.runs.count > 0
             ? <Step tone="done" label="Called">{here.runs.count} {here.runs.count === 1 ? "run" : "runs"}{here.runs.live ? <span className="text-primary-text"> · {here.runs.live} live</span> : null}</Step>
-            : <Step tone="waiting" label="First call"><span className="text-muted-foreground">{agent === "unread" ? "Its runs couldn't be read." : <>{pull ? "Wire its client in at " : "From "}{siteHref ? <a href={siteHref} target="_blank" rel="noopener noreferrer" className={cn("break-all font-mono", link)}>{site.path}:{site.line}</a> : <span className="break-all font-mono">{site.path}:{site.line}</span>}{pull ? `, and set the variables #${pull.number} lists` : ""}</>}</span></Step>}
+            : <Step tone="waiting" label="First call"><span className="text-muted-foreground">{agent === "unread" ? "Its runs couldn't be read." : <>{pull ? "Wire its client in at " : "From "}{/* Wraps whole, onto its own line where it must; the step breaks only a path too long for a line. */}{siteHref ? <a href={siteHref} target="_blank" rel="noopener noreferrer" className={cn("font-mono", link)}>{site.path}:{site.line}</a> : <span className="font-mono">{site.path}:{site.line}</span>}{pull ? `, and set the variables #${pull.number} lists` : ""}</>}</span></Step>}
         </ol>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-3">
