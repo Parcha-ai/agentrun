@@ -201,7 +201,9 @@ test("API-only with Composio's MCP origin listed: a Composio preset's name throu
   assert.deepEqual(await rowOf(listed.server.store, "mail"), before, "the row is unchanged");
 });
 
-test("a run already going: before each call of a per_run server the token saved, the origin list is read again; dropped since the claim (a runner of its own outlives the server's restart), the call gets only the refusal's words and no header; listed again, the run's own header is back", async (t) => {
+/** A store with contextforge saved per_run by the API token, its origin listed, run-1 claimed and handed RUN, and the
+ *  claim's MCP step over `wrap(store)`. */
+async function goingClaim(t, wrap = (store) => store) {
   const { store } = await storeOn(t);
   const sealKey = Buffer.alloc(32, 7);
   const url = "https://mcp.example.com/mcp";
@@ -214,10 +216,14 @@ test("a run already going: before each call of a per_run server the token saved,
   await store.agents.create({ id: "agent-1", name: "a" }, { id: "rev-1", kind: "agentic", body: {}, mcpPin: await registryPin(store) });
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "go" }, title: "go", place: { mode: "runner" } }, sealed: sealRunMcpAuth(sealKey, "run-1", { contextforge: { headers: { authorization: `Bearer ${RUN}` }, origin } }) });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 600_000 });
-  const step = await mcpClaim({ loopback: true, store, claim, grants: ["mcp:contextforge/add"], sealKey, signal: new AbortController().signal });
+  const step = await mcpClaim({ loopback: true, store: wrap(store), claim, grants: ["mcp:contextforge/add"], sealKey, signal: new AbortController().signal });
   t.after(() => step.release());
   const call = () => step.beforeCall("contextforge", new AbortController().signal);
-  const handed = { url, headers: { authorization: `Bearer ${RUN}` } };
+  return { store, step, call, url, origin, handed: { url, headers: { authorization: `Bearer ${RUN}` } } };
+}
+
+test("a run already going: before each call of a per_run server the token saved, the origin list is read again; dropped since the claim (a runner of its own outlives the server's restart), the call gets only the refusal's words and no header; listed again, the run's own header is back", async (t) => {
+  const { store, step, call, url, origin, handed } = await goingClaim(t);
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "claimed with the origin listed: the run's own header");
   await call();
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "still listed: a call keeps it");
@@ -230,4 +236,31 @@ test("a run already going: before each call of a per_run server the token saved,
   await holdApiOnlyMcpOrigins(store, true, [origin]);
   await call();
   assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed again: the run's own header is back");
+});
+
+test("a run already going: when the origin list can't be read before a call (a store error), the call is refused unsent, never sent on the header the claim opened (the gateway refuses a check that throws)", async (t) => {
+  let failing = false;
+  // The store as the claim sees it: its settings reads fail on the API-only list once `failing` is set.
+  const wrap = (store) => new Proxy(store, {
+    get(target, key) {
+      if (key === "settings") return new Proxy(target.settings, {
+        get(settings, field) {
+          if (field === "get") return async (name) => {
+            if (failing && name === "mcp.api_only_origins") throw new Error("the store could not be read");
+            return settings.get(name);
+          };
+          const value = Reflect.get(settings, field, settings);
+          return typeof value === "function" ? value.bind(settings) : value;
+        },
+      });
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const { call, handed, step } = await goingClaim(t, wrap);
+  // A beforeCall that throws is the gateway's "could not be checked just now", the call unsent (store-github-app.test.mjs).
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "the read works: the call goes on the run's header");
+  failing = true;
+  await assert.rejects(call(), /the store could not be read/, "the read fails: the check throws, so the gateway refuses the call unsent");
 });
