@@ -4,8 +4,10 @@
 // requests go to the route's origin with no key, through the route's fetch: native /api/chat, options.num_ctx, its tools
 // as text where it takes them so, $0, and never counted toward the free-model limit. What a Messages client asks beyond
 // pi-ai is answered in the translation: its token count, an answer not streamed, every model id it sends (its small
-// model's too), and fields the translation does not run (context_management, output_config, deferred tools and tool
-// references) never sent on. All against a fake Ollama on loopback (fixtures/fake-ollama.mjs); no real Ollama is asked.
+// model's too), its output schema as Ollama's format, and fields the translation does not run (context_management,
+// output_config's effort, deferred tools and tool references) never sent on; what it cannot keep (a forced tool_choice,
+// an output schema beside tools) is a 400, and any other path a 404. All against a fake Ollama on loopback
+// (fixtures/fake-ollama.mjs); no real Ollama is asked.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -304,13 +306,14 @@ test("a Goose run on an Ollama model through serve: its requests reach /api/chat
   assert.deepEqual([...new Set(lines.map((line) => `${line.provider}/${line.model}`))], [`ollama/${TOOLS}`]);
 });
 
-// The Messages wire stays as #3619 proved it: what the Responses edge asks Ollama past the Messages body (a format, its
-// sampling, no thinking) rides that edge's own in-process call (responses-fetch.ts EdgeAsks), so a Messages client's
-// own temperature, top_p, output_config.format and effort "none" reach Ollama as they did: not at all.
-test("guard: a Messages client's temperature, top_p, output_config.format and effort \"none\" never reach Ollama, with tools or without", async (t) => {
+// The Messages wire stays as #3619 proved it for sampling and thinking: what the Responses edge asks Ollama past the
+// Messages body (its sampling, no thinking) rides that edge's own in-process call (responses-fetch.ts EdgeAsks), so a
+// Messages client's own temperature, top_p and effort "none" reach Ollama as they did: not at all. Its output schema is
+// no longer dropped (the test after this one).
+test("guard: a Messages client's temperature, top_p and effort \"none\" never reach Ollama, with tools or without", async (t) => {
   const { ollama, env } = await onOllama(t);
   const { fetch: send } = await moduleLaunch(env, TOOLS);
-  const asked = { temperature: 0.3, top_p: 0.5, thinking: { type: "disabled" }, output_config: { effort: "none", format: { type: "json_schema", schema: { type: "object" } } } };
+  const asked = { temperature: 0.3, top_p: 0.5, thinking: { type: "disabled" }, output_config: { effort: "none" } };
   for (const body of [request(asked), request({ ...asked, tools: undefined })]) {
     const events = await eventsOf(await post(send, body));
     assert.equal(events.at(-1)?.type, "message_stop", JSON.stringify(events));
@@ -321,4 +324,52 @@ test("guard: a Messages client's temperature, top_p, output_config.format and ef
     assert.equal(sent.think, undefined, "think");
   }
   assert.equal(ollama.got.chat.length, 2);
+});
+
+// A Messages client's output schema (output_config.format, which claude-agent's policy lets through) is Ollama's format,
+// asked on the in-process call as the Responses edge asks it, so the Messages body is sent as it is. Ollama holds the
+// whole answer to it, which leaves the model no way to call a tool, so beside tools it is refused, never dropped.
+test("output_config.format json_schema is Ollama's format on a request with no tools; beside tools, or of another shape, it is a 400 in Messages' words and never reaches Ollama", async (t) => {
+  const { ollama, env } = await onOllama(t);
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const schema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
+  for (const stream of [true, false]) {
+    const answer = await post(send, request({ tools: undefined, stream, output_config: { format: { type: "json_schema", schema } } }));
+    assert.equal(answer.status, 200, `stream ${stream}`);
+    await answer.text();
+    assert.deepEqual(ollama.got.chat.at(-1).format, schema, `stream ${stream}: the schema is Ollama's format`);
+  }
+  const before = ollama.got.chat.length;
+  const beside = await post(send, request({ output_config: { format: { type: "json_schema", schema } } }));
+  assert.equal(beside.status, 400);
+  const said = await beside.json();
+  assert.equal(said.error?.type, "invalid_request_error");
+  assert.match(said.error?.message ?? "", /drop the output schema/);
+  for (const format of [{ type: "json_object" }, { type: "json_schema" }, { type: "json_schema", schema: "object" }]) {
+    const refused = await post(send, request({ tools: undefined, output_config: { format } }));
+    assert.equal(refused.status, 400, JSON.stringify(format));
+    assert.equal((await refused.json()).error?.type, "invalid_request_error", JSON.stringify(format));
+  }
+  assert.equal(ollama.got.chat.length, before, "no refused request reached the model");
+});
+
+// The route takes what a Messages client sends its turns and its token count on, and nothing else: any other path or
+// method is a 404, never run as a chat (a module's policy may admit more than claude-agent's and Goose's do).
+test("anything but POST /v1/messages and /v1/messages/count_tokens is a 404 in Messages' words and never runs as a chat", async (t) => {
+  const { ollama, env } = await onOllama(t);
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const body = JSON.stringify(request());
+  for (const [method, path] of [["POST", "/v1/complete"], ["POST", "/v1/messages/batches"], ["POST", "/v1/models"], ["POST", "/v1/messages/count_tokens/again"], ["GET", "/v1/messages"], ["GET", "/"]]) {
+    const answer = await send(`${ROUTE_ORIGIN}${path}`, { method, headers: { "content-type": "application/json" }, ...(method === "GET" ? {} : { body }) });
+    assert.equal(answer.status, 404, `${method} ${path}`);
+    const said = await answer.json();
+    assert.equal(said.type, "error", `${method} ${path}`);
+    assert.equal(said.error?.type, "not_found_error", `${method} ${path}`);
+  }
+  assert.equal(ollama.got.chat.length, 0, "none of them reached the model");
+  assert.equal((await post(send, request(), "/v1/messages/count_tokens")).status, 200, "the token count");
+  const turn = await post(send, request());
+  assert.equal(turn.status, 200, "a turn");
+  await turn.text();
+  assert.equal(ollama.got.chat.length, 1);
 });
