@@ -64,7 +64,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
   const savedGateway = savedGatewayIn(deps.env ?? {});
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV)) env[name] = working[name];
-  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: launch.plane ? handsJevWeb(launch.plane, working) : false });
+  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: launch.plane ? handsJevWeb(launch.plane, working, needs.harness) : false });
   for (const [name, value] of Object.entries(decision)) env[name] = value;
   // The run's own tool keys, sealed with its launch: each one its revision declares, over the server's by the same name.
   // Opened by a runner, which holds the seal key; a run's own process is handed them with the rest of its claim's keys.

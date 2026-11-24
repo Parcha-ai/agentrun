@@ -3889,8 +3889,9 @@ typed answers and their probabilities.
 - The TypeSafe and Parallel keys never enter a run's environment, which its tools and its model's provider read. The
   server drops `TYPESAFE_API_KEY` and `PARALLEL_API_KEY` from every run's process. It hands a run's process those it
   needs ([Safety](#safety)), a workflow's decision providers', Parallel's where its `web_fetch` or `web_search`
-  resolves to Parallel, and TypeSafe's where one of its web tools runs and Jev ranks it ([Search and
-  fetch](#search-and-fetch)), once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
+  resolves to Parallel, and TypeSafe's where one of its web tools is the run's own ([Search and
+  fetch](#search-and-fetch): `web_fetch` wherever it runs, `web_search` except a harness's own search inside its CLI,
+  as on codex or claude-agent), once, by name, on an inherited pipe (the first descriptor after its stdio and its secrets pipe, as macOS refuses a high one), at each
   launch, a resume after a restart included. The process reads them once into its decision providers and web tools,
   closes the descriptor before anything else runs, and keeps the keys nowhere else. It is never in an
   environment, an argument list or a file, and no program the run starts inherits it. With no key, no descriptor is

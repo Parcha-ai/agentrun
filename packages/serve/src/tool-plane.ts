@@ -254,7 +254,8 @@ export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guar
 
 /** The resolutions of web_search the run's own web_search runs (web-run.ts webOf), where Jev ranks the results: native
  *  only where it is the model provider's hosted search (pi's), never a harness's own search inside its CLI. */
-const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !input.facts?.webSearch);
+const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !facts?.webSearch);
+const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
  *  the two never disagree. A web_search the run's own tool runs says what Jev does with it, where the server has a Jev
@@ -480,10 +481,13 @@ export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => 
 /** The resolutions of each web tool its run's Web runs (web-run.ts SEARCH_CHAINS, FETCH_CHAINS), where Jev ranks a
  *  search's results. */
 const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: ["parallel", "native", "firecrawl-keyless", "exa-keyless"], web_fetch: ["parallel", "firecrawl-keyless", DIRECT_FETCH] };
-/** Whether a run is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of them resolves to
- *  something its Web runs, and Jev is not turned off in the server's `env` (AGENTRUN_WEB_JEV_OFF). */
-export const handsJevWeb = (plane: Plane, env: NodeJS.ProcessEnv): boolean =>
-  !webJevOff(env) && (WEB_RUNS.web_search.includes(plane.web_search ?? "") || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
+/** Whether a run on `harness` is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of
+ *  them is served by its own Web (web-run.ts webOf), and Jev is not turned off in the server's `env`
+ *  (AGENTRUN_WEB_JEV_OFF). web_fetch always is where it runs; web_search is where it resolves to Parallel or a keyless
+ *  provider, or to native where that is the model provider's hosted search (pi's), never a harness's own search inside
+ *  its CLI (codex's, claude-agent's: its facts' webSearch), where no Jev call can happen. */
+export const handsJevWeb = (plane: Plane, env: NodeJS.ProcessEnv, harness: string | undefined): boolean =>
+  !webJevOff(env) && (searchesOwn(plane.web_search ?? "", tableFactsOf(env, harness)) || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
 
 /** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each settings key (a tool of the
  *  table, a catalog tool, an MCP server's wildcard) to `{provider?, permission?}`, a provider only for a capability that
