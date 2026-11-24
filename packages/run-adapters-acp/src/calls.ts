@@ -127,8 +127,7 @@ export function nameCall(calls: CallIds, update: AcpCallUpdate, kindAtCall: stri
   if (hasEffects(kindAtCall) || hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (typeof tool !== "string") return;
-  const args = announcedArgs(update, announces);
-  calls.add(update.toolCallId, tool, isPlain(args) ? args : undefined);
+  calls.add(update.toolCallId, tool, announcedArgs(update, announces));
 }
 
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
@@ -140,19 +139,18 @@ export class CallIds {
   /** The key each announcement still waiting for its MCP call is kept under. */
   private readonly keyOf = new Map<string, string>();
 
-  /** The agent announced call `id` with `input` (undefined: it reported none), its recipe's field naming `tool` of
-   *  ours, or none (undefined). One with no tool is matched by its input alone, an object ({} included: announceCall
-   *  holds one back where a later update will name the call); one with no input by its tool alone; one with neither is
-   *  never matched. A tool named for an id already announced without one (a call the agent named in a later update)
-   *  keys it again. */
+  /** The agent announced call `id` with `input`, its recipe's field naming `tool` of ours, or none (undefined). Input
+   *  that is not an object (none reported, or a value that is not an argument object) is no input. One with no tool is
+   *  matched by its input alone, an object ({} included: announceCall holds one back where a later update will name
+   *  the call); one with no input by its tool alone; one with neither is never matched. A tool named for an id already
+   *  announced without one (a call the agent named in a later update) keys it again. */
   add(id: string, tool: string | undefined, input: unknown): void {
     if (this.used.has(id)) return;
-    const reported = input !== undefined && input !== null;
     if (tool === undefined && !isPlain(input)) return;
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
     // An announced call with input is matched only by that input (and its tool, where the field named one), so it never
     // takes an MCP call with other arguments that is waiting for its own announcement.
-    const key = reported ? `${tool ?? ""}\0${canonical(isPlain(input) ? input : {})}` : `${tool}\0*`;
+    const key = isPlain(input) ? `${tool ?? ""}\0${canonical(input)}` : `${tool}\0*`;
     const before = this.keyOf.get(id);
     if (before === key) return;
     if (before !== undefined) {
