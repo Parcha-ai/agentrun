@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
-import { answers, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
+import { answers, dailyLimit, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import fakeExa, { resetFauxExa } from "./fixtures/faux-exa.mjs";
 import fakeParallel, { CANARY, resetFauxParallel } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
@@ -99,6 +99,21 @@ test("keyless Firecrawl with Exa behind it: Firecrawl answers; its rate limit pa
   const hello = f.fc.got.find((one) => one.body.method === "initialize");
   assert.equal(hello.body.params.clientInfo.name, "agentrun-web", "the MCP client names web, never a server");
 });
+
+for (const where of ["text", "rpc"]) {
+  test(`keyless Firecrawl's daily limit, said in plain text (${where === "rpc" ? "a JSON-RPC error" : "a tool result marked isError"}): a quota until 00:00 UTC, Exa answers, Firecrawl is unasked until then and asked again at it`, async (t) => {
+    const f = await fakes(t, (name, n) => (name === "firecrawl_search" && n === 1 ? dailyLimit(where) : undefined));
+    process.env.AGENTRUN_TEST_FAUX_EXA = "ok";
+    const w = web.createWeb({ ...f.config, order: { search: ["firecrawl-keyless", "exa-keyless"], fetch: [] } });
+    const midnight = Date.parse("2026-11-25T00:00:00Z") - START;
+    await run(f, w, [
+      { query: "widgets", at: 0, asks: ["firecrawl-keyless", "exa-keyless"], tries: [["firecrawl-keyless", "error"], ["exa-keyless", "ok"]], by: "exa-keyless", check: (_answer, receipt) => assert.deepEqual(receipt.tries[0].limit, { kind: "quota", retryAfter: "Wed, 25 Nov 2026 00:00:00 GMT" }) },
+      { query: "gadgets", at: 16 * 60_000, asks: ["exa-keyless"], tries: [["firecrawl-keyless", "held"], ["exa-keyless", "ok"]], by: "exa-keyless" },
+      { query: "sprockets", at: midnight - 1, asks: ["exa-keyless"], tries: [["firecrawl-keyless", "held"], ["exa-keyless", "ok"]], by: "exa-keyless" },
+      { query: "widgets", at: midnight, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
+    ], `firecrawl daily (${where})`);
+  });
+}
 
 test("keyless Exa alone: its free limit answers the caller's words and holds it for the Retry-After it named; past it Exa is asked again", async (t) => {
   const f = await fakes(t);

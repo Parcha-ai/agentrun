@@ -6,9 +6,10 @@
 // for one tool.
 //
 // `answer(name, args, n)` answers the nth tools/call (n counted over every tool): an object `{status, headers}` for that
-// HTTP status with no JSON-RPC answer, or a tool result (`{content, isError?, structuredContent?}`). By default
-// firecrawl_search answers SEARCH_HITS and firecrawl_scrape PAGE, as Firecrawl's keyless tools answer them. refusal()
-// makes Firecrawl's keyless refusal (its recoveryPayload) as a tool result, in its structuredContent or its text.
+// HTTP status with no JSON-RPC answer, `{rpcError}` for a JSON-RPC error with that message, or a tool result (`{content,
+// isError?, structuredContent?}`). By default firecrawl_search answers SEARCH_HITS and firecrawl_scrape PAGE, as
+// Firecrawl's keyless tools answer them. refusal() makes Firecrawl's keyless refusal (its recoveryPayload) as a tool
+// result, in its structuredContent or its text; dailyLimit() its plain-text answer once its daily limit is spent.
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
@@ -32,6 +33,13 @@ export function refusal(code, { retryAfter, where = "text" } = {}) {
   const payload = { code, request_id: "req-fake-1", auth_mode: "keyless", message: FIRECRAWL_SIGNUP, signup_url: "https://www.firecrawl.dev/signup", ...(retryAfter === undefined ? {} : { retry_after_seconds: retryAfter }) };
   return where === "structured" ? { content: [{ type: "text", text: FIRECRAWL_SIGNUP }], structuredContent: payload, isError: true } : { ...text(payload), isError: true };
 }
+
+/** Firecrawl's answer once its keyless daily limit is spent, as it was seen on 2026-11-24: plain text, no code. */
+export const FIRECRAWL_DAILY_LIMIT = "daily limit without an account was reached";
+
+/** Firecrawl's daily-limit answer to a call: a tool result marked isError (`where: "text"`), or a JSON-RPC error
+ *  (`where: "rpc"`). */
+export const dailyLimit = (where = "text") => (where === "rpc" ? { rpcError: FIRECRAWL_DAILY_LIMIT } : { content: [{ type: "text", text: FIRECRAWL_DAILY_LIMIT }], isError: true });
 
 /** The default answer of each keyless tool. */
 export const answers = (name) => (name === "firecrawl_search" ? text({ success: true, data: { web: SEARCH_HITS } }) : name === "firecrawl_scrape" ? text(PAGE) : { content: [{ type: "text", text: `Tool ${name} not found` }], isError: true });
@@ -62,6 +70,7 @@ export async function firecrawlServer(t, answer = (name) => answers(name)) {
     if (body.method !== "tools/call") return stream(res, { id: body.id, error: { code: -32601, message: "no such method" } });
     const said = await answer(body.params.name, body.params.arguments, (n += 1));
     if (said && typeof said.status === "number") return void res.writeHead(said.status, { "content-type": "application/json", ...said.headers }).end(JSON.stringify({ error: "refused" }));
+    if (said && typeof said.rpcError === "string") return stream(res, { id: body.id, error: { code: -32000, message: said.rpcError } });
     return stream(res, { id: body.id, result: said });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { firecrawlFetch, SEARCH_UNAVAILABLE, searchBreaker, searchInTurn } from "../dist/index.js";
-import { firecrawlServer, refusal, answers } from "./fixtures/fake-firecrawl.mjs";
+import { answers, dailyLimit, FIRECRAWL_DAILY_LIMIT, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { webFetch } from "./support.mjs";
 
@@ -38,6 +38,24 @@ test("a fetch Firecrawl rate-limits goes direct for the wait it named, and to Fi
   assert.equal(fc.calls("firecrawl_scrape"), 1);
   now += 6_000;
   assert.equal((await read(PUBLIC)).via, "firecrawl-keyless", "past it");
+  assert.equal(fc.calls("firecrawl_scrape"), 2);
+});
+
+test("a fetch past Firecrawl's daily limit, said in plain text, goes direct, and Firecrawl is unasked until 00:00 UTC, then asked again", async (t) => {
+  let spent = true;
+  const fc = await firecrawlServer(t, (name) => (spent ? dailyLimit() : answers(name)));
+  let now = Date.parse("2026-11-24T12:00:00Z");
+  const firecrawl = firecrawlFetch({ endpoint: fc.url }, () => now);
+  const read = (url) => webFetch(url, { ...network(), firecrawl });
+  const first = await read(PUBLIC);
+  assert.equal(first.via, "direct");
+  assert.doesNotMatch(JSON.stringify(first), new RegExp(FIRECRAWL_DAILY_LIMIT), "Firecrawl's own words are never passed on");
+  spent = false;
+  now = Date.parse("2026-11-25T00:00:00Z") - 1;
+  assert.equal((await read("http://public.example/notes.txt")).via, "direct", "a millisecond before 00:00 UTC");
+  assert.equal(fc.calls("firecrawl_scrape"), 1);
+  now += 1;
+  assert.equal((await read(PUBLIC)).via, "firecrawl-keyless", "at 00:00 UTC");
   assert.equal(fc.calls("firecrawl_scrape"), 2);
 });
 
