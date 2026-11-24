@@ -50,6 +50,16 @@ export async function ownersAuthConfig(store: SavedServers, id: string): Promise
   return undefined;
 }
 
+/** Whether a server the API token saved holds the Composio connected account `id` (its record of what it stands on
+ *  there): the one account, besides those its own connect links start, that the token's Composio save may stand on. */
+export async function tokensAccount(store: SavedServers, id: string): Promise<boolean> {
+  for (const row of await store.mcp.servers()) {
+    if (!recordedMade(await store.settings.get(composioMadeKey(row.name)), row.createdAt)?.accounts.some((account) => account.id === id)) continue;
+    if (savedByToken(await store.settings.get(mcpSourceKey(row.name)), row.createdAt)) return true;
+  }
+  return false;
+}
+
 /** A saved server's credential as a writer read it (McpCredentialMark): its auth type, whether one is sealed, and when it
  *  was set. A save let through against one mark writes only while the row still has it, in the store's one statement
  *  (Mcp.putIfCredential), so it never lands over a credential saved or signed in with after the check. */
@@ -97,15 +107,12 @@ function composioSaveSendsKey(body: unknown): boolean {
 }
 /** A Composio save that names its key by api_key_env (the server keeps the variable's name, never its value) writes no
  *  secret only on an API-only server, which has no owner to save the key from the console: its token's own save, over a
- *  new name or a server the token saved, by the one rule (tokenWriteOverRefused), naming no auth config a server the
- *  owner saved stands on (ownersAuthConfig; one the save finds at Composio is refused as the save learns it,
- *  McpServersOverStore.save). Anywhere else the owner saves keys from the console, so the token's is the one refusal as
- *  before. */
+ *  new name or a server the token saved, by the one rule (tokenWriteOverRefused). What it stands on at Composio is the
+ *  save's own check (McpServersOverStore.tokenStandsOn and tokenAccountOn). Anywhere else the owner saves keys from the
+ *  console, so the token's is the one refusal as before. */
 export async function composioSaveDropsSecret(body: unknown, request: SecretRequest): Promise<boolean> {
   if (!request.apiOnly || !request.params[0]) return true;
-  if (await tokenWriteOverRefused(body, request)) return true;
-  const named = isObject(body) && typeof body.auth_config_id === "string" ? body.auth_config_id : undefined;
-  return named !== undefined && (await ownersAuthConfig(request.store as SavedServers, named)) !== undefined;
+  return tokenWriteOverRefused(body, request);
 }
 // A Composio server's webhook subscription (composio-triggers.ts): a rotate seals its new secret, a delete drops it.
 registerSecretWrite("rotateComposioSecret", () => true);

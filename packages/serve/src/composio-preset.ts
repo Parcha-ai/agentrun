@@ -211,9 +211,11 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
  *  it, for its delete to remove what was made. The key is the body's `api_key`, or COMPOSIO_API_KEY's value when the body
  *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. `standsOn`: the caller's
- *  check of the auth config named or found, before anything is made against it (an API token's save: never one a server
- *  the owner saved stands on); it refuses by throwing, and the save makes nothing. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>, standsOn?: (authConfig: string) => Promise<void>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+ *  check of the auth config named (before anything is sent) or found (before anything is made against it): an API token's
+ *  save never stands on one a server the owner saved stands on. `accountOn`: the caller's check of an ACTIVE account the
+ *  save found for its user, before anything is made (an API token's save: only one a server the token saved holds). Each
+ *  refuses by throwing, and the save makes nothing. */
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>, standsOn?: (authConfig: string) => Promise<void>, accountOn?: (user: string, account: string) => Promise<void>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   // No address and no headers of the caller's own: Composio makes the server and answers its address, and the key is the
   // one header sent. Any field the save does not take is refused before anything is sent, never ignored.
   if (isObject(body)) {
@@ -246,6 +248,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const madeHere: Removable[] = [];
   let url: string | undefined;
   try {
+    if (ownConfig && standsOn) await standsOn(ownConfig);
     const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
     // Every slug is one the toolkit lists (at its latest version), before anything is made: Composio makes a server
     // allowing a slug it doesn't have, which then serves nothing under that name. A list longer than MAX_PAGES refuses
@@ -271,6 +274,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
       const of = isObject(config.toolkit) ? text(config.toolkit.slug).toLowerCase() : "";
       if (of !== toolkit) throw invalid([issue("auth_config_id", "wrong_toolkit", `The auth config ${ownConfig} is ${of ? `the ${of} toolkit's` : "no toolkit's Composio names"}, not ${toolkit}'s: use one of ${toolkit}'s. Nothing was saved.`)]);
       if (config.status === "DISABLED") throw invalid([issue("auth_config_id", "disabled", `The auth config ${ownConfig} is disabled in Composio: enable it there, or use another. Nothing was saved.`)]);
+      // The id checked (standsOn) and recorded is the one sent: Composio answering another (another letter case, say) is refused.
+      if (text(config.id) !== ownConfig) throw invalid([issue("auth_config_id", "not_found", `Composio answers the auth config ${ownConfig} as ${text(config.id) || "one with no id"}: send its id exactly as Composio shows it. Nothing was saved.`)]);
       authConfig = ownConfig;
     } else if (!noAuth) {
       authConfig = await managedConfig(ask, toolkit);
@@ -282,9 +287,18 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         madeHere.push({ kind: "auth_config", id: authConfig });
       }
     }
-    // The auth config found, or named, checked by the caller before anything is made against it (an API token's save:
-    // never one a server the owner saved stands on, McpServersOverStore.tokenStandsOn). One made just now is no other's.
-    if (authConfig && !madeConfig && standsOn) await standsOn(authConfig);
+    // The auth config found, checked by the caller before anything is made against it, as a named one was before anything
+    // was sent (an API token's save: never one a server the owner saved stands on, McpServersOverStore.tokenStandsOn).
+    // One made just now is no other's.
+    if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
+    // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
+    // Looked for before anything is made, so the caller's check of one found (accountOn) leaves nothing made.
+    let active: Json | undefined;
+    if (authConfig && !perRun) {
+      const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
+      active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json | undefined;
+      if (active && accountOn) await accountOn(user, text(active.id));
+    }
     const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
       name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
     });
@@ -299,11 +313,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     let connect: string | undefined;
     const accounts: Made[] = [];
     if (authConfig && !perRun) {
-      // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
-      const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
-      const active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig);
       if (active) {
-        if (text((active as Json).id)) accounts.push({ id: text((active as Json).id), made: false });
+        if (text(active.id)) accounts.push({ id: text(active.id), made: false });
       } else {
         // The link starts the connected account it connects (connected_account_id): this save's, removed with the server.
         const link = await ask("making the connect link", "POST", "/api/v3/connected_accounts/link", { auth_config_id: authConfig, user_id: user });

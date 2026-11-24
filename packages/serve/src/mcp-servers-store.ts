@@ -15,7 +15,7 @@ import {
 import { listMcpServers, openMcpRow, putPendingSignIn, removeMcpServer, removeMcpServerIfCredential, rewriteMcpServer, saveMcpServerIfCredential, takePendingSignIn, type RemovedMcpServer } from "./mcp-store.js";
 import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./mcp-private-hosts.js";
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
-import { credentialMark, ownersAuthConfig } from "./mcp-secret-writes.js";
+import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
@@ -814,12 +814,20 @@ export class McpServersOverStore {
   }
 
   /** The API token's Composio save stands on no auth config a server the owner saved stands on (ownersAuthConfig,
-   *  mcp-secret-writes.ts): one the save named is the gate's refusal already (composioSaveDropsSecret); one Composio
-   *  answered as the toolkit's own is refused here, before anything is made at Composio (composio-preset.ts composioSave
-   *  `standsOn`): 403, naming the owner's server, nothing saved. */
+   *  mcp-secret-writes.ts), named (before anything is sent) or found as the toolkit's own (before anything is made):
+   *  composio-preset.ts composioSave `standsOn`. 403, naming the owner's server, nothing saved. */
   async tokenStandsOn(authConfig: string): Promise<void> {
     const owners = await ownersAuthConfig(this.store, authConfig);
     if (owners) throw new ApiError("forbidden", `The Composio auth config ${authConfig} is the one the owner's MCP server ${owners} stands on: an API token's server never uses it, so it never acts as the owner's connected account or removes what the owner's server made. Name an auth config of the token's own (auth_config_id). Nothing was saved.`);
+  }
+
+  /** The API token's Composio save stands on no ACTIVE account it found for its user unless a server the token saved
+   *  holds it (tokensAccount, mcp-secret-writes.ts): one no record here names may be the owner's, saved by hand, connected
+   *  in Composio's dashboard, or kept after its server's delete. Checked before anything is made (composio-preset.ts
+   *  composioSave `accountOn`): 403, nothing saved. */
+  async tokenAccountOn(user: string, account: string): Promise<void> {
+    if (account && (await tokensAccount(this.store, account))) return;
+    throw new ApiError("forbidden", `The Composio user_id ${user} already has a connected account here that no server the API token saved connected: an API token's server never acts as it. Name a user_id of the token's own. Nothing was saved.`);
   }
 
   /** A body's URL for the saved row `saved` (savedOrGiven: its shown address sent back unchanged is its saved one), but
