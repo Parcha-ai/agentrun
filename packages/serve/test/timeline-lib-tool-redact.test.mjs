@@ -80,15 +80,17 @@ test("a calls read's tool_input withholds a number that shows a held all-digit k
 
 test("a calls read's tool_input carries each string argument whole to calls.result, as its output is, through the same redaction: a grader reads a long write's tail", async () => {
   const { CAPS } = await import("../dist/timeline/index.js");
-  // A body past CAPS.text (2,000) with a held key in its tail, and one past calls.result.
+  // A body past CAPS.text (2,000) with a held key in its tail, and one past calls.result. The description is the
+  // argument a tool_use row previews (labels.ts inputPreview): whole in tool_input, cut at CAPS.preview in the preview.
   const body = `${"## Fixed\n".repeat(400)}tail ${KEY} end`;
   const huge = "x".repeat(9000);
   assert.ok(body.length > CAPS.text);
   const calls = { result: 8000, redact };
-  const rows = timelineOf([user("Draft it."), assistant([call("w1", "issue_write", { body, huge })]), result("w1", "issue_write", "drafted")], { redact, calls });
+  const rows = timelineOf([user("Draft it."), assistant([call("w1", "issue_write", { description: body, body, huge })]), result("w1", "issue_write", "drafted")], { redact, calls });
   const row = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "w1");
   assert.equal(row.tool_input.body, `${"## Fixed\n".repeat(400)}tail [redacted] end`, "whole, the held key redacted");
   assert.deepEqual([row.tool_input.huge.length, row.tool_input.huge.endsWith("...")], [calls.result, true], "cut at calls.result");
-  assert.ok(row.tool_input_preview.length <= CAPS.preview, "the preview keeps its own bound");
+  assert.equal(row.tool_input.description, row.tool_input.body, "the previewed argument whole in tool_input too");
+  assert.deepEqual([row.tool_input_preview.length, row.tool_input_preview.endsWith("...")], [CAPS.preview, true], "the preview keeps its own bound");
   assert.deepEqual(leaks(rows), []);
 });
