@@ -130,6 +130,7 @@ test("a save whose value is put and whose binding write fails reads the store ag
   assert.ok(await store.sealedKeys.get(harnessKeyRow("acme", "ACME_API_KEY")), "the value was put");
   assert.ok(keys.values().includes(VALUE), "the cut holds the value the store holds");
   assert.equal(keys.view(ACME).keys[0].set, false, "bound to no recipe, so not saved");
+  assert.deepEqual(keys.view(ACME).reenter, [{ name: "harness:acme:ACME_API_KEY", why: "not_bound" }], "and the view says it is bound to none, not to another recipe file");
   assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), {}, "and no claim opens it");
   // The next save, with the store well again, binds it.
   await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
@@ -150,7 +151,7 @@ test("a recipe the server no longer names keeps its keys, sealed and cut and run
     { label: "acme", keys: [], ready: false, kept: [["harness:acme:ACME_API_KEY", true, "console"]] });
   assert.ok(later.values().includes(VALUE), "its value is still cut");
   assert.throws(() => later.recipe("acme"), notFound, "a PUT never saves for it");
-  await assert.rejects(later.remove(later.held("acme"), "ACME_ORG"), (e) => fieldsOf(e).some((i) => i.reason === "not_an_option"), "a key never kept for it is not one");
+  await assert.rejects(later.remove(later.held("acme"), "ACME_ORG"), (e) => fieldsOf(e).some((i) => i.reason === "not_an_option" && i.message === "acme's keys are ACME_API_KEY."), "a key never kept for it is not one, and the refusal names the keys it has, never a recipe it runs on");
   await later.remove(later.held("acme"), "ACME_API_KEY");
   assert.equal(await store.sealedKeys.get(harnessKeyRow("acme", "ACME_API_KEY")), undefined, "its row is gone");
   assert.ok(later.values().includes(VALUE), "kept retired for the cut");
@@ -185,6 +186,20 @@ test("a row sealed under another seal key reads as not saved, never a clear fall
   assert.equal(again.view(ACME).keys[0].set, false);
   assert.deepEqual(again.view(ACME).reenter, [{ name: "harness:acme:ACME_API_KEY", why: "seal_key_changed" }]);
   assert.deepEqual(again.values(), []);
+});
+
+test("a key saved before keys were bound to a recipe file (beta.55, no binding row) reads not saved, opens for no claim, and the view says it is bound to none", async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.sealedKeys.put(harnessKeyRow("acme", "ACME_API_KEY"), sealedHarnessKeyBytes(SEAL, "acme", "ACME_API_KEY", VALUE));
+  const keys = new HarnessKeysOverStore(store, SEAL, [ACME], file);
+  await keys.load();
+  assert.equal(keys.view(ACME).keys[0].set, false);
+  assert.deepEqual(keys.view(ACME).reenter, [{ name: "harness:acme:ACME_API_KEY", why: "not_bound" }]);
+  assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), {});
+  assert.ok(keys.values().includes(VALUE), "still cut");
+  await keys.save(ACME, "ACME_API_KEY", { value: VALUE });
+  assert.deepEqual(keys.view(ACME).reenter, [], "saved again, it binds");
+  assert.deepEqual(await openHarnessKeys(store, SEAL, ACME), { ACME_API_KEY: VALUE });
 });
 
 test("a damaged row under this server's seal key reads as not saved, and the view says it does not read", async (t) => {
