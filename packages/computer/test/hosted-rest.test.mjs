@@ -1,7 +1,7 @@
 // The shared REST client (src/hosted/rest.ts): status table, retry rules, accept, redirect refusal, cursor pages. No vendor, no network.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { allPages, httpCode, rest } from "../dist/hosted/rest.js";
+import { allPages, httpCode, refusedRedirect, rest } from "../dist/hosted/rest.js";
 
 const answers = (...replies) => {
 	const calls = [];
@@ -46,6 +46,11 @@ test("a call carries the header, a JSON Content-Type, and never follows a redire
 	const redirect = await client(answers(new TypeError("fetch failed", { cause: new Error("unexpected redirect") })).fetch).api.call("GET", "https://api.example.test/z");
 	assert.equal(redirect.error.code, "vendor");
 	assert.match(redirect.error.message, /redirect, which is never followed/);
+	// A refused redirect is an answer; no answer at all is not one.
+	assert.equal(refusedRedirect(redirect.error), true);
+	const lost = await client(answers(new TypeError("fetch failed", { cause: new Error("connection reset") })).fetch).api.call("GET", "https://api.example.test/z");
+	assert.equal(lost.error.code, "vendor");
+	assert.equal(refusedRedirect(lost.error), false);
 });
 
 test("retry: true sends again on 429, 5xx and no answer with doubling pauses, up to the attempts; no retry flag sends once", async () => {
@@ -90,6 +95,27 @@ test("an aborted signal and a timeout are told apart", async () => {
 	const slow = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
 	const timed = await client(slow).api.call("GET", "https://api.example.test/a", { timeoutMs: 5 });
 	assert.equal(timed.error.code, "timeout");
+});
+
+test("the timeout option is the bound: a signal the caller fires, asked for each call with its ms", async () => {
+	const made = [];
+	const timeout = (ms) => {
+		const controller = new AbortController();
+		made.push({ ms, fire: () => controller.abort() });
+		return controller.signal;
+	};
+	let started;
+	const asked = new Promise((resolve) => (started = resolve));
+	const slow = (url, init) => new Promise((_, reject) => (started(), init.signal.addEventListener("abort", () => reject(new Error("aborted")))));
+	const { api } = client(slow, { timeout });
+	const pending = api.call("GET", "https://api.example.test/a", { timeoutMs: 7000 });
+	await asked;
+	assert.deepEqual(made.map((one) => one.ms), [7000]);
+	made[0].fire();
+	assert.deepEqual((await pending).error, { code: "timeout", message: "GET /a did not answer within 7 s" });
+	const quick = client(answers({ status: 200, body: "{}" }).fetch, { timeout });
+	assert.deepEqual(await quick.api.json("GET", "https://api.example.test/b"), { ok: true, value: {} });
+	assert.equal(made[1].ms, 1000, "the client's own timeoutMs when the call gives none");
 });
 
 test("allPages reads every page, refuses a repeated cursor, and refuses a listing past max", async () => {

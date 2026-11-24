@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
-import { httpsBase } from "./hosted/rest.js";
+import { httpsBase, type Rest, refusedRedirect, rest } from "./hosted/rest.js";
 import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import {
 	type AttachedComputer,
@@ -40,7 +40,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerErrorCode, failAs, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, redactWords, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
@@ -464,6 +464,7 @@ export async function create(options: PhoneProviderOptions): Promise<PhoneHarnes
 export const conformance = () => import("./conformance/phone-harness.js");
 
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
+const decoder = new TextDecoder();
 /** One argument for the phone's sh: single-quoted. */
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 /** An Android package id: dotted Java names. */
@@ -488,7 +489,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #apiKey: string;
 	readonly #baseUrl: string;
-	readonly #fetch: typeof globalThis.fetch;
+	readonly #fetch?: typeof globalThis.fetch;
+	/** The API's client (hosted/rest.ts); a call with headers of its own (a create's Idempotency-Key) gets one of its own. */
+	readonly #rest: Rest;
 	readonly #adb: AdbTransport;
 	readonly #ledger: PhoneLedger;
 	/** Each create in flight, and the names of the phones this provider ended (create-requests.ts). Past this process, the
@@ -532,7 +535,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
 		this.#apiKey = apiKey;
 		this.#baseUrl = httpsBase(options.baseUrl ?? PHONE_HARNESS_URL, "the phone harness URL");
-		this.#fetch = options.fetch ?? globalThis.fetch;
+		this.#fetch = options.fetch;
 		const adb = options.adb;
 		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function" && typeof adb?.open === "function")) {
 			throw new Error("options.adb is the adb CLI's path, or a transport with run(), server() and open()");
@@ -553,6 +556,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (!(Number.isSafeInteger(this.#requestMs) && this.#requestMs > 0)) throw new Error(`requestMs ${show(options.requestMs)} is not a whole number of milliseconds above 0`);
 		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
 		this.#daemonVersion = options.daemonVersion ?? VERSION;
+		this.#rest = this.#client();
 	}
 
 	capabilities(): ComputerCapabilities {
@@ -589,65 +593,59 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return text.replaceAll(this.#apiKey, "[the key]");
 	}
 
+	/** The API's client, with headers of one call's own beside the key. */
+	#client(headers: Record<string, string> = {}): Rest {
+		return rest({
+			base: this.#baseUrl,
+			headers: () => ({ Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...headers }),
+			vendor: this.id,
+			...(this.#fetch ? { fetch: this.#fetch } : {}),
+			timeoutMs: this.#requestMs,
+			timeout: this.#timeout,
+		});
+	}
+
 	/**
 	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
 	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
-	 * phones_busy, the service's own word that nothing was made.
+	 * phones_busy, the service's own word that nothing was made. A redirect is an answer, refused unfollowed.
 	 */
 	async #api(
 		method: string,
 		path: string,
-		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
+		{ body, headers, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
 	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
-		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
-		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const cut = (error: unknown): Result<never> & { uncertain?: boolean } => {
-			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), uncertain: true };
-			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), uncertain: true };
-		};
-		let response: Response;
-		try {
-			response = await this.#fetch(`${this.#baseUrl}${path}`, {
-				method,
-				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
-				...(body === undefined ? {} : { body: JSON.stringify(body) }),
-				// Never followed: the key's header would go on to wherever a redirect points, as rest.ts's client refuses too.
-				redirect: "error",
-				signal: either,
-			});
-		} catch (error) {
-			return cut(error);
+		const api = headers === undefined ? this.#rest : this.#client(headers);
+		// Every answer is a value here, read below in the service's own words: what the client fails is no answer at all.
+		const got = await api.call(method, api.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: Math.max(1, Math.ceil(ms)), accept: () => true }, signal);
+		if (!got.ok) {
+			const words = this.#clean(got.error.message);
+			if (got.error.code === "aborted" || refusedRedirect(got.error)) return failAs(got.error, words);
+			return { ...failAs(got.error, words, got.error.code === "timeout" ? "timeout" : "unreachable"), uncertain: true };
 		}
-		let text: string;
-		try {
-			text = await response.text();
-		} catch (error) {
-			// The answer's body stalled or broke: as a lost answer when it was cut off, else no words.
-			if (signal?.aborted || bound.aborted) return cut(error);
-			text = "";
-		}
+		const { status } = got.value;
+		const text = decoder.decode(got.value.bytes);
 		let json: unknown;
 		try {
 			json = text === "" ? undefined : JSON.parse(text);
 		} catch {
 			json = undefined;
 		}
-		if (response.ok) return ok({ status: response.status, json });
+		if (status >= 200 && status < 300) return ok({ status, json });
 		const answer = (typeof json === "object" && json !== null ? json : {}) as { error?: string; code?: string; retry_after_seconds?: number };
-		const said = this.#clean(answer.error ?? (text.slice(0, 200) || response.statusText || "no words"));
+		const said = this.#clean(answer.error ?? (text.slice(0, 200) || "no words"));
 		const where = `${method} ${path}`;
-		if (response.status === 401) return fail("denied", `${where}: the phone harness refused the API key (401): ${said}`);
-		if (response.status === 403) return fail("denied", `${where}: ${said} (403)`);
+		if (status === 401) return fail("denied", `${where}: the phone harness refused the API key (401): ${said}`);
+		if (status === 403) return fail("denied", `${where}: ${said} (403)`);
 		if (answer.code === "phones_busy") {
-			const retry = answer.retry_after_seconds ?? Number(response.headers.get("retry-after"));
-			return fail("limit", `${where}: ${said}${Number.isFinite(retry) && retry > 0 ? `; try again in ${retry} s` : ""} (phones_busy)`);
+			const retry = answer.retry_after_seconds;
+			return fail("limit", `${where}: ${said}${typeof retry === "number" && Number.isFinite(retry) && retry > 0 ? `; try again in ${retry} s` : ""} (phones_busy)`);
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
-		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
-		const failed = vendorFail("phone-harness",`${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
+		if (status === 404) return fail("not_found", `${where}: ${said} (404)`);
+		const failed = vendorFail("phone-harness",`${where}: ${said} (${status}${answer.code ? `, ${answer.code}` : ""})`);
 		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
-		return response.status >= 500 ? { ...failed, uncertain: true } : failed;
+		return status >= 500 ? { ...failed, uncertain: true } : failed;
 	}
 
 	async #session(id: string, signal?: AbortSignal, ms?: number): Promise<Result<Session>> {

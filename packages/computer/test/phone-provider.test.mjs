@@ -258,7 +258,7 @@ test("a retry that finds its request's phone still starting waits as a fresh cre
 	made.at(-1).fire();
 	const late = await pending;
 	assert.equal(late.error?.code, "timeout", JSON.stringify(late));
-	assert.match(late.error.message, /^the phone sess_held was not ready within 10 s: GET \/sessions\/sess_held: the phone harness did not answer within 6 s$/);
+	assert.match(late.error.message, /^the phone sess_held was not ready within 10 s: GET \/sessions\/sess_held did not answer within 6 s$/);
 	assert.equal(slow.fake.requests().some((r) => r.method === "DELETE" || r.method === "POST"), false, "nothing ended, nothing rented");
 	// Ready only once its deadline passed (the second read, 2 s on, of a phone with 1 s left): spent, never answered.
 	const expired = await held("phone-held-expired", "sess_expired", 1000, { readyAfter: 2 });
@@ -518,7 +518,7 @@ test("each API request has its own bound: a stalled readiness read is cut off by
 	const late = await pending;
 	assert.equal(late.ok, false, JSON.stringify(late));
 	assert.equal(late.error.code, "timeout");
-	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001: the phone harness did not answer within 6 s; it was ended$/);
+	assert.match(late.error.message, /^the phone sess_0001 was not ready within 10 s: GET \/sessions\/sess_0001 did not answer within 6 s; it was ended$/);
 	assert.equal(fake.sessions.size, 0, "the phone was ended");
 	assert.equal(made.at(-1).ms, 30_000, "the DELETE has a bound of its own");
 });
@@ -557,7 +557,7 @@ test("a POST that stalls is cut off by its bound and recovered by its Idempotenc
 	made.at(-1).fire();
 	const created = await pending;
 	assert.equal(created.ok, false, JSON.stringify(created));
-	assert.match(created.error.message, /^POST \/sessions: the phone harness did not answer within 30 s; and the service has no session for the request/);
+	assert.match(created.error.message, /^POST \/sessions did not answer within 30 s; and the service has no session for the request/);
 	const key = fake.requests()[0].headers["idempotency-key"];
 	assert.deepEqual(fake.requests().map((r) => `${r.method} ${r.path}`), ["POST /sessions", `GET /sessions/requests/${key}`]);
 	assert.ok(made.every((one) => one.ms === 30_000), "the POST and the recovery each have a bound");

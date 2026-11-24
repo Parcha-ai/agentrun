@@ -53,6 +53,8 @@ export interface RestOptions {
 	fetch?: typeof fetch;
 	/** The bound of a call that gives none. */
 	timeoutMs: number;
+	/** A signal that fires after ms, which bounds a call; default a timer. Tests give one they fire. */
+	timeout?: (ms: number) => AbortSignal;
 	retry?: { attempts: number; baseMs: number; pause?: (ms: number, signal?: AbortSignal) => Promise<void> };
 	/** The vendor's own code or words for an answer that is not accepted; what it leaves out is httpCode and `what: status text`. */
 	explain?: (answer: { status: number; bytes: Uint8Array; text: string; what: string }) => { code?: ComputerErrorCode; message?: string };
@@ -76,6 +78,11 @@ function redirected(cause: unknown): boolean {
 	const inner = (cause as { cause?: unknown } | null)?.cause;
 	return /redirect/i.test(`${(cause as Error | null)?.message ?? ""} ${(inner as Error | null)?.message ?? ""}`);
 }
+
+const NEVER_FOLLOWED = "the API answered with a redirect, which is never followed: it would carry the key";
+
+/** Whether a call failed on a redirect it refused: the API answered, so the call is no lost answer. */
+export const refusedRedirect = (error: ComputerError): boolean => error.code === "vendor" && error.message.endsWith(`: ${NEVER_FOLLOWED}`);
 
 /** An accepted answer whose body is read as it comes: an event stream. */
 export interface RestStream {
@@ -129,7 +136,11 @@ export function rest(options: RestOptions): Rest {
 			if (signal?.aborted) return fail("aborted", `${what} was aborted`);
 			// A bound that lets go once the answer is taken, so a body read after it (a stream's) is never cut by it.
 			const timeout = new AbortController();
-			const timer = setTimeout(() => timeout.abort(), timeoutMs);
+			const cut = () => timeout.abort();
+			const bound = options.timeout?.(timeoutMs);
+			const timer = bound === undefined ? setTimeout(cut, timeoutMs) : undefined;
+			if (bound?.aborted) cut();
+			bound?.addEventListener("abort", cut, { once: true });
 			let failure: ComputerError;
 			let retryable: boolean;
 			try {
@@ -154,10 +165,11 @@ export function rest(options: RestOptions): Rest {
 				// No answer: the request may have reached the vendor, so only a call that may run twice is sent again.
 				retryable = init.retry === true;
 				if (timeout.signal.aborted) failure = { code: "timeout", message: `${what} did not answer within ${timeoutMs / 1000} s` };
-				else if (redirected(cause)) return vendorFail(options.vendor, `${what}: the API answered with a redirect, which is never followed: it would carry the key`);
+				else if (redirected(cause)) return vendorFail(options.vendor, `${what}: ${NEVER_FOLLOWED}`);
 				else failure = { code: "vendor", vendor: options.vendor, message: `${what}: ${(cause as Error).message}` };
 			} finally {
 				clearTimeout(timer);
+				bound?.removeEventListener("abort", cut);
 			}
 			if (!retryable || attempt >= attempts) return { ok: false, error: failure };
 			await wait((options.retry?.baseMs ?? 0) * 2 ** (attempt - 1), signal);
