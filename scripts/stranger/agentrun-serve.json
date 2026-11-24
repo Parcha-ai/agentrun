@@ -18,6 +18,7 @@
     "@parcha/agentrun-jev",
     "@parcha/pi-browser",
     "@parcha/agentrun-import",
+    "@parcha/agentrun-web",
     "@parcha/agentrun-decisions",
     "@parcha/agentrun-kernel",
     "@parcha/agentrun-harness-claude",

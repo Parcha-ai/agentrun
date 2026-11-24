@@ -1,0 +1,42 @@
+# @parcha/agentrun-web
+
+Web search and web fetch for agents. Each provider is asked in an order given as data, behind a breaker of its own. A
+run keeps a page cache it reads in parts. A direct fetch goes only through a public-host guard the caller injects.
+AgentRun's server answers `web_search` and `web_fetch` through it.
+
+It imports nothing from the server, a browser or a vendor SDK. Everything from outside comes in through `WebConfig`:
+the provider order, the keys, the guard, the run's cap and the words a provider's refusal is told in.
+
+## One run's web
+
+```js
+import { createWeb } from "@parcha/agentrun-web";
+
+const web = createWeb({
+  order: { search: ["firecrawl-keyless", "exa-keyless"], fetch: ["firecrawl-keyless", "direct"] },
+  guard, // { fetch(url, options), html?(html, url, options) }: the public-host guard and its HTML reader
+});
+const { answer, receipt } = await web.search("agentrun durable workflows", { n: 5 });
+const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_000 });
+```
+
+- `order.search` holds the search providers in the order they are asked: `parallel`, `firecrawl-keyless`,
+  `exa-keyless`, `native`. The next is asked when one errs or its breaker holds it. `order.fetch` holds the fetch
+  providers, with `direct` for the guarded direct fetch. An order without `direct` never fetches a page itself.
+- `guard` is the only way a page is fetched directly. Without one, nothing is fetched directly and no URL goes to a
+  provider: the read fails closed. A guard failure shaped `{ failure: { code: "refused" } }` is a refusal: the page is
+  not read, and the model is told why.
+- `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
+  throws a `PayRefused`. Without it, a request is unmetered.
+- `words.rateLimited` is what a keyless provider's rate limit says to the model.
+- `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or address
+  (a test's fakes). `now` is the breakers' clock. `bounds` sets a search's deadline. `log` receives what a fetch notes
+  that the model is not told.
+
+Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every
+provider asked, with its outcome. `cost` holds the fees of the requests sent. `classifier` is `"off"`; `wall` and
+`injection` are `"unjudged"`.
+
+The pieces `createWeb` is built from are exported too: `searchWith`, `searchInTurn` and `breakers` for search,
+`webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
+`fees`. `@parcha/agentrun-web/text-urls` holds the link finder alone, for code that only finds the URLs in a text.
