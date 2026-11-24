@@ -26,7 +26,8 @@ const handedOut = new Set();
  * candidate once. A port in use is passed over. Any other listen error rejects as itself. A range that leaves no
  * candidate, or none free, fails by name. A port is claimed before it is probed, so two calls at once never get the same
  * one. Test files run side by side (serve's suite runs 8 at once) each keep their own set, and a probe proves a port free
- * only when it runs: two files can be handed the same port, about 1 in 12,768 per pair.
+ * only when it runs: two files can be handed the same port, about 1 in the number of candidates (12,768 on Linux's
+ * default range, from 32768) per pair of picks, one from each file.
  */
 export async function freePort({ low = ephemeralLow(), host = "127.0.0.1" } = {}) {
   const to = Math.min(low, 32768);
