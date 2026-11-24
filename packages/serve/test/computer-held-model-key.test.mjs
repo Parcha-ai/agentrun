@@ -39,6 +39,7 @@ const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
+const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
 const { claudeOf, codexOf, opencodeOf, CODEX_STANDIN_ENV, OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startModelProxy } = await import("@parcha/agentrun-kernel/host");
@@ -59,6 +60,13 @@ const HELLO = { protocol: "0.2", version: "0", os: "linux", kind: "linux", arch:
 const PHONE = { kind: "phone", provider: "phone-harness" };
 /** A run's own key for a model gateway, a test's: never a real one. */
 const GATEWAY_KEY = "not-a-secret-held-gateway-key";
+/** A model key and a tool key this host holds, a test's: never real ones. */
+const HOST_MODEL_KEY = "not-a-secret-held-host-model-key";
+const HOST_TOOL_KEY = "not-a-secret-held-host-tool-key";
+/** A replay of a learned workflow (runner/promotion.ts), as a launch names it: no workflow by that name was ever laid. */
+const REPLAY = { of: "run-0", workflow: "flow", digest: "0".repeat(64) };
+/** The claim-time computer of the pi claims below: the fake computer on `root` as a phone (no mount to check). */
+const phoneOn = (root) => () => ({ computerForClaim: async () => ({ computer: { kind: "phone", computer: fakeComputer(root), hello: { ...HELLO, os: "android", kind: "android" } }, release: async () => {} }) });
 
 /** The runner's claim-time computer (computerForClaim): the fake computer as a sandbox over the run's own folder (Mode 1,
  *  a bind of it, as Docker's mount is: workspace-fake-processes.mjs sandboxForClaim), its mount checked with the computer
@@ -147,8 +155,9 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
 
 /** A claim of an opencode run of the revision model `openai/gpt-6.1-sol` on a runner with no model key, its spec built as
  *  the runner builds a CLI harness's (cli-run-spec.ts cliRunSpecFromLaunch) on the opencode stand-in and no computer (a
- *  runner place). `hold`: the launch's. Resolves to the spec; rejects as the claim fails. */
-async function cliClaim(t, hold) {
+ *  runner place). `hold`: the launch's; `extra`: more of its launch (a replay's). Resolves to the spec; rejects as the
+ *  claim fails. */
+async function cliClaim(t, hold, extra = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -162,7 +171,7 @@ async function cliClaim(t, hold) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: ["read"] } });
-  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "opencode", ...(hold ? { hold } : {}) };
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "opencode", ...(hold ? { hold } : {}), ...extra };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
@@ -360,7 +369,7 @@ test("pi (adapter-run-spec), no model key here: a claim of a run whose hold carr
     routed += 1;
     return routeOf(...args);
   };
-  const phone = () => ({ computerForClaim: async () => ({ computer: { kind: "phone", computer: fakeComputer(root), hello: { ...HELLO, os: "android", kind: "android" } }, release: async () => {} }) });
+  const phone = phoneOn(root);
   // The revision's model, unpinned (the launch pins none), as the create read it.
   const body = { model: MODEL, computer: PHONE };
   const failsInKeyWords = (error) => (assert.match(error.message, KEY_WORDS, `the claim fails in the key's words: ${error.message}`), true);
@@ -370,6 +379,48 @@ test("pi (adapter-run-spec), no model key here: a claim of a run whose hold carr
   const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, routeOf: counted, computer: phone }).catch((error) => assert.fail(`a held run its model kept from running opens its claim with no key here: ${error.message}`));
   assert.equal(routed, 2, "the held claim never asked for its model's route: no model is chosen and no key is read");
   assert.deepEqual(spec.held, { minutes: 5 }, "the spec holds the computer for its owner");
+});
+
+test("pi (adapter-run-spec), subagent tiers: a held run its model kept from running, granted subagent on a host with a model key and a fast model, routes none of its tiers at its claim", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-tiers-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let routed = 0;
+  // Every route the claim asks for (model-route.ts routeOf), counted: the run's own, a subagent tier's, a learned node's.
+  const counted = async (...args) => {
+    routed += 1;
+    return routeOf(...args);
+  };
+  // The host's fast model, and a key that reaches it: a claim that routes the tier chooses that model and reads that key.
+  const env = { AGENT_MODEL_FAST: "openrouter/anthropic/claude-haiku-5.5", OPENROUTER_API_KEY: HOST_MODEL_KEY };
+  const { spec } = await specFor(t, { body: { model: MODEL, computer: PHONE, tools: ["subagent"] }, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, env, routeOf: counted, computer: phoneOn(root) })
+    .catch((error) => assert.fail(`a held run granted subagent opens its claim: ${error.message}`));
+  assert.equal(routed, 0, "the held claim routed none of its subagent tiers: no tier's model is chosen, and no saved model key is opened for one");
+  assert.deepEqual(spec.held, { minutes: 5 }, "the spec holds the computer for its owner");
+});
+
+test("pi (adapter-run-spec), learning steps: a held run its model kept from running takes none at its claim, so a replay's claim check never runs", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-learned-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // learnedFirst's steps (runner/learned-first.ts: audits settled, the promotion gate, a replay's claim check) start replay
+  // runs and read the agent's learning: none is a held run's. The replay check is the one a fake claim shows: it refuses
+  // this claim, its workflow never laid, wherever it runs.
+  const { spec } = await specFor(t, { body: { model: MODEL, computer: PHONE }, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL }, replay: REPLAY }, computer: phoneOn(root) })
+    .catch((error) => assert.fail(`the held claim took no learning step (a replay's claim check would refuse it): ${error.message}`));
+  assert.deepEqual(spec.held, { minutes: 5 }, "the spec holds the computer for its owner");
+});
+
+test("claim secrets (claimSecrets): a held run its model kept from running is laid its tools' keys and no model key; the same run not held is laid its model's key too", async () => {
+  // The host holds both where AgentRun starts; no store is read (no seal key).
+  const deps = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, PARALLEL_API_KEY: HOST_TOOL_KEY } };
+  const revision = { kind: "agentic", body: { model: MODEL, tools: ["web_search"] } };
+  const plane = { web_search: "parallel", web_fetch: "parallel" };
+  const unheld = await claimSecrets(deps, revision, { plane });
+  assert.deepEqual([unheld.OPENROUTER_API_KEY, unheld.PARALLEL_API_KEY], [HOST_MODEL_KEY, HOST_TOOL_KEY], "a claim of the run, not held, is laid its revision's model's key and its tool's key");
+  const held = await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
+  assert.equal(held.OPENROUTER_API_KEY, undefined, "a held run its model kept from running is laid no model key: its model runs nowhere");
+  assert.equal(held.PARALLEL_API_KEY, HOST_TOOL_KEY, "its tool's key is laid as any claim's is");
 });
 
 test("pi: the stand-in route refuses every model request in the create's words, verbatim, and sends none", async (t) => {
@@ -388,6 +439,13 @@ test("CLI (cli-run-spec), no model key here: a claim of an opencode run that is 
   }, "a run that is not held chooses its model at its claim, as before, and fails with no key for it");
   await assert.rejects(cliClaim(t, { minutes: 5 }), { message: said }, "a held run whose hold carries no refusal chooses it at its claim too, and fails in the same words");
   const spec = await cliClaim(t, { minutes: 5, refused: { ...REFUSAL, message: said } }).catch((error) => assert.fail(`a held run its model kept from running opens its claim with no key here: ${error.message}`));
+  assert.ok(spec.adapter, "its spec carries opencode's adapter, on the stand-in");
+});
+
+test("CLI (cli-run-spec), learning steps: a held opencode run its model kept from running takes none at its claim, so a replay's claim check never runs", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  // As on pi: learnedFirst's replay check would refuse this claim, its workflow never laid, wherever it runs.
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { replay: REPLAY }).catch((error) => assert.fail(`the held claim took no learning step (a replay's claim check would refuse it): ${error.message}`));
   assert.ok(spec.adapter, "its spec carries opencode's adapter, on the stand-in");
 });
 
