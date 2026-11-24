@@ -1,6 +1,6 @@
--- The store's schema on Postgres, version 28: the learning ledger (learn/ledger.ts), as store/schema.ts keeps it on
--- SQLite (LEARNING_LEDGER, LEARNING_SPEND). Applied once, after 0027, inside the transaction migrate.ts opens. Never edit
--- this file once applied: a change is a new file. Additive: a runner of version 27 or earlier never writes it; a run it
+-- The store's schema on Postgres, version 29: the learning ledger (learn/ledger.ts), as store/schema.ts keeps it on
+-- SQLite (LEARNING_LEDGER, LEARNING_SPEND). Applied once, after 0028, inside the transaction migrate.ts opens. Never edit
+-- this file once applied: a change is a new file. Additive: a runner of version 28 or earlier never writes it; a run it
 -- ends has no row, or a row for an earlier end (`epoch` is the run's epoch after the end it was written for, and every
 -- end moves the epoch), and the reader records it from the run's row as it reads either way (store-reads/learning.ts).
 --
@@ -41,4 +41,4 @@ CREATE TABLE IF NOT EXISTS learning_spend (
 CREATE INDEX IF NOT EXISTS learning_spend_agent ON learning_spend (agent_id);
 CREATE INDEX IF NOT EXISTS learning_spend_of_run ON learning_spend (of_run) WHERE of_run IS NOT NULL;
 
-UPDATE store_meta SET schema_version = 28 WHERE singleton = 1;
+UPDATE store_meta SET schema_version = 29 WHERE singleton = 1;
