@@ -12,6 +12,8 @@ import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFet
 import { type Keyed, type KeyedFetch, keyedFetch } from "./providers/keyed.js";
 import type { Words } from "./providers/mcp.js";
 import { type Extract, parallelExtract, parallelSearched, type ParallelSettings, parallelSettingsProblems } from "./providers/parallel.js";
+import type { WebDecider } from "./decide/decider.js";
+import { decisionPay, type DecisionRecord, judgePart, siftSearch } from "./decide/step.js";
 import { type Backend, type Breaker, breakers, fitSearch, type Limit, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "exa" | "firecrawl" | "native" | "direct";
@@ -26,7 +28,7 @@ export type Receipt = {
   asked: string;
   provider: ProviderId | null;
   tries: Try[];
-  classifier: "off";
+  classifier: "off" | DecisionRecord;
   wall: { verdict: "unjudged" };
   injection: "unjudged";
   out: { bytes: number; chars: number };
@@ -52,23 +54,28 @@ export type WebConfig = {
   send?: Partial<Record<"parallel" | "firecrawl-keyless" | "exa-keyless" | "exa" | "firecrawl", typeof fetch>>;
   words?: Words;
   now?: () => number;
-  bounds?: SearchBounds & { checkMs?: number };
+  bounds?: SearchBounds & { checkMs?: number; decideMs?: number };
   log?: WebLog;
+  /** Sifts each search's results and judges each fetched part; none: nothing is sifted, as before the step. */
+  decider?: WebDecider;
 };
-/** `breakers`: the search breakers this call reads and trips (default the Web's own). */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker };
+/** `breakers`: the search breakers this call reads and trips (default the Web's own). `task`: what the caller needs,
+ *  which a decider judges against (a search without one is judged on its query). */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; task?: string };
 /** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. */
-export type FetchOptions = Part & GuardOptions;
+export type FetchOptions = Part & GuardOptions & { task?: string };
+/** `sift`, only when a decider is given: what it did, for the model to read. */
+export type Sift = { sift?: string };
 export type Web = {
-  search(query: string, options?: SearchOptions): Promise<{ answer: Search; receipt: Receipt }>;
-  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: WebPage | Page; receipt: Receipt }>;
+  search(query: string, options?: SearchOptions): Promise<{ answer: Search & Sift; receipt: Receipt }>;
+  fetch(url: unknown, options?: FetchOptions): Promise<{ answer: (WebPage | Page) & Sift; receipt: Receipt }>;
 };
 
 /** The fees of the requests sent within one call. */
 const feesOfCall = new AsyncLocalStorage<Fee[]>();
 const usd = (lines: Fee[]) => Math.round(lines.reduce((sum, fee) => sum + fee.usd, 0) * 1e6) / 1e6;
 const outOf = (text: string) => ({ bytes: Buffer.byteLength(text), chars: text.length });
-const judged = { classifier: "off", wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
+const unjudged = { wall: { verdict: "unjudged" }, injection: "unjudged" } as const;
 /** A provider's failure: the error alone for the model, the limit it met for the breaker. */
 const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ answer: { error }, ...(limit ? { limit } : {}) });
 
@@ -135,7 +142,7 @@ export function createWeb(config: WebConfig): Web {
   };
 
   return {
-    async search(query, { n, signal, breakers: breakerOf = runBreakers } = {}) {
+    async search(query, { n, signal, breakers: breakerOf = runBreakers, task } = {}) {
       const lines: Fee[] = [];
       const tries: Try[] = [];
       const args = { query, ...(n === undefined ? {} : { n }) };
@@ -144,11 +151,14 @@ export function createWeb(config: WebConfig): Web {
       const found: Search = !order.includes("parallel") && !searchArgs(args).query ? { error: "web_search needs a query" }
         : !order.length ? { error: "web_search has no provider to ask" }
         : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal)), breakerOf, signal, config.bounds?.searchMs, tries));
-      const answer = fitSearch(found);
-      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, ...judged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
+      // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
+      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) }) : { answer: found, classifier: "off" as const };
+      const answer: Search & Sift = fitSearch(sifted.answer);
+      const { classifier } = sifted;
+      const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
       return { answer, receipt };
     },
-    async fetch(url, { offset, maxChars, ...guarded } = {}) {
+    async fetch(url, { offset, maxChars, task, ...guarded } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
@@ -156,7 +166,8 @@ export function createWeb(config: WebConfig): Web {
       const problem = partProblem({ offset, maxChars });
       if (problem) {
         const refused: Page = { ok: false, url: clip(asked, URL_MAX), status: 0, title: "", text: "", links: [], error: problem };
-        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, ...judged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
+        const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
+        return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
       }
       const cached = typeof url === "string" && pages.has(url);
       const log: WebLog = (event, fields) => {
@@ -181,13 +192,15 @@ export function createWeb(config: WebConfig): Web {
           log,
         }),
       );
-      const answer: WebPage = order.includes("parallel") && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
+      const read: WebPage = order.includes("parallel") && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
       if (!cached) {
-        if (answer.parallel) tries.push({ provider: "parallel", outcome: "error", error: answer.parallel });
-        if (answer.via !== "stopped" && answer.via !== "none") tries.push({ provider: answer.via, outcome: answer.ok ? "ok" : "error", ...(answer.ok ? {} : { error: answer.refused ?? answer.error ?? "" }) });
+        if (read.parallel) tries.push({ provider: "parallel", outcome: "error", error: read.parallel });
+        if (read.via !== "stopped" && read.via !== "none") tries.push({ provider: read.via, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }) });
       }
-      const provider = answer.ok && answer.via !== "stopped" && answer.via !== "none" ? answer.via : null;
-      const receipt: Receipt = { op: "fetch", asked, provider, tries, ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
+      const provider = read.ok && read.via !== "stopped" && read.via !== "none" ? read.via : null;
+      const signal = guarded.signal;
+      const { answer, classifier } = config.decider ? await judgePart(config.decider, asked, read, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) }) : { answer: read, classifier: "off" as const };
+      const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...unjudged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
       return { answer, receipt };
     },
   };

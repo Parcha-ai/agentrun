@@ -1,6 +1,9 @@
 // @parcha/agentrun-web: web search and web fetch for an agent. It imports nothing of a server, a harness, a browser or a
 // vendor SDK: the public-host guard, the HTML reader, the run's cap, a native search and a product's words come in
 // through WebConfig (createWeb) or as arguments, as data or injected functions.
+export * from "./decide/decider.js";
+export * from "./decide/passages.js";
+export * from "./decide/step.js";
 export * from "./fees.js";
 export * from "./fetch.js";
 export * from "./guard.js";

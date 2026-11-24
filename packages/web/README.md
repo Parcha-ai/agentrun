@@ -37,9 +37,54 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   server gives a call node fresh ones each call). `fetch(url, { lookup, fetchImpl })` dials through the given resolver
   and transport.
 
-Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every
-provider asked, with its outcome. `cost` holds the fees of the requests sent. `classifier` is `"off"`; `wall` and
-`injection` are `"unjudged"`.
+Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, classifier, wall, injection, out, cost,
+cache? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
+`classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"`.
+
+## The classifier step
+
+`decider` sifts each search's results and judges each fetched part before the model reads them. Without one, every
+answer, model text and receipt is byte-identical to a web that has no step (`test/web-decide-off.test.mjs`).
+
+```js
+import { createWeb, deciderFrom } from "@parcha/agentrun-web";
+import { JEV_PUBLISHED_PRICING, jevProvider } from "@parcha/agentrun-jev";
+
+const decider = deciderFrom(jevProvider(), { price: JEV_PUBLISHED_PRICING });
+const web = createWeb({ order, guard, pay, decider, bounds: { decideMs: 30_000 } });
+const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "Where is Widgets, Inc. registered?" });
+```
+
+- `deciderFrom(provider, { price, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
+  `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
+  calls (`DecisionAsker`), so it depends on no provider. Each call asks noul questions, one per result or passage, in
+  fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
+- Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
+  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100). A search over the budget has every snippet cut to the longest
+  length that fits (`trimmed: { snippets, to_chars }`; the model still reads them whole). Passages over it are asked
+  in several requests, one after another, ids counted across the part, and the verdicts merged in order.
+- The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
+  step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
+  keeps its item.
+- A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
+  The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
+  `next_offset` are unchanged. A fetch with no `task` is not judged.
+- The answer's `sift` tells the model what was done: `"jev kept 3 of 5 results"`, or `"not run (timeout); these results
+  are unsifted"`. A decider that fails, refuses every question, answers out of shape or passes `bounds.decideMs`
+  (`DECIDE_MS`, 30 s) never drops anything silently: the items pass unsifted and the record says why.
+- `receipt.classifier` is the decision's record: `{ provider, op, ran, items: { in, kept }, dropped: [{ id, score,
+  reason, at? }], model, temperature_sent, temperature_applied, tokens: { in, out, basis }, latency_ms, cost: { usd,
+  basis }, requests, questions_sha256: [one per request], trimmed?, error?, skipped?, scored: [{ id, score, at? }] }`.
+  `scored` holds every item asked about, in order, kept or dropped: a result by its URL, a passage by its id and its
+  place in the page. It is empty when the step did not run. `tokens` are the provider's
+  when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
+  the provider says its request carried; one that says nothing sent none.
+- Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
+  `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
+  `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
+  cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
+  figure for what was spent, summed over its requests, and `requests` how many were sent. A request after the first that
+  fails fails the step, at what every request sent cost.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
