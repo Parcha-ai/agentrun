@@ -295,6 +295,29 @@ test("the status check's folder is gone on every way the check ends: the CLI ans
   assert.deepEqual(readdirSync(late.tmp), [], 'nothing of the check is left after the limit');
 });
 
+test("a status check the CLI outlasts throws its own kind, `timed_out`, naming the limit in seconds, apart from a CLI that answered what reads as no status: a caller can tell a slow host from a broken answer", async () => {
+  const { login } = defaultLogin();
+  const silent = fakeCli({ hang: true });
+  const started = Date.now();
+  const late = await inOwnTmp(() => claude.claudeLoginStatus(silent.cli, login, { timeoutMs: 500 }));
+  const took = Date.now() - started;
+  assert.equal(late.outcome.error?.code, 'timed_out', `a check ended at its limit says so: ${late.outcome.error}`);
+  assert.match(String(late.outcome.error?.message), /timed out after 0\.5 s/, 'its words name the limit in seconds');
+  assert.equal(late.outcome.error?.limitMs, 500, 'it carries the limit');
+  assert.ok(late.outcome.error instanceof claude.ClaudeLoginTimedOut, 'the harness exports its kind');
+  assert.ok(took < 10_000, `the CLI was ended at the limit, not waited out (${took} ms)`);
+  assert.equal(silent.seen().length, 1, 'the CLI was started once: the harness itself never asks again');
+
+  const garbled = fakeCli({ answer: 'Not logged in' });
+  const nonsense = await inOwnTmp(() => claude.claudeLoginStatus(garbled.cli, login, { timeoutMs: 10_000 }));
+  assert.match(String(nonsense.outcome.error?.message), /gave no login status/);
+  assert.notEqual(nonsense.outcome.error?.code, 'timed_out', 'a CLI that answered nonsense in time did not time out');
+  assert.ok(!(nonsense.outcome.error instanceof claude.ClaudeLoginTimedOut), 'nor is it the timed-out kind');
+  assert.doesNotMatch(String(nonsense.outcome.error?.message), /timed out/);
+
+  assert.equal(new claude.ClaudeLoginTimedOut(15_000).message, 'the claude CLI gave no login status: the check timed out after 15 s', 'the default limit reads in whole seconds');
+});
+
 test("while the CLI runs, the status check's folder and its config dir are the server user's alone (0700) and the copy of the account file too (0600)", { skip: process.platform === 'win32' ? 'POSIX permission bits' : false }, async () => {
   const { login } = defaultLogin();
   const fake = fakeCli();

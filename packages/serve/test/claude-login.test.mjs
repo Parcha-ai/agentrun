@@ -13,7 +13,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, settingFor, startLoginHere, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -665,4 +665,145 @@ test("a status check's folder that a killed server left in the temporary folder 
   await serve(t, { faux: undefined, harnesses: false, runner: false });
   assert.equal(existsSync(stale), false, "the stale folder, with the copy in it, is gone once the server has started");
   assert.ok(existsSync(join(fresh, "config", ".claude.json")), "the fresh folder stays");
+});
+
+// A Claude-plan run's login check on a loaded host (loginBeforeRun). The status checks here are stand-ins: a check the
+// CLI outlasted throws as the harness's does (claudeLoginStatus: `code` "timed_out", its limit, its words).
+const timedOut = () => Object.assign(new Error("the claude CLI gave no login status: the check timed out after 15 s"), { code: "timed_out", limitMs: 15_000 });
+const SAID_IN = { signedIn: true, method: "claude.ai" };
+const SAID_OUT = { signedIn: false, method: "none" };
+
+/** A stand-in status check that answers `answers` in turn (an Error is thrown) and counts how often it was asked. */
+function statusOf(...answers) {
+  let calls = 0;
+  const status = async () => {
+    const said = answers[Math.min(calls++, answers.length - 1)];
+    if (said instanceof Error) throw said;
+    return said;
+  };
+  return { status, calls: () => calls };
+}
+
+/** A login of its own, so no test's earlier answer is another's. */
+async function ownLogin() {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-check-"));
+  return { dir: join(dir, "claude-login"), profiles: join(dir, "claude-login", "anthropic"), userHome: dir };
+}
+
+/** A clock that reads `start` plus what `at(ms)` last set. */
+function clock(start) {
+  let now = start;
+  return { now: () => now, at: (ms) => { now = start + ms; } };
+}
+
+/** Asserts `error` is the run's refusal for a login whose CLI could not say, in words that name the timeout. */
+const unknownByTimeout = (error) => {
+  assert.ok(error.message.startsWith(LOGIN_UNKNOWN), error.message);
+  assert.match(error.message, /timed out after 15 s/, "the words say the check timed out, and after how long");
+  return true;
+};
+
+test("a Claude-plan run whose login check times out once asks again, and goes on when that answer is signed in", async () => {
+  const login = await ownLogin();
+  const fake = statusOf(timedOut(), SAID_IN);
+  await loginBeforeRun(login, "claude", fake.status);
+  assert.equal(fake.calls(), 2, "status was asked twice");
+});
+
+test("a Claude-plan run whose login check times out twice goes on when the same login answered signed in 2 minutes before in this server", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(2 * 60_000);
+  const fake = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, "claude", fake.status, { now: time.now });
+  assert.equal(fake.calls(), 2, "asked twice before the earlier answer is taken");
+});
+
+test("a Claude-plan run whose login check times out twice is refused with LOGIN_UNKNOWN, in words that name the timeout, when the login never answered signed in here, answered 11 minutes ago, or only another login did", async () => {
+  const never = await ownLogin();
+  const first = statusOf(timedOut(), timedOut());
+  await assert.rejects(loginBeforeRun(never, "claude", first.status), unknownByTimeout);
+  assert.equal(first.calls(), 2, "no earlier answer: asked twice, then refused");
+
+  const old = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(old, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(11 * 60_000);
+  const stale = statusOf(timedOut(), timedOut());
+  await assert.rejects(loginBeforeRun(old, "claude", stale.status, { now: time.now }), unknownByTimeout);
+  assert.equal(stale.calls(), 2, "an answer 11 minutes old: asked twice, then refused");
+
+  // Another login (another folder) answered signed in a minute before: that answer is not this login's.
+  const other = await ownLogin();
+  time.at(0);
+  await loginBeforeRun(other, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+  const fresh = await ownLogin();
+  await assert.rejects(loginBeforeRun(fresh, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+  // The same folder with its credentials kept apart is another login too.
+  await assert.rejects(loginBeforeRun({ ...other, secure: join(other.userHome, "elsewhere") }, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+});
+
+test("a signed-out answer is never asked again nor overridden by an earlier signed-in one: the run is refused at once with LOGIN_SIGNED_OUT, and that earlier answer is gone, so a timeout after it is refused", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+  const slow = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, "claude", slow.status, { now: time.now });
+  assert.equal(slow.calls(), 2, "two timeouts a minute after a signed-in answer: the run goes on");
+
+  time.at(2 * 60_000);
+  const out = statusOf(SAID_OUT, SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", out.status, { now: time.now }), (error) => {
+    assert.equal(error.message, LOGIN_SIGNED_OUT);
+    return true;
+  });
+  assert.equal(out.calls(), 1, "a signed-out answer is the answer: status asked once");
+
+  time.at(3 * 60_000);
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { now: time.now }), unknownByTimeout);
+});
+
+test("the Settings view feeds the same answer: after it read the login signed in, a run whose two checks time out goes on; after it read signed out, one is refused; a check that times out there reads unknown and is asked once", async () => {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-view-"));
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", data);
+  let said = SAID_IN;
+  let asked = 0;
+  const deps = {
+    signIns: { view: () => undefined },
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: undefined,
+    sameMachine: false,
+    claude: async () => ({
+      claudeLoginCommand: () => "claude auth login",
+      claudeLoginStatus: async () => {
+        asked++;
+        if (said instanceof Error) throw said;
+        return said;
+      },
+    }),
+    changed: async () => {},
+  };
+  const login = loginAt("agentrun", data, deps.env);
+
+  assert.equal((await claudeLoginView(deps)).state, "signed_in");
+  const slow = statusOf(timedOut(), timedOut());
+  await loginBeforeRun(login, pinned, slow.status);
+  assert.equal(slow.calls(), 2, "the run asked twice, then took the view's answer");
+
+  said = SAID_OUT;
+  assert.equal((await claudeLoginView(deps)).state, "signed_out");
+  await assert.rejects(loginBeforeRun(login, pinned, statusOf(timedOut(), timedOut()).status), unknownByTimeout);
+
+  said = timedOut();
+  asked = 0;
+  assert.equal((await claudeLoginView(deps)).state, "unknown", "a timeout in the view reads unknown");
+  assert.equal(asked, 1, "the view never asks again: a person waits on it");
 });
