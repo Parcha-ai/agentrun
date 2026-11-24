@@ -1069,7 +1069,30 @@ test("a sign-out whose change callback fails still answers: the sign-in is gone,
   assert.equal(calls, 3, "taken at the next read");
 });
 
-const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
+// OpenAI shows a workspace's "open-source apps off" refusal on its own page and never sends the browser back, so the
+// server can't tell it from a tab left open: a sign-in that waits names it first, as the likely cause.
+const ADMIN_LIKELY = "If OpenAI's page showed an error instead of signing you in, your ChatGPT workspace's admin has likely turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+const TIMED_OUT = `The sign-in timed out: OpenAI never sent the code back. ${ADMIN_LIKELY} Otherwise, start it again.`;
+const STILL_WAITING = `OpenAI hasn't sent the code back yet. ${ADMIN_LIKELY}`;
+
+test("a sign-in still waiting after its first minute says why it may be stuck, the workspace admin's open-source setting first, long before it times out", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), now: () => clock.now });
+  t.after(() => plan.close());
+  const { authorize_url, expires_at } = await plan.startSignIn();
+  clock.now += 59_999;
+  assert.deepEqual(plan.view(), { state: "pending", authorize_url, expires_at }, "no hint in its first minute");
+  clock.now += 1;
+  assert.deepEqual(plan.view(), { state: "pending", authorize_url, expires_at, hint: STILL_WAITING });
+  // A new start waits its own minute first.
+  await plan.startSignIn();
+  assert.equal(plan.view().hint, undefined);
+  // Its end says the same likely cause, first.
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+});
 
 test("a sign-in whose code OpenAI answered never times out: saved, with the server's change still out at the 10 minutes, it reads signed in with no problem", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
