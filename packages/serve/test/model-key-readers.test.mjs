@@ -22,13 +22,13 @@ const ALLOWED = {
   "runner/model-route.ts": "an Anthropic model's route credential: reads the env it is given",
   "decisions.ts": "Jev's OpenRouter route on an openrouter.ai gateway's key: a decision key, never a run's model route",
   "run-model-key.ts": "whether the server holds a key for a run's route (serverKeyMissing, noServerKeyFor)",
-  "runner/claim-secrets.ts": "defines savedModelKeys, tierModelKeys and subagentTierKeys (which reads through the first two), and claimSpendOff's check of the server's key",
+  "runner/claim-secrets.ts": "defines savedModelKeys, tierModelKeys and subagentTierKeys (tierModelKeys on the runner, its runner's answer in a run's process), and claimSpendOff's check of the server's key",
   "runner/harness-loops.ts": "an SDK run's compile turn: asked after its backend reported it complete, with no caller's key, on the server's key or skipped",
   // These two read the saved keys only where the run holds no key of its own: checked line by line below.
-  "runner/adapter-run-spec.ts": "the subagent tiers' and learned tiers' keys, read only for a run with no key of its own",
+  "runner/adapter-run-spec.ts": "the subagent tiers', the learned tiers' and a replay's grader's fast tier's keys, read only for a run with no key of its own",
   "runner/cli-run-spec.ts": "the learned tiers' keys, read only for a run with no key of its own",
   // A run's own process holds no seal key: it asks its runner for these (held.ts), and the runner answers for the claim.
-  "runner/held.ts": "the seam's declarations of what a run's process asks its runner for (savedModelKeys, tierModelKeys): no read",
+  "runner/held.ts": "the seam's declarations of what a run's process asks its runner for (subagentTierKeys, tierModelKeys): no read",
   "runner/run-child-host.ts": "the runner's answers to a run's process (heldFor), read only for a run with no key of its own",
 };
 /** The modules whose every read must sit behind the run's own key: `keyed ? {} : <read>` (claim-secrets.ts keyedAtClaim). */
@@ -62,6 +62,12 @@ test("only the static, server-key path reads AGENT_MODEL_API_KEY, ANTHROPIC_API_
       if (/\b(savedModelKeys|tierModelKeys|subagentTierKeys)\s*\(/.test(line) && /^export|function /.test(line)) continue;
       assert.match(line, /keyed \? \{\} : await (savedModelKeys|tierModelKeys|subagentTierKeys)\(/, `${name}:${at} reads the server's saved model keys without checking whether the run brought its own key first: ${line}`);
     }
+  }
+  // A run spec reads the keys of the models it routes (tierModelKeys, subagentTierKeys), never every saved key
+  // (savedModelKeys): a tier's or a grader's route would hold keys no model of it sends.
+  for (const name of ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts"]) {
+    const every = (readers.get(name) ?? []).filter(({ line }) => /\bsavedModelKeys\s*\(/.test(line)).map(({ at }) => at);
+    assert.deepEqual(every, [], `${name} reads every saved model key: a run spec reads the keys of the models it routes alone (subagentTierKeys, tierModelKeys)`);
   }
   // The allowlist is not wider than what reads today: a module that stopped reading leaves it.
   const idle = Object.keys(ALLOWED).filter((name) => !readers.has(name));
