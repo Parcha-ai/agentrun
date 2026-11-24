@@ -47,6 +47,8 @@ async function installedAgent(t) {
     files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
     state: [".model-agent/sessions"],
     declares: { load: true, mcp: "http" },
+    // Goose's way: the agent runs our tools unasked, and the check's gate asks at the MCP call.
+    allowFile: { path: ".config/goose/permission.yaml", form: "goose-permission" },
   };
   const file = join(dir, "recipe.json");
   writeFileSync(file, `${JSON.stringify(recipe, null, 2)}\n`);

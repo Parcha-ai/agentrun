@@ -1,6 +1,10 @@
 // A stand-in ACP agent whose model is real to it: each prompt goes to ANTHROPIC_HOST's /v1/messages (the model proxy the
 // adapter starts for a proxy-billed recipe), with the host's tools as agentrun__<name>, and each tool_use of one is asked
-// about (session/request_permission) and called over the session's MCP server. It keeps its conversation in
+// about (session/request_permission), unless its permission file allows it, and called over the session's MCP server.
+// The permission file is an allowFile in Goose's form (`goose-permission`) where Goose reads it,
+// $HOME/.config/goose/permission.yaml (JSON, as the adapter writes it), read once at start: a tool its user.always_allow
+// names runs unasked, and the names it read reach the model as the system prompt (`permission file: <names, sorted>`), so
+// a test sees what the start was given. It keeps its conversation in
 // $HOME/.model-agent/sessions/<id>.json and loads it back on session/load. No binary, no network beyond loopback: the
 // harness-check tests install it from a .tar.bz2 as a recipe's release.
 // MODEL_AGENT_MODE (the recipe's env) bends it:
@@ -11,7 +15,8 @@
 //              refuses when the tunnel is refused, as an agent that checks its vendor before it signs in or opens a session;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation;
 //   untied     titles each call of ours under another server's name (`github: check echo`), a title the adapter does
-//              not tie to our tool, so its permission reaches the host's gate as the agent's own (`acp_other`);
+//              not tie to our tool even on a recipe that declares the title tie, so its permission reaches the host's
+//              gate as the agent's own (`acp_other`);
 //   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
 //              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback;
 //   leak-key   at each prompt, says on stderr that its vendor refused its key, its key (vendorKey) written out,
@@ -86,6 +91,15 @@ let signedIn = auth && signInFile && existsSync(signInFile) ? "model-agent-login
 /** The vendor key: the person's sign-in's text when it runs on one, else its own key. */
 const vendorKey = () => (signedIn === "model-agent-login" ? readFileSync(signInFile, "utf8").trim() : process.env[keyEnv] ?? "");
 const store = join(process.env.HOME ?? "/nonexistent", ".model-agent", "sessions");
+/** The tools the permission file lets run unasked, by their exact names; undefined when there is no file. */
+const alwaysAllowed = (() => {
+  try {
+    const names = JSON.parse(readFileSync(join(process.env.HOME ?? "/nonexistent", ".config", "goose", "permission.yaml"), "utf8"))?.user?.always_allow;
+    return Array.isArray(names) ? names.map(String) : [];
+  } catch {
+    return undefined;
+  }
+})();
 const sessions = new Map();
 const save = (session) => {
   mkdirSync(store, { recursive: true });
@@ -170,7 +184,8 @@ async function openSession(id, params, messages) {
 async function ask(session) {
   const offered = session.tools.map((t) => ({ name: `agentrun__${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
   if (mode === "own-tools") offered.push({ name: "shell", description: "Run a shell command.", input_schema: { type: "object", properties: { command: { type: "string" } } } });
-  const body = JSON.stringify({ model: session.model ?? process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered });
+  const system = alwaysAllowed ? { system: [{ type: "text", text: `permission file: ${[...alwaysAllowed].sort().join(",")}` }] } : {};
+  const body = JSON.stringify({ model: session.model ?? process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, ...system, messages: session.messages, tools: offered });
   const response = mode === "plan"
     ? await vendorPost(body)
     : await fetch(`${process.env.ANTHROPIC_HOST ?? process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
@@ -216,8 +231,8 @@ async function takeTurn(client, session, prompt) {
       const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
       await notify({ sessionUpdate: "tool_call", ...update });
       const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
-      const answer = await client.request("session/request_permission", { sessionId: session.id, toolCall: update, options });
-      const allowed = answer.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once";
+      const answer = alwaysAllowed?.includes(use.name) ? undefined : await client.request("session/request_permission", { sessionId: session.id, toolCall: update, options });
+      const allowed = answer === undefined || (answer.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once");
       let result = "the client refused the call";
       let failed = !allowed;
       if (allowed && use.name.startsWith("agentrun__") && session.mcp) {

@@ -54,6 +54,12 @@ async function release(t, extra = "", pack = "bz2", { sidecar } = {}) {
   return { bytes, tree, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
 }
 
+/** The allowFile in Goose's form, which the stand-in reads where Goose does: it runs the tools named there unasked. */
+const ALLOW_FILE = { path: ".config/goose/permission.yaml", form: "goose-permission" };
+/** A recipe that declares the title tie instead of an allowFile, as Cursor's does: its agent asks for each of our calls,
+ *  and the adapter answers allow_once for one it announced (`allowFile: undefined` drops the default, as JSON does). */
+const TIED = { allowFile: undefined, quirks: { permissionTie: "title" } };
+
 /** A recipe for the stand-in agent, `over` merged over it. */
 const recipeOf = (archiveSha = "0".repeat(64), over = {}) => ({
   id: "model-agent",
@@ -64,6 +70,7 @@ const recipeOf = (archiveSha = "0".repeat(64), over = {}) => ({
   files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
   state: [".model-agent/sessions"],
   declares: { load: true, mcp: "http" },
+  allowFile: ALLOW_FILE,
   ...over,
 });
 
@@ -115,6 +122,18 @@ function refusalOf(recipe) {
   assert.fail("the recipe was not refused");
 }
 
+test("the loader passes a recipe's allowFile and its title tie through, to the adapter's recipe as they are", async () => {
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const allowing = parseRecipe(JSON.stringify(recipeOf()));
+  assert.deepEqual(allowing.allowFile, { path: ".config/goose/permission.yaml", form: "goose-permission" });
+  const tied = parseRecipe(JSON.stringify(recipeOf(undefined, TIED)));
+  assert.equal(tied.allowFile, undefined);
+  assert.deepEqual(tied.quirks, { permissionTie: "title" });
+  const route = { on: "keys" };
+  assert.deepEqual(acpRecipeFor(allowing, "/opt/agent", allowing.release.archives[PLATFORM], route).allowFile, { path: ".config/goose/permission.yaml", form: "goose-permission" });
+  assert.deepEqual(acpRecipeFor(tied, "/opt/agent", tied.release.archives[PLATFORM], route).quirks, { permissionTie: "title" });
+});
+
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],
@@ -134,6 +153,10 @@ const BROKEN = [
   }],
   ["rule 3, private paths: a file outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { files: { "/etc/model-agent.json": "{}" } })],
   ["rule 3, private paths: state that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { state: ["../shared/sessions"] })],
+  ["rule 3, private paths: an allowFile outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { allowFile: { path: "/etc/goose/permission.yaml", form: "goose-permission" } })],
+  ["an allowFile in a form no agent reads", RECIPE_CODES.invalid, () => recipeOf(undefined, { allowFile: { path: ".config/goose/permission.yaml", form: "yaml" } })],
+  ["an allowFile at a path its files also write", RECIPE_CODES.invalid, () => recipeOf(undefined, { files: { ".config/goose/permission.yaml": "{}" } })],
+  ["a title tie other than \"title\"", RECIPE_CODES.invalid, () => recipeOf(undefined, { quirks: { permissionTie: "name" } })],
   ["rule 4, the owner installs it: an install step of its own", RECIPE_CODES.install, () => recipeOf(undefined, { install: "curl -fsSL https://example.invalid/install.sh | sh" })],
   ["rule 5, an allowlist environment: the host's environment passed through", RECIPE_CODES.env, () => recipeOf(undefined, { passEnv: true })],
   ["rule 5, an allowlist environment: a value read from the host's environment", RECIPE_CODES.env, () => recipeOf(undefined, { env: { MODEL_AGENT_CACHE: "$HOME/.cache" } })],
@@ -337,22 +360,30 @@ function checkStep(body) {
   if (results.length) return { text: `RESULT ${JSON.stringify(results[0].content).slice(0, 80)}` };
   const prompt = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
   // The last ask in the prompt: a restarted agent's prompt holds the conversation's note before it.
-  const use = [...prompt.matchAll(/Use the (check_\w+) tool once, with the text argument set to (\w+)/g)].at(-1);
+  const use = [...prompt.matchAll(/Use the (check_\w+) tool once, with the text argument set to (\w+)(?: and the path argument set to (\w+\.\w+))?/g)].at(-1);
   if (use) {
     const tool = tools.find((name) => name.endsWith(use[1]));
-    return tool ? { tool, input: { text: use[2] } } : { text: `NO ${use[1]} among ${tools}` };
+    return tool ? { tool, input: { text: use[2], ...(use[3] ? { path: use[3] } : {}) } } : { text: `NO ${use[1]} among ${tools}` };
   }
   return { text: "ready" };
 }
 
-test("harness-check passes an agent that keeps the rules: stages 2 and 3, and the three facts printed", { skip: linux, timeout: 120_000 }, async (t) => {
+test("harness-check passes an agent that keeps the rules: stages 2 and 3, and the three facts printed; its recipe's allowFile means it asks nothing for our tools", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, origin, env } = await installed(t, recipeOf());
   const run = await check(t, file, data, env);
   t.diagnostic(run.stdout);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.stage2)}`);
-  for (const line of ["resume: load", "tool_gate: permission", "billing: proxy", "harness-check: passed"]) assert.ok(run.stdout.split("\n").includes(line), `${line} in:\n${run.stdout}`);
+  // Before: the agent asked for each call of ours and the adapter answered allow_once on its title (tool_gate:
+  // permission). Now the recipe's allowFile lists our tools, so it asks nothing and the gate asks at the MCP call.
+  for (const line of ["resume: load", "tool_gate: config", "billing: proxy", "harness-check: passed"]) assert.ok(run.stdout.split("\n").includes(line), `${line} in:\n${run.stdout}`);
   const { report } = run;
-  assert.deepEqual(report.facts, { resume: "load", tool_gate: "permission", billing: "proxy" });
+  assert.deepEqual(report.facts, { resume: "load", tool_gate: "config", billing: "proxy" });
+  assert.equal(report.stage3.mcp_tool.permissionAsks, 0);
+  assert.deepEqual(report.gate.permissionsAsked, []);
+  assert.deepEqual(report.gate.asked.filter((g) => g.tool === "check_echo"), [{ tool: "check_echo", answer: "allow" }], "the gate asked once, at the MCP call");
+  // The file the agent was given at each start: exactly that start's tools, by the names it calls them.
+  const systems = origin.messages().map((r) => JSON.stringify(r.body.system ?? null));
+  assert.ok(systems.length >= 5 && systems.every((text) => text.includes("permission file: agentrun__check_denied,agentrun__check_echo")), systems.join("\n"));
   assert.deepEqual(report.stage2.tools_off.firstRequest.sort(), ["agentrun__check_denied", "agentrun__check_echo"]);
   assert.deepEqual(report.stage2.env_allowlist.beyondAllowlist, []);
   assert.deepEqual(report.stage2.env_allowlist.hostSecretsSeen, []);
@@ -363,6 +394,7 @@ test("harness-check passes an agent that keeps the rules: stages 2 and 3, and th
   assert.equal(report.stage3.resume.loaded, true);
   assert.equal(report.stage3.denied_call.ran, 0);
   assert.equal(report.stage3.mcp_tool.calls, 1);
+  assert.match(JSON.stringify(origin.messages()[0].body.messages), /the path argument set to proof\.txt/, "check_echo is asked with a path, the argument Goose summarizes in its title");
   assert.equal(report.stage3.other_runner.loaded, true);
   assert.ok(report.spendUsd > 0, "the turns were booked");
   // The provider got the turns' requests alone, each with the server's key, never the agent's.
@@ -395,8 +427,29 @@ test("harness-check fails an agent whose own tools are on: its model request is 
   assert.equal(existsSync(join(data, "harnesses", "model-agent.checked")), false, "a failed check notes no pass, so no server runs it");
 });
 
-test("harness-check fails an agent whose title for our tool the adapter can't tie (`github: check echo`): its permission is the agent's own, refused, so mcp_tool fails", { skip: linux, timeout: 120_000 }, async (t) => {
-  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "untied" } }));
+test("harness-check fails an agent that asks permission for our tool on a recipe with no allowFile and no title tie: refused at the host's gate, and mcp_tool says it asked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: the adapter answered allow_once on the title (`agentrun__check_echo`) and the check passed.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined }));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.match(run.stdout, /stage 3 mcp_tool: FAIL/);
+  assert.equal(run.report.stage3.mcp_tool.calls, 0, "the check echo call never ran");
+  assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.match(run.report.stage3.mcp_tool.problem, /asked permission for our tool/);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
+test("harness-check passes an agent that asks for each of our calls on a recipe that declares the title tie (quirks.permissionTie, Cursor's way): the loader passes it through", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, TIED));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(run.report.facts.tool_gate, "permission");
+  assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.equal(run.report.stage3.mcp_tool.problem, undefined);
+});
+
+test("harness-check fails an agent whose title for our tool the adapter can't tie (`github: check echo`), on a recipe that declares the tie: its permission is the agent's own, refused, so mcp_tool fails", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, { ...TIED, env: { MODEL_AGENT_MODE: "untied" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   assert.match(run.stdout, /stage 3 mcp_tool: FAIL/);
@@ -449,7 +502,7 @@ test("the check's egress proxy lists what a client asks it to reach (absolute-fo
 test("harness-check passes a plan-billed agent that reaches its vendor through HTTPS_PROXY: the hosts its recipe names are tunneled, the rest refused", { skip: linux, timeout: 120_000 }, async (t) => {
   const planned = (origin) => {
     const vendor = new URL(origin.url).host;
-    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: [vendor] } });
+    return recipeOf(undefined, { ...TIED, keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: [vendor] } });
   };
   const { data, file, origin } = await installed(t, planned);
   const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" }));
@@ -528,7 +581,7 @@ const shapeOf = (report) => ({
 test("a plan-billed recipe's check keeps its rows and codes: passed, a host it does not name refused, a key it lacks refused", { skip: linux, timeout: 120_000 }, async (t) => {
   const planned = (hosts) => (origin) => {
     const vendor = new URL(origin.url).host;
-    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
+    return recipeOf(undefined, { ...TIED, keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
   };
   const keyed = cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" });
   const passed = await installed(t, planned());
