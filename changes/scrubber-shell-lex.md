@@ -8,6 +8,7 @@ The scrubber reads a password typed in a command (`redis-cli -a`, a registry `lo
 - in ANSI-C quoting (`curl $'-u' admin:…`, `login -p $'…'`);
 - after a backslash line continuation: between a command's arguments for all five, and between `docker` and `login` or `npm` and `config set`;
 - with anything else between a program and its subcommand: a redirection (`docker >out.txt login …`), an option (`docker -D login …`, `npm -g set …`, `npm config --global set …`, any number of options between `config` and `set` within the command's read, which ends 1024 to 3072 characters past the command's name), an escaped blank;
+- after `c`, npm's and pnpm's alias of `config` (`npm c set //registry/:_authToken …`);
 - in a registry login's `-p` with the password glued on (`docker login -p<pw>`);
 - under a command name written quoted (`"curl"`, `'redis-cli'`, `$'curl'`), with `.exe`, `.cmd`, `.bat` or `.ps1` in any case (`Docker.exe`), or after a path: a quoted one holding blanks (`"C:\Program Files\Redis\redis-cli.exe" -a …`) or a relative one (`.\redis-cli.exe`). Inside such a path a backslash is a separator, not the start of an escape (`\r`, `\n`). A quoted path ends at its closing quote on the line, and where a path keeps an escape, the same text read with every escape blanked stands beside it, so a path read never leaves what the escape read cuts;
 - after a non-ASCII blank (NBSP, the ideographic space, the other Unicode spaces) before or after a flag, a value or a subcommand;

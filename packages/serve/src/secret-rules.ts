@@ -1653,7 +1653,8 @@ const NPMRC_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)
 /** npm (pnpm, yarn), read as a command (commandWords) when it runs `config set` or `set`: there a key and its value
  *  are two words (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
 const NPM_COMMAND = new RegExp(shellName("npm|pnpm|yarn"), "g");
-const NPM_SET = subcommandAt([["set"], ["config", "set"]]);
+/** `c` is npm's and pnpm's alias of `config` (`npm c set …`). */
+const NPM_SET = subcommandAt([["set"], ["config", "set"], ["c", "set"]]);
 /** An npm auth key ending a `set` argument (`//registry/:_authToken`); the next word is its value. */
 const NPM_AUTH_KEY = /(?:^|[^\w$.])(_authToken|_password|_auth)$/;
 /** Each `npm set` key's value, at least 3 characters: the word after the key's (ruling LXXVI). */
