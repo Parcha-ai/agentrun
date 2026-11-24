@@ -20,6 +20,7 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, follow, serve, storeBytes, withEnv } from "./support.mjs";
 
 const { gatewayBase } = await import("../dist/provider.js");
+const { testGateway } = await import("../dist/model-gateway.js");
 const { withSavedGateway, GATEWAY_KEY_ROW } = await import("../dist/model-gateway.js");
 const { withoutSecrets } = await import("../dist/secrets.js");
 
@@ -176,6 +177,19 @@ test("the view's problem is the one a run meets: Particle's API, which the addre
   assert.match(saved.body.error.fields[0].message, /Particle.*Chat Completions/);
   assert.doesNotMatch(saved.body.error.fields[0].message, /AGENT_MODEL_BASE_URL/);
   assert.equal((await api("GET", "/settings/model-gateway")).body.source, null, "nothing was saved");
+});
+
+// Test holds an address to the rule Save does (a run's): Particle's API is said refused, in a run's words, and never asked,
+// whether typed in the form or the gateway in force. Called directly, so the stub fetch shows nothing went out.
+test("Test refuses what Save refuses: a Particle API base, typed or in force, is refused in a run's words and never asked", async () => {
+  const particle = "https://api.particle.ai/v1";
+  const asked = [];
+  const fetch = async (url) => (asked.push(String(url)), new Response(JSON.stringify({ data: [{ id: "particle-1" }] }), { status: 200 }));
+  await assert.rejects(testGateway({ env: {}, fetch }, { base_url: particle }), (error) => error.details?.fields?.[0]?.field === "base_url" && /Particle.*Chat Completions/.test(error.details.fields[0].message));
+  const inForce = await testGateway({ env: { AGENT_MODEL_BASE_URL: particle }, fetch }, undefined);
+  assert.equal(inForce.ok, false);
+  assert.match(inForce.why, /Particle.*Chat Completions.*remove AGENT_MODEL_BASE_URL/);
+  assert.deepEqual(asked, [], "Particle's API was never asked");
 });
 
 test("the test follows no redirect: a gateway that redirects is said so, and the key never reaches the address it names", { timeout: 60_000 }, async (t) => {
