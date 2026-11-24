@@ -9,7 +9,7 @@
 // refuses the namespace.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import { after, before, describe, it, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DaemonClient, readBackOf, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES } from "@parcha/agentrun-computer";
 import { archilWorkspace, resolveComputer, runKey } from "../dist/workspace/index.js";
+import { computerdListening } from "../../computer/test/computerd-listening.mjs";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -81,6 +82,16 @@ test("Mode 2: a Daytona sandbox with no DAYTONA_ARCHIL_EGRESS holds the run's fo
   assert.deepEqual(side.launched[0].mount, { kind: "sync" }, "no disk, region or token goes to the computer");
   assert.deepEqual(run.computer.check, { ...CHECK, sync: true });
   await workspace.attach(run.computer.computer, run.computer.check);
+  await run.release();
+});
+
+test("the run's folder is pushed at the claim's start with every file at the pushed mtime (2000-01-01), its bytes as the disk holds them", async () => {
+  const root = scratch();
+  const disk = new FakeArchilDisk();
+  disk.files.set(`${ROOT}/d/f.txt`, Buffer.from("held"));
+  const { run } = await started(disk, loopback(root));
+  assert.equal(readFileSync(join(root, "d/f.txt"), "utf8"), "held");
+  assert.equal(statSync(join(root, "d/f.txt")).mtimeMs, Date.UTC(2000, 0, 1));
   await run.release();
 });
 
@@ -243,10 +254,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
     init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
     init.stderr.on("data", (chunk) => (stderr += chunk));
-    for (let tries = 0; !existsSync(socket); tries++) {
-      assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    await computerdListening(socket, init, () => stderr);
     stream = connect(socket);
     await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
     daemon = new DaemonClient({ readable: stream, writable: stream });

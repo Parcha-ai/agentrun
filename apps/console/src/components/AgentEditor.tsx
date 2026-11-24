@@ -12,13 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { ToolCard } from "@/components/ToolCard";
+import { BuiltInToolCards } from "@/components/BuiltInToolCards";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
@@ -32,7 +32,7 @@ import { placeOfComputer } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
-import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
 import { pageToolbarClass } from "@/components/ui/toolbar";
@@ -46,7 +46,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs for it when a definition names none (null: none). */
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
-export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; needs?: string[]; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
 
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
@@ -196,6 +196,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // and each beside the field it names (one the form does not show, such as a place, only above).
   const { monid: monidWarnings, rest: warnings } = splitMonidWarnings(agent?.warnings ?? [], d?.tools ?? []);
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
+  // Above the form, what refuses a run until this host has it (the server's not_set_up_here) apart from what a run goes on
+  // under (a computer every tool of which is set to deny, which no run starts; a cap below one more step).
+  const refusing = warnings.filter((w) => w.reason === "not_set_up_here");
+  const noted = warnings.filter((w) => w.reason !== "not_set_up_here");
   // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
   const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
   // The Save button, which keeps the focus after a save the server refused, where its reason shows.
@@ -207,7 +211,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
   // The built-in tools a filter keeps: what the Tools step draws and counts, one rule for both.
-  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary));
+  // ask_person first: the one tool that lets the agent stop and ask you, which Tool approvals below is not.
+  const builtIns = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary))
+    .sort((a, b) => Number(b.name === "ask_person") - Number(a.name === "ask_person"));
   const toolCount = (query: string) => builtIns(query).length
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
     + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
@@ -297,7 +303,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
-        <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
+        <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         <CodingAgentAction label="Use your agent" prompt={sourceOwned && agent
           ? editAgentPrompt(location.origin, agent.agent_id, !!d?.native, sdk, cli?.runtime)
@@ -322,7 +328,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       {(warnings.length > 0 || monidWarnings.length > 0) && (
         <div className="space-y-3 border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
           {[
-            { lines: warnings, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: refusing, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: noted, head: "Saved. A run of this revision goes on, as each line says:" },
             { lines: monidWarnings.map((m) => m.warning), head: "Saved. What the server said of its monid grants:" },
           ].filter((g) => g.lines.length).map((g) => (
             <div key={g.head}>
@@ -429,27 +436,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
                 {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-                  {builtIns(toolQuery).map((t) => {
-                    // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
-                    // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
-                    // names shows as such, to untick.
-                    const runs = runsOn(f.harness ?? "pi", t.name, caps.tools, toolOpts);
-                    const on = f.tools?.includes(t.name) ?? false;
-                    // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
-                    const choice = providerChoices.find((c) => c.name === t.name);
-                    const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
-                    const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
-                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, [...(f.tools ?? []), t.name], caps.places));
-                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
-                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
-                    // (cut to one line); the reason in full is its title, and in Details.
-                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
-                    return (
-                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
-                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
-                    );
-                  })}
+                  <BuiltInToolCards shown={builtIns(toolQuery)} offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places}
+                    workflow={workflow} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
+                    onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />
                   {/* The MCP and monid groups span the whole row: each lays out its own cards in the same columns. */}
                   {caps.mcp && !workflow && <li className="col-span-full"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} filter={toolQuery} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                   {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
@@ -469,17 +458,19 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   // about to be what it sent, so every change is kept: the save's answer drops it only if it equals what was sent.
                   onChange={(next) => (!saving && same(next, d?.tool_settings ?? {}) ? setF(({ tool_settings: _gone, ...rest }) => rest) : set({ tool_settings: next }))} />
               )}
-              {/* The agent's approvals (definition.approvals): whether a call its gate says ask waits for you. */}
+              {/* The agent's tool approvals (definition.approvals): whether a tool set to ask waits for your OK. Questions are not
+                  this: the agent asks you one only through ask_person, a tool of its own (first in Tools). */}
               {!workflow && !starting && (
-                <fieldset aria-label="Approvals" className="space-y-2">
-                  <legend className="caps text-small font-semibold">Approvals</legend>
-                  {([["ask", "Ask me", "A call whose permission is ask waits for your answer."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
+                <fieldset aria-label="Tool approvals" className="space-y-2">
+                  <legend className="caps text-small font-semibold">Tool approvals</legend>
+                  {([["ask", "Ask me", "A tool set to ask waits for your OK before it runs."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
                     <label key={value} className={cn("flex items-start gap-3 border px-3 py-2.5", approvals === value && "border-foreground")}>
                       <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} disabled={saving} onChange={() => set({ approvals: value })} />
                       <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
                     </label>
                   ))}
                   {approvals === "never" && <p className="text-small text-warning-text">{NEVER_ASK_LINE}</p>}
+                  <p className="text-small text-muted-foreground" data-approvals-not-questions>These are about tools, not questions: the agent asks you a question only with ask_person, in Tools.</p>
                 </fieldset>
               )}
               <Field group label="Skills" note="Skill files are saved with each revision and kept as they are by an edit.">
@@ -498,20 +489,23 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
                         briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
-                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it.
+                        One off only for want of a model key (`wantsKey`) is still a choice: a save of it is taken, with a
+                        warning, and it runs once a key is added. */}
                     {choices.map((h) => {
+                      const pickable = h.available || h.wantsKey === true;
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
-                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : "Not available here"}</span></span>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!pickable && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : h.wantsKey ? "Needs a model key" : "Not available here"}</span></span>
                         </>
                       );
                       const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
                       return h.available ? (
                         <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
                       ) : (
-                        <div key={h.id} className={cn(edge, "opacity-60")}>
-                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                        <div key={h.id} className={cn(edge, !pickable && "opacity-60")}>
+                          <label className={cn("flex items-start gap-3", pickable ? "cursor-pointer" : "cursor-not-allowed")}>{row}</label>
                           {h.reason && (
                             <details className="mt-2 font-mono text-label text-muted-foreground">
                               <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>

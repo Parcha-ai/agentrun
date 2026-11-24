@@ -15,6 +15,7 @@ import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
 import { calendarRowSecrets } from "../calendar/address.js";
 import { CALENDAR_ROW } from "../calendar/names.js";
 import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
+import { MIN_SECRET } from "../learn/secrets.js";
 import { GATEWAY_KEY_ROW, gatewayKeyRowSecrets } from "../model-gateway.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
@@ -30,8 +31,29 @@ export type StoreSecretsStore = Pick<Store, "sealedSecrets">;
 /** The keys of a sealed JSON value that hold secrets: OAuth tokens, a client's secret, a PKCE verifier. */
 const JSON_SECRETS = ["access_token", "refresh_token", "id_token", "client_secret", "verifier"];
 
-/** The secret strings of an opened JSON value: each header's value (a bearer's token alone too), and every string under
- *  one of JSON_SECRETS, wherever it is nested. */
+/** The authorization schemes whose header value is the scheme's word then its credential (`Bearer <token>`), in any case.
+ *  Their second word is listed alone whatever its shape. */
+const CREDENTIAL_SCHEMES = new Set(["bearer", "basic", "token", "digest", "apikey", "key"]);
+
+/** Whether the second word of a two-word header value in a scheme CREDENTIAL_SCHEMES doesn't name (Okta's `SSWS`,
+ *  Discord's `Bot`, `OAuth`, `Splunk`, `Klaviyo-API-Key`) is shaped like a credential: it has a digit, or is 20
+ *  characters or more, or is base64 at MIN_SECRET or more with its punctuation (`+`, `/`, `=`) or with both cases past
+ *  its first letter, or is hex at MIN_SECRET or more. A client's name (`Acme Integration`, `Acme integration-service`)
+ *  is none of these and is not split: a word of it is no credential, and listed alone it would be cut from every run
+ *  and refused in every learned draft. */
+function credentialShaped(word: string): boolean {
+  if (/\d/.test(word) || word.length >= 20) return true;
+  if (word.length < MIN_SECRET) return false;
+  if (/^[0-9a-f]+$/i.test(word)) return true;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(word)) return false;
+  return /[+/=]/.test(word) || (/[a-z]/.test(word.slice(1)) && /[A-Z]/.test(word.slice(1)));
+}
+
+/** The secret strings of an opened JSON value: each header's value, and its credential alone where it is one of
+ *  CREDENTIAL_SCHEMES' or credentialShaped (`Bearer <token>`, `Basic <credential>`, `SSWS <token>`: a value with a
+ *  space is never listed whole, server-secrets.ts); a Basic credential's `user:password`, its password, and its user
+ *  when the password is too short to be the secret (a key sent as the user, `-u KEY:`); and every string under one of
+ *  JSON_SECRETS, wherever nested. */
 function jsonSecrets(text: string): string[] {
   let value: unknown;
   try {
@@ -52,8 +74,17 @@ function jsonSecrets(text: string): string[] {
     for (const header of Object.values(headers as Record<string, unknown>)) {
       if (typeof header !== "string") continue;
       out.push(header);
-      const bearer = /^Bearer\s+(.+)$/i.exec(header);
-      if (bearer) out.push(bearer[1]!);
+      const scheme = /^([A-Za-z][\w.-]*)\s+(\S+)\s*$/.exec(header);
+      if (!scheme || !(CREDENTIAL_SCHEMES.has(scheme[1]!.toLowerCase()) || credentialShaped(scheme[2]!))) continue;
+      out.push(scheme[2]!);
+      if (scheme[1]!.toLowerCase() !== "basic") continue;
+      const pair = Buffer.from(scheme[2]!, "base64").toString("utf8");
+      const colon = pair.indexOf(":");
+      if (colon < 0 || /[\u0000-\u001f\ufffd]/.test(pair)) continue;
+      const user = pair.slice(0, colon);
+      const password = pair.slice(colon + 1);
+      out.push(pair, password);
+      if (password.length < MIN_SECRET) out.push(user);
     }
   }
   walk(value);
@@ -63,8 +94,9 @@ function jsonSecrets(text: string): string[] {
 /** A launch's sealed JSON: its own listed values (jsonSecrets), each handed MCP credential's headers (store/seal.ts
  *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, each per-run Composio
  *  binding's user and account (`{"mcp": {"<server>": {"composio": {"user_id", "connected_account_id"}}}}`), the run's
- *  own model key (`{"model": {"key": "..."}}`) and each of its own tool keys (`{"keys": {"<NAME>": "..."}}`). */
-function launchSecrets(text: string): string[] {
+ *  own model key (`{"model": {"key": "..."}}`), each of its own tool keys (`{"keys": {"<NAME>": "..."}}`) and each value a
+ *  message replaced since its turn began (`{"retired": ["..."]}`). */
+export function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
   let opened: { mcp?: unknown; model?: { key?: unknown }; keys?: unknown } | null;
   try {
@@ -82,6 +114,8 @@ function launchSecrets(text: string): string[] {
   }
   if (typeof opened?.model?.key === "string") out.push(opened.model.key);
   if (opened?.keys && typeof opened.keys === "object") for (const value of Object.values(opened.keys)) if (typeof value === "string") out.push(value);
+  // Each value a message replaced since the turn began (store/seal.ts RunLaunchSecrets.retired): cut, never used.
+  if (Array.isArray((opened as { retired?: unknown } | null)?.retired)) for (const value of (opened as { retired: unknown[] }).retired) if (typeof value === "string") out.push(value);
   return out;
 }
 

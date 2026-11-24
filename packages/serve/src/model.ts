@@ -25,6 +25,8 @@ import { OLLAMA_PROVIDER, ollamaBase, ollamaHostRefused, ollamaModels, ollamaPro
 
 /** The child's environment names the faux module by absolute path. */
 export const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
+/** The provider of a --faux start's model (chooseModel), which stands in for the run's and sends no key. */
+export const FAUX_PROVIDER = "faux";
 /** The Ollama tags among a run's models (`ollama/<tag>`): what providerModels resolves for it, one /api/show each. */
 export const ollamaTagsOf = (refs: Iterable<ModelRef | undefined>): string[] => [...new Set([...refs].flatMap((ref) => (ref?.provider === OLLAMA_PROVIDER ? [ref.modelId] : [])))];
 /** Whether the Ollama here is asked for its models under `env`: not under the faux model or a model gateway, which take
@@ -152,8 +154,9 @@ export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string)
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
  *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
- *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, on pi, the first
- *  model of the Ollama here that calls tools (localDefault). Undefined when none is: the harness has no default here. */
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, where `harness`
+ *  runs it (pi, a harness on a wire the route translates it onto), the first model of the Ollama here that calls tools
+ *  (localDefault). Undefined when none is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   return settingsModel(env, tier, harness) ?? localDefault(env, harness);
 }
@@ -172,8 +175,9 @@ function settingsModel(env: NodeJS.ProcessEnv, tier: Tier, harness: string): str
 
 /** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
  *  ollamaToolsModel, from its last listing, which chooseModel asks for first), where `harness` runs it (harnessRuns, its
- *  entry's facts: pi any model, an adapter its wire's vendor's alone); none behind a gateway or under the faux model. A
- *  model that takes no tools is never a default: a run on it would have none. */
+ *  entry's: pi any model, an adapter its wire's vendor's and the models the route translates onto its wire); none behind a gateway or under the faux model. A
+ *  model that takes no tools is never a default: a run on it gets its tools as text, and text tools are unreliable on
+ *  small models. */
 function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
   if (!asksOllama(env)) return undefined;
   const model = ollamaToolsModel(env);
@@ -263,7 +267,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
 /** chooseModel, `relisted` once the Ollama here was listed again for the host's default (below): never a second time. */
 async function choose(env: NodeJS.ProcessEnv, ref: string | PinnedModel | undefined, tier: Tier, harness: string, relisted: boolean): Promise<Choice> {
   if (typeof ref === "object") return pinnedChoice(env, ref, tier, harness);
-  if (env[FAUX_ENV]) return { model: { provider: "faux", modelId: fauxModel(env, tier) } };
+  if (env[FAUX_ENV]) return { model: { provider: FAUX_PROVIDER, modelId: fauxModel(env, tier) } };
   // A host whose own settings name no model reads its default from the Ollama here (hostModel's localDefault): its
   // listing first (ollamaModels: kept while fresh, asked now where none is, and a stale one asked again behind this
   // choice), so a tag it took is never the last listing's for good. A ref, a key, a default or a plan never waits on it.

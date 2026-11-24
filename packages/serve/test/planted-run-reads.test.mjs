@@ -36,7 +36,7 @@ const RUN_READS = {
   listRuns: (run) => [`/agents/${run.agentId}/runs`],
   getRun: (run) => [`/runs/${run.id}`],
   getTimeline: (run) => [`/runs/${run.id}/timeline`],
-  listRunFiles: (run) => [`/runs/${run.id}/files`],
+  listRunFiles: (run) => [`/runs/${run.id}/files`, `/runs/${run.id}/files?cut=run`],
   readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`, `/runs/${run.id}/files/${run.file}?cut=run`],
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
   getRunTrace: (run) => [`/runs/${run.id}/trace`],

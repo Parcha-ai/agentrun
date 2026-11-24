@@ -70,6 +70,11 @@ export type PublicFetchOptions = {
   signal?: AbortSignal;
   /** Default 5 MiB. */
   maxBytes?: number;
+  /** Refuse http as well, on the first hop and at every redirect: https only. Default false. */
+  httpsOnly?: boolean;
+  /** The most redirects followed, a whole number from 0 to 5; with 0 any redirect is refused before its target is
+   *  dialled. Default 5. */
+  maxRedirects?: number;
 };
 
 /** The answer that ended the redirects: its URL, status and type, and its body when it is a 2xx text answer. */
@@ -86,11 +91,39 @@ export type PublicFile = { url: string; status: number; contentType: string; byt
 
 const MIB = 1024 * 1024;
 
-/** The options checked before any lookup: `maxBytes` (default 5 MiB) a whole number of bytes above 0. */
+/** The options checked before any lookup: `maxBytes` (default 5 MiB) a whole number of bytes above 0, and
+ *  `maxRedirects` a whole number from 0 to 5. */
 function capOf(options: PublicFetchOptions): number {
   const maxBytes = options.maxBytes ?? PUBLIC_MAX_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError(`maxBytes must be a whole number of bytes above 0, not ${maxBytes}`);
+  const redirects = options.maxRedirects ?? MAX_REDIRECTS;
+  if (!Number.isSafeInteger(redirects) || redirects < 0 || redirects > MAX_REDIRECTS) throw new RangeError(`maxRedirects must be a whole number from 0 to ${MAX_REDIRECTS}, not ${redirects}`);
   return maxBytes;
+}
+
+type Lookup = (host: string) => Promise<string[]>;
+const systemLookup: Lookup = async (host) => (await dns.lookup(host, { all: true })).map((a) => a.address);
+
+/** One hop's checks before it is dialled: its name is not a local one, every address it resolves to is public, and its
+ *  port is 80 or 443. Answers the addresses, the first of which the hop dials; throws the refusal otherwise. */
+async function hopAddresses(target: URL, lookup: Lookup, signal: AbortSignal | undefined): Promise<string[]> {
+  const host = target.hostname.replace(/^\[|\]$/g, "");
+  // Trailing dots name the same host (WHATWG keeps them): the name checks read the host without any.
+  const name = host.replace(/\.+$/, "");
+  if (name === "localhost" || name.endsWith(".localhost") || name.endsWith(".local") || name.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
+  const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), signal);
+  if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
+  if (!PORTS.has(target.port)) throw refusedError(`refused: port ${target.port} is not 80 or 443`);
+  signal?.throwIfAborted();
+  return addresses;
+}
+
+/** Whether publicFetch's first hop would be dialled for `url`: http(s), and hopAddresses' checks, with nothing sent.
+ *  Resolves when it passes; throws publicFetch's own refusal when it does not. */
+export async function publicCheck(url: string, options: { lookup?: Lookup; signal?: AbortSignal } = {}): Promise<void> {
+  const target = new URL(url);
+  if (!/^https?:$/.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not http(s)`);
+  await hopAddresses(target, options.lookup ?? systemLookup, options.signal);
 }
 
 /**
@@ -100,25 +133,22 @@ function capOf(options: PublicFetchOptions): number {
  * returns or throws.
  */
 async function publicHops<T>(url: string, options: PublicFetchOptions, accept: string, answer: (res: Response, target: URL) => Promise<T>): Promise<T> {
-  const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
+  const lookup = options.lookup ?? systemLookup;
   const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
+  const [scheme, schemeName] = options.httpsOnly ? ([/^https:$/, "https"] as const) : ([/^https?:$/, "http(s)"] as const);
+  const most = options.maxRedirects ?? MAX_REDIRECTS;
   let target = new URL(url);
-  if (!/^https?:$/.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not http(s)`);
+  if (!scheme.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not ${schemeName}`);
   for (let hop = 0; ; hop += 1) {
-    const host = target.hostname.replace(/^\[|\]$/g, "");
-    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
-    const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), options.signal);
-    if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
-    if (!PORTS.has(target.port)) throw refusedError(`refused: port ${target.port} is not 80 or 443`);
-    options.signal?.throwIfAborted();
+    const addresses = await hopAddresses(target, lookup, options.signal);
     const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } });
     let res: Response | undefined;
     try {
       res = await request(target, { redirect: "manual", signal: options.signal, dispatcher, headers: { accept, "user-agent": "pi-browser" } });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-        if (hop >= MAX_REDIRECTS) throw refusedError("refused: too many redirects");
+        if (hop >= most) throw refusedError(most === 0 ? "refused: a redirect, and this download follows none" : "refused: too many redirects");
         target = new URL(res.headers.get("location")!, target);
-        if (!/^https?:$/.test(target.protocol)) throw refusedError("refused: a redirect left http(s)");
+        if (!scheme.test(target.protocol)) throw refusedError(`refused: a redirect left ${schemeName}`);
         continue;
       }
       return await answer(res, target);
@@ -180,12 +210,12 @@ function statedLength(headers: Headers): number | undefined {
 }
 
 /**
- * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
+ * Fetches `url` from a public host, following at most 5 redirects (or `maxRedirects`), each hop resolved, checked and dialled at the
  * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
- * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
- * that is local by name or resolves to any private address; a port other than 80 or 443; too many redirects; a 2xx body
- * that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
- * with the signal's reason), and an aborted hop is never dialled.
+ * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s) (other
+ * than https, with `httpsOnly`); a host that is local by name or resolves to any private address; a port other than 80
+ * or 443; too many redirects (any, with `maxRedirects` 0); a 2xx body that is not text or is over the cap. `signal` ends the fetch at any point, a
+ * hop's name lookup included (it rejects with the signal's reason), and an aborted hop is never dialled.
  */
 export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {
   const maxBytes = capOf(options);

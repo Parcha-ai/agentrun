@@ -17,6 +17,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
+const { mintSecret } = await import("../dist/standard-webhooks.js");
 const { API_ONLY_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
@@ -76,12 +77,14 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
     // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
+    // The launch hook's host releases a firing it took and will start no run for.
+    ["POST", "/v2/triggers/trg_1/firings/fir_1/release"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
     ["POST", "/v2/setup"], ["POST", "/v2/auth/sign-in"], ["GET", "/v2/auth/session"],
     ["PUT", "/v2/settings/tool-keys/monid"], ["PUT", "/v2/settings/tools"], ["PUT", "/v2/settings/webhook"], ["GET", "/v2/settings/tools"],
-    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"],
+    ["POST", "/v2/settings/mcp-servers/preview"], ["POST", "/v2/settings/mcp-servers/x/refresh"], ["POST", "/v2/settings/mcp-servers/composio/tools"], ["POST", "/v2/settings/mcp-servers/composio/toolkits"],
     ["POST", "/v2/settings/mcp-servers/x/oauth/start"], ["GET", "/v2/settings/mcp-servers/x/composio/events"], ["PUT", "/v2/settings/mcp-servers/oauth/private-hosts"],
     // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
     // with headers of the caller's own.
@@ -93,6 +96,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],
     ["GET", "/v2/triggers/trg_1"], ["PATCH", "/v2/triggers/trg_1"], ["DELETE", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"],
     ["POST", "/v2/triggers/trg_1/fire"], ["POST", "/v2/triggers/trg_1/secret"], ["POST", "/v2/hooks/composio/p1"],
+    ["GET", "/v2/triggers/trg_1/firings/fir_1/release"], ["POST", "/v2/triggers/trg_1/firings/fir_1"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
@@ -124,6 +128,10 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   // The store's schema and runner floor beside this build's, for a deploy's skew check (runnerfloor/1).
   const { version, runner_floor: floor, known } = capabilities.body.store_schema;
   assert.ok(Number.isSafeInteger(known) && version === known && Number.isSafeInteger(floor) && floor <= known, JSON.stringify(capabilities.body.store_schema));
+  // Whether a per-run Composio server here takes each run's own account (composioperrun/1), read by the backend in
+  // front from this answer: the API document stays refused here.
+  assert.equal(capabilities.body.features.mcp_client.composio_per_run, true, "the per-run Composio binding is said");
+  assert.equal((await send(server, "GET", "/v2/openapi.json")).status, 404, "the API document is not served here");
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
   assert.equal((await send(server, "GET", "/v2/usage")).status, 200, "usage");
@@ -157,6 +165,18 @@ test("an API-only server serves a run's usage lines with the token, and still re
 
   const settings = await send(server, "GET", "/v2/settings/tools");
   assert.deepEqual([settings.status, settings.body.error?.message], [404, "this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/settings/tools is not served here"], "a settings route is the profile's 404");
+});
+
+test("an API-only server with the launch hook serves a firing's release with the token: an unknown trigger is the route's own 404, and with no launch hook the route's own 422 not_allowed", async (t) => {
+  const path = `/v2/triggers/trg_0123456789abcdef01234567/firings/fir_${"0".repeat(32)}/release`;
+  const hooked = await serve(t, { apiOnly: true, runner: false, launchHook: { url: "http://127.0.0.1:9/agentrun/firings", secret: mintSecret() } });
+  const unknown = await send(hooked, "POST", path, { body: { error: "The job failed at launch." } });
+  assert.deepEqual([unknown.status, unknown.body.error?.code], [404, "not_found"], JSON.stringify(unknown.body));
+  assert.ok(!unknown.body.error.message.includes("AGENTRUN_API_ONLY"), `the route's own 404, not the profile's: ${unknown.body.error.message}`);
+  assert.equal((await send(hooked, "POST", path, { token: false, body: { error: "The job failed at launch." } })).status, 401, "and it takes the token");
+  const plain = await serve(t, { apiOnly: true, runner: false });
+  const refused = await send(plain, "POST", path, { body: { error: "The job failed at launch." } });
+  assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.reason], [422, "not_allowed"], JSON.stringify(refused.body));
 });
 
 test("an API-only server serves an agent's Archil disk, read and removed, with the token", async (t) => {
