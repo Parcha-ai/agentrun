@@ -11,6 +11,13 @@ import type { Run, TimelinePage } from "@/lib/v2";
 import { servedKey } from "@/test/keys";
 import { pick, wordsOf } from "@/test/picker";
 
+/** Lets the page's stubbed fetches and renders run until `ok`, by turns of the event loop, never by the clock: a slow
+ *  machine takes longer per turn, not more turns. Fails if `ok` never holds. */
+async function until(ok: () => boolean, turns = 200) {
+  for (let i = 0; i < turns && !ok(); i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  expect(ok()).toBe(true);
+}
+
 // Mission Control is the first page: the bare address and the old start page's both open it, so no link dead-ends.
 describe("route", () => {
   it("opens Learning Dojo without changing per-agent learning links", () => {
@@ -160,21 +167,17 @@ describe("App, the race form when the capabilities can't be read", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
-    const until = async (text: string) => {
-      const end = Date.now() + 4000;
-      while (!host.textContent?.includes(text) && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-    };
-    await until("could not be read");
+    await until(() => !!host.textContent?.includes("could not be read"));
     expect(host.textContent).toContain("The server's harnesses could not be read");
     fail = false;
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Try again")!.click(); });
-    await until("Start the race");
-    expect(host.textContent).toContain("Start the race");
+    await until(() => !!host.textContent?.includes("Start the race"));
   });
 
   it("gives the form the server's tool offers and places: a started lane carries the tools a new agent gets there", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    const started: Record<string, unknown>[] = [];
+    const made: { tools?: string[] }[] = [];
+    const started: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       const path = new URL(url, "http://serve.test").pathname;
       if (path === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
@@ -184,10 +187,16 @@ describe("App, the race form when the capabilities can't be read", () => {
         tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
         places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
       });
-      if (path === "/v2/runs" && init?.method === "POST") {
+      if (path === "/v2/agents" && init?.method === "POST") {
+        const { definition } = JSON.parse(String(init.body)) as { definition: { id: string; tools?: string[] } };
+        made.push(definition);
+        return json(201, { agent_id: definition.id, revision: "rev-1", kind: "agentic", definition });
+      }
+      const runOf = /^\/v2\/agents\/([^/]+)\/runs$/.exec(path);
+      if (runOf && init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-        started.push(body);
-        return json(202, { run_id: `run-${started.length}`, agent_id: `agent-${started.length}`, status: "queued", state: "working", labels: body.labels });
+        started.push(decodeURIComponent(runOf[1]));
+        return json(202, { run_id: `run-${started.length}`, agent_id: started.at(-1), status: "queued", state: "working", labels: body.labels });
       }
       if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
       return json(404, { error: { code: "not_found", message: path, retryable: false } });
@@ -196,18 +205,16 @@ describe("App, the race form when the capabilities can't be read", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(App)));
-    const end = Date.now() + 4000;
-    while (!host.querySelector("textarea") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    await until(() => !!host.querySelector("textarea"));
     const area = host.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area, "Fix the failing test");
       area.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Start the race")!.click(); });
-    const sent = Date.now() + 4000;
-    while (started.length < 2 && Date.now() < sent) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    await until(() => started.length === 2);
     // The offers give read; the box by default gives bash too (with no places read, a lane gets no shell).
-    expect(started.map((b) => (b.definition as { tools?: string[] }).tools)).toEqual([["read", "bash"], ["read", "bash"]]);
+    expect(made.map((d) => d.tools)).toEqual([["read", "bash"], ["read", "bash"]]);
   });
 });
 

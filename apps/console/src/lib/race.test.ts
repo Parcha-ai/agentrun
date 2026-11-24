@@ -109,21 +109,20 @@ describe("a lane's stats, from its run and its followed timeline", () => {
   });
 });
 
-describe("starting a race: one inline run per lane", () => {
-  it("a lane's start is its own agent (external race-<label>-<n>, one revision per harness and model), the race's task and cap, and the labels the race view reads", () => {
-    const body = laneStart("bench-1", 2, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "Fix the failing test", 1.5, { tools: ["read", "write", "bash"] });
-    expect(body).toEqual({
-      external: { source: "console", kind: "race", id: "race-bench-1-2", version: "pi anthropic/claude-sonnet-5-5" },
-      // POST /v2/runs takes a definition with instructions or a workflow. The inline route grants no tools of its own,
-      // so the lane names them. It names no place: the server puts the run where it puts a new agent with these tools
-      // (its defaultPlaceOf: a shell tool in its default box, else the runner).
-      definition: { name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "pi", model: "anthropic/claude-sonnet-5-5", tools: ["read", "write", "bash"] },
-      input: { content: "Fix the failing test" },
-      max_cost_usd: 1.5,
-      labels: { race: "bench-1", lane: "2", harness: "pi", model: "anthropic/claude-sonnet-5-5" },
+describe("starting a race: an agent and a run of it per lane", () => {
+  it("a lane is an agent of the console's own (POST /agents, its id race-<label>-<n>-<pick>), and a run of it with the race's task and cap and the labels the race view reads", () => {
+    const start = laneStart("bench-1", 2, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "Fix the failing test", 1.5, { tools: ["read", "write", "bash"] }, 3);
+    expect(start).toEqual({
+      // An agent like any the console makes, so it is edited, archived and deleted like one: no `external`, which would
+      // make it another system's and read-only here. Its id is the lane's and the pick's: sent again after a lost answer,
+      // the server's 409 agent_exists says it was made. It names its tools and no place: the server puts it where it puts
+      // a new agent with these tools (its defaultPlaceOf: a shell tool in its default box, else the runner).
+      agent: { id: "race-bench-1-2-3", version: 1, name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "pi", model: "anthropic/claude-sonnet-5-5", tools: ["read", "write", "bash"], skills: [] },
+      run: { input: { content: "Fix the failing test" }, max_cost_usd: 1.5, labels: { race: "bench-1", lane: "2", harness: "pi", model: "anthropic/claude-sonnet-5-5" } },
     });
+    expect(start.agent).not.toHaveProperty("external");
     // The race view orders and names it from those labels.
-    expect(lanesOf([run("r2", body.labels!), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1, { tools: [] }).labels!)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
+    expect(lanesOf([run("r2", start.run.labels), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1, { tools: [] }, 1).run.labels)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
   });
 
   it("a lane's tools are a new agent's on this server, and it names no place: the server puts it where it puts that agent, so an adapter harness with no shell stays on the runner", () => {
