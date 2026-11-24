@@ -229,6 +229,9 @@ export function createWeb(config: WebConfig): Web {
       }
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
       const step = { signal: guarded.signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) };
+      // The guard is asked beside the step; its fee lines go after the step's once both have settled, in one order.
+      const guardLines: Fee[] = [];
+      const guarding = config.pageGuard && config.decider && whole.ok && whole.text ? guardOf(config.decider, asked, whole, { ...step, pay: decisionPay(config.pay ?? unmetered, guardLines) }) : undefined;
       const need = typeof lookingFor === "string" ? clip(lookingFor.trim(), QUERY_MAX) : "";
       const notApplied = (why: string) => ({ ...part, sift: `looking_for not applied (${why}); this part is in page order` });
       let answer: (((WebPage | Page) & Sift) | FoundPage) & Warned = part;
@@ -239,7 +242,8 @@ export function createWeb(config: WebConfig): Web {
         classifier = found.classifier;
       } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
       else if (config.decider) ({ answer, classifier } = await judgePart(config.decider, asked, part, { task, ...step }));
-      const guard = config.pageGuard && config.decider && whole.ok && whole.text ? await guardOf(config.decider, asked, whole, step) : undefined;
+      const guard = await guarding;
+      lines.push(...guardLines);
       if (guard?.warning) answer = { ...answer, warning: guard.warning };
       const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...(guard ? { wall: guard.wall, injection: guard.injection } : unjudged), out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}), ...unsifted(() => webFetchText(part)) };
       return { answer, receipt };

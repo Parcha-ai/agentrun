@@ -3,6 +3,8 @@
 // with a task, giving what each answered: the answer, the text the model reads, and the receipt with its clock fields
 // zeroed (each try's ms, the record's latency). decide-runs.golden.json was written by this sequence at 36408cca68,
 // before the decider gave scores and the step chose what to show, so the drop policy is held to it byte for byte.
+// decide-runs-pre-guard.golden.json holds the sha256 of each answer, model text and receipt `policySteps` gave at
+// 489a989503, before the page guard, so a web with the guard off is held to it under every policy.
 import { deciderFrom, searchText, webFetchText } from "../../dist/index.js";
 import fakeParallel from "./faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./web-runs.mjs";
@@ -55,8 +57,8 @@ const steady = (receipt) => ({
   ...(typeof receipt.classifier === "object" ? { classifier: { ...receipt.classifier, latency_ms: 0 } } : {}),
 });
 
-/** The fixed sequence on `web`, each step's answer, model text and receipt. */
-export async function decideSteps(web) {
+/** The fixed sequence on `web`, each step's answer, model text and receipt; `more`, a looking_for fetch after it. */
+export async function decideSteps(web, more = false) {
   const out = [];
   const search = async (query, options) => {
     const { answer, receipt } = await web.search(query, options);
@@ -73,5 +75,13 @@ export async function decideSteps(web) {
   await fetch(PUBLIC, { task: TASK, offset: A.length, maxChars: 600 });
   await fetch(PUBLIC);
   await fetch("http://evil.example/", { task: TASK });
+  if (more) await fetch(PUBLIC, { task: TASK, lookingFor: "the registry entry" });
+  return out;
+}
+
+/** The fixed sequence and a looking_for fetch under each policy, with the step's decider and no page guard. */
+export async function policySteps() {
+  const out = {};
+  for (const policy of ["drop", "label", "rerank+label"]) out[policy] = await decideSteps(decideWeb({ policy }), true);
   return out;
 }
