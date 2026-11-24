@@ -778,7 +778,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
               : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} source={caps?.models?.source} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} available={caps ? caps.features?.claude_login !== false : capsFailed} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
         ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
@@ -795,7 +795,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
                     plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
             </div>
           </div>

@@ -4,8 +4,8 @@ import { ChatGPTSignIn, WhatRunsHere } from "@/components/ChatGPTSignIn";
 import { KEY_ADVICE, KeyForm } from "@/components/KeysPage";
 import { RunError } from "@/components/RunError";
 import { Button } from "@/components/ui/button";
-import { isPlanModel, PLAN_RUNS } from "@/lib/chatgpt";
-import { type Client, ClientError } from "@/lib/client";
+import { isPlanModel, planRuns } from "@/lib/chatgpt";
+import { type Capabilities, type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
 import { secretLabel, type SecretsWhyNot, WHY_NOT_WORDS } from "@/lib/secrets";
 import type { ApiError, ChatGPTView, ToolKey } from "@/lib/v2";
@@ -23,7 +23,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
  *  "Continue with ChatGPT", the keys behind "Add a key" beside it; `onPlan` hears each state the sign-in moves to (the
  *  page keeps the card while one waits), and once signed in the card says who and OpenAI's words on usage until `onDone`.
  *  `harnesses`: the capabilities' harnesses, listed as what runs here. */
-export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[] }) {
+export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "sign_in", plan, onPlan, onDone, harnesses, source }: { v2: Client; needs?: "key" | "model" | null; model?: string | null; onSaved?: () => void; writable: boolean; whyNot?: SecretsWhyNot; plan?: ChatGPTView | null; onPlan?: (v: ChatGPTView) => void; onDone?: () => void; harnesses?: readonly HarnessInfo[]; source?: Capabilities["models"]["source"] }) {
   const [rows, setRows] = useState<ToolKey[] | null>(null);
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [pick, setPick] = useState<string | null>(null);
@@ -84,7 +84,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
                 <p className="text-body text-muted-foreground">This server has no model yet, so an agent that names no model can't run.</p>
                 <ChatGPTSignIn v2={v2} view={planView} onView={moved} writable={writable} whyNot={whyNot}
                   beside={<Button type="button" size="sm" aria-expanded={keysOpen} onClick={() => setKeysOpen((open) => !open)}>Add a key</Button>} />
-                <p className="text-body text-muted-foreground">{PLAN_RUNS}</p>
+                <p className="text-body text-muted-foreground">{planRuns(source)}</p>
                 {keysOpen && <p className="text-body text-muted-foreground">{KEY_ADVICE}</p>}
               </>
             : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
