@@ -56,7 +56,9 @@ export default {
       await row.getByText(/^Last used /).waitFor();
       check(!(await page.content()).includes("ar_key_"), "a reload shows a key");
 
-      // From `lg` each date has a column of its own: the widest date a row can say fits it on one line.
+      // From `lg` each date has a column of its own: the widest date a row can say fits it on one line. Measured in the
+      // page's own fonts, so once they have loaded: a fallback font's widths are not the page's.
+      await page.evaluate(() => document.fonts.ready);
       const cut = await row.evaluate((li) => {
         const short = (start, text) => {
           const column = [...li.querySelectorAll("span")].find((s) => s.children.length === 0 && s.textContent.startsWith(start));
