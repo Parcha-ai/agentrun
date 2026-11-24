@@ -9,4 +9,4 @@ The console starts a race at `#/races/new` (New race, on the Runs list's toolbar
 - A lane the server refuses shows the server's words in its own place, and the other lanes start anyway. Start again sends only the lanes left, each under the Idempotency-Key its first request had, so no lane starts twice.
 - A lane whose answer never came whole (a lost answer, a timeout, a 5xx, a start the server is still making) may have started, so it says so and keeps its harness, model and the race's task and cap. Start again sends the same request under the same key, and the server answers with the run if it made one. Only a refusal lets a lane change.
 - Lanes are seeded when capabilities first name a harness that runs, so a race never starts with fewer than two.
-- A new race's label is its start time (UTC, to the minute) and four random characters.
+- A new race's label is its start time (UTC, to the minute) and twelve random hex characters, so two races started in the same minute never share a race page.

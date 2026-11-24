@@ -86,10 +86,11 @@ export function laneStart(label: string, n: number, lane: LaneChoice, task: stri
   };
 }
 
-/** A new race's label: when it starts (UTC, to the minute) and a few random characters, so two races never share one. */
+/** A new race's label: when it starts (UTC, to the minute) and 48 random bits (a v4 UUID's first 12 hex digits, all
+ *  before its version digit), so two races opened in the same minute never share one, and so never one race page. */
 export function newRaceLabel(now = new Date(), random: () => string = uuid): string {
   const at = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
-  return `${at}-${random().slice(0, 4)}`;
+  return `${at}-${random().replace(/-/g, "").slice(0, 12)}`;
 }
 
 /** What a lane's header says: cost (the run's own once it ended, else the newest timeline page's), tokens, tool calls
