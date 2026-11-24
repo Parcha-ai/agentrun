@@ -110,3 +110,34 @@ test("the root's own reads quote no user name or password from an error: fetchPa
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
   for (const name of ["fetchPage", "readDirect"]) assert.match(said[name].error ?? "", /includes credentials: http:\/\/public\.example\/$/, `${name}: the refusal of undici, its URL without them`);
 });
+
+// A client web_fetch is given is the caller's: what it says is scrubbed whole in web_fetch, then cut.
+test("an error any client gives that quotes a URL with a user name and password is scrubbed whole and then cut: neither the receipt, the page nor the log holds any part of them", async () => {
+  const words = quoting(280);
+  assert.ok(straddles(words, 300), "the cut of what Firecrawl said ends inside them");
+  const firecrawl = { live: () => true, read: async () => words };
+  const parallel = { live: () => true, read: async () => `failed: ${credentialed()}`, post: async () => { throw new Error("not posted"); } };
+  const leaks = [];
+  const said = [];
+  for (const [provider, client] of [["firecrawl-keyless", { firecrawl }], ["parallel", { parallel }]]) {
+    const read = await fetched({ ...client, order: [provider, "direct"] });
+    assert.deepEqual(turns(read.tries), [[provider, "error"], ["direct", "ok"]], `${provider}: the turns`);
+    leaks.push(...leaking(places(provider, read)));
+    said.push(read.tries[0].error.slice(-30));
+  }
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(said, [`${"x".repeat(10)}http://public.exampl`, "failed: http://public.example/"], "what each said, the URL without them, cut after the scrub");
+});
+
+// The run's other calls can turn Parallel off (a 401 or 403 to its key) while the guard checks this URL for it.
+test("Parallel turned off while the guard checks the URL is not asked: the page says it was refused earlier in this run", async () => {
+  const net = network();
+  let live = true;
+  const asked = [];
+  const parallel = { live: () => live, read: async (url) => (asked.push(url), "asked after it was turned off"), post: async () => { throw new Error("not posted"); } };
+  const lookup = async (host) => ((live = false), net.lookup(host));
+  const { page, tries } = await fetched({ parallel, order: ["parallel", "direct"], lookup });
+  assert.deepEqual(asked, [], "Parallel was not asked");
+  assert.deepEqual([page.via, page.parallel], ["direct", "not tried: refused earlier in this run"], "the page says why");
+  assert.deepEqual(turns(tries), [["parallel", "error"], ["direct", "ok"]], "the turns");
+});
