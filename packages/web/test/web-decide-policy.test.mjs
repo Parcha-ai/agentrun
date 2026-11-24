@@ -7,25 +7,22 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
 import { createWeb, deciderFrom, searchText, siftSearch, webFetchText } from "../dist/index.js";
-import { A, B, decideSteps, decideWeb, LONG, pagesOf, PUBLIC, scoringProvider, SCORES, stepAsked, TASK } from "./fixtures/decide-runs.mjs";
+import { A, B, decideSteps, decideWeb, LONG, pagesOf, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
 
 const golden = JSON.parse(readFileSync(new URL("./fixtures/decide-runs.golden.json", import.meta.url), "utf8"));
 const URLS = ["https://registry.example/widgets", "https://result.example/2", "https://result.example/3", "https://result.example/4"];
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const broken = { id: "fake", needs: [], decide: async () => { throw Object.assign(new Error("down"), { code: "provider_error" }); } };
 
-/** A receipt as it was before the split: without the record's `scored` and the receipt's `unsifted`, and without the
- *  page guard (its verdicts unjudged, its fee line gone). */
+/** A receipt without the two fields added since the split: the record's `scored` and the receipt's `unsifted`. */
 const unscored = (receipt) => {
   if (typeof receipt.classifier !== "object") return receipt;
   const { scored, ...classifier } = receipt.classifier;
   const { unsifted, ...rest } = receipt;
-  const guard = receipt.cost.lines.filter((line) => line.name === "fake's page guard");
-  const usd = Math.round((receipt.cost.usd - guard.reduce((sum, line) => sum + line.usd, 0)) * 1e6) / 1e6;
-  return { ...rest, classifier, wall: { verdict: "unjudged" }, injection: "unjudged", cost: { usd, lines: receipt.cost.lines.filter((line) => !guard.includes(line)) } };
+  return { ...rest, classifier };
 };
 
-test("drop answers and writes for the model byte for byte as the step did before it was split; the receipt adds only the scores, the text before the step and the page guard", async () => {
+test("drop answers and writes for the model byte for byte as the step did before it was split; the receipt adds only the scores and the text before the step", async () => {
   const now = await decideSteps(decideWeb());
   assert.equal(now.length, golden.length);
   for (const [i, step] of now.entries()) {
@@ -223,7 +220,7 @@ test("the classifier's need is only what the call passed: a search's query, or i
   await w.fetch(PUBLIC, { task: TASK });
   await w.fetch(PUBLIC, { task: TASK, lookingFor: "the registry entry" });
   await w.fetch(PUBLIC, { lookingFor: "the registry entry", offset: 100 });
-  assert.deepEqual(stepAsked(asked).map(({ request }) => [request.kind, request.state.query, request.state.task]), [
+  assert.deepEqual(asked.map(({ request }) => [request.kind, request.state.query, request.state.task]), [
     ["sift", "widgets delaware", undefined],
     ["sift", "widgets delaware", TASK],
     ["judge", undefined, TASK],

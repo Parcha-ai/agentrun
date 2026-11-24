@@ -8,7 +8,6 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { deciderFrom, judgePart, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
 import fakeParallel from "./fixtures/faux-parallel.mjs";
-import { stepAsked } from "./fixtures/decide-runs.mjs";
 import { fakeWeb, PUBLIC } from "./fixtures/web-runs.mjs";
 
 const pinned = JSON.parse(readFileSync(new URL("./fixtures/decide-requests.json", import.meta.url), "utf8"));
@@ -130,7 +129,7 @@ test("a fetched part is judged in passages: the kept passages in order, LEFT_OUT
     scored: [{ id: "p1", score: 0.9, at: [0, A.length] }, { id: "p2", score: 0.01, at: [A.length, A.length + B.length] }, { id: "p3", score: 0.7, at: [A.length + B.length, LONG.length] }],
   });
   await web.fetch(PUBLIC, { task: TASK });
-  assert.equal(stepAsked(asked).length, 2, "each call is judged, one the run's pages answer too");
+  assert.equal(asked.length, 2, "each call is judged, one the run's pages answer too");
 });
 
 test("a dropped passage's place counts from the page's start, not the part's", async () => {
@@ -145,7 +144,7 @@ test("a dropped passage's place counts from the page's start, not the part's", a
 test("a fetch with no task is not judged: the part whole, a line saying so, and a record that says why", async () => {
   const { asked, provider } = fakeProvider();
   const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: longPages } }).fetch(PUBLIC);
-  assert.equal(stepAsked(asked).length, 0);
+  assert.equal(asked.length, 0);
   assert.equal(answer.text, LONG);
   assert.equal(answer.sift, "not run (no task given); this part is whole");
   assert.equal(receipt.classifier.ran, false);
@@ -378,9 +377,9 @@ test("a fetched part over the budget is judged in several requests: the record c
   const { asked, provider } = fakeProvider();
   const { answer, receipt } = await fakeWeb({ decider: priced(provider), send: { parallel: pagesOf(wide) } }).fetch(PUBLIC, { task: TASK, maxChars: 50_000 });
   assert.equal(answer.text, wide, "nothing dropped at p=0.5");
-  assert.equal(stepAsked(asked).length, 2);
+  assert.equal(asked.length, 2);
   assert.deepEqual([receipt.classifier.requests, receipt.classifier.questions_sha256.length, receipt.classifier.items], [2, 2, { in: 40, kept: 40 }]);
-  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.name === "fake's decision").map((fee) => fee.usd), [0.0002, 0.0002]);
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002]);
 });
 
 test("passagesOf tiles the text: paragraphs packed to about 1,000 characters, a longer one cut on a space, never a surrogate pair split, and at most 50 passages", () => {

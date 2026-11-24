@@ -37,9 +37,6 @@ export function scoringProvider(scores = SCORES) {
   };
 }
 
-/** The requests a fake was asked for the classifier step, without the page guard's (pageGuardRequest). */
-export const stepAsked = (asked) => asked.filter(({ request }) => !Object.hasOwn(request.questions, "wall"));
-
 /** Parallel's fake, but an extract answers `content` as the page. */
 export const pagesOf = (content) => async (url, init) => {
   if (new URL(String(url)).pathname !== "/v1/extract") return fakeParallel(url, init);

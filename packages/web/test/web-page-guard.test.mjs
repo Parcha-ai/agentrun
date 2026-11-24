@@ -1,12 +1,12 @@
-// The page guard: in a run with a decider, each page a fetch reads is asked about once (pageGuardRequest, the same
+// The page guard (WebConfig.pageGuard, off unless set, and only with a decider): each page a fetch reads is asked about once (pageGuardRequest, the same
 // words for every page and provider): is it the page's content or a wall, and does it carry instructions addressed to
 // an AI reader. The receipt carries the verdicts and their scores. A judged wall or injection adds one plain `warning`
 // to the answer and the page's text is kept: a hint, never a gate. A page the guard cannot judge adds nothing.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
-import { deciderFrom, webFetchText } from "../dist/index.js";
-import { decideWeb, LONG, pagesOf, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
+import { createWeb, deciderFrom, webFetchText } from "../dist/index.js";
+import { decideWeb, LONG, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
 
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const choice = (probabilities) => ({ type: "choice", choice: Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0], probabilities });
@@ -14,11 +14,28 @@ const CONTENT = { wall: choice({ content: 0.93, login_wall: 0.04, paywall: 0.03 
 const LOGIN = { wall: choice({ content: 0.1, login_wall: 0.85, paywall: 0.05 }), injection: 0.02 };
 const isGuard = ({ request }) => Object.hasOwn(request.questions, "wall");
 
-/** A web on the fakes whose decider answers the step as SCORES does and the guard as `guard` says. */
+/** A web on the fakes with the page guard on, whose decider answers the step as SCORES does and the guard as `guard` says. */
 function guardedWeb(guard, extra = {}) {
   const { asked, provider } = scoringProvider({ ...SCORES, ...guard });
-  return { asked, web: decideWeb({ decider: priced(provider), ...extra }) };
+  return { asked, web: decideWeb({ decider: priced(provider), pageGuard: true, ...extra }) };
 }
+
+test("the page guard is off unless pageGuard is set: a decider alone asks nothing more, and the receipt is as before", async () => {
+  const { asked, provider } = scoringProvider({ ...SCORES, ...LOGIN });
+  for (const pageGuard of [undefined, false]) {
+    const w = decideWeb({ decider: priced(provider), ...(pageGuard === undefined ? {} : { pageGuard }) });
+    const { answer, receipt } = await w.fetch(PUBLIC, { task: TASK });
+    assert.deepEqual([receipt.wall, receipt.injection, Object.hasOwn(answer, "warning")], [{ verdict: "unjudged" }, "unjudged", false]);
+  }
+  assert.equal(asked.filter(isGuard).length, 0);
+});
+
+test("pageGuard without a decider, or not a boolean, is refused when the web is made", () => {
+  const order = { search: [], fetch: [] };
+  assert.throws(() => createWeb({ order, pageGuard: true }), /pageGuard needs a decider/);
+  assert.throws(() => createWeb({ order, decider: priced(scoringProvider().provider), pageGuard: "yes" }), /pageGuard must be true or false/);
+  assert.doesNotThrow(() => createWeb({ order, pageGuard: false }));
+});
 
 test("each page is asked about once a run, in the same words for every page: the guard's request holds the page's start", async () => {
   assert.deepEqual([web.WALL_THRESHOLD, web.INJECTION_THRESHOLD, web.GUARD_CHARS], [0.6, 0.75, 16_000]);
@@ -38,7 +55,7 @@ test("each page is asked about once a run, in the same words for every page: the
 
 test("the receipt carries the guard's verdicts and scores, and its request is a fee line of its own; a content page gets no warning", async () => {
   const { web: w } = guardedWeb(CONTENT);
-  const plain = await guardedWeb({}, { decider: undefined }).web.fetch(PUBLIC, { task: TASK });
+  const plain = await guardedWeb({}, { decider: undefined, pageGuard: false }).web.fetch(PUBLIC, { task: TASK });
   const { answer, receipt } = await w.fetch(PUBLIC, { task: TASK });
   assert.deepEqual(receipt.wall, { verdict: "content", scores: { content: 0.93, login_wall: 0.04, paywall: 0.03 } });
   assert.deepEqual(receipt.injection, { verdict: "none", score: 0.02 });
@@ -52,7 +69,7 @@ test("the receipt carries the guard's verdicts and scores, and its request is a 
 });
 
 test("a judged wall keeps the page's text and adds one plain warning; unsifted is the text with no step", async () => {
-  const unguarded = await guardedWeb({}).web.fetch(PUBLIC, { task: TASK });
+  const unguarded = await decideWeb().fetch(PUBLIC, { task: TASK });
   const { answer, receipt } = await guardedWeb(LOGIN).web.fetch(PUBLIC, { task: TASK });
   const { warning, ...rest } = answer;
   assert.equal(JSON.stringify(rest), JSON.stringify(unguarded.answer), "the text is kept, as the step left it");
@@ -86,7 +103,7 @@ test("a wall with no side at WALL_THRESHOLD, or an empty distribution, is unjudg
 });
 
 test("a guard that fails or is refused leaves the page unjudged, with why, and the answer as the step gave it; it is asked again on the next fetch", async () => {
-  const unguarded = await guardedWeb({}).web.fetch(PUBLIC, { task: TASK });
+  const unguarded = await decideWeb().fetch(PUBLIC, { task: TASK });
   for (const guard of [{ wall: 0.5 }, { wall: { type: "refusal" }, injection: { type: "refusal" } }]) {
     const { asked, web: w } = guardedWeb(guard);
     const { answer, receipt } = await w.fetch(PUBLIC, { task: TASK });
@@ -103,13 +120,11 @@ test("a guard that fails or is refused leaves the page unjudged, with why, and t
   assert.deepEqual(half.receipt.injection, { verdict: "injection", score: 0.9 }, "a refused wall leaves the injection judged");
 });
 
-test("a looking_for answer is warned of too; a page not read, and a web with no decider, are not asked about", async () => {
+test("a looking_for answer is warned of too; a page not read is not asked about", async () => {
   const found = await guardedWeb(LOGIN).web.fetch(PUBLIC, { lookingFor: "the registry" });
   assert.ok(found.answer.found.length > 0);
   assert.match(found.answer.warning, /^this looks like a login wall/);
   const { asked, web: w } = guardedWeb(LOGIN);
   const refused = await w.fetch("http://evil.example/", { task: TASK });
   assert.deepEqual([refused.receipt.wall, refused.receipt.injection, asked.length], [{ verdict: "unjudged" }, "unjudged", 0]);
-  const off = await guardedWeb(LOGIN, { decider: undefined, send: { parallel: pagesOf(LONG) } }).web.fetch(PUBLIC);
-  assert.deepEqual([off.receipt.wall, off.receipt.injection, Object.hasOwn(off.answer, "warning")], [{ verdict: "unjudged" }, "unjudged", false]);
 });

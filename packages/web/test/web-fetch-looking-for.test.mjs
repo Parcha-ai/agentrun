@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
 import { deciderFrom, judgeRequest, passagesOf, PAGE_CHARS, QUERY_MAX, webFetchText } from "../dist/index.js";
-import { decideWeb, pagesOf, PUBLIC, scoringProvider, stepAsked, TASK } from "./fixtures/decide-runs.mjs";
+import { decideWeb, pagesOf, PUBLIC, scoringProvider, TASK } from "./fixtures/decide-runs.mjs";
 
 const NEED = "the year Widgets, Inc. was registered";
 /** `n` paragraphs, each its own chunk: a two-digit number, then letters to 990 characters, and a blank line. */
@@ -37,7 +37,7 @@ test("with looking_for the decider scores the chunks of the whole page, whatever
   await w.fetch(PUBLIC, { lookingFor: NEED, maxChars: 500, offset: 0, task: TASK });
   const chunks = chunksOf(THIRTY).map(([s, e]) => THIRTY.slice(s, e));
   assert.equal(chunks.length, 30);
-  assert.deepEqual(stepAsked(asked).map(({ request }) => request), [judgeRequest(PUBLIC, NEED, chunks)], "the usual judge request: the need is looking_for, not the task");
+  assert.deepEqual(asked.map(({ request }) => request), [judgeRequest(PUBLIC, NEED, chunks)], "the usual judge request: the need is looking_for, not the task");
   const long = lookingWeb(THIRTY, scores(30));
   await long.web.fetch(PUBLIC, { lookingFor: `  ${"y".repeat(QUERY_MAX + 50)}  ` });
   assert.equal(long.asked[0].request.state.task, "y".repeat(QUERY_MAX - 1) + "…", "trimmed, and cut at QUERY_MAX");
@@ -75,7 +75,7 @@ test("the page is read once a run: a second looking_for, and a plain part after 
   await w.fetch(PUBLIC, { lookingFor: "the registered agent" });
   await w.fetch(PUBLIC);
   assert.equal(counted.extracts, 1);
-  assert.deepEqual(stepAsked(asked).map(({ request }) => request.state.task), [NEED, "the registered agent"]);
+  assert.deepEqual(asked.map(({ request }) => request.state.task), [NEED, "the registered agent"]);
 });
 
 test("a page of fewer chunks than FOUND_CHUNKS is shown whole in its chunks, each labelled to two places, a refused one not", async () => {
