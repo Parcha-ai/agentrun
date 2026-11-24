@@ -180,7 +180,10 @@ async function checkEnds(folder: string): Promise<number | undefined> {
     const file = join(folder, STATUS_ENDS_FILE);
     const stat = await lstat(file);
     if (!stat.isFile() || stat.size > 32) return undefined;
-    const ends = Number((await readFile(file, "utf8")).trim());
+    // Empty or blank is a check between its create (wx) and its write, not an end: Number("") is 0, long past.
+    const text = (await readFile(file, "utf8")).trim();
+    if (text === "") return undefined;
+    const ends = Number(text);
     return Number.isSafeInteger(ends) ? ends : undefined;
   } catch {
     return undefined;
