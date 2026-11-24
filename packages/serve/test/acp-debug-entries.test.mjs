@@ -7,6 +7,8 @@
 // No real release is needed, so it runs anywhere: Goose and Cursor are built on stand-ins installed where their installs
 // go, pinned in that package by their own digests (its GOOSE_PIN and CURSOR_PIN). Serve's checks run unchanged on them:
 // Goose's binary sha256 and Cursor's tree digest against the pin, before gooseLaunch and Cursor's entry reach a factory.
+// A stand-in changed after it was pinned is refused by them before any factory is called: the injected pins let no
+// stand-in through by themselves.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -78,16 +80,19 @@ async function installed(t, data, built, recipe) {
   return file;
 }
 
-/** A stand-in for an owner-installed release in `data` (Goose's, Cursor's): an executable at `cmd` in its folder, pinned
- *  in the recording package's `pin` by its sha256 and, for a tree, by the folder's digest, as the real pin holds them. */
-async function standIn(data, id, pin, cmd, tree = false) {
+/** A stand-in for an owner-installed release in `data` (Goose's, Cursor's): an executable at `cmd` in its folder, and
+ *  `files` (path: text) beside it, pinned in the recording package's `pin` by the executable's sha256 and, for a tree, by
+ *  the folder's digest, as the real pin holds them. Its folder and executable. */
+async function standIn(data, id, pin, cmd, tree = false, files = {}) {
   const root = join(data, "harnesses", id);
   const binary = join(root, cmd);
   mkdirSync(join(binary, ".."), { recursive: true });
   writeFileSync(binary, "#!/bin/sh\nexit 0\n");
   chmodSync(binary, 0o755);
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(root, path), text);
   const archive = { url: `https://releases.example.invalid/${id}.tar.gz`, format: "tar.gz", sha256: "0".repeat(64), cmd: `./${cmd}`, binarySha256: sha256(readFileSync(binary)) };
   pin.archives[recording.acpPlatform()] = tree ? { ...archive, treeSha256: await recording.treeDigest(root) } : archive;
+  return { root, binary };
 }
 
 /** For each ACP entry of `env`'s table, built under AGENTRUN_LOG as `value` says (undefined: unset): each adapter
@@ -140,4 +145,30 @@ test("AGENTRUN_LOG=debug reaches the adapter every ACP entry of the harness tabl
   assert.deepEqual(await walk(env, "debug"), expect(true));
   assert.deepEqual(await walk(env, undefined), expect(false));
   assert.deepEqual(await walk(env, "quiet"), expect(false));
+});
+
+test("a stand-in whose files no longer match its pin is refused by serve's own check before any adapter is made: Goose's binary changed after its sha256 was pinned, a file of Cursor's tree changed after its digest was pinned", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_LOG: "debug" }, ["AGENTRUN_LOG", "AGENT_MODEL_BASE_URL"]);
+  const data = join(await scratch(t), "agents");
+  const goose = await standIn(data, "goose", recording.GOOSE_PIN, "goose");
+  const cursor = await standIn(data, "cursor", recording.CURSOR_PIN, "dist-package/cursor-agent", true, { "dist-package/index.js": "// the launcher's code\n" });
+  // Changed after the pin was taken, never read before: no digest of them is remembered.
+  writeFileSync(goose.binary, "#!/bin/sh\n# changed after it was pinned\nexit 0\n");
+  writeFileSync(join(cursor.root, "dist-package", "index.js"), "// changed after it was pinned\n");
+  const env = { HOME: process.env.HOME, PATH: process.env.PATH, [DATA_ENV]: data, ANTHROPIC_API_KEY: "fake-test-key", CURSOR_API_KEY: "fake-test-key" };
+  const table = harnessTable(env);
+  const calls = (globalThis[RECORDS] ??= []);
+  const refusals = [
+    ["goose", { provider: "anthropic", modelId: MODEL }, /ACP_BINARY_MISMATCH: the binary at \S+ has sha256 [0-9a-f]{64}, and the pin is [0-9a-f]{64}/],
+    ["cursor", { provider: "cursor", modelId: "default" }, /ACP_BINARY_MISMATCH: the files at \S+ have the tree sha256 [0-9a-f]{64}, and the pin is [0-9a-f]{64}/],
+  ];
+  for (const [id, model, words] of refusals) {
+    calls.length = 0;
+    await assert.rejects(table[id].adapter(env, { model, models: { getModel: () => undefined } }), (error) => {
+      assert.ok(error instanceof HarnessUnavailable, `${id}: ${error?.stack ?? error}`);
+      assert.match(error.message, words, id);
+      return true;
+    });
+    assert.deepEqual(calls, [], `${id}: no adapter factory was called`);
+  }
 });
