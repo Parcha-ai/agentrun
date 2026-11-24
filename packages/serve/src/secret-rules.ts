@@ -645,15 +645,18 @@ type CommandRead = {
   readonly after?: (text: string, words: readonly Word[]) => number;
 };
 
-/** The most words of options subcommandAt passes over between a path's words (`npm config --global set`). Without it
- *  each `config` walks on to the end of its command's read: a constant factor (the read is capped), but about 30 times
- *  the words looked at on `npm -x config -x ` repeated (lexCount.passed, secret-scrub CVI). */
+/** The most words of options subcommandAt passes over one by one between a path's words (`npm config --global set`);
+ *  past them it looks the next word up (nextWord). Walking on instead, each `config` walks to the end of its command's
+ *  read: a constant factor (the read is capped), but about 30 times the words looked at on `npm -x config -x `
+ *  repeated (lexCount.passed, secret-scrub CVI). */
 const PATH_GAP = 8;
 /** Where a subcommand's words end in a program's arguments (`login`; `set`, `config set`), or -1. Options before it
  *  are passed over (`docker --config ~/.docker login`, `docker -D login`): a word starting with `-` and the word after
  *  one without `=` (its value, when it takes one). Any other word first is another subcommand (`docker run … login`).
- *  Options between a path's words are passed over the same way (`npm config --global set`), at most PATH_GAP words of
- *  them, so a read is linear in its words however many `config` it holds. Where a word could be an
+ *  Options between a path's words are passed over the same way (`npm config --global set`), PATH_GAP words of them
+ *  one by one; past those the path's next word is looked up (the first such word after them, whatever stands between),
+ *  so a password behind many options is still cut (secret-scrub CVII) and a read stays linear in its words however
+ *  many `config` it holds. Where a word could be an
  *  option's value or the subcommand, it is read as the subcommand: a list of which options take a value would leak
  *  past every option it lacks. A word's blanks at its ends are no part of it here (`docker\ login`: bash names no such
  *  program, the text still holds a login's password). */
@@ -661,6 +664,22 @@ const subcommandAt =
   (paths: readonly (readonly string[])[]) =>
   (text: string, words: readonly Word[]): number => {
     const at = (i: number): string => wordText(text, words[i]!).trim();
+    const nextOf = new Map<string, Int32Array>();
+    /** The first word at or after words[j] that is `name`, or -1: an index built in one pass over the read's words the
+     *  first time a gap runs past PATH_GAP, so each later look-up is one step. */
+    const nextWord = (name: string, j: number): number => {
+      let next = nextOf.get(name);
+      if (next === undefined) {
+        next = new Int32Array(words.length);
+        for (let k = words.length - 1, seen = -1; k >= 0; k--) {
+          lexCount.passed++;
+          if (at(k) === name) seen = k;
+          next[k] = seen;
+        }
+        nextOf.set(name, next);
+      }
+      return j < words.length ? next[j]! : -1;
+    };
     /** Where `path` ends when its first word is words[i], options passed over between its words, or -1. */
     const pathEnd = (path: readonly string[], i: number): number => {
       if (at(i) !== path[0]) return -1;
@@ -669,14 +688,17 @@ const subcommandAt =
         let value = false;
         for (let gap = 0; j < words.length && at(j) !== name; gap++) {
           lexCount.passed++;
-          if (gap >= PATH_GAP) return -1;
+          if (gap >= PATH_GAP) {
+            j = nextWord(name, j);
+            break;
+          }
           const word = at(j);
           if (word.startsWith("-")) value = !word.includes("=");
           else if (value) value = false;
           else return -1;
           j++;
         }
-        if (j >= words.length) return -1;
+        if (j < 0 || j >= words.length) return -1;
         j++;
       }
       return j;
