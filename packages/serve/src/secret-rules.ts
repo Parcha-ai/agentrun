@@ -11,7 +11,7 @@
 // in its length (secret-scrub.test.mjs walks them).
 import { heldNeedles, MIN_SECRET } from "./learn/secrets.js";
 import { cutSpans, SECRET_SHAPES, type Shape, shapeSpans, type Span } from "./redact/match.js";
-import { argWords, commandLimit, lex, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
+import { argWords, commandLimit, lex, lexCount, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
 
 export type CutKind =
   | "format" // a known format: prefix or checksum (sk-, ghp_, AKIA, JWT, PEM block, secretlint hits)
@@ -606,7 +606,7 @@ function placesOf(text: string, form: string): Hit[] {
 
 /** How far a command is read past its name, at least (shell-lex.ts commandLimit: at most three times): SHELL_LINE_MAX, and
  *  CURL_MAX for curl's continuation lines. */
-const SHELL_LINE_MAX = 1024;
+export const SHELL_LINE_MAX = 1024;
 const CURL_MAX = 4096;
 /** How deep a command inside a substitution of the same command is read on its own (`curl -H "$(curl -u a:pw …)"`). */
 const SUBSTITUTION_DEPTH = 4;
@@ -742,6 +742,8 @@ function commandWords(text: string, command: RegExp, how: CommandRead): Word[][]
     return total;
   };
   read(0, text.length, 0);
+  /** Every list is held until the last is read (lexCount.held, a test's measure). */
+  lexCount.held = Math.max(lexCount.held, out.reduce((sum, words) => sum + words.length, 0));
   return out;
 }
 

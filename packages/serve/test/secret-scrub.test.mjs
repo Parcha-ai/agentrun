@@ -6,6 +6,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import v8 from "node:v8";
+import vm from "node:vm";
 import * as secretCut from "../dist/secret-cut.js";
 import { SECRET_SHAPES, shapeSpans } from "../dist/redact/match.js";
 
@@ -2524,13 +2526,17 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
       assert.ok(perChar <= 8, `${id} on ${unit.slice(0, 20)}: ${perChar.toFixed(2)} reads a character`);
     }
   }
-  // And their CPU grows with the text no faster than the text: each rule's whole work (its name scan, word values, the
+  // And their time grows with the text no faster than the text: each rule's whole work (its name scan, word values, the
   // text scan) on 2 MB against the same rule on 500 KB, timed in the same call, at most GROWTH times (four times the
   // text: a linear rule takes about 4, a quadratic one 16). A ratio of two runs in one call needs no absolute ceiling,
   // which the clock's spread across runs of the same code crosses. FLOOR_MS keeps a rule that does next to nothing at
   // 500 KB from dividing by noise. XCV's units (curl-user) and a path's options (`npm -x config -x`, pathEnd) are read
-  // here too. A unit with a rule over its bound is timed once more, all its rules, and each rule keeps its lower ratio (the clock is
-  // not exact).
+  // here too. Each size is timed 3 times, the sizes alternating (500 KB, 2 MB, 500 KB, …) so both see the same machine,
+  // and each keeps its lowest time: noise only adds time, so the lowest is the estimate. One verdict a unit, never a
+  // second timing after a fail: a retime that passes after a fail hides a real ratio. The time is wall time
+  // (rulesWall), after a full gc(): process CPU time counts the JIT's and the collector's threads too, measured at
+  // 1.5 to 2.3 times the wall time of the same call, and a call timed on a heap other calls left full pays their
+  // garbage. With gc() first, a call pays only for what it allocates itself.
   const [GROWTH, FLOOR_MS] = [8, 20];
   /** The growth comparator: `big` (ms at 2 MB) at most GROWTH times the larger of `small` (ms at 500 KB) and FLOOR_MS. */
   const growthHolds = (label, small, big) => {
@@ -2541,8 +2547,18 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   growthHolds("control 20/80", 20, 80);
   assert.throws(() => growthHolds("control 20/320", 20, 320), /control 20\/320: 20 ms at 500 KB, 320 ms at 2 MB, 16\.00 x \(at most/, "the growth check let 16 x through");
   const grows = async (ids, unit) => {
-    const [small, big] = [await rulesAlone(ids, repeatTo(unit, 500_000)), await rulesAlone(ids, repeatTo(unit, 2_000_000))];
-    return Object.fromEntries(ids.map((id) => [id, { small: small[id], big: big[id], ratio: big[id] / Math.max(small[id], FLOOR_MS) }]));
+    const [smallText, bigText] = [repeatTo(unit, 500_000), repeatTo(unit, 2_000_000)];
+    const runs = Object.fromEntries(ids.map((id) => [id, { small: [], big: [] }]));
+    for (let i = 0; i < 3; i++) {
+      for (const [size, text] of [["small", smallText], ["big", bigText]]) {
+        const ms = await rulesWall(ids, text);
+        for (const id of ids) runs[id][size].push(ms[id]);
+      }
+    }
+    return Object.fromEntries(ids.map((id) => {
+      const [small, big] = [Math.min(...runs[id].small), Math.min(...runs[id].big)];
+      return [id, { small, big, ratio: big / Math.max(small, FLOOR_MS), runs: runs[id] }];
+    }));
   };
   const every = ["mysql-password", "password-flag", "curl-user", "secret-assign"];
   const units = [
@@ -2551,16 +2567,11 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
     ["npm -x config -x ", ["secret-assign"]],
   ];
   for (const [unit, ids] of units) {
-    const first = await grows(ids, unit);
-    let grew = first;
-    if (ids.some((id) => grew[id].ratio > GROWTH)) {
-      const again = await grows(ids, unit);
-      grew = Object.fromEntries(ids.map((id) => [id, again[id].ratio < grew[id].ratio ? again[id] : grew[id]]));
-    }
+    const grew = await grows(ids, unit);
     for (const id of ids) {
-      const { small, big, ratio } = grew[id];
-      const retimed = grew !== first ? `\tunit retimed; first ${first[id].small.toFixed(1)}/${first[id].big.toFixed(1)} ms, ${first[id].ratio.toFixed(2)} x` : "";
-      t.diagnostic(`XCII\tgrowth\t${id}\t${small.toFixed(1)} ms at 500 KB\t${big.toFixed(1)} ms at 2 MB\t${ratio.toFixed(2)} x\t${JSON.stringify(unit.slice(0, 28))}${retimed}`);
+      const { small, big, ratio, runs } = grew[id];
+      const all = `\truns ${runs.small.map((ms) => ms.toFixed(1)).join("/")} | ${runs.big.map((ms) => ms.toFixed(1)).join("/")} ms`;
+      t.diagnostic(`XCII\tgrowth\t${id}\t${small.toFixed(1)} ms at 500 KB\t${big.toFixed(1)} ms at 2 MB\t${ratio.toFixed(2)} x\t${JSON.stringify(unit.slice(0, 28))}${all}`);
       growthHolds(`${id} on ${unit.slice(0, 20)}`, small, big);
     }
   }
@@ -2803,6 +2814,20 @@ test("CIII: a Windows path read never leaves what the escape read cuts, and a qu
   assert.ok(out.text.endsWith("\\nINFO done"), `the value ran on: ${JSON.stringify(out.text)}`);
 });
 
+test("CIV: the command readers hold one command's words at a time, however long the text: at 2 MB at most SHELL_LINE_MAX words held at once", async () => {
+  // Words kept for every command until the last is read are a live set that grows with the text, and the collector's
+  // work on it grows faster than the text (mysql-password on `mysql ${a`: 616K words held at 2 MB). Handed out one
+  // command at a time, the most held at once is one read's words (at most 920 on these units, the same at 500 KB): a
+  // count, so it holds on any box. The units name a command every few characters, each read reaching the next ones.
+  const { SHELL_LINE_MAX } = await import("../dist/secret-rules.js");
+  const { lexCount } = await import("../dist/shell-lex.js");
+  for (const [id, unit] of [["mysql-password", "mysql ${a ${b ${c "], ["password-flag", "redis-cli -h o'neil -a x 'y' "], ["password-flag", "docker login -p x "], ["curl-user", 'curl "$('], ["secret-assign", "npm set x "]]) {
+    lexCount.held = 0;
+    await rulesRead([id], repeatTo(unit, 2_000_000));
+    assert.ok(lexCount.held <= SHELL_LINE_MAX, `${id} on ${JSON.stringify(unit)}: commandWords held ${lexCount.held} words at once at 2 MB, past ${SHELL_LINE_MAX}`);
+  }
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
@@ -2935,6 +2960,33 @@ const rulesRead = async (ids, text) => {
   }
   return out;
 };
+/** A full garbage collection, for a timing that should not pay for other calls' garbage (node:test runs without
+ *  --expose-gc: the flag is set here and gc taken from a fresh context). */
+const collect = (() => {
+  let gc;
+  return () => {
+    if (!gc) {
+      v8.setFlagsFromString("--expose-gc");
+      gc = vm.runInNewContext("gc");
+    }
+    gc();
+  };
+})();
+/** Several rules on one text, its views read once: each rule's wall time in ms, by id, each after a full gc() (XCII). */
+const rulesWall = async (ids, text) => {
+  const { lineBounds } = await import("../dist/secret-rules.js");
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  const out = {};
+  for (const id of ids) {
+    const rule = SCRUB_RULES.find((each) => each.id === id);
+    collect();
+    const start = performance.now();
+    await rule.find(view.text, ctx);
+    out[id] = performance.now() - start;
+  }
+  return out;
+};
 /** One rule on one text, its views read once: the characters shell-lex.ts read per character of the text (the count),
  *  the rule's CPU ms, and main's span scan for that rule alone (secret-rules.ts SPAN_SCANS) on the same view text, timed
  *  in the same call: the yardstick XCIX bounds the rule's time against. */
@@ -2953,21 +3005,6 @@ const ruleCost = async (id, text) => {
   SPAN_SCANS[id](view.text);
   used = process.cpuUsage(before);
   return { perChar, ms, scan: (used.user + used.system) / 1000 };
-};
-/** Several rules on one text, its views read once: each rule's CPU time in ms, by id. The ceiling beside the count:
- *  the count sees the lexer only, this sees every rule's whole work (its name scan, word values, the text scan). */
-const rulesAlone = async (ids, text) => {
-  const { lineBounds } = await import("../dist/secret-rules.js");
-  const [view] = secretCut.viewsOf(text);
-  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
-  const out = {};
-  for (const id of ids) {
-    const before = process.cpuUsage();
-    await SCRUB_RULES.find((each) => each.id === id).find(view.text, ctx);
-    const used = process.cpuUsage(before);
-    out[id] = (used.user + used.system) / 1000;
-  }
-  return out;
 };
 
 test("LXXIII a: docker-auth reads many \"auth\" keys in linear time: \"auths\" and the call's paths are found once a text, never once a match", async () => {
