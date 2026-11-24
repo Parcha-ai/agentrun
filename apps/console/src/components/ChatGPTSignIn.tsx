@@ -33,7 +33,8 @@ export function PlanDisclosure() {
 /** Sign in with ChatGPT, over /v2/settings/chatgpt. Signed out or expired: "Continue with ChatGPT" (with `beside` next to
  *  it), which starts the sign-in and opens OpenAI's page in a new tab. Waiting: the paste step (the address the tab ended
  *  on, which finishes it on a server elsewhere), until when it waits (the server's view says it, so a reload shows it
- *  too), and Start again; on the machine the server runs on, the browser's return finishes it by itself, which a read
+ *  too), the server's `hint` once a read carries one (past the first minute: a workspace admin's setting OpenAI refuses
+ *  on its own page, with no way back), and Start again; on the machine the server runs on, the browser's return finishes it by itself, which a read
  *  every POLL_MS sees while the page is in view. While a pasted address finishes (the server reads the plan's models
  *  first, a few seconds), reads still say pending and the page says it is finishing; a paste the server refuses because
  *  the browser's return finished the sign-in first shows the sign-in, not the refusal. Signed in: who, on which plan, and
@@ -45,10 +46,14 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   const [busy, setBusy] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [typed, setTyped] = useState(false);
+  // A waiting sign-in's newest `hint` from a read or a start (why it may be stuck; null, none), over the view it opened on
+  // (undefined, nothing newer).
+  const [hint, setHint] = useState<string | null | undefined>(undefined);
   const field = useRef<HTMLInputElement>(null);
   // Only the newest read or write lands: a read sent before a finish never undoes it.
   const asked = useRef(0);
-  useEffect(() => { setV(view); }, [view]);
+  // A new view from the page is newer than any read's hint: its own hint (or none) shows.
+  useEffect(() => { setV(view); setHint(undefined); }, [view]);
   const set = (next: ChatGPTView) => { setV(next); onView?.(next); };
 
   const pending = v.state === "pending";
@@ -64,6 +69,8 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
         const next = chatGPTView(body);
         // The sign-in ended: a paste's refusal from while it waited is stale, and the server's view says how it ended.
         if (n === asked.current && next && next.state !== "pending") { setProblem(null); set(next); }
+        // Still waiting: the server's word on why it may be stuck (OpenAI's page can refuse with no way back here).
+        else if (n === asked.current && next?.state === "pending") setHint(next.hint ?? null);
       }, () => {}).finally(() => { reading = false; });
     };
     const timer = setInterval(read, POLL_MS);
@@ -81,6 +88,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
     try {
       const s = await v2.startChatGPT();
       if (tab) { tab.opener = null; tab.location.href = s.authorize_url; }
+      setHint(null);
       set({ state: "pending", authorize_url: s.authorize_url, expires_at: s.expires_at });
     } catch (e) {
       tab?.close();
@@ -132,6 +140,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   );
   const link = httpHref(v.authorize_url);
   const expires = v.expires_at;
+  const stuck = hint === undefined ? v.hint : hint;
   return (
     <form onSubmit={(e) => void finish(e)} autoComplete="off" className="space-y-3 border bg-card p-4" aria-label="Finish signing in with ChatGPT">
       <p className="text-body">{PASTE_STEP}</p>
@@ -145,6 +154,7 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
         <Input ref={field} name="redirect_url" spellCheck={false} autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" placeholder="127.0.0.1:1455/auth/callback?code=…"
           onInput={() => setTyped(!!field.current?.value.trim())} />
       </label>
+      {stuck && <p className="text-small text-warning-text" role="status">{stuck}</p>}
       {alert}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" size="sm" variant="solid" disabled={!typed || busy}>{finishing ? "Finishing…" : "Finish sign-in"}</Button>

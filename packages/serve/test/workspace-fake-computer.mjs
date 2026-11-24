@@ -5,7 +5,9 @@
 // may answer a promise. It records every call, in order, as [method, params], so a test can show what an
 // attached Workspace asked the computer for, without the computer module's daemon.
 import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { untar } from "@parcha/agentrun-computer";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -21,6 +23,7 @@ const b64 = (bytes) => Buffer.from(bytes).toString("base64");
  */
 export function fakeComputer(root, options = {}) {
   const calls = [];
+  const pushes = new Map();
   const chunk = options.chunk ?? 512 * 1024;
   const host = (path) => {
     if (path !== "/workspace" && !path.startsWith("/workspace/")) throw new Error(`the fake computer was asked for ${path}, outside /workspace`);
@@ -72,6 +75,23 @@ export function fakeComputer(root, options = {}) {
       return {};
     },
     "files.stat": ({ path }) => statOf(lstatSync(host(path))),
+    // A tar push, held whole and extracted at its end by the system's tar, which keeps each file's mode and mtime and
+    // makes dirs and links, as computerd's extraction does.
+    "tar.push.begin": ({ path }) => {
+      const id = `push-${pushes.size + 1}`;
+      pushes.set(id, { dir: path, bytes: [] });
+      return { id };
+    },
+    "tar.push.write": ({ id, data }) => { pushes.get(id).bytes.push(Buffer.from(data, "base64")); return {}; },
+    "tar.push.end": ({ id }) => {
+      const { dir, bytes } = pushes.get(id);
+      pushes.delete(id);
+      const tar = Buffer.concat(bytes);
+      mkdirSync(host(dir), { recursive: true });
+      const extracted = spawnSync("tar", ["-x", "-p", "--no-same-owner", "-C", host(dir)], { input: tar });
+      if (extracted.status !== 0) throw new Error(`the fake computer's tar refused the push: ${extracted.stderr}`);
+      return { entries: untar(tar).length };
+    },
     "exec.run": (params) => {
       const ran = options.exec?.(params) ?? { exitCode: 0, stdout: new Uint8Array(0), stderr: new Uint8Array(0), timedOut: false, truncated: false };
       return { ...ran, stdout: b64(ran.stdout), stderr: b64(ran.stderr) };
