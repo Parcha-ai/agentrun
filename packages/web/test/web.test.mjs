@@ -222,6 +222,46 @@ test("Parallel in the order with no key: the page is fetched directly and says P
   await run(f, w, [{ url: PUBLIC, asks: ["direct"], tries: [["parallel", "error"], ["direct", "ok"]], by: "direct", usd: 0, check: (answer) => assert.equal(answer.parallel, "not tried: this run holds no Parallel key") }], "no key");
 });
 
+test("a fetch's receipt names every provider it asked: Firecrawl failing ahead of Parallel's page, and Firecrawl failing with nothing behind it", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const both = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  await run(f, both, [{ url: PUBLIC, set: { AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT: "" }, asks: ["firecrawl-keyless", "parallel"], tries: [["firecrawl-keyless", "error"], ["parallel", "ok"]], by: "parallel" }], "firecrawl then parallel");
+  const alone = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless"] } });
+  await run(f, alone, [{ url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "error"]], by: null }], "firecrawl alone");
+});
+
+test("a fetch's receipt lists its turns in the order they were taken: Firecrawl failing ahead of Parallel's page with the direct fetch behind them, and Parallel then Firecrawl failing ahead of the direct fetch", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const mode = (value) => ({ AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT: value });
+  const firecrawlFirst = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  await run(f, firecrawlFirst, [{ url: PUBLIC, set: mode(""), asks: ["firecrawl-keyless", "parallel"], tries: [["firecrawl-keyless", "error"], ["parallel", "ok"]], by: "parallel" }], "firecrawl, parallel, direct");
+  const parallelFirst = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "firecrawl-keyless", "direct"] } });
+  await run(f, parallelFirst, [{ url: PUBLIC, set: mode("errors"), asks: ["parallel", "firecrawl-keyless", "direct"], tries: [["parallel", "error"], ["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" }], "parallel, firecrawl, direct");
+});
+
+test("Parallel in the order with no key, behind a Firecrawl that reads the page: the page and its receipt are Firecrawl's alone, with no word of Parallel or of a direct fetch", async (t) => {
+  const f = await fakes(t);
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless", "parallel", "direct"] } });
+  await run(f, w, [{ url: PUBLIC, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless", check: (answer) => {
+    assert.equal(answer.parallel, undefined, "no Parallel note on Firecrawl's page");
+    assert.doesNotMatch(web.webFetchText(answer), /fetched directly/);
+  } }], "no key, firecrawl reads");
+});
+
+test("Parallel in the order with no key and Firecrawl refused, nothing behind them: the failed page never says it was fetched directly, and its receipt names both", async (t) => {
+  const f = await fakes(t, (name) => (name === "firecrawl_scrape" ? refusal("KEYLESS_QUOTA_EXHAUSTED") : undefined));
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["firecrawl-keyless", "parallel"] } });
+  const { answer, receipt } = await w.fetch(PUBLIC);
+  const text = web.webFetchText(answer);
+  assert.doesNotMatch(text, /fetched directly/, "nothing was fetched directly");
+  assert.match(text, /\nParallel was picked for web_fetch and gave no page \(not tried: this run holds no Parallel key\)\.$/);
+  assert.equal(answer.via, "none");
+  assert.deepEqual(receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["firecrawl-keyless", "error"], ["parallel", "error"]]);
+  assert.equal(receipt.tries[1]?.error, "not tried: this run holds no Parallel key");
+  assert.equal(receipt.provider, null);
+  assert.deepEqual(await f.asked(), { firecrawl: 1, exa: 0, parallel: 0, native: 0, dialled: 0 });
+});
+
 test("the direct fetch alone: a public page read, a private host refused undialled, and a part no call may ask for refused before anything is fetched", async (t) => {
   const f = await fakes(t);
   const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
@@ -261,8 +301,9 @@ test("a provider is sent the URL the guard checked, as parsed, never the string 
   const asked = "http://public.example\\@evil.example/";
   const checked = "http://public.example/@evil.example/";
   assert.equal(new URL(asked).href, checked);
-  await w.fetch(asked);
+  const { receipt } = await w.fetch(asked);
   assert.deepEqual(f.fc.toolCalls().map((one) => one.body.params.arguments.url), [checked], "Firecrawl is sent the parsed URL");
+  assert.deepEqual(receipt.tries.map((one) => [one.provider, one.outcome]), [["firecrawl-keyless", "error"], ["parallel", "ok"]], "the receipt names both providers asked");
   const extracts = (await lines(process.env.AGENTRUN_TEST_FAUX_PARALLEL_CALLS)).filter((call) => call.urls);
   assert.deepEqual(extracts.map((call) => call.urls), [[checked]], "Parallel is sent the parsed URL");
 });
