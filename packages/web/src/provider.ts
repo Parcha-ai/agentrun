@@ -6,7 +6,7 @@ import type { Pay } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import type { Read, Unread } from "./page.js";
 import type { Words } from "./providers/mcp.js";
-import type { Breaker, Limit, SearchBounds, Searched } from "./search.js";
+import { type Breaker, type Failure, failure, type Limit, type SearchBounds, type Searched } from "./search.js";
 
 /** The run's own model provider's hosted search. `signal` is the caller's; it keeps its own bounds. */
 export type NativeSearch = (query: string, n: number, signal?: AbortSignal) => Promise<Searched>;
@@ -29,17 +29,19 @@ export type ProviderParts = {
 
 /** A search a call asks: the query (trimmed, at most QUERY_MAX) and how many results (1 to RESULTS_MAX). */
 export type SearchAsk = { query: string; n: number };
-/** A read that gave no page, in our words, and the limit it met, if any (for the run's breaker). */
-export type ReadFailed = { error: string; limit?: Limit };
+/** A read that gave no page: in our words, the failure typed (search.ts Failed; a stand-in's may give the words alone),
+ *  and the limit it met, if any (for the run's breaker). */
+export type ReadFailed = { error: string; failure?: Failure; limit?: Limit };
 
 /** A provider made for one Web. `search`: one search, ended by `deadline` (the call's one deadline for every provider it
  *  asks) or kept on the caller's `signal` and the provider's own bound, as the provider says. `read`: one read of a page
  *  (one that passed the guard's check, unless the provider ends the order and reads through the guard itself).
- *  `unready`: why a read is not asked now, unsent (its key refused, or none where none means no turn), or undefined. */
+ *  `unready`: why a read is not asked now, unsent (its key refused, or none where none means no turn), typed, or
+ *  undefined. */
 export type ProviderRun = {
   search?(ask: SearchAsk, deadline: AbortSignal, signal?: AbortSignal): Promise<Searched>;
   read?(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed>;
-  unready?(): string | undefined;
+  unready?(): Failure | undefined;
 };
 
 /** How a provider's fetch fits the order. `ends`: it answers whatever it reads, the order's last word (the guarded direct
@@ -72,14 +74,20 @@ export type WebProvider<Id extends string = string> = {
  *  unions) and `make`. Two arguments, so the unions are read from `meta` alone, never from what `make` answers. */
 export const defineProvider = <const M extends Omit<WebProvider, "make">>(meta: M, make: WebProvider["make"]): M & Pick<WebProvider, "make"> => ({ ...meta, make });
 
-/** A provider's reads behind `breaker`: `held` is why it is not asked now (unready, else the breaker holding it), and a
- *  failed read's limit trips the breaker. The fetch's breaker is search's (searchBreaker). */
-export type Reader = { held(): string | undefined; read(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed> };
+/** A provider's reads behind `breaker`: `held` is why it is not asked now, typed (unready, else the breaker holding it:
+ *  its limit's kind, code HELD), and a failed read's limit trips the breaker. The fetch's breaker is search's
+ *  (searchBreaker). */
+export type Reader = { held(): Failure | undefined; read(url: unknown, options: GuardOptions): Promise<Read | Unread | ReadFailed> };
 export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
   const read = run.read;
   if (!read) throw new Error("readerOf: the provider has no read");
   return {
-    held: () => run.unready?.() ?? (breaker.held() ? "not tried: held by its limit" : undefined),
+    held() {
+      const unready = run.unready?.();
+      if (unready) return unready;
+      const holding = breaker.holding();
+      return holding ? failure(holding.kind, "HELD", "not tried: held by its limit") : undefined;
+    },
     async read(url, options) {
       const got = await read(url, options);
       if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit });

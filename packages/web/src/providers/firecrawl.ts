@@ -5,7 +5,7 @@
 import { firecrawlFeeOf, type Pay } from "../fees.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
-import { type Hit, type Searched, searchArgs, snippetOf } from "../search.js";
+import { failed, failure, type Hit, type Searched, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { type Check, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, matching, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
 export const FIRECRAWL_API_URL = "https://api.firecrawl.dev";
@@ -68,10 +68,10 @@ export async function firecrawlSearched(args: Record<string, unknown>, client: K
   const { query, n } = searchArgs(args);
   if (!query) return { answer: { error: "web_search needs a query" } };
   const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "search", "/v2/search", firecrawlSearchBody(query, n, settings), signal);
-  if ("error" in got) return { answer: { error: got.error }, ...(got.limit ? { limit: got.limit } : {}) };
+  if ("error" in got) return searchFailed(got);
   const data = got.json.data as { web?: unknown } | unknown[] | undefined;
   const rows = got.json.success === false ? undefined : Array.isArray(data) ? data : Array.isArray(data?.web) ? data.web : undefined;
-  if (!rows) return { answer: { error: "Firecrawl's search answered no results this server reads" } };
+  if (!rows) return searchFailed(failed("error", "UNREADABLE", "Firecrawl's search answered no results this server reads"));
   const hits = rows.flatMap((row: { url?: unknown; title?: unknown; description?: unknown } | null): Hit[] => (typeof row?.url === "string" && URL.canParse(row.url) ? [{ url: row.url, title: typeof row.title === "string" ? clip(row.title, TITLE_CAP) : "", snippet: snippetOf(typeof row.description === "string" ? row.description : "") }] : []));
   return { answer: { provider: "firecrawl", query, results: hits.slice(0, n) } };
 }
@@ -87,11 +87,11 @@ export async function firecrawlRead(url: string, client: Keyed | null, settings:
   const got = await keyedCall(client, "Firecrawl", "FIRECRAWL_API_KEY", "fetch", "/v2/scrape", firecrawlScrapeBody(url, settings), signal);
   if ("error" in got) return got;
   const data = (typeof got.json.data === "object" && got.json.data !== null ? got.json.data : {}) as { markdown?: unknown; metadata?: unknown };
-  if (got.json.success === false || typeof data.markdown !== "string" || data.markdown.trim() === "") return { error: "Firecrawl's fetch answered no page text" };
+  if (got.json.success === false || typeof data.markdown !== "string" || data.markdown.trim() === "") return failed("not_text", "NO_TEXT", "Firecrawl's fetch answered no page text");
   const meta = (typeof data.metadata === "object" && data.metadata !== null ? data.metadata : {}) as { title?: unknown; sourceURL?: unknown; url?: unknown; statusCode?: unknown };
   const final = [meta.url, meta.sourceURL].find((one): one is string => typeof one === "string" && URL.canParse(one)) ?? url;
   const status = typeof meta.statusCode === "number" && Number.isInteger(meta.statusCode) ? meta.statusCode : 200;
-  if (status < 200 || status > 299) return { error: `Firecrawl's fetch: the page answered ${status}` };
+  if (status < 200 || status > 299) return failed("error", `PAGE_${status}`, `Firecrawl's fetch: the page answered ${status}`);
   const title = typeof meta.title === "string" ? meta.title : Array.isArray(meta.title) && typeof meta.title[0] === "string" ? meta.title[0] : "";
   return markdownRead(final, title, data.markdown, true, status);
 }
@@ -105,7 +105,7 @@ export const firecrawl = defineProvider(
     return {
       search: (ask, _deadline, signal) => firecrawlSearched(ask, client, asked, signal),
       read: (url, { signal }) => firecrawlRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? "not tried: refused earlier in this run" : undefined),
+      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
     };
   },
 );

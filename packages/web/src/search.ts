@@ -35,9 +35,31 @@ export type Search = { provider: SearchProvider; query: string; results: Hit[]; 
  *  server's mark on keyless Exa's limit naming no wait alone (exaLimitOf): Exa answers its daily count running out as
  *  that limit, so the same answer again once a wait has passed is that count (searchBreaker). */
 export type Limit = { kind: "quota"; retryAfter?: string | number } | { kind: "rate"; retryAfter?: string | number; repeatIsQuota?: true };
-/** A Search, and the limit its provider answered, if any: the run's breaker reads `limit` (searchBreaker), the model the
- *  Search alone. */
-export type Searched = { answer: Search; limit?: Limit };
+/** Why a provider gave no answer, by class: `infra` (no answer: a timeout, a connection or the endpoint failing, a 5xx),
+ *  `quota` (a quota spent: credit, a daily limit), `rate` (a rate limit), `refused` (not sent or not served: no key, the
+ *  key refused, the cap's refusal, the public-host guard), `not_text` (the provider read the page and gave no text),
+ *  `error` (any other answer it gave that is no result). */
+export type FailureClass = "infra" | "quota" | "rate" | "error" | "refused" | "not_text";
+/** A failure typed: its class, a machine code (the provider's own where it names one, else ours: upper-case words joined
+ *  by underscores) and the message in our words. */
+export type Failure = { class: FailureClass; code: string; message: string };
+/** A failure as a provider answers one: the message as `error`, the failure typed, and the limit it met, if any. */
+export type Failed = { error: string; failure: Failure; limit?: Limit };
+/** `message` typed as `kind` with `code`. */
+export const failure = (kind: FailureClass, code: string, message: string): Failure => ({ class: kind, code, message });
+/** `message` failed as `kind` with `code`, and `limit` where one was met. */
+export const failed = (kind: FailureClass, code: string, message: string, limit?: Limit): Failed => ({ error: message, failure: failure(kind, code, message), ...(limit ? { limit } : {}) });
+/** `value` without its typed failure: what an exported call answers, as it did before failures were typed. */
+export function bare<T>(value: T): T {
+  if (typeof value !== "object" || value === null || !("failure" in value)) return value;
+  const { failure: _typed, ...rest } = value as T & { failure: unknown };
+  return rest as T;
+}
+/** A Search, and the failure and limit its provider answered, if any: the run's breaker reads `limit` (searchBreaker),
+ *  the receipt `failure`, the model the Search alone. */
+export type Searched = { answer: Search; failure?: Failure; limit?: Limit };
+/** A failed search as searchInTurn reads it. */
+export const searchFailed = ({ error, failure, limit }: Failed): Searched => ({ answer: { error }, failure, ...(limit ? { limit } : {}) });
 
 /** The wait a Retry-After names, in ms from `nowMs` (negative for a date already passed): delta-seconds or an HTTP date,
  *  or a number of seconds; undefined when it names neither. The one reading of a Retry-After here. */
@@ -68,7 +90,10 @@ export function offUntil(limit: Limit, nowMs: number): number | undefined {
  *  naming a wait past 15 minutes, turns it off (offUntil); a shorter rate limit opens a wait, never shrinking one
  *  already open; a repeatIsQuota limit after an earlier one whose wait has
  *  passed, with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
-export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number };
+export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number; holding(): Holding | undefined };
+/** What holds a breaker now: the kind of the limit that last held it, and when it may be asked again (Infinity: not in
+ *  the breaker's life). */
+export type Holding = { kind: Limit["kind"]; until: number };
 /** `ms` of a wait as searchBusy's seconds: rounded up, at least 1. */
 const busyFor = (ms: number): Search => ({ error: searchBusy(Math.max(1, Math.ceil(ms / 1_000))) });
 export function searchBreaker(now: () => number = Date.now): Breaker {
@@ -77,8 +102,15 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
   let until = 0;
   // A marked rate limit (keyless Exa's) has opened a wait in this run, with no search succeeding since.
   let marked = false;
+  // The kind of the limit that turned it off, and of the one that opened its wait.
+  let offKind: Limit["kind"] = "quota";
+  let waitKind: Limit["kind"] = "rate";
   const off = () => now() < offTill;
   return {
+    holding() {
+      if (off()) return { kind: offKind, until: offTill };
+      return until > now() ? { kind: waitKind, until } : undefined;
+    },
     held() {
       if (off()) return { error: SEARCH_UNAVAILABLE };
       const left = until - now();
@@ -93,15 +125,18 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
       const till = offUntil(limit, at);
       // The call that turns search off for a rate limit answers so itself, never its limit's "try again" words.
       if (till !== undefined) {
+        if (till >= offTill) offKind = limit.kind;
         offTill = Math.max(offTill, till);
         return limit.kind === "quota" ? answer : { error: SEARCH_UNAVAILABLE };
       }
       if (limit.kind === "rate" && limit.repeatIsQuota && marked && at >= until) {
         offTill = Number.POSITIVE_INFINITY;
+        offKind = "quota";
         return { error: SEARCH_UNAVAILABLE };
       }
       if (limit.kind === "rate" && limit.repeatIsQuota) marked = true;
       until = Math.max(until, at + waitOf(limit.retryAfter, at));
+      waitKind = limit.kind;
       return answer;
     },
   };
@@ -148,8 +183,9 @@ export const searchArgs = (args: Record<string, unknown>) => ({
  *  `deadline`, the call's one deadline for every backend it asks (searchInTurn); Parallel and a native search keep the
  *  caller's signal and their own bounds. */
 export type Backend = { name: string; ask(deadline: AbortSignal): Promise<Searched> };
-/** One backend's turn in a call: answered (`ok`), failed (`error`, with the limit it met), or held by its breaker. */
-export type Try = { provider: string; outcome: "ok" | "error" | "held"; error?: string; limit?: Limit; ms?: number };
+/** One backend's turn in a call: answered (`ok`), failed (`error`: its message, the failure typed where the provider
+ *  typed it, the limit it met), or held by its breaker. */
+export type Try = { provider: string; outcome: "ok" | "error" | "held"; error?: string; failure?: Failure; limit?: Limit; ms?: number };
 /** The most one call of web_search spends across its keyless backends together: Firecrawl's failing or timing out
  *  leaves Exa what is left of it, never a fresh bound. Firecrawl's own bound inside it (FIRECRAWL_MS, 30 s) leaves Exa
  *  at least the rest. */
@@ -166,15 +202,17 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
   let last: Search | undefined;
   for (const backend of backends) {
     const breaker = breakerOf(backend.name);
-    if (breaker.held()) {
-      tries?.push({ provider: backend.name, outcome: "held", ms: 0 });
+    const held = breaker.held();
+    if (held) {
+      const holding = breaker.holding();
+      tries?.push({ provider: backend.name, outcome: "held", ...(holding && "error" in held ? { failure: failure(holding.kind, "HELD", held.error) } : {}), ms: 0 });
       continue;
     }
     if (last && deadline.aborted) break;
     const started = tries ? performance.now() : 0;
     const searched = await backend.ask(deadline);
     const answer = breaker.read(searched);
-    tries?.push({ provider: backend.name, outcome: "error" in answer ? "error" : "ok", ...("error" in answer ? { error: answer.error } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
+    tries?.push({ provider: backend.name, outcome: "error" in answer ? "error" : "ok", ...("error" in answer ? { error: answer.error, ...(searched.failure ? { failure: searched.failure } : {}) } : {}), ...(searched.limit ? { limit: searched.limit } : {}), ms: Math.round(performance.now() - started) });
     if (!("error" in answer)) return answer;
     last = answer;
   }

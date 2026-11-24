@@ -6,7 +6,7 @@ import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
 import type { Reader } from "./provider.js";
 import { type FetchProvider, providerOf, SAID, type SaidProvider } from "./providers/registry.js";
-import type { Limit, Try } from "./search.js";
+import { type Failure, failure, type Limit, type Try } from "./search.js";
 
 const PORTS = new Set(["", "80", "443"]);
 
@@ -62,16 +62,17 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     const reader = readers[id];
     if (!shape || !reader) continue;
     if (shape.ends) {
-      const read = (await reader.read(url, options)) as Read | Unread;
+      // Its failure, typed, is the receipt's, never the page's.
+      const { failure, ...read } = (await reader.read(url, options)) as (Read | Unread) & { failure?: Failure };
       // Why a provider ahead gave no page goes to the log, never to the model (the page is this one's); never the URL.
       for (const miss of logged) log?.(miss.event, { said: miss.said, direct: read.ok ? "read" : "failed" });
-      tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }) });
+      tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }), ...(failure ? { failure } : {}) });
       return { ...read, via: id, ...said };
     }
     let why = reader.held();
-    if (why === undefined && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
+    if (why === undefined && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = failure("refused", "GUARD", "not tried: the URL did not pass the public-host guard");
     if (why !== undefined) {
-      if (shape.miss === "said") (said[id as SaidProvider] = why), tries.push({ provider: id, outcome: "error", error: why });
+      if (shape.miss === "said") (said[id as SaidProvider] = why.message), tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
       continue;
     }
     const read = await reader.read(url, options);
@@ -82,12 +83,13 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     }
     const error = read.error ?? "";
     const limit: Limit | undefined = "limit" in read ? read.limit : undefined;
+    const typed = "failure" in read && read.failure ? { failure: read.failure } : {};
     if (shape.miss === "said") {
       said[id as SaidProvider] = error;
-      tries.push({ provider: id, outcome: "error", error });
+      tries.push({ provider: id, outcome: "error", error, ...typed });
       continue;
     }
-    tries.push({ provider: id, outcome: "error", ...(error ? { error: error.slice(0, 300) } : {}), ...(limit ? { limit } : {}) });
+    tries.push({ provider: id, outcome: "error", ...(error ? { error: error.slice(0, 300) } : {}), ...typed, ...(limit ? { limit } : {}) });
     if (shape.miss.when === "failed") log?.(shape.miss.log, { provider: id, said: error.slice(0, 300), ...(limit ? { limit: JSON.stringify(limit) } : {}) });
     else logged.push({ event: shape.miss.log, said: error.slice(0, 300) });
   }

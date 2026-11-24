@@ -3,13 +3,13 @@
 // spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
 import { type Fee, PaidRefused, type Pay, unmetered } from "../fees.js";
-import type { Limit } from "../search.js";
+import { type Failed, failed, type Limit } from "../search.js";
 
 /** The most bytes of one answer read: past it the answer is not read. */
 export const KEYED_MAX_BYTES = 8 * 1024 * 1024;
 
-/** A request that gave no answer this server reads, in our words, and the limit it met, if any (for the breaker). */
-export type KeyedFailed = { error: string; limit?: Limit };
+/** A request that gave no answer this server reads, typed, and the limit it met, if any (for the breaker). */
+export type KeyedFailed = Failed;
 /** One provider on one key: `who` names it in our words, `live` is false once it refused the key, `post` is one paid
  *  request to `path` below its base. */
 export type Keyed = { who: string; live(): boolean; post(path: string, body: unknown, signal?: AbortSignal): Promise<Response> };
@@ -77,25 +77,26 @@ async function jsonOf(response: Response): Promise<unknown> {
  *  words: no key (`keyEnv` names the variable), the key refused, the cap's refusal, a timeout, a status (its code where
  *  the provider gives one, its limit for the breaker), or an answer that is not JSON. */
 export async function keyedCall(client: Keyed | null, who: string, keyEnv: string, what: "search" | "fetch", path: string, body: unknown, signal?: AbortSignal): Promise<{ json: Record<string, unknown> } | KeyedFailed> {
-  if (!client) return { error: `web_${what} goes through ${who} here, and this run holds no ${who} key (${keyEnv})` };
-  if (!client.live()) return { error: `${who} refused this run's key: it is not asked again in this run` };
+  if (!client) return failed("refused", "NO_KEY", `web_${what} goes through ${who} here, and this run holds no ${who} key (${keyEnv})`);
+  if (!client.live()) return failed("refused", "KEY_REFUSED", `${who} refused this run's key: it is not asked again in this run`);
   let response: Response;
   try {
     response = await client.post(path, body, signal);
   } catch (error) {
-    if (error instanceof PaidRefused) return { error: error.message };
+    if (error instanceof PaidRefused) return failed("refused", "CAP_REFUSED", error.message);
     const name = (error as Error)?.name;
-    return { error: name === "TimeoutError" ? `${who}'s ${what} did not answer in time` : name === "AbortError" ? `${who}'s ${what} was stopped` : `${who}'s ${what} failed to connect` };
+    return name === "TimeoutError" ? failed("infra", "TIMEOUT", `${who}'s ${what} did not answer in time`) : name === "AbortError" ? failed("infra", "STOPPED", `${who}'s ${what} was stopped`) : failed("infra", "CONNECT", `${who}'s ${what} failed to connect`);
   }
   if (!response.ok) {
     const said = (await jsonOf(response)) as { tag?: unknown; code?: unknown } | undefined;
     const code = codeOf(said?.code) ?? codeOf(said?.tag);
-    if (!client.live()) return { error: `${who} refused this run's key (${response.status}): it is not asked again in this run` };
+    if (!client.live()) return failed("refused", code ?? "KEY_REFUSED", `${who} refused this run's key (${response.status}): it is not asked again in this run`);
     const limit = statusLimit(response);
-    return { error: `${who}'s ${what} answered ${response.status}${code ? ` (${code})` : ""}`, ...(limit ? { limit } : {}) };
+    const kind = limit ? limit.kind : response.status >= 500 ? "infra" : "error";
+    return failed(kind, code ?? `HTTP_${response.status}`, `${who}'s ${what} answered ${response.status}${code ? ` (${code})` : ""}`, limit);
   }
   const json = await jsonOf(response);
-  if (typeof json !== "object" || json === null || Array.isArray(json)) return { error: `${who}'s ${what} answered nothing this server reads` };
+  if (typeof json !== "object" || json === null || Array.isArray(json)) return failed("error", "UNREADABLE", `${who}'s ${what} answered nothing this server reads`);
   return { json: json as Record<string, unknown> };
 }
 

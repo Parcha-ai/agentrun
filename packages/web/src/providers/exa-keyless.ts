@@ -6,7 +6,7 @@ import type { LookupFunction } from "node:net";
 import type { Agent } from "undici";
 import { clip, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun } from "../provider.js";
-import { type Hit, type Limit, type Search, snippetOf } from "../search.js";
+import { bare, type Failure, type FailureClass, type Hit, type Limit, type Search, snippetOf } from "../search.js";
 import { type Called, callTool, RATE_LIMITED, sleep, textBlocks, type Words } from "./mcp.js";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
@@ -34,6 +34,10 @@ const RETRY_AFTER_MAX_S = 5;
 /** A search Exa refused for its free limit (`retryAfterS`, the wait it named, when it named one) or for the connection
  *  (403): a reason another provider may get past, which the caller reads before the model reads `error` alone. */
 export type ExaLimited = { error: string; limit: "rate_limited"; retryAfterS?: number } | { error: string; limit: "connection_refused" };
+
+/** A failed search with its failure typed (the provider's own; exaSearch answers it bare). */
+type Typed = (ExaLimited | { error: string }) & { failure: Failure };
+const typed = <T extends { error: string }>(kind: FailureClass, code: string, found: T): T & { failure: Failure } => ({ ...found, failure: { class: kind, code, message: found.error } });
 
 /** The wait before the one retry: the Retry-After Exa named, else 1 to 3 s, each with jitter so runs limited together
  *  do not all ask again at once. */
@@ -68,18 +72,18 @@ function hitOf(section: string): Hit | undefined {
 
 /** One exchange's outcome as Exa's answer to a search for `query`, at most `n` results: its refusals and failures in our
  *  words, else its hits. */
-function searchOf(called: Called, query: string, n: number, rateLimited: string): Search | ExaLimited {
+function searchOf(called: Called, query: string, n: number, rateLimited: string): Search | Typed {
   if ("status" in called) {
-    if (called.status === 429) return { error: rateLimited, limit: "rate_limited", ...(called.retryAfterS === undefined ? {} : { retryAfterS: called.retryAfterS }) };
-    if (called.status === 403) return { error: "Exa refused keyless use from this connection (403): it takes keyless searches only over IPv4, straight to its endpoint, not over IPv6 or through a proxy", limit: "connection_refused" };
-    return { error: `Exa's MCP endpoint answered ${called.status} to ${called.step === "initialize" ? "initialize" : "the search"}` };
+    if (called.status === 429) return typed("rate", "HTTP_429", { error: rateLimited, limit: "rate_limited" as const, ...(called.retryAfterS === undefined ? {} : { retryAfterS: called.retryAfterS }) });
+    if (called.status === 403) return typed("refused", "CONNECTION_REFUSED", { error: "Exa refused keyless use from this connection (403): it takes keyless searches only over IPv4, straight to its endpoint, not over IPv6 or through a proxy", limit: "connection_refused" as const });
+    return typed("infra", `HTTP_${called.status}`, { error: `Exa's MCP endpoint answered ${called.status} to ${called.step === "initialize" ? "initialize" : "the search"}` });
   }
-  if ("error" in called) return { error: called.rpc ? exaSaid(called.error) : "Exa's MCP endpoint did not answer initialize" };
+  if ("error" in called) return called.rpc ? typed("error", "RPC_ERROR", { error: exaSaid(called.error) }) : typed("infra", "NO_INITIALIZE", { error: "Exa's MCP endpoint did not answer initialize" });
   const { result } = called;
   const meta = result?._meta;
-  if (result?.isError === true && typeof meta === "object" && meta !== null && (meta as Record<string, unknown>)[RATE_LIMITED_META] === true) return { error: rateLimited, limit: "rate_limited" };
+  if (result?.isError === true && typeof meta === "object" && meta !== null && (meta as Record<string, unknown>)[RATE_LIMITED_META] === true) return typed("rate", "RATE_LIMITED", { error: rateLimited, limit: "rate_limited" as const });
   const said = textBlocks(result);
-  if (!Array.isArray(result?.content) || result.isError === true) return { error: exaSaid(said) };
+  if (!Array.isArray(result?.content) || result.isError === true) return typed("error", "FAILED", { error: exaSaid(said) });
   const hits = said.split(/\n-{3,}\n/).flatMap((section) => hitOf(section) ?? []);
   return { provider: "exa-keyless", query, results: hits.slice(0, n) };
 }
@@ -87,7 +91,14 @@ function searchOf(called: Called, query: string, n: number, rateLimited: string)
 /** `query` searched on Exa's keyless MCP endpoint through `send` (a test's fake; default a fetch over IPv4 alone,
  *  ipv4Fetch, closed when the search ends), at most `n` results: once, and once more past Exa's free limit after
  *  `pause` (default a wait the search's signal ends; a test's records it). `words`: the caller's for its free limit. */
-export async function exaSearch(query: string, n: number, { send, signal, pause = sleep, words = {} }: { send?: typeof fetch; signal?: AbortSignal; pause?: (ms: number, signal: AbortSignal) => Promise<void>; words?: Words } = {}): Promise<Search | ExaLimited> {
+export async function exaSearch(query: string, n: number, options: ExaOptions = {}): Promise<Search | ExaLimited> {
+  return bare(await searchTyped(query, n, options));
+}
+
+/** What exaSearch takes: the fetch, the caller's signal, the pause before its one retry, the caller's words. */
+type ExaOptions = { send?: typeof fetch; signal?: AbortSignal; pause?: (ms: number, signal: AbortSignal) => Promise<void>; words?: Words };
+/** exaSearch with a failure typed. */
+async function searchTyped(query: string, n: number, { send, signal, pause = sleep, words = {} }: ExaOptions): Promise<Search | Typed> {
   const deadline = AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), ...(signal ? [signal] : [])]);
   const own = send ? undefined : ipv4Fetch();
   const dial = send ?? own!.send;
@@ -99,7 +110,8 @@ export async function exaSearch(query: string, n: number, { send, signal, pause 
     return await once();
   } catch (error) {
     const name = (error as Error)?.name;
-    return { error: name === "TimeoutError" ? "Exa's search did not answer within 60 s" : name === "AbortError" ? "the search was stopped" : `Exa's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` };
+    if (name === "TimeoutError") return typed("infra", "TIMEOUT", { error: "Exa's search did not answer within 60 s" });
+    return name === "AbortError" ? typed("infra", "STOPPED", { error: "the search was stopped" }) : typed("infra", "CONNECT", { error: `Exa's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` });
   } finally {
     await own?.close().catch(() => undefined);
   }
@@ -117,9 +129,9 @@ export function exaLimitOf(found: ExaLimited): Limit | undefined {
  *  the model's alone. */
 export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", ops: ["search"] }, ({ send, words }): ProviderRun => ({
   async search({ query, n }, deadline) {
-    const found = await exaSearch(query, n, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
-    if (!("limit" in found)) return { answer: found };
-    const limit = exaLimitOf(found);
-    return { answer: { error: found.error }, ...(limit ? { limit } : {}) };
+    const found = await searchTyped(query, n, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
+    if (!("failure" in found)) return { answer: found };
+    const limit = "limit" in found ? exaLimitOf(found) : undefined;
+    return { answer: { error: found.error }, failure: found.failure, ...(limit ? { limit } : {}) };
   },
 }));

@@ -3,7 +3,7 @@
 // (EXA_DEFAULTS); a setting it does not take is refused when the Web is made. A 401 or 403 refuses the key for the run.
 import { EXA_SEARCH_TYPE_USD, type ExaSearchType, exaFeeOf, type Pay } from "../fees.js";
 import { clip, linksWithin, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
-import { type Hit, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
+import { failed, failure, type Hit, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { linksOf } from "../text-urls.js";
 import { type Check, codeOf, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, oneOf, settingsProblems, wholeIn, yesNo } from "./keyed.js";
@@ -80,9 +80,9 @@ export async function exaSearched(args: Record<string, unknown>, client: Keyed |
   const { query, n } = searchArgs(args);
   if (!query) return { answer: { error: "web_search needs a query" } };
   const got = await keyedCall(client, "Exa", "EXA_API_KEY", "search", "/search", exaSearchBody(query, n, settings), signal);
-  if ("error" in got) return { answer: { error: got.error }, ...(got.limit ? { limit: got.limit } : {}) };
+  if ("error" in got) return searchFailed(got);
   const { results } = got.json;
-  if (!Array.isArray(results)) return { answer: { error: "Exa's search answered no results this server reads" } };
+  if (!Array.isArray(results)) return searchFailed(failed("error", "UNREADABLE", "Exa's search answered no results this server reads"));
   const asked = settings.snippet ?? EXA_DEFAULTS.snippet;
   const hits = results.flatMap((row: { url?: unknown; title?: unknown; publishedDate?: unknown; highlights?: unknown; text?: unknown } | null): Hit[] => {
     if (typeof row?.url !== "string" || !URL.canParse(row.url)) return [];
@@ -108,15 +108,15 @@ export async function exaRead(url: string, client: Keyed | null, settings: ExaSe
   const got = await keyedCall(client, "Exa", "EXA_API_KEY", "fetch", "/contents", exaContentsBody(url, settings), signal);
   if ("error" in got) return got;
   const { results, statuses } = got.json as { results?: unknown; statuses?: unknown };
-  const failed = (Array.isArray(statuses) ? statuses : []).find((one: { status?: unknown } | null) => one?.status === "error") as { error?: { tag?: unknown; httpStatusCode?: unknown } } | undefined;
-  if (failed) {
-    const tag = codeOf(failed.error?.tag);
-    const status = Number.isInteger(failed.error?.httpStatusCode) ? failed.error?.httpStatusCode : undefined;
+  const crawl = (Array.isArray(statuses) ? statuses : []).find((one: { status?: unknown } | null) => one?.status === "error") as { error?: { tag?: unknown; httpStatusCode?: unknown } } | undefined;
+  if (crawl) {
+    const tag = codeOf(crawl.error?.tag);
+    const status = Number.isInteger(crawl.error?.httpStatusCode) ? crawl.error?.httpStatusCode : undefined;
     const why = [tag, status].filter((one) => one !== undefined).join(", ");
-    return { error: `Exa could not read the page${why ? ` (${why})` : ""}` };
+    return failed("error", tag ?? (status === undefined ? "CRAWL_FAILED" : `PAGE_${status}`), `Exa could not read the page${why ? ` (${why})` : ""}`);
   }
   const row = (Array.isArray(results) ? results : []).find((one: { text?: unknown } | null) => typeof one?.text === "string" && one.text.trim() !== "") as { url?: unknown; title?: unknown; text: string } | undefined;
-  if (!row) return { error: "Exa's fetch answered no page text" };
+  if (!row) return failed("not_text", "NO_TEXT", "Exa's fetch answered no page text");
   const asked = PAGE_READ_MAX_CHARS + 1;
   return { ok: true, url: clip(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(row.text, row.text.length < asked), ...linksWithin(linksOf(row.text)) };
 }
@@ -132,7 +132,7 @@ export const exa = defineProvider(
     return {
       search: (ask, _deadline, signal) => exaSearched(ask, client, asked, signal),
       read: (url, { signal }) => exaRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? "not tried: refused earlier in this run" : undefined),
+      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
     };
   },
 );
