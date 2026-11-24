@@ -1304,11 +1304,10 @@ export class Triggers {
    *  written by `start` from the firing's key (the run's origin key, so the firing finds it), the trigger, input origin
    *  and title its own start would give the run, and the target and previous-result flag it starts on (the policy's
    *  start, as drive's). `start` starts the firing in the run's own write (store.runs.create `firing`), which throws
-   *  FiringMoved once the firing has moved since its room was checked; handedRan then reads it, and starts one a run was
-   *  written apart from. Its start stays in `starting` until that read, so a second start of the firing meanwhile
-   *  follows it. Or the run already started under that key,
-   *  `replayed`. Refused, in words, unless this server has the hook and the firing, of a start_run trigger on `agentId`,
-   *  may start now (startRoom). */
+   *  FiringMoved once the firing has moved since its room was checked. It can also answer a run that write never linked
+   *  (startRun's re-delivery under the origin key, or another writer's run after a constraint), and handedRan then
+   *  starts the firing with it. Or the run already started under that key, `replayed`. Refused, in words, unless this
+   *  server has the hook and the firing, of a start_run trigger on `agentId`, may start now (startRoom). */
   async handedStart(given: unknown, agentId: string, start: (firing: HandedStart) => Promise<{ run_id: string }>): Promise<{ run_id: string; replayed: boolean }> {
     const refused = (reason: string, message: string, field = "trigger_firing") => invalid([{ field, reason, message }]);
     if (!this.deps.launchHook) throw refused("not_allowed", "This server has no launch hook: a run starts as a trigger firing's only when the hook handed that firing to its host.");
@@ -1360,11 +1359,11 @@ export class Triggers {
         }
         room.ran(run);
         try {
-          // The run's write started the firing (store.runs.create `firing`): said here. One a start wrote without it is
-          // started by handedRan, which says so. A firing released before that (a run written apart from it, by a server
-          // from before the one write, that a release beat to the firing) stays released: the run is answered, never
-          // refused, since it exists, and the log says it ran after the release.
-          // Not dead: it keeps this start in `starting` until its firing reads started, so a concurrent host start waits on it and replays its run instead of a not_due.
+          // A run this start's write linked started the firing in that write: said here. `start` can also answer a
+          // run its write never linked (startRun's re-delivery of the run under the origin key, or another writer's
+          // run after a constraint): handedRan starts the firing with it, and says so. A firing a release took first
+          // stays released: the run is answered, never refused, since it exists, and the log says it ran after the
+          // release.
           if (!(await this.handedRan(triggerId, key, run.run_id))) {
             const now = await this.store.triggers.firing(triggerId, key);
             this.deps.say({ condition: now && released(now) ? "trigger_run_after_release" : "trigger_fired", trigger: triggerId, firing: key, run: run.run_id });
