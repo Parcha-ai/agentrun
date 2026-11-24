@@ -61,6 +61,10 @@ export type TemplateImported = Answer<"importTemplate">;
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
+/** Active and ended-needs-review projections over the same run identities. */
+export type FactoryRunPage = components["RunList"];
+export type FactoryRun = FactoryRunPage["runs"][number];
+export type FactoryScope = NonNullable<FactoryRunPage["scope"]>;
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;

@@ -75,6 +75,7 @@ import { readLaunchBody } from "./run-launch.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { factoryRunsPage } from "./factory-runs.js";
 import { runEntries } from "./store-reads/journal.js";
 import { metersOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
@@ -2525,6 +2526,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string) {
+    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, filter, async (id) => {
+      const summary = await summaryOverStore(store, id, { ...viewDepsFor(origin), factory: true });
+      return summary ? { ...summary, ...(await runComputerOf(id, summary)) } : undefined;
+    });
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");

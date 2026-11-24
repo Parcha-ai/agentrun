@@ -701,8 +701,11 @@ export interface Runs {
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is listed only
+   *  in active scope, where independently stored workers count as executions too.
+   *  `scope` selects non-imported active executions (including resumable agentic stops) or unarchived terminal escalations and failures
+   *  before limiting. `before` is an exclusive keyset boundary in descending (startedAt, id) order. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; limit?: number; scope?: "active" | "review"; before?: { startedAt: number; id: string } }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner

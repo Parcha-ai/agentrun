@@ -2584,6 +2584,14 @@ Open the link the server prints, once, in a browser. `/` is the console (`apps/c
 server's own origin, under a CSP that allows that origin only, but for the provider icons on the Keys page (below):
 
 - **Mission Control**: the store's counts and the latest runs.
+- **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
+  reported active child conversations, active learning workers, and sessions without a repository. Waiting, Working, Needs you and Unknown
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
+  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
+  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
+  The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
+  partial-coverage counts; failures preserve the last-known cards with a stale notice.
 - **Agents**: each agent with its kind and harness, archived ones behind **Archived**. **New agent** and an agent's page:
   a name, a description, a prompt (with its model, thinking level and tools) or a workflow, sent to `POST /v2/agents`;
   an edit is `PUT /v2/agents/{id}/definition` with `If-Match` set to the revision it started from (412 when another came
@@ -2597,6 +2605,13 @@ server's own origin, under a CSP that allows that origin only, but for the provi
   or **Sign in** with OAuth), **Preview** its tools and protocol, then **Save**; each saved one with its tool count and
   its credential's state, **Refresh**, **Change** (a credential left empty keeps the saved one) and **Delete**. An
   agent's Tools step lists each saved server's tools; a box ticked grants `mcp:<server>/<tool>`.
+
+The visibility API uses `GET /v2/runs?scope=active` and `scope=review` (also on an agent's runs route), with `limit`
+and opaque `next_cursor`. Scope is filtered before pagination; cursors are tied to the scope and agent filters.
+Do not combine scope with `status` or `archived`. Scoped summaries add `factory` source/control, observation,
+activity, GitHub provenance and reported-child metadata. A lifecycle version captured inside each run snapshot
+orders overlapping observations across the two scopes. An online connector is transport health, not a heartbeat
+for each session. These reads add no scheduling, branch-writing or merge authority.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password

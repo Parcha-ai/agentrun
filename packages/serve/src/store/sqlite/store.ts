@@ -893,15 +893,27 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      list: async ({ agentId, revisionId, state, archived, limit }) => {
-        // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
-        // count, stat or notice names it.
-        const where: string[] = [NOT_A_LEARNING_RUN];
+      list: async ({ agentId, revisionId, state, archived, limit, scope, before }) => {
+        // Ordinary history excludes the internal grade/merge run. Factory active visibility includes every execution,
+        // including these independently stored workers; terminal attention keeps the ordinary history boundary.
+        const where: string[] = scope === "active" ? [] : [NOT_A_LEARNING_RUN];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
+        // Factory visibility is selected before the page limit: an old parked run must not disappear behind newer
+        // history. A person's stopped agentic turn remains continuable; an imported session never executes here.
+        if (scope !== undefined) {
+          where.push("imported_from IS NULL");
+          where.push(scope === "active"
+            ? `(state IN ('queued', 'running', 'parked') OR (state = 'stopped' AND outcome = 'stopped' AND ${NOT_A_LEARNING_RUN} AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')))`
+            : "((state = 'ended' AND outcome = 'escalated') OR state = 'failed') AND archived_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.id = runs.agent_id AND agents.archived_at IS NOT NULL)");
+        }
+        if (before !== undefined) {
+          where.push("(started_at < ? OR (started_at = ? AND id < ?))");
+          params.push(before.startedAt, before.startedAt, before.id);
+        }
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);

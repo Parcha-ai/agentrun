@@ -1697,6 +1697,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "agent", in: "query", required: false, description: "Only this agent's runs.", schema: ref("schemas/Id") },
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
+        { name: "scope", in: "query", required: false, description: "Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing.", schema: { enum: ["active", "review"] } },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
       ],
       responses: { "200": json(ref("schemas/RunList"), "One page of runs, newest first."), ...errors(400, 401, 429, 500) },
@@ -2626,7 +2627,27 @@ export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "
 /** Definition's own: only instructions ever misses from an answer (a workflow revision keeps none); version, skills
  *  and tools are always sent (agents-store.ts definitionOf), so they stay required there. */
 export const DEFINITION_OPTIONAL = ["instructions"];
+const FACTORY_ACTIVITY: Json = {
+  ...closed({
+    lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
+    source: { enum: ["managed", "native", "sdk"] }, runtime: { type: "string" }, control: { enum: ["managed", "observed"] },
+    controls: closed({ stop: { type: "boolean" }, cancel: { type: "boolean" }, approve: { type: "boolean" } }),
+    observation: closed({
+      basis: { enum: ["runner", "connector", "unreported"] }, status: { enum: ["current", "offline", "revoked", "unreported"] },
+      last_seen_at: { type: ["string", "null"], format: "date-time" },
+    }),
+    last_activity_at: { type: ["string", "null"], format: "date-time" },
+    github: { oneOf: [{ type: "null" }, closed({
+      repository: { type: "string" }, issue: { type: ["integer", "null"], minimum: 1 }, pull_request: { type: ["integer", "null"], minimum: 1 },
+      head_sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$" }, provenance: { enum: ["launch", "github_trigger"] },
+    })] },
+    children: { type: "array", items: closed({ id: { type: "string" }, conversation_id: { type: "integer", minimum: 0 }, parent_call_id: { type: "string" }, status: { enum: ["active", "completed"] }, label: { type: ["string", "null"], maxLength: 160 } }) },
+  }),
+  description: "Present on scoped factory lists. Source reporting and supported controls, not an execution authorization. Connector health does not prove session liveness; SDK heartbeat is unreported. GitHub links come only from explicit launch binding or a trusted GitHub trigger, never prose. Children are active durable subagent conversations with recorded ownership, not standalone runs; an empty list makes no claim about unreported native/SDK children.",
+  "x-agentrun-serve": "factory/1",
+};
 const RUN_FIELDS: Record<string, Json> = {
+  factory: FACTORY_ACTIVITY,
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
@@ -2744,6 +2765,10 @@ const MCP_RUN_AUTH: Json = {
 };
 
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunList: {
+    scope: { enum: ["active", "review"], description: "Present only for a scoped factory list.", "x-agentrun-serve": "factory/1" },
+    observed_at: { type: "string", format: "date-time", description: "When this scoped read began. Each run is a consistent snapshot; pages are not one frozen snapshot. Re-read from the first page to discover newer admissions.", "x-agentrun-serve": "factory/1" },
+  },
   Limits: {
     free_model_requests: { type: "integer", minimum: 1, description: "The most requests on free models a run makes: a free model's catalog price is all zeros, so a dollar cap cannot stop it. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every free model's request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do. ChatGPT-plan requests don't count.", "x-agentrun-serve": "freerequests/1" },
   },
@@ -2837,6 +2862,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
   },
   RunSummary: {
+    computer: RUN_COMPUTER,
     sdk: SDK_RUN,
     native: NATIVE_RUN,
     ...RUN_FIELDS,
@@ -3481,6 +3507,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   listAgents.parameters = [...listAgents.parameters, { name: "archived", in: "query", required: false, description: "true lists only archived agents; false, the default, the others.", schema: { type: "boolean" } }];
   listAgents["x-agentrun-serve-changed"] = { archived: "archivedparam/1" };
   changed.push("GET /agents");
+  const agentRuns = (doc.paths["/agents/{agent_id}/runs"] as Json).get as Json & { parameters: Json[] };
+  agentRuns.parameters = [...agentRuns.parameters, { name: "scope", in: "query", required: false, description: "Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100.", schema: { enum: ["active", "review"] } }];
+  agentRuns["x-agentrun-serve-changed"] = { scope: "factory/1" };
+  changed.push("GET /agents/{agent_id}/runs");
   // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.
   const getAgent = (doc.paths["/agents/{agent_id}"] as Json).get as Json & { responses: Record<string, Json & { content: Record<string, Json> }> };

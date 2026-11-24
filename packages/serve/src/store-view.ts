@@ -62,11 +62,14 @@ import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
 import { FINAL_STATES, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
+import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, type FactoryActivity } from "./factory-activity.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
  *  one rotated is cut at once), and the agents' saved sign-ins (for the handed-pointer cut). The server passes the same it
  *  passes the file path. */
 export interface ViewDeps {
+  /** Scoped factory lists ask for source/provenance metadata. Ordinary run reads keep their existing shape and cost. */
+  readonly factory?: boolean;
   readonly origin: string;
   readonly serverSecrets: () => string[];
   readonly signIns?: SignInReader;
@@ -172,6 +175,7 @@ function pausedOf(runRow: RunRow, entries: readonly { kind?: string; id?: unknow
 /** The run read from the store: the row, its launch, its timeline, its agent's revision count for the version, its
  *  learning end, and the sign-in cut it serves through. Undefined for an unknown run. */
 interface StoreRun {
+  readonly factory?: Omit<FactoryActivity, "controls">;
   readonly native?: Record<string, unknown>;
   readonly sdk?: Record<string, unknown>;
   readonly row: NonNullable<Awaited<ReturnType<typeof readRun>>>;
@@ -413,7 +417,17 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const decisions = booked.requests ? booked : undefined;
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan };
+  const source = launch?.sdk ? "sdk" : launch?.native ? "native" : "managed";
+  const factory: StoreRun["factory"] = deps.factory ? {
+    lifecycle_version: await store.runs.changesHead(),
+    source, runtime: launch?.sdk?.runtime ?? launch?.native?.runtime ?? harness,
+    control: source === "sdk" ? "observed" : "managed",
+    observation: await factoryObservation(store, launch, live, liveRow?.updatedAt, deps.now ?? Date.now),
+    last_activity_at: factoryLastActivity(records),
+    github: unshown ? null : factoryGithub(launch, (text) => withoutLoopback(redacted(text, values))),
+    children: terminal || FINAL_STATES.includes(runRow.state) || unshown ? [] : await factoryChildren(store, runId, records, (text) => withoutLoopback(redacted(text, values))),
+  } : undefined;
+  return { ...(factory ? { factory } : {}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -512,6 +526,11 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
   const settled = terminal && ended;
 
   return {
+    ...(run.factory ? { factory: { ...run.factory, controls: {
+      stop: run.factory.control === "managed" && row.kind === "agentic" && status === "working" && state === "working",
+      cancel: run.factory.control === "managed" && !terminal && !FINAL_STATES.includes(runRow.state),
+      approve: run.factory.control === "managed" && !FINAL_STATES.includes(runRow.state) && pending?.kind === "approval",
+    } } } satisfies { factory: FactoryActivity } : {}),
     ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),
     ...(run.native && !unshown ? {native:redactedOutput(run.native,values)}:{}),
     run_id: row.id,
@@ -565,6 +584,7 @@ export async function summaryOverStore(store: Store, runId: string, deps: ViewDe
   const { run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title, effort, created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, learning } = view as Record<string, unknown>;
   return {
     run_id, agent_id, agent_version, console_url, revision, kind, sha, status, state, title,
+    ...(view.factory ? { factory: view.factory, ...(view.computer ? { computer: view.computer } : {}) } : {}),
     ...(view.sdk ? {sdk:view.sdk} : {}),
     ...(view.native ? {native:view.native} : {}),
     ...(effort ? { effort } : {}),

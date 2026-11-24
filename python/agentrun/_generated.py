@@ -697,6 +697,11 @@ __all__ = [
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
+    "RunFactory",
+    "RunFactoryChildrenItem",
+    "RunFactoryControls",
+    "RunFactoryGithub",
+    "RunFactoryObservation",
     "RunFile",
     "RunFileList",
     "RunImportedFrom",
@@ -727,6 +732,13 @@ __all__ = [
     "RunState",
     "RunStatus",
     "RunSummary",
+    "RunSummaryComputer",
+    "RunSummaryComputerHeld",
+    "RunSummaryFactory",
+    "RunSummaryFactoryChildrenItem",
+    "RunSummaryFactoryControls",
+    "RunSummaryFactoryGithub",
+    "RunSummaryFactoryObservation",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningGivenItem",
@@ -2084,9 +2096,14 @@ class ListLearningPromotionsResponseServingItem(TypedDict):
 ListRunsResponse: TypeAlias = "RunList"
 
 
-class RunList(TypedDict):
+class _RunListRequired(TypedDict):
     runs: list[RunSummary]
     next_cursor: str | None
+
+
+class RunList(_RunListRequired, total=False):
+    scope: Literal["active", "review"]
+    observed_at: str
 
 
 class _RunSummaryRequired(TypedDict):
@@ -2106,8 +2123,10 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    computer: RunSummaryComputer
     sdk: RunSummarySdk
     native: RunSummaryNative
+    factory: RunSummaryFactory
     console_url: str
     effort: Effort
     error: RunError | None
@@ -2141,6 +2160,27 @@ class Cost(_CostRequired, total=False):
 class CostPlan(TypedDict):
     requests: int
     tokens: int
+
+
+class _RunSummaryComputerRequired(TypedDict):
+    kind: Literal["sandbox", "desktop", "phone", "browser"]
+    provider: str
+    state: Literal["starting", "ready", "taken_over", "ended", "failed"]
+
+
+class RunSummaryComputer(_RunSummaryComputerRequired, total=False):
+    why: str
+    held: RunSummaryComputerHeld
+
+
+class _RunSummaryComputerHeldRequired(TypedDict):
+    state: Literal["starting", "waiting", "started", "ended", "released"]
+    minutes: int
+
+
+class RunSummaryComputerHeld(_RunSummaryComputerHeldRequired, total=False):
+    until: str
+    why: Literal["timeout", "lost"]
 
 
 class RunSummarySdk(TypedDict):
@@ -2199,6 +2239,46 @@ class RunSummaryNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunSummaryFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunSummaryFactoryControls
+    observation: RunSummaryFactoryObservation
+    last_activity_at: str | None
+    github: None | RunSummaryFactoryGithub
+    children: list[RunSummaryFactoryChildrenItem]
+
+
+class RunSummaryFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunSummaryFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunSummaryFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunSummaryFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
@@ -4626,6 +4706,7 @@ class Run(_RunRequired, total=False):
     effort: Effort
     sdk: RunSdk
     native: RunNative
+    factory: RunFactory
     console_url: str
     approvals: Literal["ask", "never"]
     last_progress_at: str | None
@@ -4705,6 +4786,46 @@ class RunNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunFactoryControls
+    observation: RunFactoryObservation
+    last_activity_at: str | None
+    github: None | RunFactoryGithub
+    children: list[RunFactoryChildrenItem]
+
+
+class RunFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
 
 
 class RunClaim(TypedDict):
@@ -7942,7 +8063,7 @@ OPERATIONS: dict[str, Operation] = {
     "getNative": Operation(method="GET", path="/agents/{agent_id}/native", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listAgents": Operation(method="GET", path="/agents", path_params=(), multi_segment=(), query=("limit", "cursor", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listLearningPromotions": Operation(method="GET", path="/agents/{agent_id}/learning/promotions", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "scope"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
     "verifyNative": Operation(method="POST", path="/agents/{agent_id}/native/verify", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8028,7 +8149,7 @@ OPERATIONS: dict[str, Operation] = {
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "scope", "archived"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8132,9 +8253,9 @@ class AgentsResource(Group):
         """Each learned workflow revision's promotion: its replay's numbers and whether it serves (GET /agents/{agent_id}/learning/promotions)."""
         return self._call("listLearningPromotions", (agent_id,), None, None, timeout=timeout)
 
-    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, timeout: float | None = None) -> ListRunsResponse:
+    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, timeout: float | None = None) -> ListRunsResponse:
         """The agent's runs index (GET /agents/{agent_id}/runs)."""
-        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status}, timeout=timeout)
+        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "scope": scope}, timeout=timeout)
 
     def unarchive(self, agent_id: str, *, timeout: float | None = None) -> UnarchiveAgentResponse:
         """Show the archived agent in the lists again (POST /agents/{agent_id}/unarchive)."""
@@ -8496,9 +8617,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, archived: bool | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "scope": scope, "archived": archived}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""
