@@ -24,9 +24,8 @@ const PAGE = "http://public.example/";
 const ANTHROPIC_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 5 };
 // OpenCode has no native search: picked, it is unavailable there; on auto it takes the server's Parallel key.
 const NATIVE = { pi: "native", "claude-agent": "native", codex: "native", opencode: "unavailable: no native search for opencode, whose model requests carry no provider-hosted tool" };
-/** On auto: native on pi (a direct Anthropic model) and codex; on claude-agent, whose own search is an explicit pick, the
- *  server's Parallel key. */
-const AUTO_KEYED = { pi: "native", "claude-agent": "parallel", codex: "native", opencode: "parallel" };
+/** On auto: the server's Parallel key on every harness; a native search is an explicit pick. */
+const AUTO_KEYED = { pi: "parallel", "claude-agent": "parallel", codex: "parallel", opencode: "parallel" };
 const each = (value) => ({ pi: value, "claude-agent": value, codex: value, opencode: value });
 
 /** The environment of test `t` (model keys only, unless `extra` says more), and the lines each fake files. */
@@ -65,7 +64,7 @@ const HARNESS_RESEARCH = "Research widgets on the web, read http://public.exampl
 test.skip("with only model keys: native search on pi, claude-agent and codex, and the kernel's fetch, each run's report citing the page; then Parallel picked, the next runs go through Parallel", { timeout: 180_000 }, async (t) => {
   const { seen } = await setting(t, { PARALLEL_API_KEY: PARALLEL_CANARY });
   const { api } = await serve(t, FAUX);
-  assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("kernel") }, "native search on pi and codex, Parallel on claude-agent (Claude's own search an explicit pick), the kernel's fetch");
+  assert.deepEqual(await resolves(api), { web_search: AUTO_KEYED, web_fetch: each("kernel") }, "Parallel on every harness (a native search an explicit pick), the kernel's fetch");
   assert.deepEqual((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
   assert.deepEqual(await resolves(api), { web_search: NATIVE, web_fetch: each("kernel") }, "native picked: each harness's own, Claude's among them; Parallel's key held but not used");
   assert.equal((await api("GET", "/capabilities")).body.features.tool_permissions, true);
