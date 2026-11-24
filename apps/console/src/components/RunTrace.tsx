@@ -3,12 +3,15 @@ import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useId
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
+import { Dialog } from "@/components/ui/dialog";
+import { Field, Input } from "@/components/ui/field";
 import { ListFilter } from "@/components/ListFilter";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { bytes, capDollars, compact, isEstimate, runEnded, soFar } from "@/lib/format";
 import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, since, type SpanKind, type SpanSort, type Spend, spanMs, type StretchBar, stretches, stretchLane, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { compareHref, runIdOf } from "@/lib/traceCompare";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -404,6 +407,32 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose, onRec
   );
 }
 
+/** Asks which run to compare this one with, and opens the two side by side (#/compare, lib/traceCompare.ts): this run
+ *  first, the other second. The other is named by its id or by its page's address, as a person copies either. */
+function CompareWith({ runId, onClose }: { runId: string; onClose: () => void }) {
+  const [pasted, setPasted] = useState("");
+  const [refused, setRefused] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const go = () => {
+    const other = runIdOf(pasted);
+    if (!other) { setRefused(pasted.trim() ? "That is not a run's id or its page's address." : "Paste the other run's id, or its page's address."); return; }
+    if (other === runId) { setRefused("That is this run. Name another one."); return; }
+    onClose();
+    location.hash = compareHref([runId, other]);
+  };
+  return (
+    <Dialog open onClose={onClose} title="Compare with another run" initialFocus={field}
+      description="This run's requests, calls, tokens, cost and time beside another run's, with the difference."
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" onClick={go}>Compare</Button></>}>
+      <form onSubmit={(e) => { e.preventDefault(); go(); }}>
+        <Field label="The other run" hint="Its id, or the address of its page. It is the second run; this one is the first." error={refused}>
+          <Input ref={field} value={pasted} onChange={(e) => { setPasted(e.target.value); setRefused(null); }} placeholder="run id or address" className="font-mono" />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
 /** A model's mark where the cost is split by model: the first the full colour, the next striped, the rest light with an edge. */
 const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 
@@ -758,6 +787,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   // The part of the run the table's time axis shows: all of it, until a zoom or a drag across the overview.
   const [range, setRange] = useState<View>(WHOLE);
   const [whole, setWhole] = useState(false);
+  const [comparing, setComparing] = useState(false);
   const [reveal, setReveal] = useState(false);
   // The row the keyboard was last on: the table's one stop for the Tab key.
   const [cursor, setCursor] = useState<string | null>(null);
@@ -912,7 +942,8 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
                 options={([["all", "All"], ["model", "Model"], ["tool", "Tools"], ["failed", "Failed"]] as const).map(([value, label]) => ({ value, label: <>{label} <span className="font-normal">{counts[value]}</span></> }))} />
             </ListFilter>
           )}
-          <Button size="sm" className="ml-auto" onClick={exportJson} title="Save the trace as the server sent it"><Download aria-hidden />Export JSON</Button>
+          <Button size="sm" className="ml-auto" onClick={() => setComparing(true)} title="This run's figures beside another run's">Compare</Button>
+          <Button size="sm" onClick={exportJson} title="Save the trace as the server sent it"><Download aria-hidden />Export JSON</Button>
         </div>
 
         {spans.length === 0 ? (
@@ -1039,6 +1070,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
             </div>
           </>
         )}
+        {comparing && <CompareWith runId={run.run_id} onClose={() => setComparing(false)} />}
         {/* The panel opens beside or under the table, away from where the keyboard is: a screen reader is told. */}
         <p role="status" className="sr-only">{selected ? `Details shown for ${selected.name}. Escape closes them.` : ""}</p>
       </section>
