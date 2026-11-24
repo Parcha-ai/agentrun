@@ -278,10 +278,20 @@ describe("a schedule's typed input", () => {
   // A key no field has, with a value a field could show ("external"), is read into the draft's text too: it stays as
   // stored whatever that text says, since no field sends it.
   it("keeps a stored key no field has, though its value reads as text", () => {
-    const t = typed({ company: "Acme GmbH", reference: "external" });
+    const t = typed({ company: "Acme GmbH", reference: "external", count: 3, active: true });
     const d = draftOf(t);
     expect(patchOf(t, bodyOf({ ...d, shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
-    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external" });
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, company: "Beta AG" } }).body!).target?.input).toEqual({ company: "Beta AG", reference: "external", count: 3, active: true });
+  });
+  // The agent's schema can come to require a field its stored input never had: a rename that edits no field must not
+  // fill that field in (a required text field read as "").
+  it("sends a rename alone when the schema now requires a field the stored input lacks", () => {
+    const t = typed({ content: "Check." });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape, name: "renamed" }).body!)).toEqual({ name: "renamed" });
+  });
+  it("sends an edited message beside fields left alone", () => {
+    const t = typed({ content: "Check.", company: "Acme GmbH" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape, content: "Recheck." }).body!).target?.input).toEqual({ content: "Recheck.", company: "Acme GmbH" });
   });
   it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
     expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
