@@ -204,3 +204,22 @@ test('the shim takes a grace only as a positive whole number of milliseconds a t
   ]) assert.deepEqual(await run(args), { code: 2, err: usage }, what);
   assert.deepEqual(await run(['--term-grace', '1000', ...child]), { code: 5, err: '' }, 'a grace in milliseconds is taken, and the child runs');
 });
+
+// parentWatched reads a grace by the shim's rule, so a grace the shim would refuse throws at the call, on every machine
+// (the parent-death signal has no use for one, but the same call elsewhere would start the shim), in place of a usage
+// exit 2 at spawn that reads as the child's own exit. One the shim takes, it passes on.
+test('parentWatched throws a RangeError at the call for a grace the shim would refuse, whichever watch, and the shim takes every grace it passes on', { timeout: 30_000 }, async () => {
+  const cli = { command: '/pinned/cli', args: [] };
+  for (const [what, termGraceMs] of [['0', 0], ['-0', -0], ['a negative grace', -1], ['a fraction', 1.5], ['NaN', NaN], ['Infinity', Infinity], ['one longer than a timer waits', 2_147_483_648], ['1e21', 1e21]]) {
+    for (const how of ['shim', 'pdeathsig']) assert.throws(() => parentWatched(cli, how, { termGraceMs }), RangeError, `a grace of ${what} the shim would refuse was taken at the call (${how})`);
+  }
+  const run = ({ command, args }) => new Promise((resolve) => {
+    const p = spawn(command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    p.on('close', (code) => resolve({ code, err }));
+  });
+  for (const termGraceMs of [1, 2_147_483_647]) {
+    assert.deepEqual(await run(parentWatched({ command: process.execPath, args: ['-e', 'process.exit(5)'] }, 'shim', { termGraceMs })), { code: 5, err: '' }, `the shim refused a grace of ${termGraceMs} parentWatched passed on`);
+  }
+});
