@@ -145,6 +145,26 @@ const HARNESS_PROMISES = {
 };
 const closed = (properties: Json, description?: string) => ({ type: "object", additionalProperties: false, required: Object.keys(properties), properties, ...(description ? { description } : {}) });
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
+/** wrapped/1: GET /wrapped's answer (wrapped.ts). */
+const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+const WRAPPED: Json = closed({
+  year: { type: "integer", minimum: 1000, maximum: 9999 },
+  sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
+  turns: { ...COUNT, description: "The person's prompts in those sessions." },
+  requests: { ...COUNT, description: "Model requests made in the year, each once, subagents' with them." },
+  tokens: { ...WRAPPED_TOKENS, description: "The year's requests' tokens: `input` is uncached input, so the whole prompt is input + cache_read + cache_write." },
+  cost_usd: { type: "number", minimum: 0, description: "The list price of the requests that could be priced; `unpriced_requests` counts those that could not." },
+  unpriced_requests: COUNT,
+  days: { type: "array", description: "Each local day with a request, ascending.", items: closed({ day: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, requests: COUNT, tokens: COUNT }) },
+  hours: { type: "array", minItems: 24, maxItems: 24, items: COUNT, description: "Requests by local hour of the day." },
+  weekdays: { type: "array", minItems: 7, maxItems: 7, items: COUNT, description: "Requests by local weekday, Sunday first." },
+  active_ms: { ...COUNT, description: "Time at work: the gaps between a session's requests, each counted when under 15 minutes." },
+  harnesses: { type: "array", items: closed({ harness: { type: "string" }, sessions: COUNT, requests: COUNT, tokens: COUNT }), description: "By the harness that runs what each source ran, most tokens first." },
+  models: { type: "array", items: closed({ model: { type: "string", description: "`provider/model`, or `unknown` for a request that names none." }, requests: COUNT, tokens: COUNT, cost_usd: { type: "number", minimum: 0 } }), description: "By the request's model, most tokens first." },
+  sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
+  imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
+  unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+}, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
   runs: COUNT, completed: { ...COUNT, description: "Completed, escalated runs included: one completed and waits for a person's review." },
@@ -2304,6 +2324,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": json(CAPACITY, "The capacity, read now."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "capacity/1",
+    },
+  },
+  "/wrapped": {
+    get: {
+      operationId: "getWrapped", tags: ["runs"], summary: "A year of the work under this machine's session files",
+      description: "Reads the Claude Code, Codex, pi and other session files under the home of the machine this server runs on, and answers numbers and names only (no prompt, title, path or project). Everything is bucketed by each request's time in the server's local zone, so a session that spans New Year splits; a session counts for the year of its first request. Answered only by a server bound to loopback with no public URL: any other, and the API-only profile, is 403. The answer is kept for a minute.",
+      parameters: [
+        { name: "year", in: "query", required: false, description: "A four-digit year, in the server's local zone. Default the current year.", schema: { type: "integer", minimum: 1000, maximum: 9999 } },
+      ],
+      responses: { "200": json(WRAPPED, "The year, read now."), ...errors(400, 401, 403, 429, 500) },
+      "x-agentrun-serve": "wrapped/1",
     },
   },
   "/runs/{run_id}/graph": {

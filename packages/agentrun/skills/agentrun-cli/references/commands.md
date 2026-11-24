@@ -1639,3 +1639,13 @@ Route: `POST /workflows/validate`.
 
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+## wrapped
+
+### `agentrun wrapped`
+
+A year of the work under this machine's session files.
+
+Route: `GET /wrapped`.
+
+- `--year INTEGER` (integer): A four-digit year, in the server's local zone. Default the current year.
