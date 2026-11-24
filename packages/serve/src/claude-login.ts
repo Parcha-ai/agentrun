@@ -11,7 +11,7 @@
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus } from "@parcha/agentrun-harness-claude";
@@ -403,29 +403,59 @@ const loginKey = (login: ClaudeAgentLogin): string => JSON.stringify([login.dir,
  *  the login's paths is in its name, and an answer is only ever this machine's and this login's. */
 const answerFile = (data: string, login: ClaudeAgentLogin): string => join(data, LOGIN_ANSWERS_DIR, createHash("sha256").update(JSON.stringify([machineId(data), loginKey(login)])).digest("hex").slice(0, 32));
 
+/** The most an answer file holds: a time in milliseconds and a newline. A longer file is no note of ours. */
+const ANSWER_MAX_BYTES = 32;
+
+/** The answers folder in `data`, made 0700, or tightened to 0700 when it was there wider; false when what is at its name
+ *  is not a folder (a link, say), which a note is never written through. */
+function answersFolder(data: string): boolean {
+  const dir = join(data, LOGIN_ANSWERS_DIR);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const at = lstatSync(dir);
+  if (!at.isDirectory()) return false;
+  if ((at.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  return true;
+}
+
 /** Notes what the CLI said of `login` at `now` in `data`: signed in, the time, alone, in a file of its own (0600, in a
- *  folder of 0700), written aside and renamed in place so a reader never sees half of it; signed out, the file goes (the
- *  earlier time with it). The answer only spares a later run a refusal, so a note that can't be written is left out. */
+ *  folder of 0700, answersFolder), written aside and renamed in place so a reader never sees half of it, the aside file
+ *  removed when the rename fails; signed out, the file goes (the earlier time with it). The answer only spares a later
+ *  run a refusal, so a note that can't be written is left out. */
 function noteAnswer(login: ClaudeAgentLogin, said: ClaudeLoginStatus, now: number, data: string): void {
   try {
     const file = answerFile(data, login);
     if (!said.signedIn) return void rmSync(file, { force: true });
-    mkdirSync(join(data, LOGIN_ANSWERS_DIR), { recursive: true, mode: 0o700 });
+    if (!answersFolder(data)) return;
     const aside = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
-    writeFileSync(aside, `${now}\n`, { mode: 0o600, flag: "wx" });
-    renameSync(aside, file);
+    try {
+      writeFileSync(aside, `${now}\n`, { mode: 0o600, flag: "wx" });
+      renameSync(aside, file);
+    } finally {
+      rmSync(aside, { force: true });
+    }
   } catch {
     // Not noted: a run whose checks give no answer is refused, as with no earlier answer.
   }
 }
 
-/** When `login` last answered signed in on this machine (noteAnswer), or undefined. */
+/** When `login` last answered signed in on this machine (noteAnswer), or undefined. Only a regular file at the answer's
+ *  name, of at most ANSWER_MAX_BYTES, is read: a link there is not followed, and a FIFO opens without waiting (it would
+ *  hold this read, on a run's start, for ever) and is no file, so neither is an answer. */
 function signedInAt(data: string, login: ClaudeAgentLogin): number | undefined {
+  let fd: number | undefined;
   try {
-    const at = Number(readFileSync(answerFile(data, login), "utf8").trim());
-    return Number.isSafeInteger(at) ? at : undefined;
+    fd = openSync(answerFile(data, login), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const at = fstatSync(fd);
+    if (!at.isFile() || at.size > ANSWER_MAX_BYTES) return undefined;
+    const bytes = Buffer.alloc(ANSWER_MAX_BYTES + 1);
+    const read = readSync(fd, bytes, 0, bytes.length, 0);
+    if (read > ANSWER_MAX_BYTES) return undefined;
+    const time = Number(bytes.subarray(0, read).toString("utf8").trim());
+    return Number.isSafeInteger(time) ? time : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
