@@ -231,13 +231,28 @@ function partsOf(value: string): string[] {
   return [...body.filter((line) => line.length >= LINE_MIN), body.join("")].filter(longEnough);
 }
 
+/** Whether a held JSON value's string under the key `name` is a secret by its name (heldFields): its name with its
+ *  separators dropped and lowered names a secret, a password, a token, a private value, a credential or an API key, or
+ *  ends in "key" ("aws_secret_access_key", "SessionToken", "signing_secret", "private_key", "secret_key"); or, lowered,
+ *  it is a credential parameter's whole name (redact/match.ts CREDENTIAL_NAMES: "signature"). Never one that names a
+ *  public thing by its end (an id, a URI or URL, a type, an email, an endpoint, an expiry: "client_id", "token_uri",
+ *  "access_key_id", "token_type"), a public key, or a token that is none (a page's, the next page's). */
+function secretName(name: string): boolean {
+  const flat = name.toLowerCase().replace(/[-_.\s]/g, "");
+  if (/(?:uri|url|id|type|email|endpoint|expiry|expires|pagetoken|nexttoken)$/.test(flat) || flat.includes("public")) return false;
+  return /secret|password|passwd|token|private|credential|apikey/.test(flat) || flat.endsWith("key") || CREDENTIAL_NAMES.has(name.toLowerCase());
+}
+/** A JWK's private members (RFC 7518: an EC or OKP key's "d", an RSA key's "d", "p", "q", "dp", "dq" and "qi", a
+ *  symmetric key's "k"), held in an object with a "kty" only: elsewhere a one-letter name says nothing. */
+const JWK_PRIVATE: ReadonlySet<string> = new Set(["d", "p", "q", "dp", "dq", "qi", "k"]);
+
 /** The strings of a held JSON value (an object or an array, as it parses, at any depth) that may be printed alone, each
  *  held as itself (trimmed), as any held value: one that holds a line break (a service account's private key, `jq -r
- *  .private_key`), and one whose key, lowered, is a credential's whole name (redact/match.ts CREDENTIAL_NAMES: an OAuth
- *  client's "client_secret", a token's "refresh_token"; never "page_token"). An array's items have no key, so only the
- *  line-break rule holds them. Its other strings are not held: an id, a project, an email and public URLs ("client_id",
- *  "token_uri") are no secret, and would be cut wherever a text names them. Undefined where `value` is no JSON object
- *  or array. */
+ *  .private_key`), one whose key names a secret (secretName: an OAuth client's "client_secret", an AWS secret access
+ *  key; never "page_token"), and a JWK's private member beside its "kty" (JWK_PRIVATE). An array's items have no key,
+ *  so only the line-break rule holds them. Its other strings are not held: an id, a project, an email and public URLs
+ *  ("client_id", "token_uri") are no secret, and would be cut wherever a text names them. Undefined where `value` is no
+ *  JSON object or array. */
 function heldFields(value: string): string[] | undefined {
   const head = value.trimStart()[0];
   if (head !== "{" && head !== "[") return undefined;
@@ -249,13 +264,17 @@ function heldFields(value: string): string[] | undefined {
   }
   const out: string[] = [];
   // Walked with a stack of its own, not a call per level: a value nested thousands deep is read as any other.
-  const stack: [node: unknown, key: string | undefined][] = [[parsed, undefined]];
+  // Each node with its key and whether its object is a JWK (holds a "kty").
+  const stack: [node: unknown, key: string | undefined, jwk: boolean][] = [[parsed, undefined, false]];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    const [node, key] = next;
+    const [node, key, jwk] = next;
     if (typeof node === "string") {
-      if (/[\r\n]/.test(node) || (key !== undefined && CREDENTIAL_NAMES.has(key.toLowerCase()))) out.push(node.trim());
-    } else if (Array.isArray(node)) for (const item of node) stack.push([item, undefined]);
-    else if (node !== null && typeof node === "object") for (const [name, item] of Object.entries(node)) stack.push([item, name]);
+      if (/[\r\n]/.test(node) || (key !== undefined && (secretName(key) || (jwk && JWK_PRIVATE.has(key))))) out.push(node.trim());
+    } else if (Array.isArray(node)) for (const item of node) stack.push([item, undefined, false]);
+    else if (node !== null && typeof node === "object") {
+      const kty = typeof (node as Record<string, unknown>).kty === "string";
+      for (const [name, item] of Object.entries(node)) stack.push([item, name, kty]);
+    }
   }
   return out.filter(longEnough);
 }
