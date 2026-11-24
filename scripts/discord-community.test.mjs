@@ -34,8 +34,8 @@ test('Discord sends an embed without pings and keeps the URL out of transport er
   });
 });
 
-test('a late poll announces the highest new milestone once, including after an unstar and restar', async () => {
-  let stars = 1499;
+test('new hundreds starting at 1,300 are announced once, including after an unstar and restar', async () => {
+  let stars = 1299;
   let deployment;
   const outgoing = [];
   const fetchImpl = async (url, request) => {
@@ -53,19 +53,22 @@ test('a late poll announces the highest new milestone once, including after an u
     }
     assert.equal(url, `${webhookUrl}?wait=true`);
     outgoing.push(JSON.parse(request.body).embeds[0]);
-    assert.equal(deployment.payload.milestone, 1500, 'the record exists before delivery');
+    assert.equal(deployment.payload.milestone, Math.floor(stars / 100) * 100, 'the record exists before delivery');
     return Response.json({ id: '12', channel_id: '34' });
   };
   const check = () => notifyStars({ repository, sha: 'a'.repeat(40), token: 'test', webhookUrl, fetchImpl });
   assert.equal(await check(), null);
-  stars = 1503;
+  stars = 1303;
   assert.equal(await check(), '12');
-  stars = 1499;
+  stars = 1299;
   assert.equal(await check(), null);
-  stars = 1500;
+  stars = 1300;
   assert.equal(await check(), null);
+  stars = 1402;
+  assert.equal(await check(), '12');
   assert.deepEqual(outgoing.map(embed => [embed.title, embed.fields[0].value]), [
-    ['⭐ AgentRun passed 1,500 GitHub stars', '1,503'],
+    ['⭐ AgentRun passed 1,300 GitHub stars', '1,303'],
+    ['⭐ AgentRun passed 1,400 GitHub stars', '1,402'],
   ]);
 });
 

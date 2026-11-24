@@ -131,7 +131,7 @@ Whoever cut the release posts its summary to the team's Slack, as the team's bot
 
 See npm's [trusted publishing](https://docs.npmjs.com/trusted-publishers/), [provenance](https://docs.npmjs.com/generating-provenance-statements/) and [scoped package](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/) documentation for account setup.
 
-The **Star notifications** workflow checks the public GitHub star count hourly. It posts the highest new 500-star milestone, starting at 1,500, to the AgentRun Discord announcements channel using `DISCORD_MILESTONES_WEBHOOK_URL`. Its GitHub deployment records reserve milestones before delivery so a retry or a drop in star count cannot repeat an announcement. If a reserved milestone fails delivery, check Discord before posting manually. To verify both webhook secrets without posting, manually run **Star notifications** with `verify_discord` selected.
+The **Star notifications** workflow checks the public GitHub star count hourly. It posts the highest new 100-star milestone, starting at 1,300, to the AgentRun Discord announcements channel using `DISCORD_MILESTONES_WEBHOOK_URL`. Its GitHub deployment records reserve milestones before delivery so a retry or a drop in star count cannot repeat an announcement. If a reserved milestone fails delivery, check Discord before posting manually. To verify both webhook secrets without posting, manually run **Star notifications** with `verify_discord` selected.
 
 ## Check a published server
 

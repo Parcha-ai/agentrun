@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { isMain } from './is-main.mjs';
 import { getJson } from './release-ci-gate.mjs';
 
-const starStep = 500;
+const starStep = 100;
+const firstMilestone = 1300;
 const starTask = 'community:discord-stars';
 const starEnvironment = 'Discord star milestones';
 const formatCount = new Intl.NumberFormat('en-US');
@@ -64,7 +65,7 @@ export async function notifyStars({ repository, sha, token, webhookUrl, fetchImp
   if (!Number.isSafeInteger(stars) || stars < 0) throw new Error('GitHub did not return a valid star count.');
 
   const milestone = Math.floor(stars / starStep) * starStep;
-  if (milestone < 1500) return null;
+  if (milestone < firstMilestone) return null;
 
   const query = new URLSearchParams({ task: starTask, environment: starEnvironment, per_page: '1' });
   const [latest] = await read(`${base}/deployments?${query}`);
