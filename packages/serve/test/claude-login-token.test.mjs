@@ -448,6 +448,34 @@ test("a held pair's save takes its turn with renewals: it reads the file again u
   assert.equal(endpoint.posts.length, 1, "nothing posted after the one renewal");
 });
 
+test("a held token Anthropic refused is never handed again: unsaved, the ask is refused in LOGIN_REFUSED_NOT_RENEWED's words; once the disk works and the held pair is saved, the next ask renews from the saved pair, its refresh token posted once, and hands the new token", async (t) => {
+  assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
+  const { data, login } = loginFolder(t);
+  const start = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  const third = { access: fake("access-third"), refresh: fake("refresh-third") };
+  const oldText = JSON.stringify({ claudeAiOauth: oauthOf(old.access, start + 60_000, old.refresh) });
+  const elsewhere = join(data, "credentials-elsewhere.json");
+  writeFileSync(elsewhere, oldText, { mode: 0o600 });
+  symlinkSync(elsewhere, file);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next], [next.refresh, third]]));
+  const reader = new tokens.LoginTokens({ login, now: () => start, fetch: endpoint.fetch });
+  assert.equal(await reader.token(), next.access, "renewed, its save failed: the pair is held in memory");
+  // The run's CLI is refused the held token (a 401), with most of its hour left.
+  await reader.refused(next.access);
+  await assert.rejects(reader.token(), { message: tokens.LOGIN_REFUSED_NOT_RENEWED }, "unsaved, the held refresh token is not the file's: refused, never handed again");
+  assert.equal(endpoint.posts.length, 1, "and nothing posted");
+  // The disk works again, the file still holding the old pair: the next ask saves the held pair and renews from it.
+  rmSync(file);
+  writeWhole(file, oldText);
+  assert.equal(await reader.token(), third.access, "the refusal honoured: renewed from the saved pair, the refused token never handed");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh, next.refresh], "each refresh token posted once");
+  const saved = JSON.parse(readFileSync(file, "utf8")).claudeAiOauth;
+  assert.deepEqual([saved.accessToken, saved.refreshToken], [third.access, third.refresh], "the renewal written back");
+});
+
 /** `lock` taken over as another runner takes a stale one (proper-lockfile): removed, made again, its mtime the new
  *  holder's own (`at`). */
 function takeOver(lock, at) {
