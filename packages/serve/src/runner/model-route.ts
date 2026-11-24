@@ -441,22 +441,40 @@ const COUNT_BYTES_PER_TOKEN = 4;
 /** Whether a request asks Messages' token count (its path's last segment, any query after it). */
 const countsTokens = (url: unknown): boolean => /\/count_tokens(?:\?|$)/.test(String(url));
 
+/** Why a Messages `tool_choice` that forces a call is refused (its 400's words), else undefined: the model behind the
+ *  route (Ollama's chat) takes no tool choice, so a call forced by "any" or by a tool's name cannot be kept. "auto",
+ *  "none" and none at all are taken; any other type is refused too. */
+function forcedChoice(choice: unknown): string | undefined {
+  if (choice === undefined || choice === null) return undefined;
+  const plain = typeof choice === "object" && !Array.isArray(choice) ? (choice as { type?: unknown; name?: unknown }) : undefined;
+  const type = plain ? plain.type : choice;
+  if (type === "auto" || type === "none") return undefined;
+  const unkept = 'is not taken on this model\'s route: the model here cannot be made to call a tool, so send "auto"';
+  if (type === "any") return `tool_choice "any" ${unkept}`;
+  if (type === "tool") return `tool_choice naming the tool ${String(plain?.name ?? "(none)")} ${unkept}`;
+  return `tool_choice ${JSON.stringify(type ?? "(no type)")} is not taken on this model's route: "auto" and "none" only`;
+}
+
 /** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
  *  translates onto, which asks two things pi-ai never does. Its token count (POST /v1/messages/count_tokens, free, asked
  *  beside its turns) is answered here and never run on the model, which has no count of its own: the body's bytes over
  *  four (COUNT_BYTES_PER_TOKEN), a bound for its context, not a price. A request with no `stream: true` (a side request)
- *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). */
+ *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). A tool_choice that
+ *  forces a call is refused with a 400 before the model is asked (forcedChoice). */
 export function forMessagesClients(route: typeof fetch): typeof fetch {
   return (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
     const body = String(init.body ?? "");
     if (countsTokens(url)) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
-    const streamed = (() => {
+    const read = (() => {
       try {
-        return (JSON.parse(body || "{}") as { stream?: unknown }).stream === true;
+        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown };
       } catch {
-        return true;
+        return undefined;
       }
     })();
+    const refused = forcedChoice(read?.tool_choice);
+    if (refused) return messagesError(refused, 400, "invalid_request_error");
+    const streamed = read === undefined || read.stream === true;
     const answer = await route(url, init);
     return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
   }) as typeof fetch;
@@ -491,8 +509,8 @@ function wholeOf(sse: string): Response {
   }
 }
 
-/** A Messages error answer: 500, `words` its message. */
-const messagesError = (words: string): Response => Response.json({ type: "error", error: { type: "api_error", message: words } }, { status: 500 });
+/** A Messages error answer: `words` its message, 500 api_error unless said otherwise. */
+const messagesError = (words: string, status = 500, type = "api_error"): Response => Response.json({ type: "error", error: { type, message: words } }, { status });
 
 /** wholeOf's reading, which throws on a part that is not JSON. */
 function wholeRead(sse: string): Response {
