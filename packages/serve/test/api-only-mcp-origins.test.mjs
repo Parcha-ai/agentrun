@@ -272,6 +272,29 @@ test("a run already going: when the origin list can't be read before a call (a s
   await assert.rejects(call(), /the store could not be read/, "the read fails: the check throws, so the gateway refuses the call unsent");
 });
 
+test("a run already going: one check before a call reads the origin list once, not again for the server's row", async (t) => {
+  let reads = 0;
+  // The store as the claim sees it: each settings read of the API-only list counted.
+  const wrap = (store) => new Proxy(store, {
+    get(target, key) {
+      if (key === "settings") return new Proxy(target.settings, {
+        get(settings, field) {
+          if (field === "get") return async (name) => ((name === "mcp.api_only_origins" && reads++), settings.get(name));
+          const value = Reflect.get(settings, field, settings);
+          return typeof value === "function" ? value.bind(settings) : value;
+        },
+      });
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const { call, handed, step } = await goingClaim(t, wrap);
+  reads = 0;
+  await call();
+  assert.deepEqual({ ...step.credentials.contextforge }, handed, "listed: the call goes on the run's header");
+  assert.equal(reads, 1, "the list read once in the check");
+});
+
 test("an upgrade with the setting unset: an API-only start holds an empty list, so a per_run server the token saved on a full start is refused (a run granted it fails in the words, and nothing reaches the address)", async (t) => {
   const gw = await gateway(t);
   // A full start, as a backend saved its gateway with API-only off: the token's per_run save, marked the token's.
