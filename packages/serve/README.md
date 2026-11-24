@@ -248,7 +248,7 @@ names no run, and a store with no such run says nothing; quiet keeps it too.
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
 exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
 `invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
-`server.address`, and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known), and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are
 also given on their own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
 all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
 has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
