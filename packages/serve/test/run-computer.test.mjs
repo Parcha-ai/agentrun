@@ -64,6 +64,11 @@ test("a parked run's kept desktop reads kept on a server whose clock is a minute
   assert.equal(await viewSays(), undefined, "the computer view: still kept");
   assert.equal((await read())?.state, "ready", "the run read: still kept 30 s before its keep ends on the store's clock, though this server's clock is past it");
   assert.equal((await read())?.released, undefined, "never said released while the computer view says kept");
+  // A store clock that can't be read judges no time, as the computer view's says nothing then.
+  const clock = over.sealedKeys.clock;
+  over.sealedKeys.clock = async () => { throw new Error("the store is not answering"); };
+  assert.equal((await read())?.state, "ready", "no store clock: not released on this server's clock");
+  over.sealedKeys.clock = clock;
   store.now = row.until;
   assert.ok(await viewSays(), "the computer view: its time passed");
   assert.equal((await read())?.state, "released", "the run read: released once the keep ends on the store's clock");

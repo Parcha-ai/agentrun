@@ -103,7 +103,8 @@ export const keptKeyOf = (runId: string): string => `${KEPT_PREFIX}${runId}`;
 /** A computer kept at a park: its provider (by id), its kind, its ref, the claim epoch its labels carry (a later claim
  *  reads its mount back under that epoch), and the time it is kept until (ms). `until` is on the store's clock (the
  *  deadlines': the database's on Postgres, Store.sealedKeys.clock), stamped from it at the park, and every reader judges
- *  it on that clock: the claim rule's pin (in SQL), a claim's take-back, the janitor's pass and the run's computer view.
+ *  it on that clock: the claim rule's pin (in SQL), a claim's take-back, the janitor's pass, the run's computer view and
+ *  the run read's `computer.released` (computer-held-routes.ts releasedAtPark).
  *  The parking runner's own timer counts KEEP_MS from the stamp on its own clock. `ending`: its delete has begun and may
  *  not have finished, or a later claim went on without it and left it to its runner to end (restoreKept, keepKept);
  *  `ended`: it is gone. Either way no claim takes it. */
