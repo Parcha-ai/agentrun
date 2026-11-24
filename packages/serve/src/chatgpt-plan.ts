@@ -212,10 +212,13 @@ export class ChatGPTPlan implements PlanReader {
   /** Why the last sign-in ended without signing in (signInFailure's words past its browser step, or its timeout), until a
    *  sign-in starts, finishes or a sign-out. A cancelled one leaves none. */
   #problem: string | undefined;
-  /** Set when the server's change callback failed after a sign-in was saved; cleared once it takes (changeAgain). */
+  /** Set when the server's change callback failed (tellChanged); cleared once one that started after it takes. */
   #changeOwed = false;
-  /** The owed change in flight (changeAgain), which a read while it is out waits for. */
-  #changing: Promise<void> | undefined;
+  /** Moved on by each change callback that fails: one that takes clears what is owed only if none failed since it began,
+   *  so a change that read an earlier sign-in never clears a later one's. */
+  #failedChanges = 0;
+  /** The server's read in flight (refresh), which a read while it is out waits for. */
+  #refreshing: Promise<void> | undefined;
   readonly #watchers = new Set<(tokens: string[]) => void>();
   readonly #deps: ChatGPTPlanDeps;
   constructor(deps: ChatGPTPlanDeps) {
@@ -449,33 +452,38 @@ export class ChatGPTPlan implements PlanReader {
     this.#snapshot = row;
     this.#problem = undefined;
     this.#deps.log?.({ chatgpt: "signed_in", ...(previousRevoked === undefined ? {} : { previous_revoked: String(previousRevoked) }) });
-    // Saved: what the server does with the change after it is not the sign-in's to fail. One it failed to take is owed,
-    // and taken again at its next read (changeAgain).
+    await this.tellChanged();
+  }
+
+  /** Tells the server the sign-in changed (its change callback: env read again, the listings relisted, the offers
+   *  probed). What the server does with it is not the change's to fail: a failure is owed, said in the log (once: not
+   *  again for `again`, a retry of one owed), and taken again at the server's next read (refresh). */
+  private async tellChanged(again = false): Promise<void> {
+    const failed = this.#failedChanges;
     try {
       await this.#deps.changed?.();
-      this.#changeOwed = false;
+      if (this.#failedChanges === failed) this.#changeOwed = false;
     } catch (error) {
+      this.#failedChanges += 1;
       this.#changeOwed = true;
+      if (again) return;
       const code = (error as { code?: unknown })?.code;
       this.#deps.log?.({ chatgpt: "changed_failed", reason: String(typeof code === "string" ? code : (error as Error)?.name ?? "error").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "error" });
     }
   }
 
-  /** Takes again a sign-in's change the server failed to take (changed_failed), at the server's read of the sign-in, so
-   *  what it offers does not wait for a restart. Nothing when none is owed; a failure again stays owed, said once. One at
-   *  a time: a read while one is out waits for that one (the console polls, and each change relists and probes). */
-  changeAgain(): Promise<void> {
-    if (!this.#changeOwed) return Promise.resolve();
-    // Cleared in a reaction, never inside the try: a callback that throws at once would run a `finally` there before the
-    // assignment, and leave a settled promise in flight for good.
-    return (this.#changing ??= (async () => {
-      try {
-        await this.#deps.changed?.();
-        this.#changeOwed = false;
-      } catch {
-        // Owed still: the next read takes it again.
-      }
-    })().finally(() => (this.#changing = undefined)));
+  /** The sign-in as the store holds it now, read at the server's read of it: a runner may have renewed it, found it
+   *  expired, or another server signed in or out. A change is told to the server, and so is one it failed to take, so
+   *  what it offers does not wait for a restart. One at a time: a read while one is out waits for that one (the console
+   *  polls, and each change relists and probes). */
+  refresh(): Promise<void> {
+    // Cleared in a reaction, never inside the function: a read that throws at once would run a `finally` there before
+    // the assignment, and leave a settled promise in flight for good.
+    return (this.#refreshing ??= (async () => {
+      const was = this.state;
+      if ((await this.load()).state !== was) await this.tellChanged();
+      else if (this.#changeOwed) await this.tellChanged(true);
+    })().finally(() => (this.#refreshing = undefined)));
   }
 
   /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback
@@ -575,7 +583,7 @@ export class ChatGPTPlan implements PlanReader {
       if (await this.swap(bytes, expired)) {
         this.#snapshot = expired;
         this.#deps.log?.({ chatgpt: "expired" });
-        await this.#deps.changed?.();
+        await this.tellChanged();
         throw new PlanUnavailable(EXPIRED);
       }
       return this.adopt();
@@ -632,7 +640,7 @@ export class ChatGPTPlan implements PlanReader {
     }
     this.#snapshot = undefined;
     this.#deps.log?.({ chatgpt: "signed_out", revoked: String(revoked) });
-    await this.#deps.changed?.();
+    await this.tellChanged();
     return { revoked };
   }
 

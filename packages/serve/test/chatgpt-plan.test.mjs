@@ -886,7 +886,7 @@ test("a ChatGPT plan that can't be used here says so: a grant without the plan's
   assert.deepEqual(logged.map((fields) => fields.reason), ["no_direct_scope", "authorize_access_denied", "token_400_invalid_grant"]);
 });
 
-test("a sign-in saved whose change callback then fails reads signed in, with no problem and no sign_in_failed; the change is owed and taken again at the server's next read (changeAgain) until it takes", { timeout: 30_000 }, async (t) => {
+test("a sign-in saved whose change callback then fails reads signed in, with no problem and no sign_in_failed; the change is owed and taken again at the server's next read (refresh) until it takes", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
   const logged = [];
@@ -904,11 +904,11 @@ test("a sign-in saved whose change callback then fails reads signed in, with no 
   assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in", "changed_failed"]);
   assert.equal(logged[1].reason, "SQLITE_BUSY");
   // The server's next read takes it again; failing again, it stays owed, said once.
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 2);
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 3, "taken at last");
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 3, "nothing owed once it took");
   assert.equal(logged.length, 2);
 });
@@ -930,13 +930,13 @@ test("reads at once take an owed change once: a second read waits for the change
   assert.equal(calls, 1, "owed");
   // Two reads (GET /capabilities and GET /settings/chatgpt, say) while the change is out: one change runs.
   let settled = 0;
-  const reads = [plan.changeAgain(), plan.changeAgain()].map((read) => read.then(() => (settled += 1)));
+  const reads = [plan.refresh(), plan.refresh()].map((read) => read.then(() => (settled += 1)));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls, 2, "one change in flight, not one per read");
   assert.equal(settled, 0, "each read waits for it");
   release();
   await Promise.all(reads);
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 2, "taken: nothing owed");
 });
 
@@ -952,12 +952,123 @@ test("a change callback that throws at once, not in a promise, is still taken ag
   t.after(() => plan.close());
   const { authorize_url } = await plan.startSignIn();
   await plan.finishSignIn(callbackFor(authorize_url));
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 2, "taken again, and failed again");
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 3, "a failed retry leaves no change in flight behind it");
-  await plan.changeAgain();
+  await plan.refresh();
   assert.equal(calls, 3, "taken: nothing owed");
+});
+
+test("a change that started before a later one failed does not clear it: the later sign-in's change is still owed", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  let calls = 0;
+  let release;
+  const changed = async () => {
+    calls += 1;
+    // 1: the first sign-in's change fails. 2: the read's retry, held. 3: the second sign-in's change fails.
+    if (calls === 1 || calls === 3) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+    if (calls === 2) await new Promise((resolve) => (release = resolve));
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: () => {}, changed });
+  t.after(() => plan.close());
+  const first = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(first.authorize_url));
+  const retry = plan.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2, "the retry is out");
+  const second = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(second.authorize_url));
+  assert.equal(calls, 3, "the second sign-in's change failed");
+  // The retry read the first sign-in: its success is not the second's.
+  release();
+  await retry;
+  await plan.refresh();
+  assert.equal(calls, 4, "the second sign-in's change is taken at the next read");
+});
+
+test("a change of state the server reads (another server signed out) is told once for reads at once", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  let calls = 0;
+  let hold = false;
+  const held = [];
+  const changed = async () => {
+    calls += 1;
+    if (hold) await new Promise((resolve) => held.push(resolve));
+  };
+  const plan = new ChatGPTPlan({ store, sealKey, log: () => {}, changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.equal(calls, 1);
+  // Another server on the same store signs out: this one's reads see it.
+  const other = new ChatGPTPlan({ store, sealKey });
+  t.after(() => other.close());
+  await other.signOut();
+  hold = true;
+  const reads = [plan.refresh(), plan.refresh(), plan.refresh()];
+  while (!held.length) await new Promise((resolve) => setImmediate(resolve));
+  hold = false;
+  for (const resolve of held) resolve();
+  await Promise.all(reads);
+  assert.equal(calls, 2, "one change for three reads at once");
+  assert.equal(plan.state, "signed_out");
+});
+
+test("a change of state the server reads whose change callback fails is owed, said, and taken at the next read", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const logged = [];
+  let calls = 0;
+  let fail = false;
+  const changed = async () => {
+    calls += 1;
+    if (fail) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store, sealKey, log: (fields) => logged.push(fields), changed });
+  t.after(() => plan.close());
+  await plan.load();
+  // Signed in by another server on the same store, and this server's change of it fails: it is owed, not lost.
+  const other = new ChatGPTPlan({ store, sealKey });
+  t.after(() => other.close());
+  const { authorize_url } = await other.startSignIn();
+  await other.finishSignIn(callbackFor(authorize_url));
+  fail = true;
+  await plan.refresh();
+  assert.equal(calls, 1);
+  assert.equal(plan.state, "signed_in");
+  assert.deepEqual(logged, [{ chatgpt: "changed_failed", reason: "SQLITE_BUSY" }]);
+  fail = false;
+  await plan.refresh();
+  assert.equal(calls, 2, "the failed change of state is taken at the next read");
+  await plan.refresh();
+  assert.equal(calls, 2, "and then nothing is owed");
+});
+
+test("a sign-out whose change callback fails still answers: the sign-in is gone, and the change is owed", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const logged = [];
+  let calls = 0;
+  const changed = async () => {
+    calls += 1;
+    if (calls === 2) throw Object.assign(new Error("relist failed"), { code: "SQLITE_BUSY" });
+  };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), log: (fields) => logged.push(fields), changed });
+  t.after(() => plan.close());
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  assert.deepEqual(await plan.signOut(), { revoked: true });
+  assert.equal(plan.state, "signed_out");
+  assert.deepEqual(logged.map((fields) => fields.chatgpt), ["signed_in", "signed_out", "changed_failed"]);
+  await plan.refresh();
+  assert.equal(calls, 3, "taken at the next read");
 });
 
 const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
