@@ -110,9 +110,13 @@ workflow cost, one check at a time), and the agent takes the runs meanwhile. The
 label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`), else the agent's
 own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
 owner's own names): there each path is judged against the grade's value at that path. With no agree_on there is one
-field, the whole answer (`answer`), judged against a grade's expected answer as a whole (equal, or the same decision by
-the grader's verdict on the draft and that answer, which the replay run asks; the grade says whether the agent's own
-answer was right), else against the agent's (equal, or the grader's same decision). No field name is ever taken from a
+field, the whole answer (`answer`), judged against the agent's answer with the grade's expected keys written over it
+when both are JSON objects, else against the grade's expected answer whole (`learn/promote.ts` knownAnswerText: equal,
+or the same decision by the grader's verdict on the draft and that answer, which the replay run asks; the grade says
+whether the agent's own answer was right). The agent said `{"answer":42,"note":"checked"}` and the grade expects
+`{"answer":41}`: a draft of `{"answer":41,"note":"checked"}` is right. A disagreement still shows the recompile the
+grade's own expected answer. With no grade, it is judged against the agent's answer (equal, or the grader's same
+decision). No field name is ever taken from a
 grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
@@ -138,8 +142,8 @@ path must resolve in both answers' values (bare JSON, a whole fence, or the last
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the agent's reach the same
-decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
+AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
 more on a transport failure alone. Its wait is raced, as the end-of-run turn's is, against the run's stop or cancel, a

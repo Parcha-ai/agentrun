@@ -677,10 +677,17 @@ export const valueAtPath = (value: unknown, path: string): unknown => {
 /** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
 export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
 
-/** A grade's expected answer as the answer a whole-answer check compares a draft with: its JSON. A replay run's grader
- *  (runner/compare-end.ts) and the check (runner/promotion.ts judgeRows) read the same text, so its verdict's pair is
- *  this answer's. */
-export const expectedAnswerText = (expected: Readonly<Record<string, unknown>>): string => JSON.stringify(expected);
+/** The known answer a whole-answer check compares a draft with, given a grade's `expected` answer, as JSON: the agent's
+ *  answer (`agent`, its JSON) with the grade's keys written over it when both are JSON objects, so a grade that names
+ *  only the keys it corrects leaves the rest of the agent's answer standing; else the expected answer whole. Own keys
+ *  only, and never one named `__proto__`. A replay run's grader (runner/compare-end.ts) and the check
+ *  (runner/promotion.ts judgeRows) read the same text, so its verdict's pair is this answer's. */
+export function knownAnswerText(agent: string | null, expected: unknown): string {
+  const said = agent === null ? undefined : valueOf(agent);
+  if (!isObject(said) || !isObject(expected)) return JSON.stringify(expected);
+  const own = (value: Readonly<Record<string, unknown>>) => Object.entries(value).filter(([key]) => key !== "__proto__");
+  return JSON.stringify(Object.fromEntries([...own(said), ...own(expected)]));
+}
 
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's

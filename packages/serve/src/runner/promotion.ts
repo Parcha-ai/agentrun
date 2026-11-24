@@ -60,7 +60,7 @@ import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayC
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
-import { answerAt, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, expectedAnswerText, gradesOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
+import { answerAt, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type Refused, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers } from "../learn/field-check.js";
 import { refusedIn } from "../purged-workflow.js";
 import { sendCommand } from "./commands.js";
@@ -498,7 +498,7 @@ const stopUnchecked = (deps: DecideDeps, name: string, digest: string, bar: Chec
  *  draft did: its answer when it answered alone, why it handed the input back, or failed (or skipped a write). A
  *  reserved input whose replay run was never created, or never ended, by the check's deadline failed (`unstarted` for
  *  the first). `expected` and `correct`: the agent run's newest grade (learn/promote.ts Grade), when it has one: its
- *  expected answer is the known answer (whole, or at each agree_on path it holds), before the agent's own; and whether
+ *  expected answer is the known answer (written over the agent's, or at each agree_on path it holds); and whether
  *  the agent's answer was right. */
 export type CheckRow = { readonly of: string; readonly input: string; readonly agent: string | null; readonly outcome: ReplayOutcome; readonly answer: string | null; readonly escalated?: string; readonly skipped?: Skipped; readonly unstarted?: true; readonly compared?: Compared; readonly expected?: Readonly<Record<string, unknown>>; readonly correct?: boolean };
 
@@ -508,8 +508,10 @@ export const WHOLE_ANSWER = "answer";
 /** A check row as learn/field-check.ts judges it: an input answered alone with one field per agree_on path (the draft's,
  *  the agent's and the grade's value there), else one field, the whole answer (`answer`), right as compareAnswers says
  *  (`compared`: equal, or the same decision by the grader's verdict its replay run kept) against its best known answer:
- *  a grade's expected answer as a whole, the grade saying whether the agent's was right; else the agent's answer, known
- *  wrong when a grade with no expected answer said so. Field names are never taken from a grade: its keys are a
+ *  a grade's expected answer written over the agent's (learn/promote.ts knownAnswerText), the grade saying whether the
+ *  agent's was right; else the agent's answer, known wrong when a grade with no expected answer said so. The field's
+ *  `grade` is the grade's own expected answer, the part its owner gave, which a disagreement shows the recompile (and
+ *  a purge blanks). Field names are never taken from a grade: its keys are a
  *  person's data, which a run's purge must leave nowhere. Under agree_on a grade that said the answer was wrong, with no
  *  expected answer, names no field, so it changes nothing there. */
 function checkInputOf(row: CheckRow, on: readonly string[] | undefined, compared: Compared): CheckInput {
@@ -622,11 +624,12 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  when it read any input's answers. */
 async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
   const ran = rows.filter((row) => row.outcome !== "skipped_write");
-  // With no agree_on, the draft's answer is compared whole with its known answer (a grade's expected answer, else the
-  // agent's): equal, else the grader's verdict on that pair, which its replay run asked (with no grader, no fast model,
-  // they differ). Under agree_on, fields and grades are compared as values (checkInputOf).
+  // With no agree_on, the draft's answer is compared whole with its known answer (a grade's expected answer written over
+  // the agent's, knownAnswerText, else the agent's): equal, else the grader's verdict on that pair, which its replay run
+  // asked (with no grader, no fast model, they differ). Under agree_on, fields and grades are compared as values
+  // (checkInputOf).
   const on = bar.agree_on?.length ? bar.agree_on : undefined;
-  const compared = new Map(ran.map((row): [CheckRow, Compared] => [row, on ? { same: false } : compareAnswers(row.answer, row.expected ? expectedAnswerText(row.expected) : row.agent, undefined, row.compared)]));
+  const compared = new Map(ran.map((row): [CheckRow, Compared] => [row, on ? { same: false } : compareAnswers(row.answer, row.expected ? knownAnswerText(row.agent, row.expected) : row.agent, undefined, row.compared)]));
   const verdict = checkFields(rows.map((row) => checkInputOf(row, on, compared.get(row) ?? { same: false })), bar, before ? tallyBefore(before, on) : undefined);
   const missed = new Map<string, string[]>();
   for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
