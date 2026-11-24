@@ -43,11 +43,12 @@ test("the receipt carries the guard's verdicts and scores, and its request is a 
   assert.deepEqual(receipt.wall, { verdict: "content", scores: { content: 0.93, login_wall: 0.04, paywall: 0.03 } });
   assert.deepEqual(receipt.injection, { verdict: "none", score: 0.02 });
   assert.equal(Object.hasOwn(answer, "warning"), false);
-  assert.deepEqual(receipt.cost.lines.map((line) => line.name), ["fake's decision", "fake's page guard"]);
+  const decided = (lines) => lines.filter((line) => line.by === "fake").map((line) => line.name);
+  assert.deepEqual(decided(receipt.cost.lines), ["fake's decision", "fake's page guard"]);
   assert.equal(receipt.unsifted, webFetchText(plain.answer));
   const again = await w.fetch(PUBLIC, { task: TASK });
   assert.deepEqual([again.receipt.wall, again.receipt.injection], [receipt.wall, receipt.injection], "the run's verdict for the page");
-  assert.deepEqual(again.receipt.cost.lines.map((line) => line.name), ["fake's decision"], "and not paid again");
+  assert.deepEqual(decided(again.receipt.cost.lines), ["fake's decision"], "and not paid again");
 });
 
 test("a judged wall keeps the page's text and adds one plain warning; unsifted is the text with no step", async () => {
