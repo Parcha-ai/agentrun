@@ -85,6 +85,9 @@ main() {
   need tar
   need gzip
   root=$HOME/.agentrun
+  # Before anything is downloaded, so a refusal changes nothing.
+  shim=$root/bin/agentrun
+  [ ! -x "$shim" ] || no_service_over_service
 
   # The launcher's version and its Node floor: from the tarball given, or from the registry's document for that version.
   if [ -n "$tarball" ]; then
@@ -180,16 +183,10 @@ EOF
     default)
       # A service already installed restarts on this version, or installs again to go on or off the tailnet; status
       # exits 3 when there is none.
+      no_service_over_service
       code=0
       "$shim" service status > /dev/null 2>&1 || code=$?
-      if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -n "$no_service" ]; then
-        # --no-service where AgentRun is a service already: asked for by name, so the service goes, and AgentRun runs in
-        # the background until this machine stops. `service install` brings the service back.
-        say "--no-service: removing the AgentRun service of this user; AgentRun runs in the background until this machine stops."
-        "$shim" service uninstall
-        start_background
-        say "To keep it running after a restart again: $(shown_shim) service install"
-      elif { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
+      if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
         "$shim" service restart
       elif [ "$code" = 0 ] || [ "$code" = 1 ]; then
         stop_background
@@ -238,7 +235,8 @@ Options:
                     floor's major line, from nodejs.org/dist/index.json)
   --no-start        install only
   --service         install the service without asking, and fail if this machine can't run one
-  --no-service      never install the service, and remove one installed before: run AgentRun in the background until the machine stops
+  --no-service      never install the service: run AgentRun in the background until the machine stops. Where it is a
+                    service already, it stops before changing anything (`agentrun service uninstall` first)
   --tailscale       also serve it over HTTPS on your own tailnet only, at this machine's name there
                     (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
                     not); --no-tailscale takes it off
@@ -383,6 +381,20 @@ $(cat "$dir/.node")"
 in_use() {
   case $running in *"$1/"*) return 0 ;; esac
   return 1
+}
+
+# --no-service where AgentRun is a service of this user already (`service status` exits 0 or 1; 3 for none, and an
+# AgentRun with no service command something else). A background start would run without what the service was installed
+# with (--data, --port, --tailscale, --env, --public-url), and `service uninstall` takes its tailnet address off, so the
+# installer stops and leaves the service as it is.
+no_service_over_service() {
+  [ -n "$no_service" ] || return 0
+  code=0
+  "$shim" service status > /dev/null 2>&1 || code=$?
+  case $code in 0 | 1) ;; *) return 0 ;; esac
+  fail "--no-service, but AgentRun is a service of this user already. Running it in the background instead would drop what the service runs with (--data, --port, --tailscale, --env, --public-url), so the service is left as it is.
+  To run AgentRun without a service: $(shown_shim) service uninstall (the data directory stays), then this installer with --no-service.
+  To update the service: this installer without --no-service."
 }
 
 # Whether to make AgentRun a service of this user (GRE-4837: a service nobody asked for surprised the person who ran
