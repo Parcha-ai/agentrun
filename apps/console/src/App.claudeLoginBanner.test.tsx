@@ -208,3 +208,17 @@ describe("the Playground's No model bar heeds the login only for a run on the ru
     }
   });
 });
+
+// A server with no agents yet: the Playground picks none, so there is no run to read the bar from. A login that is on and
+// reads signed in is the model a first agent on Claude Agent runs on, so the bar goes; signed out, it stays.
+describe("the No model bar with no agent picked", () => {
+  it("a Playground with no agents shows no bar while the login is on and reads signed in, and the bar while it reads signed out", async () => {
+    const page = await open(SIGNED_IN, CAPS, []);
+    expect(page.bar()?.textContent ?? null, "the bar over a Playground with no agents while the login reads signed in").toBeNull();
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    const out = await open({ ...LOGIN, state: "signed_out" }, CAPS, []);
+    expect(out.bar()?.textContent ?? "", "the bar over a Playground with no agents while the login reads signed out").toContain(BAR);
+  });
+});
