@@ -188,6 +188,23 @@ test("the graph: a held value whole in a question's instructions is cut in place
   assert.deepEqual(shown.graph, questionGraph("Which one? [redacted]", "first"));
 });
 
+// The run's facts (`run`): a held value split across its agent and its revision. Withheld, it is served in its own shape:
+// the facts the server makes (its id, status, pause and times) as they are, the agent and the revision "[redacted]", and
+// marked withheld; never the string "[redacted]" where the run's facts stand. A held value whole in the agent is cut in
+// place, with no mark (control).
+test("the graph: a held value split across the run's agent and its revision serves the run in its shape, its agent and revision \"[redacted]\", marked withheld", () => {
+  const view = graphOf({}, {}, "x");
+  const shown = servedGraphView({ ...view, run: { ...view.run, agent: `agent ${HEAD}`, revision: `${REST} r1` } }, SECRETS);
+  assert.deepEqual(shows(JSON.stringify(shown)), []);
+  assert.deepEqual(shown.run, { ...view.run, agent: "[redacted]", revision: "[redacted]", withheld: true });
+});
+
+test("the graph: a held value whole in the run's agent is cut in place, the run's facts as they are and no mark (control)", () => {
+  const view = graphOf({}, {}, "x");
+  const shown = servedGraphView({ ...view, run: { ...view.run, agent: `agent ${KEY}` } }, SECRETS);
+  assert.deepEqual(shown.run, { ...view.run, agent: "agent [redacted]" });
+});
+
 // A web call's output in the graph is its JSON written as a string in the call's part: the join reads the strings inside
 // that string too, so a held value split across two of them withholds the part; one whole in a string is cut in place,
 // the JSON still parsing (control).

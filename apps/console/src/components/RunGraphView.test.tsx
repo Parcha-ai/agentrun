@@ -1,3 +1,4 @@
+import { workflowGraph } from "@dsl/graph";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,5 +52,19 @@ describe("RunGraphView", () => {
     act(() => root!.render(createElement(RunGraphView, { data, fileUrl: (ref: string) => ref })));
     expect(host.textContent).toContain("Decisions");
     expect(host.querySelector('[role="status"]')?.textContent ?? "").toMatch(/graph is withheld/);
+  });
+  it("draws a run whose facts the server withheld (a saved secret split across its agent and revision), and says so; totals withheld as \"[redacted]\" draw no counts", () => {
+    const workflow = { v: 2, root: { node: "code", label: "one", code: "(s) => s" } };
+    const data = {
+      run: { id: "r", agent: "[redacted]", revision: "[redacted]", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00Z", endedAt: "2026-11-24T00:00:09Z", withheld: true },
+      workflow, graph: workflowGraph(workflow),
+      nodes: { "/root": { status: "done" } }, decisions: [], effects: [], totals: "[redacted]",
+    } as unknown as RunGraph;
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunGraphView, { data, fileUrl: (ref: string) => ref })));
+    expect(host.textContent).toContain("Decisions");
+    expect([...host.querySelectorAll('[role="status"]')].map((node) => node.textContent).join(" ")).toMatch(/agent and revision are withheld/);
   });
 });
