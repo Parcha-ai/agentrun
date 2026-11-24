@@ -807,3 +807,35 @@ test("the Settings view feeds the same answer: after it read the login signed in
   assert.equal((await claudeLoginView(deps)).state, "unknown", "a timeout in the view reads unknown");
   assert.equal(asked, 1, "the view never asks again: a person waits on it");
 });
+
+test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
+  const login = await ownLogin();
+  const time = clock(1_000_000);
+  await loginBeforeRun(login, "claude", statusOf(SAID_IN).status, { now: time.now });
+  time.at(60_000);
+
+  const missing = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT", errno: -2, syscall: "spawn claude", path: "claude" });
+  const gone = statusOf(missing, SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", gone.status, { now: time.now }), (error) => {
+    assert.equal(error.message, `${LOGIN_UNKNOWN}: spawn claude ENOENT`);
+    return true;
+  });
+  assert.equal(gone.calls(), 1, "a CLI that is not there: status asked once, and the signed-in answer a minute before does not stand in");
+
+  const broken = statusOf(new Error("EACCES: permission denied, open '.claude.json'"), SAID_IN);
+  await assert.rejects(loginBeforeRun(login, "claude", broken.status, { now: time.now }), (error) => {
+    assert.equal(error.message, `${LOGIN_UNKNOWN}: EACCES: permission denied, open '.claude.json'`);
+    return true;
+  });
+  assert.equal(broken.calls(), 1, "an error with no code: status asked once");
+
+  // A CLI that answered, in time, nothing that reads as a status gave no answer too, as the harness says by its code.
+  const noStatus = () => Object.assign(new Error("the claude CLI gave no login status"), { code: "no_status" });
+  const garbled = statusOf(noStatus(), SAID_IN);
+  await loginBeforeRun(login, "claude", garbled.status, { now: time.now });
+  assert.equal(garbled.calls(), 2, "no status once, then signed in: asked twice, and the run goes on");
+  time.at(2 * 60_000);
+  const twice = statusOf(noStatus(), noStatus());
+  await loginBeforeRun(login, "claude", twice.status, { now: time.now });
+  assert.equal(twice.calls(), 2, "no status twice, a minute after a signed-in answer: the run goes on by it");
+});

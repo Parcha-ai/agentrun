@@ -318,6 +318,19 @@ test("a status check the CLI outlasts throws its own kind, `timed_out`, naming t
   assert.equal(new claude.ClaudeLoginTimedOut(15_000).message, 'the claude CLI gave no login status: the check timed out after 15 s', 'the default limit reads in whole seconds');
 });
 
+test("a CLI that answers, in time, nothing that reads as a status throws its own kind, `no_status`, so a caller can tell it from a CLI that never started", async () => {
+  const { login } = defaultLogin();
+  const garbled = fakeCli({ answer: 'Not logged in' });
+  const nonsense = await inOwnTmp(() => claude.claudeLoginStatus(garbled.cli, login, { timeoutMs: 10_000 }));
+  assert.equal(nonsense.outcome.error?.code, 'no_status', `a CLI that answered no status says so: ${nonsense.outcome.error}`);
+  assert.ok(nonsense.outcome.error instanceof claude.ClaudeLoginNoStatus, 'the harness exports its kind');
+  assert.equal(nonsense.outcome.error?.message, 'the claude CLI gave no login status');
+
+  const missing = await inOwnTmp(() => claude.claudeLoginStatus(join(scratch(), 'no-such-claude'), login, { timeoutMs: 10_000 }));
+  assert.equal(missing.outcome.error?.code, 'ENOENT', `a CLI path that is no program is the spawn's own error: ${missing.outcome.error}`);
+  assert.ok(!(missing.outcome.error instanceof claude.ClaudeLoginNoStatus), 'it is not the no-status kind');
+});
+
 test("while the CLI runs, the status check's folder and its config dir are the server user's alone (0700) and the copy of the account file too (0600)", { skip: process.platform === 'win32' ? 'POSIX permission bits' : false }, async () => {
   const { login } = defaultLogin();
   const fake = fakeCli();
