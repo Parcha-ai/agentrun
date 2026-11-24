@@ -695,10 +695,16 @@ const BLANKS = /[\t-\r ]+/y;
 const IGNORABLE = /\p{Default_Ignorable_Code_Point}+/gu;
 const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
 
-/** `text` as a view reads it, and as a held value's needles are read: NFKC, with its whitespace and its characters that
- *  render as nothing gone, before NFKC (so one between a letter and its accent hides neither) and after. A held value
- *  with a zero-width space or a soft hyphen between its characters reads as itself. */
-export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKC").replace(GONE, "");
+/** Combining marks: an accent, a cedilla, an enclosing circle. */
+const MARKS = /\p{M}+/gu;
+
+/** `text` as a view reads it, and as a held value's needles are read: decomposed (NFKD), its combining marks dropped,
+ *  then NFKC, with its whitespace and its characters that render as nothing gone, before (so one between a letter and
+ *  its accent hides neither) and after. A held value with a zero-width space or a soft hyphen between its characters
+ *  reads as itself; so does one with a combining mark after a letter, which NFKC alone composes into another letter
+ *  ("Z" and U+0301 into "Ź"), and one written with a precomposed letter in place of its own ("Ź" for "Z"). A held
+ *  value's accents are dropped the same way, so it reads as itself with them or without: more cutting, never less. */
+export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
  *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
@@ -743,7 +749,8 @@ function unescaped(text: string, at: number): Char | undefined {
  *  starts an escape of the next, each character that escape decodes to comes from all of the raw text the two levels
  *  read; a "\" that starts none is itself. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII
  *  stretch is. Line breaks written "\r\n" decode to whitespace, gone from the view. An escaped quote, at either level
- *  ("\"", "\\\"", """), decodes to nothing: it is where a string written in a string starts or ends, and a held value
+ *  (a backslash and a quote, or one more level of it, or the "\u" escape whose digits are 0022), decodes to nothing:
+ *  it is where a string written in a string starts or ends, and a held value
  *  split across it reads whole, as one split across two strings does in the join view (joinView). */
 const JSON_ESCAPE: Decoder = {
   trigger: "\\",
