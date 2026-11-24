@@ -47,6 +47,13 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
   return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
 }
 
+/** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
+ *  a URL that holds them (undici's refusal of a redirect to one quotes it whole); a receipt and the model read it. */
+const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#@]*@/g, "//");
+/** The direct fetch's `read` with withoutUserinfo's errors. */
+const unquoted = (read: Read | Unread): Read | Unread =>
+  read.ok ? read : { ...read, ...(read.refused === undefined ? {} : { refused: withoutUserinfo(read.refused) }), ...(read.error === undefined ? {} : { error: withoutUserinfo(read.error) }) };
+
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound, the log,
  *  `tried` (told each turn as it ends) and `noParallel` (why the order's Parallel has no client, where the caller knows). */
 type ReadWith = { parallel?: Extract | null; firecrawl?: KeylessFetch | null; order: readonly FetchProvider[]; guard?: Guard; checkMs: number; options: GuardOptions; log?: WebLog; tried?: (one: FetchTry) => void; noParallel?: string };
@@ -58,9 +65,10 @@ type ReadWith = { parallel?: Extract | null; firecrawl?: KeylessFetch | null; or
 async function readOnce(url: unknown, { parallel, firecrawl, order, guard, checkMs, options, log, tried, noParallel }: ReadWith): Promise<WebRead | WebUnread> {
   let firecrawlSaid: string | undefined;
   let why: string | undefined;
-  // Each turn told where it ends, so every provider asked is told, whichever answers the page or none does.
+  // Each turn told where it ends, so every provider asked is told, whichever answers the page or none does. What a
+  // provider says goes on with no URL's user name or password in it (withoutUserinfo).
   const turn = (provider: FetchProvider, read: Read | Unread | string) =>
-    tried?.(typeof read === "string" ? { provider, outcome: "error", error: read } : read.ok ? { provider, outcome: "ok" } : { provider, outcome: "error", error: read.refused ?? read.error ?? "" });
+    tried?.(typeof read === "string" ? { provider, outcome: "error", error: withoutUserinfo(read) } : read.ok ? { provider, outcome: "ok" } : { provider, outcome: "error", error: withoutUserinfo(read.refused ?? read.error ?? "") });
   for (const provider of order) {
     if (provider === "firecrawl-keyless") {
       const sent = firecrawl?.live() ? await passes(url, guard, options, checkMs) : null;
@@ -68,7 +76,7 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
         const read = await firecrawl.read(sent.href, options.signal);
         turn("firecrawl-keyless", typeof read === "string" ? read.slice(0, 300) : read);
         if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
-        firecrawlSaid = read;
+        firecrawlSaid = withoutUserinfo(read);
       }
     } else if (provider === "parallel") {
       const sent = parallel?.live() ? await passes(url, guard, options, checkMs) : null;
@@ -82,11 +90,11 @@ async function readOnce(url: unknown, { parallel, firecrawl, order, guard, check
           turn("parallel", read);
           return { ...read, via: "parallel" };
         }
-        why = read;
+        why = withoutUserinfo(read);
       }
       if (why !== undefined) turn("parallel", why);
     } else {
-      const direct = await readDirect(url, guard, options);
+      const direct = unquoted(await readDirect(url, guard, options));
       turn("direct", direct);
       // Why Firecrawl gave no page goes to the log, never to the model (the page is the direct fetch's); never the URL.
       if (firecrawlSaid !== undefined) log?.("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" });
