@@ -143,13 +143,13 @@ test("an account of another Composio user under the same auth config is never th
   assert.ok(!storeBytes(s.server.data).includes("other@example.com"), "nor kept");
 });
 
-for (const [what, user] of [["empty", ""], ["the per-run sentinel", "per_run"]]) {
+for (const [what, made] of [["empty", { user: "" }], ["per-run", { user: "per_run", per_run: true }]]) {
   test(`a server whose recorded Composio user is ${what} never has its accounts asked for, and says unknown`, async (t) => {
     const s = await setup(t, { active: ["gmail"] });
     assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
-    // A damaged record (or one a later writer made): its user is no Composio user a single account belongs to.
+    // A damaged record, or a per-run one: its user is no Composio user a single account belongs to.
     const record = await s.server.store.settings.get("mcp.composio/gmail");
-    await s.server.store.settings.put("mcp.composio/gmail", { ...record, user });
+    await s.server.store.settings.put("mcp.composio/gmail", { ...record, ...made });
     const asked = s.composio.to("/api/v3/connected_accounts", "GET").length;
     const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
     assert.equal(res.status, 200, JSON.stringify(res.body));
@@ -157,6 +157,19 @@ for (const [what, user] of [["empty", ""], ["the per-run sentinel", "per_run"]])
     assert.deepEqual(res.body.server.composio_account, { state: "unknown", checked_at: res.body.server.composio_account?.checked_at });
   });
 }
+
+test("a server saved before per-run mode for a Composio user literally named per_run is asked for that user's accounts, and connects", async (t) => {
+  const s = await setup(t, { active: ["gmail"] });
+  assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+  // Its record names the user and has no per_run mark: only a save made since the mode exists writes one.
+  const record = await s.server.store.settings.get("mcp.composio/gmail");
+  await s.server.store.settings.put("mcp.composio/gmail", { ...record, user: "per_run" });
+  const asked = s.composio.to("/api/v3/connected_accounts", "GET").length;
+  const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const listed = s.composio.to("/api/v3/connected_accounts", "GET").slice(asked);
+  assert.ok(listed.length > 0 && listed.every((call) => call.query.user_ids === "per_run"), `its accounts were asked for as the user per_run: ${JSON.stringify(listed.map((call) => call.query))}`);
+});
 
 test("an account Composio answers with no user_id, under the user asked for, still connects the server", async (t) => {
   // Composio's docs mark the listing's user_id deprecated, to be dropped: only one that names another user is refused.
