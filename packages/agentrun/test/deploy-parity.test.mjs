@@ -148,7 +148,16 @@ test("the parity fixture installed on A and deployed by agentrun deploy, as a fo
   const toB = await cli({ ...env, AGENTRUN_API_KEY: b.token }, ["deploy", pkg, "--to", b.baseUrl, "--yes"]);
   assert.equal(toB.code, 0, toB.err);
   const onB = answerOf(toB, "the deploy to B");
-  const folder = parityOf(await readAgent(a.api, every.body.agent_id), await readAgent(b.api, onB.agent_id));
+  const [readOnA, readOnB] = [await readAgent(a.api, every.body.agent_id), await readAgent(b.api, onB.agent_id)];
+  const folder = parityOf(readOnA, readOnB);
+  // What each install stores where the package names an MCP tool: the instruction line, and the digest skill's sha256
+  // (the API serves a skill's hash, not its text), beside the hashes of the fixture's text and of it on B's names.
+  const cited = (read) => read.agent.definition.instructions.split("\n").filter((line) => line.includes("get_file_contents"));
+  const digestSha = (read) => read.agent.skills.find((file) => file.path.endsWith("digest/SKILL.md"))?.sha256;
+  const digest = readFileSync(join(FIXTURE, "skills/digest/SKILL.md"), "utf8");
+  const digestOnB = createHash("sha256").update(digest.replace("mcp:slack/SLACK_SEND_MESSAGE", "mcp:team-slack/SLACK_SEND_MESSAGE")).digest("hex");
+  t.diagnostic(`rename: A stores instructions ${JSON.stringify(cited(readOnA))}, B stores ${JSON.stringify(cited(readOnB))}`);
+  t.diagnostic(`rename: digest/SKILL.md sha256 A ${digestSha(readOnA)} B ${digestSha(readOnB)}; fixture ${fixtureSha("skills/digest/SKILL.md")}, fixture on team-slack ${digestOnB}`);
 
   // Leg 2: A's agent by its export, the CLI signed in to A and deploying to C with C's key.
   signedIn(dir, a.baseUrl, a.token);
@@ -162,6 +171,15 @@ test("the parity fixture installed on A and deployed by agentrun deploy, as a fo
   const found = { folder: { differences: folder.differences, unread: folder.unread, warnings: folder.warnings }, install: { differences: agentLeg.differences, unread: agentLeg.unread, warnings: agentLeg.warnings } };
   assert.deepEqual(found, { folder: { differences: [], unread: [], warnings: [] }, install: { differences: [], unread: [], warnings: [] } }, `parity: ${JSON.stringify(found, null, 2)}`);
   assert.deepEqual([folder.pass, agentLeg.pass], [true, true]);
+
+  // The parity above held across a real rename: B saved github and slack as team-github and team-slack, and its apply
+  // wrote the MCP names in the instructions and the digest skill on those (templates.ts onServers). If B stored A's
+  // names, the rename the check normalizes never happened.
+  assert.deepEqual(
+    { instructions: [cited(readOnA), cited(readOnB)], digest: [digestSha(readOnA), digestSha(readOnB)] },
+    { instructions: [["`mcp:github/get_file_contents`."], ["`mcp:team-github/get_file_contents`."]], digest: [fixtureSha("skills/digest/SKILL.md"), digestOnB] },
+    "B stores the MCP names in its instructions and digest skill on B's saved servers' names, and A on the fixture's",
+  );
 
   // A deploy that loses a tool, on a real server: the whole fixture onto C, which saved no docs server. The deploy skips
   // that need (not required), the check names the tool C's agent lacks, and C's plan says why.
