@@ -339,6 +339,29 @@ test("Parallel passed over for a URL it may not be sent says the real reason, in
   }
 });
 
+// undici's fetch builds a Request for each hop, and Request refuses a URL holding a user name or password with an error
+// that quotes the URL whole. The transport here builds one too (Node's Request is undici's), so the refusal and its
+// words are undici's own.
+test("a public page redirecting to a URL that holds a user name and password: neither the receipt's turns nor the page the model reads quote them", async (t) => {
+  const f = await fakes(t);
+  const moved = "http://public.example/moved";
+  const target = new URL(PUBLIC);
+  target.username = "web-user";
+  target.password = "not-a-secret";
+  const fetchImpl = async (url, init) => {
+    new Request(url);
+    if (String(url) === moved) return new Response(null, { status: 302, headers: { location: target.href } });
+    return f.net.fetchImpl(url, init);
+  };
+  const w = web.createWeb({ ...f.config, order: { search: [], fetch: ["direct"] } });
+  const { answer, receipt } = await w.fetch(moved, { fetchImpl });
+  const text = web.webFetchText(answer);
+  assert.match(text, /includes credentials/, "the page says undici refused the redirect's URL");
+  assert.deepEqual(receipt.tries.map((one) => [one.provider, one.outcome]), [["direct", "error"]]);
+  for (const one of receipt.tries) assert.doesNotMatch(one.error ?? "", /web-user|not-a-secret/, "the receipt's turn quotes no user name or password");
+  assert.doesNotMatch(text, /web-user|not-a-secret/, "the page the model reads quotes no user name or password");
+});
+
 // A call stops waiting at its signal; the read it started is the run's and goes on. Here the read waits on the guard's
 // name lookup for Parallel (released by hand) when the call is stopped, then Parallel reads the page and is paid.
 test("a fetch stopped while the guard checks its URL for Parallel: the receipt it returned stays as it was, though the read goes on and pays", async (t) => {
