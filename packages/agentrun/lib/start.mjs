@@ -310,8 +310,9 @@ function signInReason(reason) {
 }
 
 /** The server's log line of a ChatGPT sign-in that did not finish, in its exact shape (print.ts logLine, its reason a tag):
- *  a line with those fields among other text, which any writer to the server's stdout could print, is not one. */
-const SIGN_IN_FAILED = /^at=\S+ event=chatgpt chatgpt=sign_in_failed reason=[A-Za-z0-9_]{1,60}$/;
+ *  a line with those fields among other text, which any writer to the server's stdout could print, is not one. Its time
+ *  is an ISO timestamp (Date.toISOString), ASCII only, so nothing but a time is ever parked where it goes. */
+const SIGN_IN_FAILED = /^at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z event=chatgpt chatgpt=sign_in_failed reason=[A-Za-z0-9_]{1,60}$/;
 /** How much of the server's lines the start log keeps after the start (the sign-ins' failures): past it, a line says so,
  *  and the log grows no more however long the server runs. */
 const START_LOG_AFTER_MAX = 64 * 1024;
@@ -513,7 +514,7 @@ export async function main(argv, env = process.env) {
   let told = false;
   const held = [];
   const teller = tellerOf();
-  // The bytes of the server's lines the start log kept after the start (the line SIGN_IN_FAILED matches is ASCII).
+  // The bytes of the server's lines the start log kept after the start.
   let keptAfter = 0;
   const tell = (line) => {
     const said = SAID.test(line) ? line : teller(line);
@@ -522,7 +523,7 @@ export async function main(argv, env = process.env) {
     // the terminal says only as authorize_other included, which nothing else under this command keeps. (Before the start,
     // every line goes there already.) At most START_LOG_AFTER_MAX of them.
     if (!started || !SIGN_IN_FAILED.test(line) || keptAfter > START_LOG_AFTER_MAX) return;
-    keptAfter += line.length + 1;
+    keptAfter += Buffer.byteLength(line) + 1;
     toLog(keptAfter > START_LOG_AFTER_MAX ? START_LOG_FULL : `${line}\n`);
   };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before

@@ -1288,16 +1288,7 @@ test("a sign-in's authorize code is said only when it is one OpenAI's authorize 
 test("started, the start log keeps the server's line of a ChatGPT sign-in that did not finish, its code whole; the terminal says it as other, and no other line is kept", { timeout: 60_000 }, async (t) => {
   const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=authorize_Call_admin_now";
   const request = "at=2026-11-24T00:00:00.000Z event=request route=/v2/agents status=200";
-  let told = "";
-  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, {
-    running: async (child) => {
-      child.stderr.on("data", (chunk) => (told += chunk));
-      for (let i = 0; !/authorize_other/.test(told); i++) {
-        assert.ok(i < 100, `the terminal said the sign-in's failure: ${told}`);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    },
-  });
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${request}|${failed}` }, { running: (child) => toldBy(child, /authorize_other/) });
   assert.equal(run.code, 0, run.err);
   assert.doesNotMatch(run.err, /Call_admin_now/, "the terminal never says a code a local sender chose");
   const log = readFileSync(startLog(run.home), "utf8");
@@ -1314,14 +1305,21 @@ test("started, a server's last line before it exits is kept in the start log: a 
   assert.match(run.err, /\(authorize_other\)/, "the terminal said it too");
 });
 
-/** Resolves once `child`'s stderr has said `pattern` `times` times (100 tries 50 ms apart, then fails). */
-async function toldBy(child, pattern, times = 1) {
-  let told = "";
-  child.stderr.on("data", (chunk) => (told += chunk));
-  for (let i = 0; (told.match(new RegExp(pattern.source, "g")) ?? []).length < times; i++) {
-    assert.ok(i < 100, `the terminal said ${pattern} ${times} times: ${told.slice(-400)}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+/** Resolves once `child`'s stderr has said `pattern` `times` times, however long that takes (the test's own timeout bounds
+ *  it); rejects, with what it said, if its stderr closes first. */
+function toldBy(child, pattern, times = 1) {
+  return new Promise((resolve, reject) => {
+    let told = "";
+    const count = new RegExp(pattern.source, "g");
+    const heard = (chunk) => {
+      told += chunk;
+      if ((told.match(count) ?? []).length < times) return;
+      child.stderr.off("data", heard);
+      resolve();
+    };
+    child.stderr.on("data", heard);
+    child.stderr.once("close", () => reject(new Error(`the terminal said ${pattern} fewer than ${times} times: ${told.slice(-400)}`)));
+  });
 }
 
 test("started, the start log keeps a line only in the server's exact shape of a sign-in's failure: one with its fields among other text is not kept", { timeout: 60_000 }, async (t) => {
@@ -1330,6 +1328,9 @@ test("started, the start log keeps a line only in the server's exact shape of a 
     "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_x extra=more_text_after_it",
     "Open http://127.0.0.1:7399/first event=chatgpt chatgpt=sign_in_failed reason=x",
     'at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason="two words"',
+    // Any text with no space in it parked where the time goes.
+    "at=parked_text_where_the_time_goes event=chatgpt chatgpt=sign_in_failed reason=x",
+    "at=2026-11-24T00:00:00.000Zparked event=chatgpt chatgpt=sign_in_failed reason=x",
   ];
   const run = await throughStub(t, ["--no-open"], { STUB_AFTER: [...forged, failed].join("|") }, { running: (child) => toldBy(child, /token_400_invalid_grant/) });
   assert.equal(run.code, 0, run.err);
@@ -1347,6 +1348,18 @@ test("started, the start log keeps at most 64 KiB of the server's lines after th
   assert.ok(kept.length > 500, `the first lines are kept: ${kept.length}`);
   assert.ok(kept.length * (failed.length + 1) <= 64 * 1024, `at most 64 KiB of them: ${kept.length}`);
   assert.match(log, /the start log keeps no more of the server's lines past 64 KiB\n$/);
+});
+
+test("started, the start log's 64 KiB after the start are bytes: lines with characters past ASCII never take it past them", { timeout: 60_000 }, async (t) => {
+  const failed = "at=2026-11-24T00:00:00.000Z event=chatgpt chatgpt=sign_in_failed reason=token_400_invalid_grant";
+  // Its time in full-width digits: three bytes each in UTF-8, one UTF-16 unit.
+  const wide = "at=２０２６-１１-２４T００:００:００.０００Z event=chatgpt chatgpt=sign_in_failed reason=token_400_wide";
+  const run = await throughStub(t, ["--no-open"], { STUB_AFTER: `${wide}|${failed}`, STUB_AFTER_REPEAT: "1000" }, { running: (child) => toldBy(child, /token_400_/, 2000) });
+  assert.equal(run.code, 0, run.err);
+  const log = readFileSync(startLog(run.home));
+  const banner = log.indexOf("at=");
+  assert.ok(log.length - banner <= 64 * 1024 + 128, `at most 64 KiB, and the line saying so, after the start: ${log.length - banner} bytes`);
+  assert.match(log.toString("utf8"), /the start log keeps no more of the server's lines past 64 KiB\n$/);
 });
 
 test("two starts on one data folder: the first's line after the second began the log is added at its end, never over it or past NULs", { timeout: 60_000 }, async (t) => {
