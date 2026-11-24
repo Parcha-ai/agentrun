@@ -495,6 +495,48 @@ const CASES = [
       },
     ];
   })(),
+  // A held JSON value's own lines are no parts of it: a service account as Google serves it, pretty-printed, has its
+  // public strings on lines of their own, and a text that names them, as written or minified, shows. Its private key's
+  // lines are still parts (heldFields holds the key, and its lines are its parts).
+  ...(() => {
+    const { lines, pem } = fakePem(25);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const account = JSON.stringify({
+      type: "service_account",
+      project_id: "made-up-project",
+      private_key_id: "0123456789abcdef0123456789abcdef01234567",
+      private_key: `${pem}\n`,
+      client_email: "probe@made-up-project.iam.gserviceaccount.com",
+      client_id: "123456789012345678901",
+      auth_uri: "https://accounts.google.com/o/oauth2/auth",
+      token_uri: "https://oauth2.googleapis.com/token",
+      auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+    }, null, 2);
+    const pretty = account.split("\n").filter((line) => /"(?:auth_uri|token_uri|auth_provider_x509_cert_url|client_email)"/.test(line)).join("\n");
+    const minified = '{"type":"service_account","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs"}';
+    return [
+      {
+        name: "a held pretty-printed service account's public lines, printed as written, show",
+        text: `$ grep _ur sa.json\n${pretty}\n`,
+        values: [account],
+        hides: [],
+        exact: all(`$ grep _ur sa.json\n${pretty}\n`),
+      },
+      {
+        name: "a held pretty-printed service account's public strings, in minified JSON, show",
+        text: `the docs' example: ${minified} ok`,
+        values: [account],
+        hides: [],
+        exact: all(`the docs' example: ${minified} ok`),
+      },
+      {
+        name: "a held pretty-printed service account's private key, printed alone, shows no line of it",
+        text: `$ jq -r .private_key sa.json\n${pem}\n`,
+        values: [account],
+        hides: lines.map((line) => line.slice(0, 12)),
+      },
+    ];
+  })(),
   // A held JSON value's string whose key names a credential (the URL rule's names, the whole key) is held as itself,
   // nested or not: an OAuth client's secret, printed alone, is cut. Its other one-line strings (an id, its URLs) are no
   // secret and stay.
