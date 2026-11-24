@@ -419,6 +419,27 @@ test("API-only: an account the token's own earlier save connected (its record ho
   assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), mine, "the first server's record is unchanged");
 });
 
+test("API-only: a server the token saved before the account rule, whose record holds the owner's ACTIVE account as found (made: false), never backs the token's next save for that user: 403, nothing made at Composio", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const s = await setup(t, { fake: OWNERS_ACCOUNT });
+  const { storedSource } = await import("../dist/mcp-sources.js");
+  // What such a save wrote: the token's row, its source marked the token's, and the owner's account recorded as found.
+  await s.server.store.mcp.put({ name: "mail", url: `${s.composio.mcpOrigin}/v3/mcp/srv_tokens/mcp?user_id=agentrun`, auth: "headers", tools: [ADD_TOOL], sealed: null });
+  const row = await s.server.store.mcp.server("mail");
+  await s.server.store.settings.put(mcpSourceKey("mail"), storedSource({ source: "composio", toolkit: "gmail" }, row, false, true));
+  const old = storedMade({ user: "agentrun", auth_config: { id: OWNERS_CONFIG, made: false }, accounts: [{ id: "ca_fake_gmail", made: false }], key_env: KEY_ENV }, row);
+  await s.server.store.settings.put(composioMadeKey("mail"), old);
+  const from = s.composio.calls.length;
+  const res = await s.token("PUT", "/settings/mcp-servers/notes/composio", { ...SAVE, user_id: "agentrun" });
+  assert.equal(res.status, 403, JSON.stringify(res.body));
+  assert.match(res.body.error?.message, /user_id agentrun already has a connected account here.*Name a user_id of the token's own/, res.body.error?.message);
+  assert.deepEqual(s.composio.calls.slice(from).filter((call) => call.method !== "GET"), [], "nothing made or removed at Composio");
+  assert.deepEqual(s.composio.mcpIds, [], "no MCP server made");
+  assert.equal(await s.server.store.mcp.server("notes"), undefined, "no server saved");
+  assert.equal(await s.server.store.settings.get(composioMadeKey("notes")), undefined, "no record of one");
+  assert.deepEqual(await s.server.store.settings.get(composioMadeKey("mail")), old, "the old record is unchanged");
+});
+
 test("API-only: an auth_config_id the owner's server stands on, named in another letter case, is never taken for another: Composio's answer for it is compared with the name sent, and a mismatch is 422 under auth_config_id with nothing made", async (t) => {
   withEnv(t, { [KEY_ENV]: KEY });
   const s = await setup(t, { fake: { authConfigs: { gmail: [{ id: "ac_OwnersApp1", is_composio_managed: false, status: "ENABLED" }] }, anyCase: true } });
