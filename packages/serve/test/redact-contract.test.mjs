@@ -589,6 +589,34 @@ const CASES = [
       ["a held value split by an escaped soft hyphen (\\u00ad)", `x ${H}${B}u00ad${R} y`],
     ].map(([what, text]) => ({ name: `guard: ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
+  // A held value split across two strings of a JSON text (P1-B): each string read alone shows half, and the JSON's
+  // punctuation between them is no whitespace any view drops. The join view reads the strings' contents joined (the
+  // values, the property names, and both), so no split across them shows, whatever tool wrote the text. A held value
+  // whole in one string is cut in place, and the JSON still parses (control).
+  ...(() => {
+    const [H, R] = P24;
+    const all = (shown, but = []) => Object.fromEntries(Object.keys(ENTRIES).filter((name) => !but.includes(name)).map((name) => [name, shown]));
+    const split = [
+      ["two values of a non-web tool's result", JSON.stringify({ items: [{ title: `see ${H}`, snippet: `${R} more` }] })],
+      ["the url and the reason of web_fetch's refused answer", JSON.stringify({ ok: false, url: `https://h.example/${H}`, refused: `${R} is not allowed` })],
+      ["two arguments of a call", JSON.stringify({ command: `echo ${H}`, note: R })],
+      ["a property name and its value", JSON.stringify({ [H]: R })],
+      ["two property names", JSON.stringify({ [H]: "x", [R]: "y" })],
+      ["an escaped quote inside one string", JSON.stringify({ note: `see ${H}"${R} more` })],
+      ["two strings of JSON written in a JSON string", JSON.stringify({ out: JSON.stringify([H, R]) })],
+      ["two values of JSON written in a JSON string, a property name between them", JSON.stringify({ out: JSON.stringify({ title: `see ${H}`, snippet: `${R} more` }) })],
+      ["a string and the line after the JSON", `${JSON.stringify({ snippet: `the end ${H}` })}\n${R} after`],
+    ];
+    const edge = `${"w ".repeat(4090)}${JSON.stringify({ t: `see ${H}`, s: `${R} more` })}`;
+    const whole = (title) => JSON.stringify({ items: [{ title, snippet: `${R} more` }] });
+    return [
+      ...split.map(([what, text]) => ({ name: `a held value split across ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all("[redacted]") })),
+      // The first piece of an answer ends inside the first string: the second piece alone reads its quotes the wrong way
+      // round, and the pass over what the pieces show reads them joined. A row's head never reaches the JSON.
+      { name: "a held value split across two strings at the edge of an answer's first piece withholds the text", text: edge, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all("[redacted]", ["redacted"]) },
+      { name: "a held value whole in one string of a JSON text is cut in place, and the JSON still parses (control)", text: whole(`see ${P24.join("")}`), values: [P24.join("")], hides: [H], exact: all(whole("see [redacted]")) },
+    ];
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
