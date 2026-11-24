@@ -407,7 +407,7 @@ test("a paired box whose route leaves the runner while it says hello there (its 
   const moved = await heldDial(async () => assert.equal(await paired.unroute(computer, { ...mine, run: "run-a" }), true));
   assert.equal(moved?.code, 1001, `a box whose route left this runner while it said hello is closed with 1001, its redial routed, never 4401 (pair again): ${JSON.stringify(moved)}`);
   assert.match(moved.reason, new RegExp(`^${NAME} moved while it said hello`), "the close's words say it moved");
-  assert.equal(relay.dial.hub.online(computer), false, "the runner's hub does not keep it");
+  await until(async () => relay.dial.hub.online(computer), (online) => online === false, "the runner's hub does not keep it");
   assert.equal((await side.store.pairedComputers.get(computer))?.revokedAt, null, "its pairing stays good");
   assert.ok(pairedRow((await api("GET", "/computers")).body, computer), "the server still lists it as paired");
   assert.equal(await paired.route(computer, { ...mine, run: "run-b", until: UNTIL() }), true);

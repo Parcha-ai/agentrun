@@ -528,16 +528,21 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   };
 
   /** Who dials the attach socket, as the hub takes it: a paired computer by its id, or a minted machine by its name (its
-   *  hello must say the kind, os and arch it was minted for). `good` reads its row again once the hub has the socket;
-   *  `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and `<event>_refused`. */
-  type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; good: () => Promise<boolean>; seen: (hello: HelloResult) => Promise<void> };
+   *  hello must say the kind, os and arch it was minted for). `standing` reads its row again once the hub has the socket:
+   *  `revoked` (its token is gone: closed with 4401 in `gone`, pair again) or, for a paired computer on a runner's
+   *  listener, `moved` (its route no longer names this runner and incarnation: closed with 1001 in `moved`, its redial
+   *  routed, its pairing kept). `seen` keeps a paired computer's hello. Its log lines are `<event>_attached` and
+   *  `<event>_refused`. */
+  type Dialer = { computer: PairedComputer; field: string; event: string; gone: string; moved: string; standing: () => Promise<"good" | "revoked" | "moved">; seen: (hello: HelloResult) => Promise<void> };
   const pairedDialer = (row: PairedComputerRow): Dialer => ({
     computer: pairedOf(row),
     field: "computer",
     event: "computer",
     gone: `${row.name} was removed from this server's console: pair it again to use it`,
-    // On a runner's listener, the route must still name this runner and incarnation too.
-    good: async () => (await paired.get(row.id))?.revokedAt === null && (options.owner === undefined || (await routedHere(row.id))),
+    moved: `${row.name} moved while it said hello: its route left this runner, and its redial goes where the route says`,
+    // Revoked first: a removal drops the route too. On a runner's listener the route must still name this runner and
+    // incarnation; one that left it (a cancelled bring, a run moved) is a move, never a revoke.
+    standing: async () => ((await paired.get(row.id))?.revokedAt !== null ? "revoked" : options.owner !== undefined && !(await routedHere(row.id)) ? "moved" : "good"),
     seen: (hello) => paired.seen(row.id, hello as unknown as Record<string, unknown>),
   });
 
@@ -552,7 +557,9 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     field: "machine",
     event: "machine",
     gone: machineGone(row.machine),
-    good: async () => (await minted.get(row.machine))?.revokedAt === null,
+    // A minted machine has no route, so it never moves: good or revoked.
+    moved: machineGone(row.machine),
+    standing: async () => ((await minted.get(row.machine))?.revokedAt === null ? "good" : "revoked"),
     seen: async () => undefined,
   });
 
@@ -757,9 +764,16 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
           // The row read for the token may be older than a removal that committed, and its hub.revoke, while this socket
           // was still being accepted (a Postgres read and write are separate connections): read the row again, now that the
           // socket is the hub's. A removal committing after this read revokes the hub's socket after this accept, closing it.
-          if (!(await dialer.good())) {
+          // A route that left this runner meanwhile (only a runner's listener reads one here) is a move, as the server's
+          // tick closes one: this socket alone closes with 1001 and its driver redials; the pairing is untouched.
+          const standing = await dialer.standing();
+          if (standing === "revoked") {
             hub.revoke(computer.id, dialer.gone);
             return log(`${event}_refused`, { [field]: computer.id, why: "removed while it attached" });
+          }
+          if (standing === "moved") {
+            ws.close(ATTACH_CLOSE.going, closeReason(dialer.moved));
+            return log(`${event}_refused`, { [field]: computer.id, why: "its route left this runner while it attached" });
           }
           await dialer.seen(said.value);
           // The note a refused or dropped route left (routed.route.refused) goes, now that the box is here; a route of the
