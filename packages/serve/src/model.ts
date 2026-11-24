@@ -203,7 +203,7 @@ export type ModelSource = { source: (typeof MODEL_SOURCES)[number]; route_prefix
  *  revision that names none runs on). */
 export function modelSource(env: NodeJS.ProcessEnv): ModelSource {
   const each = (name: (tier: Tier) => string | null) => Object.fromEntries(TIERS.map((tier) => [tier, name(tier)])) as Record<Tier, string | null>;
-  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `faux/${fauxModel(env, tier)}`) };
+  if (env[FAUX_ENV]) return { source: "faux", route_prefix: null, ...each((tier) => `${FAUX_PROVIDER}/${fauxModel(env, tier)}`) };
   if (env.AGENT_MODEL_BASE_URL) return { source: "gateway", route_prefix: MODEL_PROVIDER, ...each((tier) => (hostModel(env, tier) ? `${MODEL_PROVIDER}/${hostModel(env, tier)}` : null)) };
   if (signedIn(env) && !Object.values(PROVIDER_KEYS).flat().some((name) => env[name])) return { source: "chatgpt", route_prefix: null, ...each((tier) => hostModel(env, tier) ?? null) };
   return { source: "providers", route_prefix: null, ...each((tier) => hostModel(env, tier) ?? null) };
