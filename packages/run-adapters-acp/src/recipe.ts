@@ -138,7 +138,7 @@ export function announcesProblems(announces: unknown, permissionTie: unknown): s
     const said = typeof announces === "object" && announces !== null && !Array.isArray(announces) ? (announces as Record<string, unknown>) : undefined;
     const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
     const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
-    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path inside _meta or rawInput of the agent\'s tool_call (`_meta.goose.toolCall.toolName`), "server"?: one, "args"?: one }');
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path into the agent\'s tool_call (`_meta.goose.toolCall.toolName`) that does not start at its title, toolCallId, kind or status, "server"?: one, "args"?: one }');
   }
   if (permissionTie === "title" && announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   return problems;
