@@ -13,9 +13,12 @@
 
 export type Span = [start: number, end: number];
 
-/** The characters the shape scanners have visited in this process: the text each prefix search passes over, each run
- *  read, each guard read back. A test sets it to 0, redacts, and reads it: a scanner that read a run once per start
- *  inside it would count the square of the run's length. */
+/** The characters the redaction pipeline has visited in this process: the text each prefix search passes over, each
+ *  run read, each guard read back (the shape scanners); each form, hex, folded and plain needle's search, and the text
+ *  it passes over (find); each view built (its special characters found, its blanks, its decoders' reads, its non-ASCII
+ *  stretches squeezed, each cut its cover passes), lowered and flattened; the finds merged and the text cut; and
+ *  key-refusal.ts's reads of a text in pieces. A test sets it to 0, redacts, and reads it: a stage that read again from
+ *  the start at each find would count the text once per find. */
 export const scanned = { chars: 0 };
 
 // ---- Character classes, as the regexes they replace wrote them.
@@ -77,6 +80,13 @@ function seek(hay: string, prefix: string, from: number): number {
   const at = hay.indexOf(prefix, from);
   scanned.chars += (at < 0 ? hay.length : at + prefix.length) - from;
   return at < 0 ? Number.POSITIVE_INFINITY : at;
+}
+
+/** Where `needle` next stands in `hay` at or after `from`, or -1: a needle's search, counted as seek counts a prefix's. */
+function find(hay: string, needle: string, from: number): number {
+  const at = hay.indexOf(needle, from);
+  scanned.chars += Math.max(0, (at < 0 ? hay.length : at + needle.length) - from);
+  return at;
 }
 
 /** `text` with A-Z lowered and nothing else changed, so each offset is the same in both. */
@@ -426,7 +436,7 @@ export type Needles = {
 /** Adds each place `needle` stands in `hay` to `out`, overlapping places too. */
 function places(hay: string, needle: string, out: Span[]): void {
   if (!needle) return;
-  for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) out.push([at, at + needle.length]);
+  for (let at = find(hay, needle, 0); at >= 0; at = find(hay, needle, at + 1)) out.push([at, at + needle.length]);
 }
 
 const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 || code === 46;
@@ -435,6 +445,8 @@ const isSeparator = (code: number) => code === 45 || code === 95 || code === 58 
  *  two. Found in the text lowered with its separators gone, each character's offset in the text kept, and a place kept
  *  only where no two of its digits are more than one separator apart. */
 function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
+  // The text lowered, then read once for its separators.
+  scanned.chars += 2 * text.length;
   const lower = asciiLower(text);
   const at = new Int32Array(text.length);
   const parts: string[] = [];
@@ -454,7 +466,7 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
   for (let k = 1; k < count; k++) stretch[k] = at[k]! - at[k - 1]! > 2 ? k : stretch[k - 1]!;
   for (const needle of folds) {
     if (!needle) continue;
-    for (let i = flat.indexOf(needle); i >= 0; i = flat.indexOf(needle, i + 1)) {
+    for (let i = find(flat, needle, 0); i >= 0; i = find(flat, needle, i + 1)) {
       const last = i + needle.length - 1;
       if (stretch[last]! <= i) out.push([at[i]!, at[last]! + 1]);
     }
@@ -463,6 +475,8 @@ function foldSpans(text: string, folds: readonly string[], out: Span[]): void {
 
 /** `found` in order, each run of overlapping or touching spans as one. */
 export function merged(found: readonly (readonly [number, number])[]): Span[] {
+  // Each find read once: they come as one sorted run per form, hex, fold and shape, which the sort merges.
+  scanned.chars += found.length;
   const out: Span[] = [];
   for (const [start, end] of [...found].sort((a, b) => a[0] - b[0])) {
     const last = out.at(-1);
@@ -474,6 +488,7 @@ export function merged(found: readonly (readonly [number, number])[]): Span[] {
 
 /** `text` with each of `spans` (merged, in order) replaced by "[redacted]". */
 export function cutAt(text: string, spans: readonly Span[]): string {
+  scanned.chars += text.length;
   let out = "";
   let from = 0;
   for (const [start, end] of spans) {
@@ -511,13 +526,15 @@ const PERCENT: Decoder = {
   decode(text, at, unit) {
     let end = at;
     while (text[end] === "%" && HEX(text.charCodeAt(end + 1)) && HEX(text.charCodeAt(end + 2))) end += 3;
+    // Each byte read, and the three characters past the run that end it.
+    scanned.chars += end - at + 3;
     if (end === at) return -1;
     decoded(text, at, end, unit);
     return end;
   },
 };
 /** "+" as a space, as a form's encoding writes one. */
-const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
+const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
 /** What JSON's one-character escapes stand for. */
 const ESCAPED: Readonly<Record<string, string>> = {
   n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
@@ -526,7 +543,9 @@ const ESCAPED: Readonly<Record<string, string>> = {
  *  ESCAPED's keys, or "\u" and four hex digits (a UTF-16 unit), or else the character as it stands. */
 type Char = { char: string; end: number };
 function unescaped(text: string, at: number): Char | undefined {
+  // Counted as the most it reads, six characters ("\u" and four hex digits), whatever it reads.
   if (at >= text.length) return undefined;
+  scanned.chars += Math.min(6, text.length - at);
   if (text[at] !== "\\") return { char: text[at]!, end: at + 1 };
   const next = text[at + 1];
   if (next !== undefined && ESCAPED[next] !== undefined) return { char: ESCAPED[next]!, end: at + 2 };
@@ -610,8 +629,13 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (to <= from) return;
     out.push(text.slice(from, to));
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      // The cover's cursor only goes forward: each cut is passed once in the whole view.
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       for (let k = cut; k < cuts.length && cuts[k]![0] < to; k++) {
+        scanned.chars++;
         const start = Math.max(from, cuts[k]![0]);
         const end = Math.min(to, cuts[k]![1]);
         if (start < end) cover(length + start - from, length + end - from);
@@ -624,7 +648,10 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     if (!chars) return;
     out.push(chars);
     if (cuts) {
-      while (cut < cuts.length && cuts[cut]![1] <= from) cut++;
+      while (cut < cuts.length && cuts[cut]![1] <= from) {
+        cut++;
+        scanned.chars++;
+      }
       if (cut < cuts.length && cuts[cut]![0] <= from && to <= cuts[cut]![1]) cover(length, length + chars.length);
     }
     length += chars.length;
@@ -640,6 +667,8 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   };
   const flushGroup = () => {
     if (!group) return;
+    // The stretch squeezed twice: whole, and without its lead.
+    scanned.chars += 2 * group.chars.length;
     const made = squeeze(group.chars);
     const { lead } = group;
     const rest = lead ? squeeze(group.chars.slice(lead.char.length)) : "";
@@ -674,6 +703,8 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     special.lastIndex = at;
     const hit = special.exec(text);
     const stop = hit ? hit.index : text.length;
+    // The characters copied as they are, and the special one that stopped the search.
+    scanned.chars += (hit ? stop + 1 : stop) - at;
     if (stop > at) {
       flushGroup();
       flushHeld();
@@ -690,6 +721,7 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
       // character after it could compose onto.
       BLANKS.lastIndex = stop;
       BLANKS.test(text);
+      scanned.chars += BLANKS.lastIndex - stop;
       flushGroup();
       flushHeld();
       held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
@@ -715,6 +747,8 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
     for (let at = from; at < to; at += 3) unit(String.fromCharCode(Number.parseInt(text.slice(at + 1, at + 3), 16)), at, at + 3);
     return;
   }
+  // The run read three times: its hex parsed, decoded whole, and decoded one sequence at a time.
+  scanned.chars += 3 * (to - from);
   const bytes = Buffer.from(text.slice(from, to).replaceAll("%", ""), "hex");
   const whole = bytes.toString("utf8");
   const pieces: [string, number, number][] = [];
@@ -731,6 +765,7 @@ function decoded(text: string, from: number, to: number, unit: Sink): void {
 
 /** A view with its separators ("-", "_", ":", ".") gone, its covered stretches moved to match. */
 function flatOf(view: View): View {
+  scanned.chars += view.text.length + view.covered.length;
   const parts: string[] = [];
   const kept = new Int32Array(view.text.length + 1);
   let from = 0;
@@ -772,10 +807,10 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
   for (const needle of needles) {
     if (!needle) continue;
     if (!covered) {
-      if (view.includes(needle)) return true;
+      if (find(view, needle, 0) >= 0) return true;
       continue;
     }
-    for (let at = view.indexOf(needle); at >= 0; at = view.indexOf(needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
+    for (let at = find(view, needle, 0); at >= 0; at = find(view, needle, at + 1)) if (!inside(covered, at, at + needle.length)) return true;
   }
   return false;
 }
@@ -787,11 +822,14 @@ export function holds(text: string, needles: Needles, { fold = true, cuts }: { f
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
   for (const spec of VIEWS) {
+    // Whether a decoding view is read: its test reads the text to its first trigger at most.
+    if (spec.decoders.length) scanned.chars += text.length;
     if (!spec.when(text)) continue;
     const view = viewOf(text, spec, cuts);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (!needles.hexes.length && !folds.length) continue;
+    scanned.chars += view.text.length;
     const lower = { text: asciiLower(view.text), covered: view.covered };
     if (holdsIn(lower.text, covered, needles.hexes)) return true;
     if (!folds.length) continue;

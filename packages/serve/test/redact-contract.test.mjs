@@ -645,12 +645,13 @@ test("the work count reads each stage: a form's search, a view and its decoders,
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound before;
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: four views at most, each built in 9 reads (its special characters found, its blanks, its
-//   non-ASCII stretches squeezed twice, its cover) and the JSON view in 23 (two levels of escapes read per character
-//   decoded), then each searched for 7 plain needles, the hex and the fold, lowered and flattened (21 each): about 134;
-//   planCut runs two (the text with its cuts, then the cut text, at most 10/8 as long): about 302;
-// - so planCut is about 452; an answer adds its pieces' ends and joins (6), heldIn's check of what it returns (10/8 of a
-//   check: 168), of the pieces as they came (134), and its shape pass (64): about 824.
+// - one whole-text check: whether each of the three decoding views is read (3); four views at most, each built in 9
+//   reads (its special characters found, its blanks, its non-ASCII stretches squeezed twice, its cover) and the JSON
+//   view in 23 (two levels of escapes read per character decoded), then each searched for 7 plain needles, the hex and
+//   the fold, lowered and flattened (21 each): about 137; planCut runs two (the text with its cuts, then the cut text,
+//   at most 10/8 as long): about 308;
+// - so planCut is about 458; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8 of
+//   a check: 171), of the pieces as they came (137), and its shape pass (64): about 840.
 // 1024 is that, rounded up to a power of two. A stage that read again from the start at each find passes the text once
 // per find: a held value found every 9 characters is found 14,563 times in 128 KiB.
 const WORK = 1024;

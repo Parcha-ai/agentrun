@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import type { Span } from "./redact/match.js";
+import { scanned, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -216,6 +216,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
   if (from < text.length) {
     // Stopped inside a run runCut cut: the rest of it, to its next whitespace (at most a piece), goes to the pass too.
     const space = run ? text.slice(from, from + ANSWER_PIECE).search(/\s/) : 0;
+    scanned.chars += space < 0 ? Math.min(ANSWER_PIECE, text.length - from) : space + 1;
     const runTo = from + (space < 0 ? ANSWER_PIECE : space);
     const ahead = peek(text, from, hold);
     if (ahead === undefined) unread = true;
@@ -234,7 +235,10 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
     for (const [start, end] of read.cuts) cuts.push([raw.length + start, raw.length + end]);
     raw += read.text;
   });
-  return { out: out.join(""), seen: { raw, cuts, shapes: shapes.join(""), unread }, short: from < text.length && shown <= enough };
+  const [shows, cutShapes] = [out.join(""), shapes.join("")];
+  // Each of the three joins read once.
+  scanned.chars += raw.length + shows.length + cutShapes.length;
+  return { out: shows, seen: { raw, cuts, shapes: cutShapes, unread }, short: from < text.length && shown <= enough };
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
@@ -262,6 +266,8 @@ function peek(text: string, from: number, count: number): string | undefined {
       parts.push(text.slice(at, end));
       span += end - at;
     }
+    // Each character read, a percent-encoded run's twice more (its hex parsed, then decoded).
+    scanned.chars += text[at] === "%" && end > at + 1 ? 3 * (end - at) : end - at;
     if (span > ANSWER_PIECE) return undefined;
     at = end;
   }
@@ -277,6 +283,9 @@ function pieceEnd(text: string, from: number): number {
   if (to === text.length) return to;
   const head = text.slice(from, to);
   const space = head.search(/\s[^\s]*$/);
+  // The search for the piece's last whitespace reads each run of the piece twice at most (to the run's end, then back);
+  // the scheme's check after it, as much again.
+  scanned.chars += 4 * head.length;
   if (space <= 0) {
     const cut = runCut(text, from, to);
     return cut > from ? cut : runEnd(text, to);
@@ -293,6 +302,7 @@ function pieceEnd(text: string, from: number): number {
 /** The next whitespace in `text` at or after `at`, or its end. */
 function runEnd(text: string, at: number): number {
   const next = text.slice(at).search(/\s/);
+  scanned.chars += next < 0 ? text.length - at : next + 1;
   return next < 0 ? text.length : at + next;
 }
 
@@ -305,6 +315,8 @@ function runEnd(text: string, at: number): number {
  *  which is read once per URL, to the end of its run at most. */
 function runCut(text: string, from: number, to: number): number {
   const head = text.slice(from, to);
+  // The head read three times: back from its end for each quote, and for a JSON array's numbers twice.
+  scanned.chars += 3 * head.length;
   const urls = authorities(text, from, head);
   let url = urls.length - 1;
   for (let at = head.lastIndexOf('"'); at >= 0; at = at > 0 ? head.lastIndexOf('"', at - 1) : -1) {
@@ -327,6 +339,8 @@ function authorities(text: string, from: number, head: string): [number, number]
     stop.lastIndex = from + at + 3;
     const hit = stop.exec(text);
     const end = (hit?.index ?? text.length) - from;
+    // Its authority, from the "://" to the stop (the head's search for "://" counts with runCut's reads).
+    scanned.chars += end - at;
     if (hit?.[0] === "@") found.push([at, end]);
     if (end >= head.length) break;
     // Past an "@", on; past any other stop, from the character before it: a "/" may be the first of the next "://".
