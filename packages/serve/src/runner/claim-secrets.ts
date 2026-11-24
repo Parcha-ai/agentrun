@@ -159,8 +159,10 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
 /** The model keys the host's models of `tiers` need (model.ts modelKeys: each one's provider's, or the gateway's), read as
  *  claimSecrets reads a run's (the runner's environment first, then the key saved in Settings → Model keys), for a run's
  *  learned workflow nodes of those tiers (adapter-run-spec.ts learnedTierRoutes): claimSecrets opens only the run's own
- *  model's. For the tiers' routes alone, through withModelKeys (never enumerable), never onto a tool's environment. */
-export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[]): Promise<NodeJS.ProcessEnv> {
+ *  model's. For the tiers' routes alone, through withModelKeys (never enumerable), never onto a tool's environment.
+ *  `refs`: a model named for a tier in place of the host's (an agentic revision's modelTiers, for its subagent tiers:
+ *  run-child-host.ts heldFor), read on the runner alone; a run's process names none. */
+export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>> = {}): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
   // A run's own process holds no seal key: its runner reads them, the plan's reader with them (held.ts).
   const at = deps.sealKey ? undefined : held();
@@ -170,12 +172,12 @@ export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier
   }
   const working = await workingEnv(deps);
   const out: NodeJS.ProcessEnv = {};
-  for (const name of modelKeys(working, undefined, tiers)) if (working[name] !== undefined) out[name] = working[name];
+  for (const name of modelKeys(working, undefined, tiers, refs)) if (working[name] !== undefined) out[name] = working[name];
   // The ChatGPT sign-in, when a host model of those tiers is on the plan (claimSecrets gives it only to a run whose own
   // models reach it), as a symbol withModelKeys reads, never a key.
   const plan = await planReaderOf(deps.store, deps.sealKey);
   const probe = withPlan({ ...working }, plan);
-  return plan && tiers.some((tier) => onPlan(hostModel(probe, tier))) ? withPlan(out, plan) : out;
+  return plan && tiers.some((tier) => onPlan(refs[tier] ?? hostModel(probe, tier))) ? withPlan(out, plan) : out;
 }
 
 /** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */
@@ -210,7 +212,8 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
 }
 
 /** Every model key the server holds, for a model route with no revision to scope it by (an SDK run's compile turn): each
- *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. */
+ *  by its name from `deps.env` first, then the store's sealed value, as claimSecrets reads them. In a run's own process,
+ *  what its runner hands: its subagent tiers' models' keys alone (run-child-host.ts heldFor). */
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
   // A run's own process holds no seal key: what its runner hands a claim whose routes read them (held.ts savedModelKeys).
   const at = deps.sealKey ? undefined : held();

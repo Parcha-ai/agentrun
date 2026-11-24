@@ -650,8 +650,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // booking, adapters/pi.ts tiers). A tier with neither is the agent's own model, as a learned workflow's node of it runs
   // on the run's. A tier no route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
   // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
-  // its route reads every model key the server holds (savedModelKeys). Those reach the tier's proxy alone, as its
-  // credential, never the run's tools (toolEnv).
+  // its route reads the saved model keys (savedModelKeys: in a run's own process, its runner hands the keys of its tiers'
+  // models alone, run-child-host.ts heldFor). Those reach the tier's proxy alone, as its credential, never the run's tools
+  // (toolEnv).
   // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
   // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
   // requests as that route books them.
