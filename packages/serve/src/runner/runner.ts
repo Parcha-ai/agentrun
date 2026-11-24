@@ -476,6 +476,18 @@ export function startRunner(options: RunnerOptions): Runner {
     });
   };
 
+  /** When a claim answered now (a claim's, or a renew's, asked at `sentAt`) is lost unless renewed, on `clock`: its
+   *  lease less the stop margin. On a store whose lease clock is this process's own (Store.leaseClock: SQLite) that is
+   *  the claim's `until`, read on that clock now, less the margin: the store granted the lease from when the call held
+   *  the writer lock, so a call that waited in line for it (another write holding the lock, this runner's own calls
+   *  before it on a loaded disk) keeps what it was granted. Otherwise (Postgres: the database's clock) it is reckoned
+   *  from when the call was asked, which is never later than its lock. Either way it falls the margin before the
+   *  store's lease runs out, and another runner may claim the run. */
+  const deadlineOf = (claim: Claim, sentAt: number): number => {
+    const leaseNow = store.leaseClock?.();
+    return leaseNow === undefined ? sentAt + leaseMs - stopMarginMs : clock.now() + (claim.until - leaseNow) - stopMarginMs;
+  };
+
   const armDeadline = (held: Held, at: number) => {
     clock.clearTimeout(held.deadline);
     held.deadline = clock.setTimeout(() => loseClaim(held, "not-renewed"), Math.max(0, at - clock.now()));
@@ -527,7 +539,7 @@ export function startRunner(options: RunnerOptions): Runner {
         if (isFenced(result)) loseClaim(held, "fenced");
         else {
           held.claim = result as Claim;
-          armDeadline(held, sentAt + leaseMs - stopMarginMs);
+          armDeadline(held, deadlineOf(held.claim, sentAt));
         }
       });
     } catch (error) {
@@ -968,7 +980,7 @@ export function startRunner(options: RunnerOptions): Runner {
       clock.clearTimeout(held.deadline);
     };
     runs.set(claim.runId, held);
-    armDeadline(held, sentAt + leaseMs - stopMarginMs);
+    armDeadline(held, deadlineOf(claim, sentAt));
     emit({ type: "claimed", claim });
     void announceStart(claim);
     held.done = (async () => {
