@@ -104,41 +104,23 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
  *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
- *  address closedPort gave), else any. */
+ *  address freePort gave, fixtures/ports.mjs), else any. A port another listener holds rejects with its error
+ *  (EADDRINUSE), never an uncaught one. */
 export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
   const got = { tags: 0, show: [], chat: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
-  await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(asked, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
   return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
-}
-
-/** Where closedPort picks: below the kernel's ephemeral range (32768-60999 on Linux, 49152-65535 on macOS), which a
- *  listener on port 0 is handed a port from. */
-const CLOSED_LOW = 20_000;
-const CLOSED_SPAN = 32_768 - CLOSED_LOW;
-
-/** A loopback port nothing listens on: one a server held, then closed. It is never one a later listener on port 0 (a
- *  fakeOllama) can be handed: serve keeps a down address's empty listing for OLLAMA_TTL_MS, and a fake given that port
- *  would read it and never be asked. Tried from a random place in [20000, 32768), so test files running side by side
- *  seldom try the same one; one in use is passed over. */
-export async function closedPort() {
-  const start = Math.floor(Math.random() * CLOSED_SPAN);
-  for (let i = 0; i < CLOSED_SPAN; i += 1) {
-    const port = CLOSED_LOW + ((start + i) % CLOSED_SPAN);
-    const server = createServer();
-    const bound = await new Promise((resolve) => {
-      server.once("error", () => resolve(false));
-      server.listen(port, "127.0.0.1", () => resolve(true));
-    });
-    if (!bound) continue;
-    await new Promise((resolve) => server.close(resolve));
-    return port;
-  }
-  throw new Error(`no loopback port free in [${CLOSED_LOW}, ${CLOSED_LOW + CLOSED_SPAN})`);
 }

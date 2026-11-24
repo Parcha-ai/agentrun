@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { closedPort, fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama, SYNTH_MODELS } from "./fixtures/fake-ollama.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs";
 
@@ -51,17 +52,17 @@ test("providerModels lists exactly the chat models the Ollama here lists, from /
   assert.deepEqual([plain.cost, tools.cost], [{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }], "$0");
   assert.ok(await models.getAuth(plain), "keyless: it runs with no key");
 
-  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
   assert.deepEqual(down.getModels("ollama"), [], "nothing listening: no ollama models");
   assert.ok(down.getModels("openai").length > 0, "and every other provider as before");
 });
 
 // Serve keeps each address's listing for OLLAMA_TTL_MS, a down one's [] too (the test of an Ollama started after the server
-// below pins it). A down address a test lists is closedPort's, so a fake listening on port 0 later must never be handed
+// below pins it). A down address a test lists is freePort's (fixtures/ports.mjs), so a fake listening on port 0 later must never be handed
 // that port: it would read the kept [] and never be asked.
 const PORT_RANGE = "/proc/sys/net/ipv4/ip_local_port_range";
 
-test("closedPort's port is outside the kernel's ephemeral range, so no later port-0 listener (a fake Ollama) is handed a down address serve kept a listing for", async (t) => {
+test("freePort's port is outside the kernel's ephemeral range, so no later port-0 listener (a fake Ollama) is handed a down address serve kept a listing for", async (t) => {
   let range;
   try {
     range = (await readFile(PORT_RANGE, "utf8")).trim().split(/\s+/).map(Number);
@@ -72,13 +73,13 @@ test("closedPort's port is outside the kernel's ephemeral range, so no later por
   const [low, high] = range;
   assert.ok(Number.isInteger(low) && Number.isInteger(high) && low <= high, `${PORT_RANGE} reads ${JSON.stringify(range)}`);
   for (let i = 0; i < 20; i += 1) {
-    const port = await closedPort();
-    assert.ok(port < low || port > high, `closedPort gave ${port}, inside ${low}-${high}, the range a port-0 listener is handed a port from`);
+    const port = await freePort();
+    assert.ok(port < low || port > high, `freePort gave ${port}, inside ${low}-${high}, the range a port-0 listener is handed a port from`);
   }
 });
 
 test("a down address listed first leaves the next port-0 fake Ollama its own listing: the fake's models, asked of it", async (t) => {
-  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await closedPort()}` });
+  const down = await providerModels({ OLLAMA_HOST: `127.0.0.1:${await freePort()}` });
   assert.deepEqual(down.getModels("ollama"), [], "nothing listening: no ollama models");
   const ollama = await fakeOllama(t);
   const listed = (await providerModels({ OLLAMA_HOST: ollama.host })).getModels("ollama").map((model) => model.id);
@@ -395,7 +396,7 @@ test("an Ollama started after the server, with a model pulled, shows in capabili
   let clock = 1_000_000;
   ollamaClock(() => clock);
   t.after(() => ollamaClock());
-  const port = await closedPort();
+  const port = await freePort();
   const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
   withEnv(t, env);
   const { api } = await serve(t, { faux: undefined });

@@ -14,7 +14,8 @@ import { test } from "node:test";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import * as adapters from "../dist/adapters.js";
-import { closedPort, fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { freePort } from "./fixtures/ports.mjs";
 import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 import { messagesLaunches, messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, harnessData, runDir, scratch, serve, serverLog, withEnv } from "./support.mjs";
@@ -244,7 +245,7 @@ test("claude-agent on an Ollama model: its CLI's one model is the tag (no small,
 
 test("with no key and no Ollama, a harness on the wire says to start Ollama, as pi does", async (t) => {
   withEnv(t, {}, KEYS);
-  const env = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
+  const env = { OLLAMA_HOST: `127.0.0.1:${await freePort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
   const { why } = await modelOn(MESSAGES, env, undefined, "claude-agent");
   assert.match(why, /^No model yet for claude-agent: start Ollama and pull a model with tools, or add an OpenRouter or Anthropic key/, why);
   assert.doesNotMatch((await modelOn("openai-responses", env, undefined, "codex")).why, /Ollama/, "a harness on a wire the route does not translate onto is not told so");
