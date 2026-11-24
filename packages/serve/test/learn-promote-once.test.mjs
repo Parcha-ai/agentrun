@@ -335,7 +335,8 @@ test("(c) under the bar: held, the next run is asked one revision with the input
   assert.match(held.check.disagreements.find(({ run }) => run === "prior-2").escalated, /not sure of 42/, "the escalate's reason, as its learned_workflow result said it");
   const [ask] = w.asks.get("run-2");
   assert.ok(ask?.startsWith("One more turn: revise your learned workflow `answer`"), ask?.slice(0, 200));
-  assert.match(ask, /checked on 5 inputs of your last 5 completed runs, it answered 4 alone \(80\.0%, at least 70\.0% needed\); field by field: answer: 2 of 4 [^.]*\. It fell short on answer\./);
+  assert.match(ask, /checked on 5 inputs of your last 5 completed runs, it answered 4 alone \(80\.0%, at least 70\.0% needed\); field by field: answer: 2 of 4 said what the agent said \(50\.0%, the bar 80\.0%\)\. It fell short on answer\./);
+  assert.match(ask, /The fields it had wrong: answer/, "each disagreement names the field it had wrong");
   // The disagreements' fence alone (the ask's traces of the agent's last runs name other inputs too).
   const fence = /----- begin (\w+): the disagreements -----\n([\s\S]*?)\n----- end \1 -----/.exec(ask)?.[2] ?? "";
   assert.ok(fence, ask.slice(0, 2000));
