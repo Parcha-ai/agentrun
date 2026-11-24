@@ -5,7 +5,7 @@
 // Nothing here opens a credential or touches a store: listServer connects to a URL with the official SDK client, agrees a
 // protocol revision and lists every tool (all pages, under caps); the validation turns a request body into a URL, auth and
 // prices, or a 422; no redirect is followed, so a credential goes only where the owner sends it.
-import { COMPOSIO_ACCOUNT_ID, COMPOSIO_USER, COMPOSIO_USER_ID, COMPOSIO_USER_ID_WORDS } from "./composio-preset.js";
+import { COMPOSIO_ACCOUNT_ID, COMPOSIO_USER, COMPOSIO_USER_ID, COMPOSIO_USER_ID_WORDS, COMPOSIO_USER_WORDS } from "./composio-preset.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
 import type { ComposioBinding } from "./store/seal.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -273,7 +273,7 @@ function composioBindingOf(field: string, entry: Record<string, unknown>, issues
   const account = entry.connected_account_id;
   if (typeof user !== "string" || !COMPOSIO_USER_ID.test(user)) issues.push({ field: `${field}.composio_user_id`, reason: "invalid", message: `composio_user_id is the Composio user this run's calls run as: ${COMPOSIO_USER_ID_WORDS}.` });
   // The preset's default user is the one single-user preset servers call as: a run that forgot to name its own never lands there.
-  else if (user === COMPOSIO_USER) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: "That composio_user_id is the Composio preset's shared default user, the one single-user preset servers call as: bind the run to its own person's Composio user." });
+  else if (user === COMPOSIO_USER) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: `That composio_user_id is ${COMPOSIO_USER_WORDS}: bind the run to its own person's Composio user.` });
   if (account !== undefined && (typeof account !== "string" || !COMPOSIO_ACCOUNT_ID.test(account))) issues.push({ field: `${field}.connected_account_id`, reason: "invalid", message: "connected_account_id is a Composio connected account's id: ca_ and 5 to 64 letters, digits, _ or -." });
   if (issues.length > before) return undefined;
   return { user_id: user as string, ...(account !== undefined ? { connected_account_id: account as string } : {}) };
