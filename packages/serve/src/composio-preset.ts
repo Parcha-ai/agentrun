@@ -299,12 +299,14 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     // One made just now is no other's.
     if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
     // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
-    // Looked for before anything is made, so the caller's check of one found (accountOn) leaves nothing made.
+    // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It checks every ACTIVE
+    // one: Composio may serve any of them for this user and config.
     let active: Json | undefined;
     if (authConfig && !perRun) {
       const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
-      active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json | undefined;
-      if (active && accountOn) await accountOn(user, text(active.id));
+      const actives = (Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[];
+      if (accountOn) for (const one of actives) await accountOn(user, text(one.id));
+      active = actives[0];
     }
     const made = await ask("making the MCP server", "POST", "/api/v3.1/mcp/servers/custom", {
       name: `ar-${name.slice(0, 18)}-${randomBytes(3).toString("hex")}`, toolkits: [toolkit], ...(authConfig ? { auth_config_ids: [authConfig] } : {}), allowed_tools: tools, managed_auth_via_composio: true,
