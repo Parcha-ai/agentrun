@@ -382,7 +382,8 @@ test("an ask's requests go at most REQUESTS_AT_ONCE at a time, at most PASSAGES_
 });
 
 test("a request after the first that fails keeps the step from running, at what every request sent cost", async () => {
-  const passages = Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(995)}\n\n`);
+  // 50 passages of 6 paragraphs, about 16 KB of state each: 5 a request, so 10 requests, more than REQUESTS_AT_ONCE.
+  const passages = Array(300).fill(`${"汉".repeat(900)}\n\n`);
   for (const [failure, cost] of [
     [Object.assign(new Error("upstream 500"), { code: "provider_error" }), { usd: null, basis: "unknown" }],
     [Object.assign(new Error("no route"), { code: "connection" }), { usd: 0.0001, basis: "estimate" }],
@@ -393,7 +394,7 @@ test("a request after the first that fails keeps the step from running, at what 
     const { classifier } = await judgePart(priced(provider), PUBLIC, { ok: true, url: PUBLIC, text: passages.join("") }, { task: TASK });
     // The first REQUESTS_AT_ONCE go out together: request 1 answers, 2 to 4 fail, and no more are sent.
     assert.deepEqual([classifier.ran, classifier.requests, classifier.error.code, classifier.cost, classifier.questions_sha256], [false, REQUESTS_AT_ONCE, failure.code, cost, []]);
-    assert.match(classifier.error.message, /^request 2 of \d+: /);
+    assert.ok(Number(/^request 2 of (\d+): /.exec(classifier.error.message)?.[1]) > REQUESTS_AT_ONCE, classifier.error.message);
   }
 });
 
