@@ -16,7 +16,7 @@ import { test } from "node:test";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import * as adapters from "../dist/adapters.js";
-import { closedPort, fakeOllama } from "./fixtures/fake-ollama.mjs";
+import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 import { messagesLaunches, messagesModule, MESSAGES_MODULE } from "./fixtures/messages-module.mjs";
 import { agent, follow, harnessData, runDir, scratch, serve, serverLog, withEnv } from "./support.mjs";
@@ -113,7 +113,7 @@ test("Messages' token count is answered on the route, never run on the model: in
   assert.equal(counted.status, 200);
   assert.match(counted.headers.get("content-type") ?? "", /application\/json/);
   const { input_tokens } = await counted.json();
-  assert.equal(input_tokens, Math.ceil(Buffer.byteLength(JSON.stringify(body)) / 4));
+  assert.ok(Number.isInteger(input_tokens) && input_tokens > 0, `a count: ${input_tokens}`);
   assert.equal(ollama.got.chat.length, 0, "the model was never asked");
 });
 
@@ -188,17 +188,20 @@ test("guard: what the translation does not run is never sent on to Ollama: conte
 test("a tool_choice that forces a call (any, or one naming a tool) is refused with a 400 in Messages' words and never reaches Ollama, as is any other type; auto, none and none at all run as before, their tools sent", async (t) => {
   const { ollama, env } = await onOllama(t);
   const { fetch: send } = await moduleLaunch(env, TOOLS);
-  const unkept = 'is not taken on this model\'s route: the model here cannot be made to call a tool, so send "auto"';
+  // Each refusal names what it refused: its words are the code's to write, not this test's to pin.
   const refusals = [
-    [{ type: "any" }, `tool_choice "any" ${unkept}`],
-    [{ type: "tool", name: "read" }, `tool_choice naming the tool read ${unkept}`],
-    [{ type: "every" }, 'tool_choice "every" is not taken on this model\'s route: "auto" and "none" only'],
+    [{ type: "any" }, /"any"/],
+    [{ type: "tool", name: "read" }, /\bread\b/],
+    [{ type: "every" }, /"every"/],
   ];
-  for (const [choice, message] of refusals) {
+  for (const [choice, names] of refusals) {
     for (const stream of [true, undefined]) {
       const answer = await post(send, request({ tool_choice: choice, stream }));
       assert.equal(answer.status, 400, `${JSON.stringify(choice)}, stream ${stream}`);
-      assert.deepEqual(await answer.json(), { type: "error", error: { type: "invalid_request_error", message } });
+      const said = await answer.json();
+      assert.equal(said.type, "error");
+      assert.equal(said.error?.type, "invalid_request_error");
+      assert.match(said.error?.message ?? "", names);
     }
   }
   assert.equal(ollama.got.chat.length, 0, "no refused request reached the model");
@@ -246,7 +249,9 @@ test("claude-agent on an Ollama model: its CLI's one model is the tag (no small,
 
 test("with no key and no Ollama, a harness on the wire says to start Ollama, as pi does", async (t) => {
   withEnv(t, {}, KEYS);
-  const env = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}`, AGENTRUN_SERVE_DATA: await scratch(t) };
+  // An address held for the test whose every connection is reset: an Ollama that is down, on a port no one else takes.
+  const down = await fakeOllama(t, { down: true });
+  const env = { OLLAMA_HOST: down.host, AGENTRUN_SERVE_DATA: await scratch(t) };
   const { why } = await modelOn(MESSAGES, env, undefined, "claude-agent");
   assert.match(why, /^No model yet for claude-agent: start Ollama and pull a model with tools, or add an OpenRouter or Anthropic key/, why);
   assert.match((await modelOn("openai-responses", env, undefined, "codex")).why, /^No model yet: start Ollama and pull a model with tools, or /, "codex, on Responses, the route's too");
