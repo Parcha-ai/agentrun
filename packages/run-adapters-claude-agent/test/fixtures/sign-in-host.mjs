@@ -4,5 +4,5 @@
 import { startClaudeLogin } from '@parcha/agentrun-harness-claude';
 
 const [cli, dir, home, watch] = process.argv.slice(2);
-startClaudeLogin(cli, { dir, profiles: `${dir}/anthropic` }, { home, display: {}, watch });
+startClaudeLogin(cli, { dir, profiles: `${dir}/anthropic`, userHome: home }, { display: {}, watch });
 setInterval(() => {}, 1000);
