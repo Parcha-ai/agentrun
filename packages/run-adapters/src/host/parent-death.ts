@@ -56,8 +56,19 @@ export interface ParentWatchOptions {
   termGraceMs?: number;
 }
 
-/** `child`, started so that it dies with this process (`how`, default what this machine supports). */
+/** The longest grace the shim takes: a timer fires at once past it. */
+export const MAX_TERM_GRACE_MS = 2_147_483_647;
+
+/** `arg` (`--term-grace`'s value) as the shim reads it: a positive whole number of milliseconds a timer can wait, in
+ *  digits; undefined for anything else. parentWatched reads a caller's grace by the same rule. */
+export function termGraceOf(arg: string): number | undefined {
+  return /^[1-9]\d*$/.test(arg) && Number(arg) <= MAX_TERM_GRACE_MS ? Number(arg) : undefined;
+}
+
+/** `child`, started so that it dies with this process (`how`, default what this machine supports). A `termGraceMs` the
+ *  shim would refuse (termGraceOf) throws a RangeError here, whichever watch `how` is. */
 export function parentWatched(child: Readonly<LaunchCommand>, how: ParentWatch = parentWatchHere(), options: Readonly<ParentWatchOptions> = {}): LaunchCommand {
+  if (options.termGraceMs !== undefined && termGraceOf(String(options.termGraceMs)) === undefined) throw new RangeError(`termGraceMs must be a whole number of ms from 1 to ${MAX_TERM_GRACE_MS}, not ${options.termGraceMs}`);
   if (how === "pdeathsig") return { command: SETPRIV, args: ["--pdeathsig", "KILL", "--", child.command, ...child.args] };
   const grace = options.termGraceMs === undefined ? [] : ["--term-grace", String(options.termGraceMs)];
   return { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), ...grace, "--", child.command, ...child.args] };

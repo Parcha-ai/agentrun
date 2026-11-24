@@ -152,7 +152,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, homeOf, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -1631,23 +1631,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
-  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
-  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
-  // when they are made from them, and a change with any other inputs probes again.
+  // What the latest probe is made from, once it has read it, until it lands or fails: none while no probe is out. A
+  // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
-  const probe = async (why: string) => {
+  // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
+  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // probe holds no one up and its failure is no one else's.
+  let turn: Promise<void> = Promise.resolve();
+  let endTurn: () => void = () => {};
+  const probe = (why: string): Promise<void> => {
+    endTurn();
+    turn = new Promise<void>((resolve) => (endTurn = resolve));
+    const probed = probeOffers(why);
+    probed.then(endTurn, endTurn);
+    return probed;
+  };
+  const probeOffers = async (why: string) => {
     const mine = ++probes;
     probing = undefined;
-    // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
-    if (asksOllama(env)) await ollamaModels(env);
-    const from = offersInputs(env);
-    if (mine === probes) probing = from;
-    const started = performance.now();
-    const next = await harnessOffers(offersEnvOf(env));
-    log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
-    if (mine !== probes) return;
-    [offers, offersFrom, probing] = [next, from, undefined];
-    recompose();
+    try {
+      // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
+      if (asksOllama(env)) await ollamaModels(env);
+      const from = offersInputs(env);
+      if (mine === probes) probing = from;
+      const started = performance.now();
+      const next = await harnessOffers(offersEnvOf(env));
+      log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
+      if (mine !== probes) return;
+      [offers, offersFrom] = [next, from];
+      recompose();
+    } finally {
+      if (mine === probes) probing = undefined;
+    }
   };
   /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
   const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
@@ -1674,13 +1689,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    const inputs = offersInputs(env);
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
-    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
-    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
-    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
-    if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
-    else await probe("key");
+    // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
+    // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
+    // once; with them behind (a tool key saved while a turn-on's probe is out) it waits for that probe's turn, then
+    // decides again from the inputs read then (a later change's, if one landed meanwhile): the probe landed, and it
+    // recomposes; it failed, and the change probes for itself; a later probe overtook it, and the change goes by that
+    // one. So it never answers another request's failure, and never waits on a dropped probe. With no probe out that has
+    // read its inputs (none out, or the latest still reading the Ollama listing), it recomposes when the offers held are
+    // made from these inputs and probes when not; a probe it starts itself fails it if it fails.
+    for (;;) {
+      const inputs = offersInputs(env);
+      const out = probing !== undefined && sameInputs(probing, inputs);
+      if (out && !offersMadeFrom(inputs)) {
+        log?.(logLine("harness_offers_wait", { why: "key" }));
+        await turn;
+        continue;
+      }
+      if (offersMadeFrom(inputs) && (probing === undefined || out)) recompose();
+      else await probe("key");
+      return;
+    }
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
    *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
@@ -3302,7 +3331,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
     const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
-    const message = blockers.map((b) => b.message).join(" ");
+    // Refused for its model in a box while its harness runs on the login at the runner, on a model the login runs: the
+    // words say so, and how to run it there (details.login_on_runner, the console's offer to move it).
+    const runnerOnly = blockers.some((b) => b.field === "definition.model" && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.kind === "agentic" ? shape.model : undefined, shape.place) : undefined;
+    const message = [...blockers.map((b) => b.message), ...(runnerOnly ? [runnerOnly] : [])].join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
     const fields = blockers.map(issueOf);
     const unbound = blockers.flatMap((b) => (b.tool ? [b.tool] : []));
@@ -3313,7 +3345,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
     if (revision.kind === "agentic") {
-      const details = { unbound, missing, ...named };
+      const details = { unbound, missing, ...named, ...(runnerOnly ? { login_on_runner: true } : {}) };
       // A held run kept from running by its model alone opens (runnable.ts Blocker.model: a CLI harness that lacks only a
       // model key here among them): its computer is its owner's to call, and these words are its start's refusal
       // (computer-held.ts). Any other blocker refuses it here, as any run.
