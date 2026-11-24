@@ -300,11 +300,18 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
     // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
     // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It checks every ACTIVE
-    // one: Composio may serve any of them for this user and config.
+    // one, on every page (at most MAX_PAGES; a longer list is refused): Composio may serve any of them for this user and config.
     let active: Json | undefined;
     if (authConfig && !perRun) {
-      const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
-      const actives = (Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[];
+      const actives: Json[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; ; page++) {
+        if (page === MAX_PAGES) throw new ApiError("upstream_failed", `Composio listed more than ${MAX_PAGES} pages of connected accounts for this user under the auth config ${authConfig}: nothing was saved.`);
+        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
+        cursor = text(listed.next_cursor) || undefined;
+        if (!cursor) break;
+      }
       if (accountOn) for (const one of actives) await accountOn(user, text(one.id));
       active = actives[0];
     }
