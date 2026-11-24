@@ -844,6 +844,20 @@ test("the conformance module keeps a COMPUTER_E2B_MAX_LIFETIME_MS under 30 minut
 	}
 });
 
+test("the conformance module refuses COMPUTER_E2B_MAX_LIFETIME_MS=0 in words, on the run's provider and its drifted twin, before any E2B call", async () => {
+	const conformance = await e2b.conformance();
+	for (const make of [conformance.createProvider, conformance.createDriftedProvider]) {
+		const rec = recorder();
+		const env = { [ENV.key]: KEY, [ENV.live]: "1", [ENV.maxLifetimeMs]: "0" };
+		await assert.rejects(
+			make({ Sandbox: rec.Sandbox, daemonPath: DAEMON_PATH, buildDaemon: async () => DAEMON_PATH, env }),
+			/maxLifetimeMs must be a whole number of ms above 0 and at most \d+ ms, the longest E2B keeps a computer/,
+			`${make.name}: 0 is refused, never taken as 30 minutes`,
+		);
+		assert.deepEqual(rec.calls, [], `${make.name}: no E2B call`);
+	}
+});
+
 test("the conformance module's daemon: an option's path over COMPUTER_E2B_DAEMON, and the drifted twin uploads the one it built", async () => {
 	const conformance = await e2b.conformance();
 	const empty = () => {
