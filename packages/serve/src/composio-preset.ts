@@ -246,9 +246,10 @@ const labelOf = (account: Json): string | undefined =>
 /** The account of a saved Composio server's user for its toolkit, under its auth config (the one its MCP server serves),
  *  as Composio lists it now: never one it answers as another user's (an account with no user_id, which Composio's docs
  *  say it will stop answering, is taken as the user asked for). `unknown`, unasked, for a user that is no one
- *  Composio user (empty, which Composio reads as every user, or the per-run sentinel). */
+ *  Composio user (empty, which Composio reads as every user). A per-run server is never asked (checkAccount, made.per_run);
+ *  one saved before that mode for a user literally named "per_run" is that user's. */
 export async function composioAccount(ask: Ask, of: { user: string; toolkit: string; auth_config: string }): Promise<ComposioAccount> {
-  if (!COMPOSIO_USER_ID.test(of.user) || of.user === COMPOSIO_PER_RUN) return { state: "unknown" };
+  if (!COMPOSIO_USER_ID.test(of.user)) return { state: "unknown" };
   const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(of.user)}&toolkit_slugs=${encodeURIComponent(of.toolkit)}&auth_config_ids=${encodeURIComponent(of.auth_config)}`);
   const mine = (Array.isArray(listed.items) ? listed.items : []).filter((a): a is Json => isObject(a) && (!a.user_id || a.user_id === of.user) && isObject(a.auth_config) && a.auth_config.id === of.auth_config);
   const active = mine.filter((a) => a.status === "ACTIVE");
