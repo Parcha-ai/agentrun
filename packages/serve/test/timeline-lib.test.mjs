@@ -163,6 +163,29 @@ test("a round of different tools has a header and one line per call", () => {
   assert.match(out[2], /^ {12}Took a screenshot +ok$/);
 });
 
+// A browser that takes only actions (a local Chrome over CDP) refuses code before it runs, as pi-browser's typed
+// failure `code: "refused"`. Its row says what the browser refused, never that the page in the code failed to open; any
+// other failure of the same call still reads as the call's own label, failed.
+test("a run the browser refused before it ran says the browser refused it, not that its page failed to open; another failure reads as before", () => {
+  const refusal = (message) => JSON.stringify({ ok: false, code: "refused", retryable: false, effect: "none", message });
+  const CODE = "run code is not available on this browser (the agent's browser computer): send actions instead.";
+  const rows = timelineOf([
+    assistant([call("a", "run", { code: "await page.goto('https://iana.org/help/example-domains')" })], 0),
+    result("a", "run", refusal(CODE), 1, { isError: true }),
+    assistant([call("b", "run", { code: "await page.click('#go')" })], 2),
+    result("b", "run", refusal(CODE), 3, { isError: true }),
+    assistant([call("c", "run", { actions: [{ op: "scroll" }] })], 4),
+    result("c", "run", refusal("run takes the ops goto, click, hover, fill, type, press and select, not \"scroll\""), 5, { isError: true }),
+    assistant([call("d", "run", { code: "await page.goto('https://iana.org/help/example-domains')" })], 6),
+    result("d", "run", JSON.stringify({ ok: false, code: "navigation_failed", retryable: true, effect: "none", message: "net::ERR_NAME_NOT_RESOLVED" }), 7, { isError: true }),
+  ]);
+  const done = (id) => rows.find((row) => row.kind === "tool_result" && row.tool_use_id === id);
+  assert.deepEqual([done("a").summary, done("a").tool_status], [`The browser refused the code to open iana.org/help/example-domains: ${CODE}`, "failed"]);
+  assert.equal(done("b").summary, `The browser refused the agent's code: ${CODE}`);
+  assert.equal(done("c").summary, 'The browser refused the action: run takes the ops goto, click, hover, fill, type, press and select, not "scroll"');
+  assert.equal(done("d").summary, "Opened iana.org/help/example-domains failed: net::ERR_NAME_NOT_RESOLVED", "a page that failed to open still says so");
+});
+
 test("rounds of one call of one tool fold across rounds; thinking, a row or a failure ends the fold", () => {
   const bash = (id, t) => [assistant([call(id, "bash", { command: `ls ${id}` })], t), result(id, "bash", "ok", t)];
   const folded = timelineOf([...bash("a", 0), ...bash("b", 1), ...bash("c", 2)]);
