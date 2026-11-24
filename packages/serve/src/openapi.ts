@@ -8,7 +8,7 @@ import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
 // not serve at all (NOT_SERVED) is left out of the document, and this server's own routes are added as operations marked
 // `x-agentrun-serve` (true, or the addition that made it, as `stats/1`), listed in `info.x-agentrun-serve`.
 import { readFileSync } from "node:fs";
-import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
+import { CALL_RESULT_CHARS, CALLS_PAGE_ROWS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
 import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
@@ -4013,7 +4013,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CAPS.text} characters. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CALL_RESULT_CHARS} characters, as \`tool_result_text\` is. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {

@@ -79,7 +79,8 @@ export type TimelineEvent = {
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
   /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
-   *  makes it where the call is first seen, cut at CAPS.text. */
+   *  makes it where the call is first seen, cut at `calls.result` characters, the bound its output has (a grader reads
+   *  a long write whole: an issue body, a note, a posted digest). */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
    *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
@@ -817,9 +818,10 @@ function createProjector(options: TimelineOptions) {
   /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
   const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
     make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
-  /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld. */
+  /** A `calls` read's `tool_input` (inputShown), each string cut at `calls.result`; none when the arguments themselves
+   *  are withheld. */
   const inputOf = (args: Obj): { tool_input?: Obj } => {
-    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
+    const shown = options.calls ? obj(inputShown(args, options.calls.result, options.redact, options.calls.held)) : undefined;
     return shown ? { tool_input: shown } : {};
   };
   /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its
