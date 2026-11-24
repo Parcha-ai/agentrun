@@ -55,7 +55,7 @@ test("a held value the agent hands a fake MCP tool reaches neither the grader's 
   assert.equal(updated.pass, true, JSON.stringify(updated));
 });
 
-test("mcpCallsOf shows a faked server's calls from the timeline, less any the run refused; callsOf keeps a refused row's mark", async () => {
+test("mcpCallsOf shows a faked server's calls from the timeline, less any the run refused (the one that ran shows, not its refused twin); callsOf keeps a refused row's mark", async () => {
   const rows = [
     { kind: "tool_use", tool_name: "bash", tool_use_id: "a", tool_input: { command: "ls" } },
     { kind: "tool_result", tool_use_id: "a", tool_status: "failed", refused: true, tool_result_text: "Refused: denied" },
@@ -68,9 +68,30 @@ test("mcpCallsOf shows a faked server's calls from the timeline, less any the ru
   const calls = [
     { tool: "mcp:crm/get_contact", arguments: { id: "7" }, status: "success" },
     { tool: "mcp:crm/update_contact", arguments: { id: "7" }, status: "failed", refused: true },
+    { tool: "mcp:crm/update_contact", arguments: { id: "7" }, status: "success" },
     { tool: "mcp:mail/send", arguments: {}, status: "success" },
     { tool: "bash", arguments: { command: "ls" }, status: "success" },
   ];
-  assert.deepEqual(mcpCallsOf(calls, ["crm"]).map((call) => call.tool), ["mcp:crm/get_contact"], "a refused call never reached the fake; another server's and a built-in's are not a fake's");
-  assert.deepEqual(mcpCallsOf(calls, []), []);
+  const received = [{ tool: "mcp:crm/get_contact", arguments: { id: "7" } }, { tool: "mcp:crm/update_contact", arguments: { id: "7" } }, { tool: "mcp:mail/send", arguments: {} }];
+  assert.deepEqual(mcpCallsOf(calls, ["crm"], received).map((call) => `${call.tool} ${call.status}`), ["mcp:crm/get_contact success", "mcp:crm/update_contact success"], "a refused call never reached the fake; another server's and a built-in's are not a fake's");
+  assert.deepEqual(mcpCallsOf(calls, [], received), []);
+});
+
+test("mcpCallsOf leaves out a call that never reached the fake: a shown call pairs with one in the fake's log whose arguments its cut copy fits, then any left pair in order", () => {
+  const calls = [
+    // Never reached the fake (it couldn't be reached): the timeline has it, the fake's log doesn't.
+    { tool: "mcp:crm/update_contact", arguments: { note: "[redacted]", id: "2" }, status: "failed" },
+    { tool: "mcp:crm/update_contact", arguments: { note: "[redacted]", id: "23" }, status: "success" },
+    // Logged by the fake as it came, not as the timeline shows it: paired in order all the same.
+    { tool: "mcp:crm/get_contact", arguments: { id: 9 }, status: "success" },
+  ];
+  const received = [
+    { tool: "mcp:crm/update_contact", arguments: { note: "a value the run held", id: "23" } },
+    { tool: "mcp:crm/get_contact", arguments: { id: "9" } },
+  ];
+  assert.deepEqual(mcpCallsOf(calls, ["crm"], received).map((call) => `${call.tool} ${JSON.stringify(call.arguments)}`), ['mcp:crm/update_contact {"note":"[redacted]","id":"23"}', 'mcp:crm/get_contact {"id":9}']);
+  assert.deepEqual(mcpCallsOf(calls, ["crm"], []), [], "nothing reached the fakes");
+  // As many shown as reached each tool: two alike, one logged.
+  const twice = [{ tool: "mcp:crm/get_contact", arguments: { id: "9" }, status: "failed" }, { tool: "mcp:crm/get_contact", arguments: { id: "9" }, status: "success" }];
+  assert.equal(mcpCallsOf(twice, ["crm"], [{ tool: "mcp:crm/get_contact", arguments: { id: "9" } }]).length, 1);
 });

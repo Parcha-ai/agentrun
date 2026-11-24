@@ -552,11 +552,11 @@ export type RunRecord = {
   answer: string;
   /** Its tool calls as its timeline shows them, in order. */
   calls: ToolCall[];
-  /** The calls each fake MCP server received, as its timeline shows them (the faked servers' calls of `calls` that ran,
-   *  each argument through the run's redaction), in order: what an llm grader and the report are shown. */
+  /** The calls each fake MCP server received, as its timeline shows them (the faked servers' calls of `calls` that reached
+   *  a fake, paired with its log by mcpCallsOf, each argument through the run's redaction), in order: what an llm grader and the report are shown. */
   mcpCalls: ToolCall[];
   /** Each fake MCP server's own log of the calls that reached it, their arguments whole: read only to match a tool_used
-   *  grader's `args` on a faked tool, never shown to a grader nor put in the report (a value the run's cut holds, handed
+   *  grader's `args` on a faked tool and to pair `mcpCalls` with what reached a fake, never shown to a grader nor put in the report (a value the run's cut holds, handed
    *  to a fake tool, is whole here). */
   fakeLog: ToolCall[];
   /** The paths of its files, from its work folder. */
@@ -1039,11 +1039,44 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
   }
 }
 
+/** Whether `shown`, a call's arguments through the run's redaction, can be `whole` with each "[redacted]" in it standing for
+ *  what the redaction cut: the text around each cut is `whole`'s, in order, end to end. Arguments the timeline doesn't
+ *  show fit any. */
+function cutOf(shown: Json | undefined, whole: Json | undefined): boolean {
+  if (shown === undefined) return true;
+  const pieces = JSON.stringify(shown).split("[redacted]");
+  const text = JSON.stringify(whole ?? null);
+  if (pieces.length === 1) return text === pieces[0];
+  const last = pieces[pieces.length - 1];
+  if (!text.startsWith(pieces[0]) || !text.endsWith(last)) return false;
+  let at = pieces[0].length;
+  for (const piece of pieces.slice(1, -1)) {
+    const found = text.indexOf(piece, at);
+    if (found < 0) return false;
+    at = found + piece.length;
+  }
+  return at <= text.length - last.length;
+}
+
 /** The calls the faked MCP servers `faked` received, as the run's timeline shows them (`calls`, from callsOf: each argument
- *  through the run's redaction): each call on a faked server's tool, less any the run refused before it ran (it never
- *  reached the fake). What an llm grader's <mcp-calls> and the report's `mcp_calls` show, never the fake's own log. */
-export function mcpCallsOf(calls: readonly ToolCall[], faked: readonly string[]): ToolCall[] {
-  return calls.filter((call) => !call.refused && faked.includes(mcpNameOf(call.tool)?.server ?? ""));
+ *  through the run's redaction): each call on a faked server's tool that pairs with one in the fakes' own log
+ *  (`received`), so a call the run refused before it ran, or one that never reached the fake (it couldn't be reached, a
+ *  cap refused it), is left out. A call pairs with a logged one of its tool whose arguments its cut copy fits (cutOf),
+ *  then any left pair with the logged ones left, in order: as many shown as reached each tool. What an llm grader's
+ *  <mcp-calls> and the report's `mcp_calls` show, never the fake's own log. */
+export function mcpCallsOf(calls: readonly ToolCall[], faked: readonly string[], received: readonly ToolCall[]): ToolCall[] {
+  const shown = calls.filter((call) => !call.refused && faked.includes(mcpNameOf(call.tool)?.server ?? ""));
+  const left: (ToolCall | undefined)[] = [...received];
+  const paired = new Set<ToolCall>();
+  const pair = (call: ToolCall, fits: (got: ToolCall) => boolean) => {
+    const at = left.findIndex((got) => got !== undefined && got.tool === call.tool && fits(got));
+    if (at < 0) return;
+    left[at] = undefined;
+    paired.add(call);
+  };
+  for (const call of shown) pair(call, (got) => cutOf(call.arguments, got.arguments));
+  for (const call of shown) if (!paired.has(call)) pair(call, () => true);
+  return shown.filter((call) => paired.has(call));
 }
 
 /** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
@@ -1700,11 +1733,12 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const listed = await filesOf(api, runId);
   const calls = callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit])));
+  const fakeLog = fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call })));
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
     calls,
-    mcpCalls: mcpCallsOf(calls, Object.keys(one.mcp)),
-    fakeLog: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
+    mcpCalls: mcpCallsOf(calls, Object.keys(one.mcp), fakeLog),
+    fakeLog,
     files: await (async () => {
       const paths = listed.map((file) => file.path);
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
