@@ -6,7 +6,7 @@ import type { Stats } from "node:fs";
 import { stat } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import { relative, sep } from "node:path";
-import { type CalculateCost, type Catalog, builtinCatalog, priceRequests } from "./price.js";
+import { type CalculateCost, type Catalog, builtinCatalog, loadCalculateCost, priceRequest, priceRequests, roundUsd } from "./price.js";
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
@@ -121,8 +121,9 @@ const keyOf = (home: string, { file, id }: Locator): { key: string; file: string
 /** What a total takes of one session a read found, and no more: its session's counts and ids, and each request's model
  *  and tokens, packed. A whole SessionRead holds every request as objects (its calls, uuids, key, effort); a source of
  *  millions of requests held so until its totals are taken outgrows the heap. */
-type Compact = {
-  session: Pick<SessionRead["session"], "id" | "child" | "parent" | "users" | "copies" | "costUsd" | "model">;
+type Meta = Pick<SessionRead["session"], "id" | "child" | "parent" | "users" | "copies" | "costUsd" | "model">;
+type Unpriced = {
+  session: Meta;
   /** Each request's model (its own, else the session's), as its index in the pass's Models; -1 for none. */
   models: Int32Array;
   /** Each request's tokens, USAGE_FIELDS numbers a request, in order; HAS_* says which it has. */
@@ -133,6 +134,32 @@ type Compact = {
   at: Float64Array;
 };
 
+/** A part once its requests are priced, as they are read when the prices are in hand: their tokens summed (exact: whole
+ *  counts, the source's sums at most 2^53 - 1), and each request's cost, unrounded, to be summed in the totals' order.
+ *  Without a requests sink a part is kept so: 8 bytes a request, not the request's model, tokens and time. */
+type Counted = {
+  session: Meta;
+  /** Its requests. */
+  n: number;
+  /** input, output, cacheRead, cacheWrite, cacheWrite1h, reasoning: its requests' sums. */
+  tokens: Float64Array;
+  /** Each request's cost (0 for one of no tokens); undefined when there are no prices (no catalog, or no pi-ai). */
+  costs: Float64Array | undefined;
+  /** Whether a request could not be priced: its tokens unknown, or its model listed nowhere. */
+  unpriceable: boolean;
+};
+
+type Compact = Unpriced | Counted;
+const requestsOf = (read: Compact): number => ("n" in read ? read.n : read.models.length);
+
+/** The prices requests are taken at, loaded once one is needed, as the totals would: the catalog, and pi-ai's
+ *  calculateCost when the catalog is there. `ready` once both are as they will be. */
+type Pricer = { ready: boolean; catalog?: Catalog | undefined; calculate?: CalculateCost | undefined; load: () => Promise<void> };
+
+/** Tokens summed as reads come cannot round: thrown when a count is not a whole number of at most 2^53 - 1 or a source's
+ *  sum would pass it, and the source is read again with each request's tokens kept. */
+class Inexact extends Error {}
+
 /** The default threads' ceiling (ParseOptions.threads). */
 const MAX_THREADS = 8;
 
@@ -140,7 +167,7 @@ const MAX_THREADS = 8;
 type Models = { names: string[]; index: Map<string, number> };
 
 /** `read` as a total takes it (Compact), each request's model the one totalsOf prices it at. */
-function compact(read: SessionRead, models: Models): Compact {
+function compact(read: SessionRead, models: Models): Unpriced {
   const { id, child, parent, users, copies, costUsd, model } = read.session;
   const { counts } = read;
   if (counts) {
@@ -169,7 +196,7 @@ function compact(read: SessionRead, models: Models): Compact {
     };
   }
   const n = read.requests.length;
-  const out: Compact = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
+  const out: Unpriced = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
   for (let i = 0; i < n; i += 1) {
     const request = read.requests[i]!;
     out.at[i] = request.at;
@@ -202,7 +229,7 @@ function compact(read: SessionRead, models: Models): Compact {
 }
 
 /** The i-th request of `read` as priceRequests and the requests sink take it. */
-function requestAt(read: Compact, i: number, models: Models): SessionRequest {
+function requestAt(read: Unpriced, i: number, models: Models): SessionRequest {
   const index = read.models[i]!;
   const model = index === -1 ? undefined : models.names[index];
   const request: SessionRequest = { at: read.at[i]!, ...(model !== undefined ? { model } : {}) };
@@ -213,6 +240,36 @@ function requestAt(read: Compact, i: number, models: Models): SessionRequest {
   if (has & HAS_LONG) usage.cacheWrite1h = read.usage[o + 4]!;
   if (has & HAS_REASONING) usage.reasoning = read.usage[o + 5]!;
   return { ...request, usage };
+}
+
+const TOKEN_FIELDS = 6;
+
+/** `read` priced (Counted), its tokens added to `sums` (the source's so far). */
+function counted(read: Unpriced, models: Models, pricer: Pricer, sums: Float64Array): Counted {
+  const n = read.models.length;
+  const tokens = new Float64Array(TOKEN_FIELDS);
+  const { catalog, calculate } = pricer;
+  const costs = catalog && calculate ? new Float64Array(n) : undefined;
+  let unpriceable = false;
+  for (let i = 0; i < n; i += 1) {
+    const request = requestAt(read, i, models);
+    const { usage } = request;
+    if (usage) {
+      const counts = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.cacheWrite1h ?? 0, usage.reasoning ?? 0];
+      for (let k = 0; k < TOKEN_FIELDS; k += 1) {
+        const count = counts[k]!;
+        if (!Number.isSafeInteger(count) || count < 0) throw new Inexact();
+        tokens[k]! += count;
+      }
+    }
+    if (costs && !unpriceable) {
+      const usd = priceRequest(request, catalog!, calculate!);
+      if (usd === undefined) unpriceable = true;
+      else costs[i] = usd;
+    }
+  }
+  for (let k = 0; k < TOKEN_FIELDS; k += 1) if ((sums[k]! += tokens[k]!) > Number.MAX_SAFE_INTEGER) throw new Inexact();
+  return { session: read.session, n, tokens, costs, unpriceable };
 }
 
 type Part = { locator: Locator; read: Compact };
@@ -232,6 +289,21 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
     }
     state.read = 0;
   }
+  // Requests are priced as they are read once the prices are in hand: at once when the caller handed them in (or none),
+  // else loaded when a session is read that the totals will price, as they would load them. A requests sink takes each
+  // request with its time, so with one every part keeps its requests (Unpriced) to the totals.
+  const pricer: Pricer = {
+    ready: catalog === false || (catalog !== undefined && calculateCost !== undefined),
+    ...(catalog ? { catalog } : {}),
+    ...(catalog && calculateCost ? { calculate: calculateCost } : {}),
+    async load() {
+      if (this.ready) return;
+      this.catalog = await priceWith();
+      this.calculate = this.catalog ? (calculateCost ?? (await loadCalculateCost())) : undefined;
+      this.ready = true;
+    },
+  };
+  const whole = requests !== undefined;
   // With a pool, every source is listed first and all their files queued at once, in the import's order: a source's last
   // files then share the threads with the next source's, and the largest files of every source are read first (pool.ts).
   const ahead = new Map<string, Listing>();
@@ -244,8 +316,17 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
   }
   for (const source of sources) {
     const models: Models = { names: [], index: new Map() };
-    const { tops, children, unread } = await readSource(home, source, readers, env, state, models, ahead.get(source));
-    out.push(...(await totalsOf(home, source, tops, children, models, priceWith, calculateCost, requests)));
+    let read;
+    try {
+      read = await readSource(home, source, readers, env, state, models, pricer, whole, ahead.get(source));
+    } catch (error) {
+      if (!(error instanceof Inexact)) throw error;
+      // Tokens that cannot be summed as read: the source again, each request's tokens kept to the totals.
+      if (state) (state.sources ??= {})[source] = undefined;
+      read = await readSource(home, source, readers, env, state, models, pricer, true);
+    }
+    const { tops, children, unread } = read;
+    out.push(...(await totalsOf(home, source, tops, children, models, pricer, priceWith, calculateCost, requests)));
     failed.push(...unread.map(({ locator, error }) => ({ key: keyOf(home, locator).key, file: locator.file, source, error })));
   }
   if (failed.length && !failures) throw new ReadFailures(failed);
@@ -272,7 +353,7 @@ async function listSource(home: string, source: string, readers: Readers, env: E
   return { listed, childList };
 }
 
-async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
+async function readSource(home: string, source: string, readers: Readers, env: Env | undefined, state: HomeState | undefined, models: Models, pricer: Pricer, whole: boolean, listing?: Listing): Promise<{ tops: Part[]; children: (Part & { of: Locator })[]; unread: { locator: Locator; error: unknown }[] }> {
   const reader = readerOf(source, readers);
   // The pool's listing, when parseHome read this source ahead (pool.ts); each read is taken below in order, or made again.
   const { listed, childList, reads: ahead } = listing ?? (await listSource(home, source, readers, env));
@@ -285,6 +366,8 @@ async function readSource(home: string, source: string, readers: Readers, env: E
     // A source's state whose files changed so (a locator gone, a copy now before its record's) is set aside: the source is
     // read from its start and its state rebuilt.
     if (kept && ([...kept.cursors.keys()].some((key) => !place.has(key)) || outOfOrder(kept))) kept = undefined;
+    // A pass from nothing is the last: only its sessions may load the prices (one resumed may be read again).
+    const fresh = !kept || kept.cursors.size === 0;
     if (state && !kept) kept = state.sources![source] = { cursors: new Map(), owners: recordIndex(), copied: new Map() };
     const { owners, copied } = kept ?? { owners: recordIndex(), copied: new Map<string, Set<string>>() };
     let restarted = false;
@@ -346,12 +429,25 @@ async function readSource(home: string, source: string, readers: Readers, env: E
       return result.sessions;
     };
     const tops: Part[] = [];
+    const children: (Part & { of: Locator })[] = [];
+    const sums = new Float64Array(TOKEN_FIELDS);
     // Each locator's sessions packed as soon as they are read. A totals read gives each request's counts alone, and its
     // cursor, kept in a state between passes, holds those too: no request is held as an object, by a pass or a state. A
-    // reader with no totals read gives its requests whole: only one locator's are held so at a time.
-    for (const [i, { locator }] of listed.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[i] : undefined)) tops.push({ locator: session.locator, read: compact(session, models) });
-    const children: (Part & { of: Locator })[] = [];
-    for (const [i, { locator, of }] of childList.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[listed.length + i] : undefined)) children.push({ locator: session.locator, read: compact(session, models), of });
+    // reader with no totals read gives its requests whole: only one locator's are held so at a time. Without a requests
+    // sink each part is priced once the prices are in hand. A session's own file that wrote no cost and is no file of
+    // copies alone is one the totals price: the prices are loaded then, and the parts read so far priced.
+    const pack = async (session: SessionRead, top: boolean): Promise<Compact> => {
+      const unpriced = compact(session, models);
+      if (whole) return unpriced;
+      const { child, parent, costUsd, copies, users } = session.session;
+      if (!pricer.ready && fresh && top && !(child && parent) && costUsd === undefined && !(copies > 0 && users === 0 && (session.counts?.n ?? session.requests.length) === 0)) {
+        await pricer.load();
+        for (const part of [...tops, ...children]) if (!("n" in part.read)) part.read = counted(part.read, models, pricer, sums);
+      }
+      return pricer.ready ? counted(unpriced, models, pricer, sums) : unpriced;
+    };
+    for (const [i, { locator }] of listed.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[i] : undefined)) tops.push({ locator: session.locator, read: await pack(session, true) });
+    for (const [i, { locator, of }] of childList.entries()) for (const session of await read(locator, pass === 0 ? ahead?.[listed.length + i] : undefined)) children.push({ locator: session.locator, read: await pack(session, false), of });
     // A locator its reader could not go on in, or a copy this pass found whose record counts after it: read the source
     // again, from nothing.
     if (pass > 0 || !kept || !(restarted || outOfOrder(kept))) return { tops, children, unread };
@@ -359,7 +455,7 @@ async function readSource(home: string, source: string, readers: Readers, env: E
   }
 }
 
-async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], models: Models, priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
+async function totalsOf(home: string, source: string, tops: Part[], children: (Part & { of: Locator })[], models: Models, pricer: Pricer, priceWith: () => Promise<Catalog | undefined>, calculateCost: CalculateCost | undefined, sink?: ParseOptions["requests"]): Promise<SessionTotals[]> {
   // Sessions by id, their locators in the import's order; one naming its parent (a Codex subagent's thread) is the
   // parent's, as is each one beside a session's (Claude Code's subagents).
   const sessions = new Map<string, { parts: Part[]; children: Part[]; untied?: true }>();
@@ -400,24 +496,48 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
   for (const { parts, children: subagents, untied } of sessions.values()) {
     // A session whose every file holds only records an earlier file holds (copies) is no session: its records count where
     // they were first read. serve's import leaves such a file out the same way.
-    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && read.models.length === 0) && subagents.length === 0) continue;
+    if (parts.every(({ read }) => read.session.copies > 0 && read.session.users === 0 && requestsOf(read) === 0) && subagents.length === 0) continue;
     const first = parts[0]!;
     const tokens = noTokens();
     let reasoning = 0;
     let calls = 0;
+    // Parts priced as read (Counted) or not (Unpriced): a source's are all one or all the other, and all Unpriced with a sink.
+    const all = [...parts, ...subagents].map(({ read }) => read);
+    const priced = all.filter((read): read is Counted => "n" in read);
+    if (priced.length && (priced.length !== all.length || sink)) throw new Error("parts priced and not in one session");
     const requests: SessionRequest[] = [];
-    for (const { read } of [...parts, ...subagents]) for (let i = 0; i < read.models.length; i += 1) requests.push(requestAt(read, i, models));
-    for (const { usage } of requests) {
-      calls += 1;
-      if (!usage) continue;
-      addTokens(tokens, usage);
-      reasoning += usage.reasoning ?? 0;
+    if (priced.length) {
+      // Whole counts summed below 2^53: the same sums in any order.
+      for (const read of priced) {
+        calls += read.n;
+        tokens.input += read.tokens[0]!;
+        tokens.output += read.tokens[1]!;
+        tokens.cacheRead += read.tokens[2]!;
+        tokens.cacheWrite += read.tokens[3]!;
+        tokens.cacheWrite1h += read.tokens[4]!;
+        reasoning += read.tokens[5]!;
+      }
+    } else {
+      for (const read of all as Unpriced[]) for (let i = 0; i < read.models.length; i += 1) requests.push(requestAt(read, i, models));
+      for (const { usage } of requests) {
+        calls += 1;
+        if (!usage) continue;
+        addTokens(tokens, usage);
+        reasoning += usage.reasoning ?? 0;
+      }
     }
     // The source's own cost, when each of its files wrote one: Claude Code writes the session's running total (a moved
     // session's copy goes on from the original's), so the highest; another source prices each request, so their sum.
     const written = parts.flatMap(({ read }) => (read.session.costUsd !== undefined ? [read.session.costUsd] : []));
     let cost: number | undefined = written.length === parts.length ? (source === "claude-code" ? Math.max(...written) : written.reduce((n, usd) => n + usd, 0)) : undefined;
-    if (cost === undefined) {
+    if (cost === undefined && priced.length) {
+      // Each request's cost as priced when read, summed in the order priceRequests sums them.
+      if (pricer.catalog && pricer.calculate && !priced.some(({ unpriceable }) => unpriceable)) {
+        let total = 0;
+        for (const { costs, n } of priced) for (let i = 0; i < n; i += 1) total += costs![i]!;
+        cost = roundUsd(total);
+      }
+    } else if (cost === undefined) {
       const catalog = await priceWith();
       cost = catalog ? await priceRequests(requests, catalog, calculateCost) : undefined;
     }
@@ -438,7 +558,7 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     };
     out.push(totals);
     if (sink) {
-      const times = parts.flatMap(({ read }) => Array.from(read.at)).filter(Number.isFinite);
+      const times = parts.flatMap(({ read }) => Array.from((read as Unpriced).at)).filter(Number.isFinite);
       sink(totals, requests, times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
     }
   }

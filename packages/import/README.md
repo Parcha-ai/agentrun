@@ -53,7 +53,9 @@ splits: `tokens`, `requests`, `days` (`{day, requests, tokens}`), `hours` (24) a
 `harnesses` and `sources`. A session counts in `sessions` (and its prompts in `turns`) for the year its first request is in.
 `cost` is the catalog's list price of the requests it could price; `unpricedRequests` counts the rest. Like the totals, it
 holds counts, names and times only: no prompt, title, path or project. `parseHome`'s `requests` option is the hook it is
-built on: each session's totals and its requests, as they are totalled.
+built on: each session's totals and its requests, as they are totalled. With it, parseHome keeps every request (its model,
+tokens and time) until its session is totalled; without it, each request is priced as its file is read and only its
+cost is kept.
 
 ## Known answer
 
