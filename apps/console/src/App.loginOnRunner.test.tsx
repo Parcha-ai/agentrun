@@ -126,7 +126,8 @@ describe("the Playground's offer to move an agent in a box to the runner, where 
       await settle();
     }
     expect(page.saved.map((s) => s.agent), "a click under the refusal of boxed saved other, the agent picked since, which was never refused").not.toContain("other");
-    expect(page.host.textContent, "the refusal of boxed is still said with other picked").not.toContain("runs agents on the runner only");
+    const said = [...page.host.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent).join("\n");
+    expect(said, "the refusal of boxed is still said with other picked").not.toContain("The run did not start");
     await pick(page.agentPicker(), "boxed");
     const move = page.move();
     expect(move, "boxed picked again: its refusal offers the move").toBeDefined();
