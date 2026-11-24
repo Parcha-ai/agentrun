@@ -2515,6 +2515,14 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   }
 });
 
+test("XCIV: a substitution inside curl's double quotes still ends curl, as the shell runs it there (Greptile P2 on 4cacd50606): `date -u +%H:%M` in it is no `-u user:pass`", async () => {
+  for (const text of ['curl -H "X-Time: $(date -u +%H:%M)" https://x.io', 'curl -H "X-Time: \x60date -u +%H:%M\x60" https://x.io']) {
+    for (const wrap of FOUR_WRAPS) await kept(wrap(text));
+  }
+  // A quoted `-u` value before the substitution is still read, and one after it is another command's.
+  await gone('curl -u "admin:Copper&lumen9" -H "X-Time: $(date)" https://x.io', ["Copper", "lumen9"]);
+});
+
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
   const long = "Tq7Wm2Rk9Zx".repeat(137);
   const [head, tail] = [long.slice(0, 200), long.slice(-200)];

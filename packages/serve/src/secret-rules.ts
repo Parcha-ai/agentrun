@@ -580,21 +580,25 @@ function placesOf(text: string, form: string): Hit[] {
 const SHELL_LINE_MAX = 1024;
 const CURL_MAX = 4096;
 /** Where the quoted part opened at `at` closes, before its line's end and `limit`, or -1 (a quote left open is a
- *  character). A double-quoted part's backslash escapes the next character. */
-function quoteClose(text: string, at: number, limit: number): number {
+ *  character). A double-quoted part's backslash escapes the next character. With `substitutions` (curl), a double-quoted
+ *  part's `$(` or backtick is where it stops instead, as the shell runs a substitution there (Greptile P2 on 4cacd50606:
+ *  `"X-Time: $(date -u +%H:%M)"` read whole gave curl-user `-u +%H:%M`); the caller reads that place as the command's end. */
+function quoteClose(text: string, at: number, limit: number, substitutions = false): number {
   const quote = text.charAt(at);
   for (let i = at + 1; i < limit; i++) {
     const c = text.charAt(i);
     if (c === quote) return i;
     if (c === "\n") return -1;
-    if (c === "\\" && quote === '"' && text.charAt(i + 1) !== "\n") i++;
+    if (quote !== '"') continue;
+    if (substitutions && (c === "\x60" || (c === "$" && text.charAt(i + 1) === "("))) return i;
+    if (c === "\\" && text.charAt(i + 1) !== "\n") i++;
   }
   return -1;
 }
 /** Where a shell command whose name ends at `from` ends (Greptile P1 on 683391d4fd: `redis-cli -a 'Copper&lumen9'`
  *  stopped at its quoted `&`, and its password stayed): its line's end, or a shell operator outside quotes (`;`, `|`,
  *  `&`). A quoted part is read whole to its closing quote on its line. curl (ruling XXIV) runs on over a backslash's
- *  line break and a lone `&`, and ends at `&&`, `$(` and a backtick too. At most SHELL_LINE_MAX characters (CURL_MAX) are
+ *  line break and a lone `&`, and ends at `&&`, `$(` and a backtick too, a double-quoted one's included. At most SHELL_LINE_MAX characters (CURL_MAX) are
  *  read, a quote's search included. Once a quote of a kind fails to close, every later one of that kind would too (its
  *  search reads the same characters, paired the same), so each kind is searched for until one fails: linear. */
 function commandEnd(text: string, from: number, curl: boolean): number {
@@ -612,7 +616,8 @@ function commandEnd(text: string, from: number, curl: boolean): number {
       at += e === "\r" && text.charAt(at + 2) === "\n" ? 3 : e === "" ? 1 : 2;
       continue;
     } else if ((c === "'" || c === '"') && open.includes(c)) {
-      const close = quoteClose(text, at, limit);
+      const close = quoteClose(text, at, limit, curl);
+      if (close >= 0 && text.charAt(close) !== c) return close;
       if (close >= 0) at = close;
       else open = open.replace(c, "");
     }
