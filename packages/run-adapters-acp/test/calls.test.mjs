@@ -154,3 +154,15 @@ test("the update's kind: a late update with an effect kind never names its call 
   assert.equal(ours.announced('e'), 'look_up');
   assert.equal(await ours.take('look_up', { q: 'x' }, signal, 50), 'e');
 });
+
+test("an announcement naming no tool with empty input (Cursor's untitled `MCP: tool`, rawInput {}) is never matched by its arguments: a parallel no-argument call of another tool never takes its id", async () => {
+  // Before: it was kept under the arguments {}, so the first MCP call of any tool with no arguments took its id before
+  // Cursor's late update named the call.
+  const ids = new CallIds();
+  const signal = new AbortController().signal;
+  ids.add('call_cursor', undefined, {});
+  assert.equal(await ids.take('check_echo', {}, signal, 50), undefined, "another tool's call with no arguments");
+  // The late update names it; then its own MCP call takes it.
+  ids.add('call_cursor', 'look_up', {});
+  assert.equal(await ids.take('look_up', {}, signal, 50), 'call_cursor');
+});
