@@ -7,7 +7,8 @@
 // --before records into <file> the id of every machine the vendor lists with the adapter's label agentrun.computer=1,
 // and a run id it mints for the run it wraps, which it prints: {"recorded":n,"file":...,"run":"<id>"}. The run is given
 // that id with the conformance CLI's --run (runConformance's run), and every machine it makes carries it as
-// agentrun.conformance (RUN_LABEL).
+// agentrun.conformance (RUN_LABEL). <file> must not be there yet: --before makes it, and refuses one that is, with
+// nothing listed, since another run's --after may read it (each run takes its own, from mktemp -d).
 // --after lists them again, deletes every one whose id is not in <file> and whose RUN_LABEL is the file's run, then
 // reads each of those back by get until the vendor no longer has it, up to 60 s each, and prints one JSON line,
 // {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}: swept is every machine of the run it found that was not there
@@ -16,12 +17,14 @@
 // either: no call names it, and a before file of another provider is refused, as is one that names no run, and one
 // listed elsewhere for a provider whose module names where it lists (sweepScope: an app and a server), since every
 // machine there would read as new.
-// Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read,
-// missing settings, or a listing the vendor refused (nothing is deleted then). It makes nothing, so it needs no live switch.
+// Exit 0 when every swept machine is gone, 1 when one is still there, 2 on a usage error, a before file it cannot read
+// (or, for --before, one that is there already), missing settings, or a listing the vendor refused (nothing is deleted
+// then). It makes nothing, so it needs no live switch.
 //
-// The conformance runner runs the same sweep (sweepMachines) at the end of every run of a hosted provider, over the
-// run's own label: its report's cleanup.sweep, whose stillThere must be empty for Core to pass.
-import { readFileSync, writeFileSync } from "node:fs";
+// The conformance runner runs the same sweep (sweepMachines) at the end of every run of a hosted provider, over its own
+// labels, the run's and the runner's (RUNNER_LABEL): its report's cleanup.sweep, whose stillThere must be empty for Core
+// to pass.
+import { closeSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { COMPUTER_LABEL } from "../drift.js";
 import { isCommand } from "../entry.js";
 import type { MachineHost } from "../host.js";
@@ -119,12 +122,14 @@ interface HostModule {
 const USAGE = `usage: node packages/computer/dist/conformance/sweep.js --provider <id> --before <file> | --after <file>
   --provider <id>  a provider on the shared machine-host adapter (e2b, agent37, morph, daytona, boxd, smolcloud, groundbox)
   --before <file>  record the id of every machine the vendor lists with ${COMPUTER_LABEL}=1 into <file>, with a run id
-                   it mints and prints ({"recorded":n,"file":...,"run":"<id>"}): give it to the run's --run
+                   it mints and prints ({"recorded":n,"file":...,"run":"<id>"}): give it to the run's --run.
+                   <file> must not be there yet (each run its own, from mktemp -d): an existing one is refused
   --after <file>   delete every machine listed with ${COMPUTER_LABEL}=1 whose id is not in <file> and whose ${RUN_LABEL}
                    is <file>'s run, read each back until the vendor no longer has it (up to 60 s each), and print
                    {"swept":n,"gone":m,"stillThere":[ids],"leftAlone":k}; any other new one is left alone
   settings: the provider's conformance module's (COMPUTER_<VENDOR>_*), never the vendor's own names
-exit: 0 every swept machine is gone, 1 one is still there, 2 usage error, unreadable before file, no settings, or a refused listing`;
+exit: 0 every swept machine is gone, 1 one is still there, 2 usage error, unreadable before file, a --before file there
+      already, no settings, or a refused listing`;
 
 class Usage extends Error {}
 
@@ -227,15 +232,32 @@ export async function main(argv: string[], io: SweepIo = {}): Promise<number> {
 		return 2;
 	}
 	if (before === undefined) {
+		// The file is made here, before the listing, and only if it is not there ("wx"): a before file another run
+		// recorded is never written over, or that run's --after would read this run's id and delete this run's machines.
+		let fd: number;
+		try {
+			fd = openSync(args.file, "wx");
+		} catch (error) {
+			const why = (error as NodeJS.ErrnoException).code === "EEXIST" ? "is there already, and --before never writes over a before file: another run's --after may read it. Give each run a file of its own (mktemp -d)" : `cannot be made: ${(error as Error).message}`;
+			await write(stderr, `${args.file} ${why}; nothing was listed\n`);
+			return 2;
+		}
 		const listed = await listedBy(host, "the listing", { [COMPUTER_LABEL]: "1" }, 60_000);
 		if (!listed.ok) {
+			// The empty file this --before made goes, so the same path takes the next one.
+			closeSync(fd);
+			rmSync(args.file, { force: true });
 			await write(stderr, `listing the machines carrying ${COMPUTER_LABEL}=1 failed, so nothing was recorded: ${listed.error.message}\n`);
 			return 2;
 		}
 		const ids = listed.value.map((machine) => machine.id).sort();
 		// The run this sweep wraps: its --after deletes only the machines labelled with this id, never another run's.
 		const run = newRunId();
-		writeFileSync(args.file, `${JSON.stringify({ provider: args.provider, ...(scope === undefined ? {} : { scope }), label: `${COMPUTER_LABEL}=1`, run, at: new Date().toISOString(), ids }, null, 2)}\n`);
+		try {
+			writeFileSync(fd, `${JSON.stringify({ provider: args.provider, ...(scope === undefined ? {} : { scope }), label: `${COMPUTER_LABEL}=1`, run, at: new Date().toISOString(), ids }, null, 2)}\n`);
+		} finally {
+			closeSync(fd);
+		}
 		await write(stdout, `${JSON.stringify({ recorded: ids.length, file: args.file, run })}\n`);
 		return 0;
 	}

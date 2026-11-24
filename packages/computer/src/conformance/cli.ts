@@ -70,7 +70,8 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
               the most computers alive at once, for a plan that keeps fewer (default no cap; the report says the
               run's peak). The run's computer makes way for a case's own; a case that needs more fails
   --run       the run's id, the one the live sweep's --before printed: every computer of the run carries it, and
-              that sweep's --after deletes the run's computers and no other run's (default a fresh id)
+              that sweep's --after deletes the run's computers and no other run's (default a fresh id). Two
+              processes may share one: each run's own end-of-run sweep deletes only its own computers
   --json      print the report as JSON
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made

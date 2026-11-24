@@ -29,6 +29,13 @@ import {
 
 /** The label every computer of a run carries, with the run's id. */
 export const RUN_LABEL = "agentrun.conformance";
+/**
+ * The label every computer of a run also carries, with an id minted by each runConformance call, never given. Several
+ * runners may share one run's id (two processes given one before file's --run), so the runner's own end-of-run sweeps
+ * go by this label too: the first runner to end deletes its own computers, never another runner's live ones. The live
+ * sweep's --after goes by RUN_LABEL alone, so it still takes every runner's leftovers.
+ */
+export const RUNNER_LABEL = "agentrun.conformance.runner";
 /** A run's id: 12 hex characters, minted by the run itself or by the live sweep's --before (sweep.ts) for the run it wraps. */
 export const RUN_ID = /^[0-9a-f]{12}$/;
 export const newRunId = (): string => randomBytes(6).toString("hex");
@@ -94,9 +101,9 @@ function whenAborted(signal: AbortSignal): Promise<never> {
 }
 
 /**
- * Runs the cases against the provider and reports each one. Every computer carries the run's label; each one a case
- * makes is deleted when the case ends, the shared one when the run ends, then a janitor provider is swept by the label
- * and the label is listed to show nothing is left. Every provider call is bounded: one that never answers fails its case
+ * Runs the cases against the provider and reports each one. Every computer carries the run's label and the runner's;
+ * each one a case makes is deleted when the case ends, the shared one when the run ends, then a janitor provider is
+ * swept by both labels and they are listed to show nothing is left. Every provider call is bounded: one that never answers fails its case
  * or is named in the cleanup, and a computer that arrives after its case ended is deleted when it arrives.
  */
 export async function runConformance(provider: ComputerProvider, options: ConformanceOptions): Promise<ConformanceReport> {
@@ -115,7 +122,11 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	const dialer = options.cdp ?? dialCdp;
 	if (options.run !== undefined && !RUN_ID.test(options.run)) throw new TypeError(`options.run is a run id the live sweep's --before mints, 12 hex characters; got ${JSON.stringify(options.run)}`);
 	const run = options.run ?? newRunId();
-	const runLabels = { [RUN_LABEL]: run };
+	// This runner's own id: its create requests are named by it, not by the run's, since a provider makes one computer
+	// per request name, and another runner given the same run must never find this one's.
+	const runner = newRunId();
+	// The cases list and attach by both, and the cleanup sweeps by both: this runner's computers alone.
+	const runLabels = { [RUN_LABEL]: run, [RUNNER_LABEL]: runner };
 	const capabilities = provider.capabilities();
 	// A provider of the shape before groups declares none, so its kind-consistent case fails in words, not the run.
 	const groups: Group[] = Array.isArray(capabilities.groups) ? capabilities.groups : [];
@@ -304,7 +315,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 			// after it is deleted as it lands (lateCreate).
 			const stop = new AbortController();
 			const both = signal ? AbortSignal.any([signal, stop.signal]) : stop.signal;
-			const requestId = `${run}/shared${++made > 1 ? `/${made}` : ""}`;
+			const requestId = `${runner}/shared${++made > 1 ? `/${made}` : ""}`;
 			const creating = capped(requestId, "shared", both, () => provider.create(spec(), { signal: both, requestId }));
 			let created: Result<CreatedComputer>;
 			try {
@@ -446,7 +457,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 		 * create through by, kept: what it gives is deleted when the case ends, or as it comes after that. A create with
 		 * planted secrets is outside the cap: it can't use the account, so it holds no room (one it makes anyway fails its case).
 		 */
-		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${run}/${c.id}/${++creates}`) => {
+		const attempt = (whole: ComputerSpec, by: ComputerProvider = provider, requestId = `${runner}/${c.id}/${++creates}`) => {
 			const make = () => by.create(whole, { signal: caseSignal, requestId });
 			const creating = (plantedBy.has(by) ? make() : capped(requestId, c.id, caseSignal, make)).then((created) => {
 				noteCreated(created, c.id);
@@ -512,7 +523,8 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 					return home.replace(/\/+$/, "") || "/";
 				},
 				async dir() {
-					const path = `${await t.home()}/agentrun-conformance-${run}/${c.id.replace(/[^a-z0-9-]/gi, "-")}-${++dirs}`;
+					// The runner's id, not the run's: a computer whose home is a host's own may serve two runners of one run.
+					const path = `${await t.home()}/agentrun-conformance-${runner}/${c.id.replace(/[^a-z0-9-]/gi, "-")}-${++dirs}`;
 					await t.call("files.mkdir", { path, parents: true });
 					return path;
 				},
@@ -686,7 +698,10 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	return report;
 }
 
-/** Sweeps a janitor provider by the run's label, past every deadline, and lists the label to show nothing is left. */
+/**
+ * Sweeps a janitor provider by the runner's labels (RUN_LABEL and RUNNER_LABEL), past every deadline, and lists them to
+ * show nothing of its own is left: another runner given the same run keeps its computers.
+ */
 async function cleanup(
 	provider: ComputerProvider,
 	lifetime: "vendor" | "janitor",
@@ -711,7 +726,8 @@ async function cleanup(
 		if (listed.ok) report.cleanup.left = listed.value.map((info) => info.ref.name).sort();
 		else report.cleanup.errors.push(`list ${JSON.stringify(labels)}: ${listed.error.code}: ${listed.error.message}`);
 		// Nothing left behind, read from the vendor itself: a provider on the shared machine-host adapter is swept by the
-		// run's label through its host, as the live sweep (sweep.ts) does, and every machine it finds must be gone.
+		// runner's labels through its host, as the live sweep (sweep.ts) does by the run's, and every machine it finds must
+		// be gone.
 		const host = (provider as { host?: MachineHost }).host;
 		if (host !== undefined && typeof host.list === "function") {
 			const { sweepMachines } = await import("./sweep.js");
