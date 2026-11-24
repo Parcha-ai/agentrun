@@ -9,6 +9,8 @@
  * - A construct that does not close on its line, before `limit`, or within NEST_MAX levels (a quote, `$(`, a backtick,
  *   `${`, `$((`, `<(`) is a character, and reading goes on after it: unknown never ends a command early.
  * - `#` is a character: a comment is still text that can hold a secret.
+ * - A non-ASCII blank (NBSP, the ideographic space and the rest of `\s`) separates words as a space does: a password
+ *   after `-a` and an NBSP is still the flag's.
  *
  * Linear by count: `lexCount.read` counts each character a search reads. A search for a construct's closer that fails
  * is remembered (Misses), so a later opener of that kind inside the span it read fails at once, without reading it
@@ -60,9 +62,10 @@ export function commandLimit(named: number, max: number, to: number): number {
 /** What lex read: its tokens to the first operator `ends` accepts (not included), where it stopped, and the body spans
  *  of the command substitutions (`$(…)`, backticks, `<(…)`, `>(…)`) in its words, inside quotes and `${…}` too; a
  *  substitution nested in another's body is not listed (its body is read for it). */
-export type Lexed = { readonly tokens: readonly Token[]; readonly end: number; readonly subs: readonly (readonly [number, number])[] };
+export type Lexed = { readonly tokens: readonly Token[]; readonly end: number; readonly subs: readonly (readonly [number, number])[]; readonly reads: number };
 
-/** Characters read by lex and its closer searches: the counted guard's measure (shell-lex.test.mjs). */
+/** Characters read by lex and its closer searches, over every call: the counted guard's measure (shell-lex.test.mjs).
+ *  Nothing reads it to decide: each Lexed carries its own `reads`. */
 export const lexCount = { read: 0 };
 
 /** How deep constructs nest before the next one is read as a character. */
@@ -99,8 +102,9 @@ mark("0123456789?$!#@*-", SPECIAL_VAR);
 mark(" \t\n\r\v\f;&|()<>'\"\x60", RUN_STOP);
 mark("0123456789", DIGIT);
 const is = (c: number, bit: number): boolean => c >= 0 && c < 128 && (CLASS[c]! & bit) !== 0;
-/** A non-ASCII blank also ends a cut run (as `\s` reads it). */
-const WIDE_SPACE = /\s/;
+/** The non-ASCII blanks (`\s` past ASCII: NBSP, the Unicode spaces, the ideographic space, a BOM). The lexer reads
+ *  each as a blank between words, as a transcript's reader does; bash would not (a transcript is not a script). */
+const WIDE_BLANKS: ReadonlySet<number> = new Set([0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]);
 const HEX_ESCAPE = /^[0-9A-Fa-f]{1,2}/;
 const OCTAL_ESCAPE = /^[0-7]{1,3}/;
 const OCTAL_DIGIT = /[0-7]/;
@@ -117,6 +121,9 @@ class Reader {
   }
 
   private readonly seen: Map<number, boolean>;
+
+  /** Characters this reader's searches read (lex adds them to lexCount and returns them). */
+  reads = 0;
 
   /** Where the last group (`$(`, `<(`, `>(`) that failed stopped, until a token stream outside any group reads past
    *  it: a group whose own tokens hold a group that failed fails there too (it reads the same characters from the
@@ -161,7 +168,7 @@ class Reader {
   single(open: number): number {
     if (this.missed("sq", open)) return -1;
     for (let i = open + 1; ; i++) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === SQ) return i + 1;
       if (c === END || c === NL) return this.fail("sq", open, i);
@@ -172,7 +179,7 @@ class Reader {
   ansi(open: number): number {
     if (this.missed("ansi", open)) return -1;
     for (let i = open + 2; ; i++) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === SQ) return i + 1;
       if (c === END || c === NL) return this.fail("ansi", open, i);
@@ -187,7 +194,7 @@ class Reader {
     if (this.missed("dq", open)) return -1;
     const found: [number, number][] | undefined = subs && [];
     for (let i = quote + 1; ; ) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === DQ) {
         if (found) subs!.push(...found);
@@ -249,7 +256,7 @@ class Reader {
     if (is(d, NAME_START)) {
       let end = i + 2;
       while (is(this.at(end), NAME_CHAR)) {
-        lexCount.read++;
+        this.reads++;
         end++;
       }
       return { kind: "var", start: i, end };
@@ -262,7 +269,7 @@ class Reader {
   tick(open: number): number {
     if (this.missed("tick", open)) return -1;
     for (let i = open + 1; ; i++) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === BT) return i + 1;
       if (c === END || c === NL) return this.fail("tick", open, i);
@@ -276,7 +283,7 @@ class Reader {
     if (this.missed("brace", open) || nest >= NEST_MAX) return -1;
     const found: [number, number][] | undefined = subs && [];
     for (let i = open + 2; ; ) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === RB) {
         if (found) subs!.push(...found);
@@ -298,7 +305,7 @@ class Reader {
     if (this.missed("arith", open)) return -1;
     let depth = 0;
     for (let i = open + 1; ; i++) {
-      lexCount.read++;
+      this.reads++;
       const c = this.at(i);
       if (c === END || c === NL) return this.fail("arith", open, i);
       if (c === LP) depth++;
@@ -352,15 +359,15 @@ class Reader {
     let c = this.at(i);
     // Blanks, and a backslash-newline between words (a continuation joins the lines and leaves no word).
     while (true) {
-      if (c === SP || c === TAB) i++;
+      if (c === SP || c === TAB || WIDE_BLANKS.has(c)) i++;
       else if (c === BS && this.at(i + 1) === NL) i += 2;
       else if (c === BS && this.at(i + 1) === CR && this.at(i + 2) === NL) i += 3;
       else break;
-      lexCount.read++;
+      this.reads++;
       c = this.at(i);
     }
     if (c === END) return undefined;
-    lexCount.read++;
+    this.reads++;
     const d = this.at(i + 1);
     if (c === NL) return { op: "\n", start: i, end: i + 1 };
     if (c === SEMI) return { op: ";", start: i, end: i + 1 };
@@ -390,7 +397,7 @@ class Reader {
       i += 2;
       while (is(this.at(i), DIGIT)) i++;
     }
-    lexCount.read += i - start;
+    this.reads += i - start;
     return { op: "redir", start, end: i };
   }
 
@@ -401,8 +408,8 @@ class Reader {
     let i = start;
     while (i < this.limit) {
       const c = this.text.charCodeAt(i);
-      if (c < 128 && (CLASS[c]! & (BLANK | OPERATOR)) !== 0 && !((c === LT || c === GT) && this.at(i + 1) === LP)) break;
-      lexCount.read++;
+      if (c < 128 ? (CLASS[c]! & (BLANK | OPERATOR)) !== 0 && !((c === LT || c === GT) && this.at(i + 1) === LP) : WIDE_BLANKS.has(c)) break;
+      this.reads++;
       let part: Part | undefined;
       if (c === BS) {
         // A backslash escapes the next character; before a line break it joins the lines.
@@ -447,6 +454,12 @@ class Reader {
  *  A bare run the limit cuts is read on to its end, so a long value is whole. */
 export function lex(text: string, from: number, limit: number, ends: (op: string) => boolean, misses: Misses = new Map()): Lexed {
   const reader = new Reader(text, Math.min(limit, text.length), misses);
+  const read = tokensOf(reader, text, from, ends);
+  lexCount.read += reader.reads;
+  return { ...read, reads: reader.reads };
+}
+
+function tokensOf(reader: Reader, text: string, from: number, ends: (op: string) => boolean): Omit<Lexed, "reads"> {
   const tokens: Token[] = [];
   const subs: [number, number][] = [];
   let at = from;
@@ -463,8 +476,8 @@ export function lex(text: string, from: number, limit: number, ends: (op: string
     let end = last.end;
     for (; end < text.length; end++) {
       const c = text.charCodeAt(end);
-      if (c < 128 ? (CLASS[c]! & RUN_STOP) !== 0 : WIDE_SPACE.test(text.charAt(end))) break;
-      lexCount.read++;
+      if (c < 128 ? (CLASS[c]! & RUN_STOP) !== 0 : WIDE_BLANKS.has(c)) break;
+      reader.reads++;
     }
     if (end > last.end) {
       tokens[tokens.length - 1] = { start: last.start, end, parts: [...last.parts, { kind: "lit", start: last.end, end }] };

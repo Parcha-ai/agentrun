@@ -1,19 +1,31 @@
 // Writes expected.json: for each corpus row (corpus.mjs), in each wrap, the characters main's scrubber cut, read in
-// count mode. Main is the scrubber before the shell lexer: b0058698b0, whose redact, learn and secret-* sources are the
-// ones it was built from. To regenerate: check out BASE, build packages/serve (tsc), then
-//   node test/fixtures/scrub-differential/generate.mjs <that build's dist directory> <the commit's full sha>
-// The sha must be BASE: a different base is a different baseline, and this file says which one the test holds.
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { corpus, covered, WRAPS } from "./corpus.mjs";
+// count mode. Main is the scrubber before the shell lexer: BASE (corpus.mjs). To regenerate, in a checkout of BASE with
+// a clean tree, build packages/serve (tsc), then
+//   node <this file> <that checkout's root>
+// It reads that checkout's packages/serve/dist, and refuses when the checkout is not BASE, its tree is not clean, the
+// build is older than a source it compiles, or the build reads commands with the shell lexer (no build of BASE does).
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { BASE, corpus, covered, WRAPS } from "./corpus.mjs";
 
-const BASE = "b0058698b0032901cecb6002e7f338110e628490";
-const [dist, sha] = process.argv.slice(2);
-if (!dist || sha !== BASE) {
-  console.error(`usage: generate.mjs <dist of ${BASE}'s serve build> ${BASE}`);
+const refuse = (why) => {
+  console.error(`generate.mjs: ${why}\nusage: generate.mjs <root of a clean checkout of ${BASE}, packages/serve built>`);
   process.exit(2);
+};
+const root = process.argv[2] ? resolve(process.argv[2]) : refuse("no checkout given");
+const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+if (git("rev-parse", "HEAD") !== BASE) refuse(`${root} is at ${git("rev-parse", "HEAD")}, not ${BASE}`);
+if (git("status", "--porcelain", "--untracked-files=no") !== "") refuse(`${root} has changes to tracked files`);
+const src = join(root, "packages/serve/src");
+const dist = join(root, "packages/serve/dist");
+for (const file of readdirSync(src).filter((name) => name.endsWith(".ts") && !name.endsWith(".d.ts"))) {
+  const built = join(dist, file.replace(/\.ts$/, ".js"));
+  if (!existsSync(built) || statSync(built).mtimeMs < statSync(join(src, file)).mtimeMs) refuse(`${built} is missing or older than its source: build packages/serve`);
 }
-const { scrub } = await import(resolve(dist, "secret-cut.js"));
+if (existsSync(join(dist, "shell-lex.js")) || readFileSync(join(dist, "secret-rules.js"), "utf8").includes("shell-lex")) refuse(`${dist} reads commands with the shell lexer: it is no build of ${BASE}`);
+
+const { scrub } = await import(join(dist, "secret-cut.js"));
 const rows = {};
 for (const row of corpus()) {
   rows[row.id] = {};

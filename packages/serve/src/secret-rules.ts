@@ -11,7 +11,7 @@
 // in its length (secret-scrub.test.mjs walks them).
 import { heldNeedles, MIN_SECRET } from "./learn/secrets.js";
 import { cutSpans, SECRET_SHAPES, type Shape, shapeSpans, type Span } from "./redact/match.js";
-import { argWords, commandLimit, lex, lexCount, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
+import { argWords, commandLimit, lex, type Misses, type Word, wordFrom, wordText } from "./shell-lex.js";
 
 export type CutKind =
   | "format" // a known format: prefix or checksum (sk-, ghp_, AKIA, JWT, PEM block, secretlint hits)
@@ -29,9 +29,7 @@ export const RESTORABLE: Readonly<Record<CutKind, boolean>> = Object.freeze({ fo
  *  code does not fill (an UPPER_NAME=, a YAML key at a line's start, a flag's value): there a code shape is a value
  *  (ruling XII). `typed` marks a slot a type annotation reads the same as (`name: Type`, a YAML key or a Python
  *  annotation), where a type's name stays no value. */
-/** A rule's find. `whole`: the rule read the value to its end (a curl `-u` password, over the characters glued to it), so
- *  what follows it is no elided rest (secret-cut.ts reads no `<redacted>`-style placeholder after it). */
-export type Hit = { readonly start: number; readonly end: number; readonly name?: string; readonly quoted?: boolean; readonly code?: boolean; readonly typed?: boolean; readonly whole?: boolean };
+export type Hit = { readonly start: number; readonly end: number; readonly name?: string; readonly quoted?: boolean; readonly code?: boolean; readonly typed?: boolean };
 
 /** One of secretlint's finds: the message it reports (its anchor: `AWSSecretAccessKey`, `NPM_ACCESS_TOKEN`, ...) and the
  *  value, as it names it and as each JSON string holding it would read it. */
@@ -585,14 +583,15 @@ const SHELL_LINE_MAX = 1024;
 const CURL_MAX = 4096;
 /** How deep a command inside a substitution of the same command is read on its own (`curl -H "$(curl -u a:pw …)"`). */
 const SUBSTITUTION_DEPTH = 4;
-/** A command's name as the shell reads it, for the lexer's readers: after a word boundary (a path before it too,
- *  `/usr/bin/curl`, `C:\tools\curl.exe`), `.exe` maybe after a program's, and no word character or `-` glued on
- *  (`curl-user` names no curl); or the same quoted whole (`"curl"`, `'curl'`, `$'curl'`, `"C:\tools\curl.exe"`),
- *  the match taking the closing quote so the read starts past it. A subcommand (`login`, `config`, `set`) is a word
- *  alone: `program` false. */
-const shellName = (names: string, program = true): string => {
-  const name = program ? String.raw`(?:${names})(?:\.exe)?` : `(?:${names})`;
-  const path = (quote: string): string => (program ? String.raw`(?:[^${quote}\s]{0,256}[/\\])?` : "");
+/** A program's name as the shell reads it, for the lexer's readers: after a word boundary (a path before it too,
+ *  `/usr/bin/curl`, `C:\tools\curl.exe`), `.exe` or `.cmd` maybe after it, and no word character or `-` glued on
+ *  (`curl-user` names no curl); or the same quoted whole (`"curl"`, `'curl'`, `$'curl'`), with a path before it that
+ *  may hold blanks inside the quotes (`"C:\Program Files\Docker\docker.exe"`, at most 256 characters on its line),
+ *  the match taking the closing quote so the read starts past it. A subcommand (`login`, `set`) is no name: the
+ *  reader takes it from the command's words (subcommandAt). */
+const shellName = (names: string): string => {
+  const name = String.raw`(?:${names})(?:\.(?:exe|cmd))?`;
+  const path = (quote: string): string => String.raw`(?:[^${quote}\n]{0,256}[/\\])?`;
   return String.raw`(?:\b${name}(?![\w-])|"${path('"')}${name}"|'${path("'")}${name}')`;
 };
 /** The operators that end a command: `;`, `&`, `&&`, `||`, `|`, `|&` (a line's end always does, shell-lex.ts). */
@@ -600,12 +599,42 @@ const shellEnds = (op: string): boolean => op === ";" || op === "&" || op === "&
 /** curl reads on over a lone `&` (ruling XXIV: an unquoted URL's `?a=1&b=2`). */
 const curlEnds = (op: string): boolean => op !== "&" && shellEnds(op);
 
-/** What commandWords may spend reading commands named inside an earlier command's read, in the lexer's counted reads,
- *  as a share of the text's length: at most half a read a character more. */
+/** What commandWords may spend reading commands named inside an earlier command's read, in the characters its lex
+ *  calls read (Lexed.reads), as a share of the text's length: at most half a read a character more. */
 const REREAD_SHARE = 0.5;
 /** How commandWords reads a command: `max` characters past its name at least (commandLimit), to the operator `ends`
- *  takes; `own` for curl, whose substitutions' words are no arguments of its own (XCIV, XCV). */
-type CommandRead = { readonly max: number; readonly ends: (op: string) => boolean; readonly own?: boolean };
+ *  takes; `own` for curl, whose substitutions' words are no arguments of its own (XCIV, XCV); `after` for a program
+ *  whose subcommand makes it the command read (`docker … login`, `npm … set`): the index of the first word past the
+ *  subcommand, or -1 when the program runs another one (then its words are no list, its substitutions still read). */
+type CommandRead = {
+  readonly max: number;
+  readonly ends: (op: string) => boolean;
+  readonly own?: boolean;
+  readonly after?: (text: string, words: readonly Word[]) => number;
+};
+
+/** Where a subcommand's words end in a program's arguments (`login`; `set`, `config set`), or -1. Options before it
+ *  are passed over (`docker --config ~/.docker login`, `docker -D login`): a word starting with `-` and the word after
+ *  one without `=` (its value, when it takes one). Any other word first is another subcommand (`docker run … login`).
+ *  A word's blanks at its ends are no part of it here (`docker\ login`: bash names no such program, the text still
+ *  holds a login's password). */
+const subcommandAt =
+  (paths: readonly (readonly string[])[]) =>
+  (text: string, words: readonly Word[]): number => {
+    let value = false;
+    for (let i = 0; i < words.length; i++) {
+      const word = wordText(text, words[i]!).trim();
+      if (word.startsWith("-")) {
+        value = !word.includes("=");
+        continue;
+      }
+      const path = paths.find((each) => each.every((name, k) => i + k < words.length && wordText(text, words[i + k]!).trim() === name));
+      if (path) return i + path.length;
+      if (!value) return -1;
+      value = false;
+    }
+    return -1;
+  };
 
 /** The words of each command `command` names in `text`, after its name, read by shell-lex.ts to the operator `ends`
  *  takes, its line's end or `max` characters (a redirection's target dropped: argWords); then the same of each command
@@ -613,19 +642,21 @@ type CommandRead = { readonly max: number; readonly ends: (op: string) => boolea
  *  around it; for the others each substitution's words are read as one more list of the command's (parity: an over-cut
  *  kept). The next command is looked for from this one's name on, so a command of the same name that an earlier read
  *  took into a quote it paired (`redis-cli -h o'neil ping; redis-cli -a pw 'x'`) is read too; one inside a substitution
- *  is read once, by the substitution's own read. Such re-reads share a budget of the lexer's counted reads
- *  (lexCount, REREAD_SHARE of the text's length): past it the next command is looked for past the earlier read's end,
+ *  is read once, by the substitution's own read. Such re-reads share a budget of what their lex calls read
+ *  (Lexed.reads, REREAD_SHARE of the text's length): past it the next command is looked for past the earlier read's end,
  *  as before, and the span scan (inside) still cuts there. The lexer's failed searches are kept across the text
  *  (`misses`): linear. */
 function commandWords(text: string, command: RegExp, how: CommandRead): Word[][] {
   const out: Word[][] = [];
   const misses: Misses = new Map();
   let spare = Math.ceil(text.length * REREAD_SHARE);
-  const read = (from: number, to: number, depth: number): void => {
+  /** The commands named in text[from, to), read; what their lex calls read. */
+  const read = (from: number, to: number, depth: number): number => {
     const region = from === 0 && to === text.length ? text : text.slice(from, to);
     const re = new RegExp(command.source, command.flags);
     let subs: readonly (readonly [number, number])[] = [];
     let readTo = from;
+    let total = 0;
     for (let m = re.exec(region); m; m = re.exec(region)) {
       const at = from + m.index;
       const sub = subs.find(([start, end]) => start <= at && at < end);
@@ -634,30 +665,38 @@ function commandWords(text: string, command: RegExp, how: CommandRead): Word[][]
         continue;
       }
       const named = at + m[0].length;
-      const reads = lexCount.read;
       const lexed = lex(text, named, commandLimit(named, how.max, to), how.ends, misses);
-      out.push(argWords(text, lexed.tokens));
-      if (!how.own) substitutionWords(text, lexed.subs, depth, misses, out);
-      if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of lexed.subs) read(start, end, depth + 1);
-      if (at < readTo) spare -= lexCount.read - reads;
+      let reads = lexed.reads;
+      const words = argWords(text, lexed.tokens);
+      const first = how.after ? how.after(text, words) : 0;
+      if (first >= 0) {
+        out.push(first === 0 ? words : words.slice(first));
+        if (!how.own) reads += substitutionWords(text, lexed.subs, depth, misses, out);
+      }
+      if (depth < SUBSTITUTION_DEPTH) for (const [start, end] of lexed.subs) reads += read(start, end, depth + 1);
+      if (at < readTo) spare -= reads;
+      total += reads;
       subs = lexed.subs;
       readTo = Math.max(readTo, lexed.end);
       re.lastIndex = Math.max(named - from, m.index + 1);
     }
+    return total;
   };
   read(0, text.length, 0);
   return out;
 }
 
 /** Each substitution body's words (operators inside it read through), and its own substitutions' in turn, to
- *  SUBSTITUTION_DEPTH: each body one list of `out`. */
-function substitutionWords(text: string, subs: readonly (readonly [number, number])[], depth: number, misses: Misses, out: Word[][]): void {
-  if (depth >= SUBSTITUTION_DEPTH) return;
+ *  SUBSTITUTION_DEPTH: each body one list of `out`. What the lex calls read. */
+function substitutionWords(text: string, subs: readonly (readonly [number, number])[], depth: number, misses: Misses, out: Word[][]): number {
+  if (depth >= SUBSTITUTION_DEPTH) return 0;
+  let reads = 0;
   for (const [start, end] of subs) {
     const body = lex(text, start, end, never, misses);
     out.push(argWords(text, body.tokens));
-    substitutionWords(text, body.subs, depth + 1, misses, out);
+    reads += body.reads + substitutionWords(text, body.subs, depth + 1, misses, out);
   }
+  return reads;
 }
 const never = (): boolean => false;
 
@@ -666,7 +705,24 @@ const never = (): boolean => false;
 // Each of the five command rules (mysql-password, password-flag's -p and -a, curl-user, npm set) cuts the union of its
 // lexer read (commandWords) and this span scan: the scan reads a command to its end and runs a pattern over it. The
 // lexer read adds cuts where it reads the shell better; it never takes one away. Once the differential corpus
-// (test/fixtures/scrub-differential) shows the lexer's cuts cover the scan's on every row, the scan can go.
+// (test/fixtures/scrub-differential) shows the lexer's cuts cover the scan's on every row, the scan can go: this
+// section to its end marker, the five scan* calls in the rules, and these patterns' RULE_PATTERNS entries.
+
+/** The commands as the scan names them, and the flag and value each one's pattern finds inside (main's, verbatim). */
+const MYSQL_SCAN = /\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|mariadb-dump|mariadb-admin)(?=[ \t])/g;
+const MYSQL_P = new RegExp(String.raw`(?<=[ \t])-p${VALUE}`, "gd");
+const LOGIN_SCAN = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login\b/g;
+const LOGIN_P = new RegExp(String.raw`(?<=[ \t])(-p)(?:=|[ \t]{1,3})${VALUE}`, "gd");
+const REDIS_SCAN = /\bredis-cli\b/g;
+const REDIS_A = new RegExp(String.raw`(?<=[ \t])(-a)[ \t]{1,3}${VALUE}`, "gd");
+const CURL_SCAN = /\bcurl\b/g;
+const CURL_USER = /(?<=\s)(?:-u[ \t]{0,3}|--user(?:=|[ \t]{1,3}))(?:(["'])[^\s:"']{0,256}:([^"'\n]{1,512})\1|[^\s:"']{0,256}:([^\s"']{1,512}))/gd;
+const NPM_SET_SCAN = /\b(?:npm|pnpm|yarn)[ \t]{1,3}(?:config[ \t]{1,3})?set(?=[ \t])/g;
+const NPM_SET_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)[ \t]{1,3}${VALUE}`, "gd");
+const curlUser = (m: RegExpExecArray): Hit => {
+  const [start, end] = m.indices![m[2] !== undefined ? 2 : 3]!;
+  return { start, end, name: "user", quoted: true };
+};
 
 /** How far a substitution's closer is looked for: one that does not close within it ends the command where it opens. */
 const SUBSTITUTION_MAX = 256;
@@ -741,12 +797,11 @@ function quoteEnd(text: string, at: number, limit: number, curl: boolean, misses
   return -1;
 }
 /** Where a shell command whose name ends at `from` ends, and the substitutions it holds (`redis-cli -a 'Copper&lumen9'`
- *  read on over its quoted `&`): its line's end, or a shell
- *  operator outside quotes (`;`, `|`, `&`). A quoted part is read whole to its closing quote on its line. curl (ruling
- *  XXIV) runs on over a backslash's line break and a lone `&`, and ends at `&&`; a substitution (`$(…)`, a backtick
- *  pair), bare or in double quotes, is read whole and the command read on past it (its contents are no
- *  part of curl's arguments, and a `-u` after it is), and one that never closes
- *  ends the command where it opens. At most SHELL_LINE_MAX characters (CURL_MAX) are read. `misses` carries failed
+ *  read on over its quoted `&`): its line's end, or a shell operator outside quotes (`;`, `|`, `&`). A quoted part is
+ *  read whole to its closing quote on its line. curl (ruling XXIV) runs on over a backslash's line break and a lone
+ *  `&`, and ends at `&&`; a substitution (`$(…)`, a backtick pair), bare or in double quotes, is read whole and the
+ *  command read on past it (its contents are no part of curl's arguments, and a `-u` after it is), and one that never
+ *  closes ends the command where it opens. At most SHELL_LINE_MAX characters (CURL_MAX) are read. `misses` carries failed
  *  quote searches from one command to the next (quoteEnd), and a substitution's search is bounded and ends its command
  *  when it fails: linear in the text. */
 function commandEnd(text: string, from: number, curl: boolean, misses: Record<string, QuoteMiss | undefined>): { end: number; subs: [number, number][] } {
@@ -799,6 +854,22 @@ function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpE
   }
   return out;
 }
+
+/** Each rule's scan: the hits its pattern finds inside each command the scan names. */
+const scanMysql = (text: string): Hit[] => inside(text, MYSQL_SCAN, MYSQL_P, (m) => flagValue(valueHit(m, 1, 1, "-p")));
+const scanLogin = (text: string): Hit[] => inside(text, LOGIN_SCAN, LOGIN_P, (m) => flagValue(valueHit(m, 2, 1, m[1])));
+const scanRedis = (text: string): Hit[] => inside(text, REDIS_SCAN, REDIS_A, (m) => flagValue(valueHit(m, 2, 1, m[1])));
+const scanCurl = (text: string): Hit[] => inside(text, CURL_SCAN, CURL_USER, curlUser, true);
+const scanNpm = (text: string): Hit[] => inside(text, NPM_SET_SCAN, NPM_SET_AUTH, npmAuth);
+/** Each command rule's scan alone, by rule id, for the tests' cost bound (secret-scrub.test.mjs XCIX). */
+export const SPAN_SCANS: Readonly<Record<string, (text: string) => Hit[]>> = Object.freeze({
+  "mysql-password": scanMysql,
+  "password-flag": (text: string) => [...scanLogin(text), ...scanRedis(text)],
+  "curl-user": scanCurl,
+  "secret-assign": scanNpm,
+});
+
+// ---------- the span scans end
 
 /** The value a word gives its command from its `skip`th character on (shell-lex.ts wordChars: quotes taken off,
  *  escapes read), placed where those characters are written: a hit when at least `min` characters long. */
@@ -1499,18 +1570,16 @@ function iniSection(text: string, from: number): boolean {
  *  quoted key's `:` (`"//registry/:_authToken": "tok"`, a JSON or YAML map of npm's config). npm config list's own
  *  mask, `= (protected)`, is no value VALUE reads. */
 const NPMRC_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)(?:[ \t]{0,3}=(?!=)|["'][ \t]{0,3}:)[ \t]{0,3}${VALUE}`, "gd");
-/** npm's (pnpm's, yarn's) `config set` or `set`, read as a command (commandWords): there a key and its value are two words
- *  (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
-const NPM_SET_COMMAND = new RegExp(String.raw`${shellName("npm|pnpm|yarn")}[ \t]{1,3}(?:${shellName("config", false)}[ \t]{1,3})?${shellName("set", false)}`, "g");
-/** The same, as the span scan reads it (inside), and the key and value it finds there. */
-const NPM_SET_SCAN = /\b(?:npm|pnpm|yarn)[ \t]{1,3}(?:config[ \t]{1,3})?set(?=[ \t])/g;
-const NPM_SET_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)[ \t]{1,3}${VALUE}`, "gd");
+/** npm (pnpm, yarn), read as a command (commandWords) when it runs `config set` or `set`: there a key and its value
+ *  are two words (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
+const NPM_COMMAND = new RegExp(shellName("npm|pnpm|yarn"), "g");
+const NPM_SET = subcommandAt([["set"], ["config", "set"]]);
 /** An npm auth key ending a `set` argument (`//registry/:_authToken`); the next word is its value. */
 const NPM_AUTH_KEY = /(?:^|[^\w$.])(_authToken|_password|_auth)$/;
 /** Each `npm set` key's value, at least 3 characters: the word after the key's (ruling LXXVI). */
 const npmSet = (text: string): Hit[] => {
   const out: Hit[] = [];
-  for (const words of commandWords(text, NPM_SET_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds })) {
+  for (const words of commandWords(text, NPM_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds, after: NPM_SET })) {
     for (let i = 0; i + 1 < words.length; i++) {
       const key = NPM_AUTH_KEY.exec(wordText(text, words[i]!));
       const hit = key ? wordValue(text, words[i + 1]!, 0, 3, key[1]!) : undefined;
@@ -2135,9 +2204,6 @@ const SSHPASS = new RegExp(String.raw`\bsshpass[ \t]{1,3}-p[ \t]{0,3}${VALUE}`, 
 /** A mysql-family command, read as a command (commandWords); its `-p<pw>` read inside (no blank after
  *  `-p`: `-p word` prompts for the password and names a database, ruling D). */
 const MYSQL_COMMAND = new RegExp(shellName("mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|mariadb-dump|mariadb-admin"), "g");
-/** The same, as the span scan reads it (inside), and the `-p<pw>` it finds there. */
-const MYSQL_SCAN = /\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|mariadb-dump|mariadb-admin)(?=[ \t])/g;
-const MYSQL_P = new RegExp(String.raw`(?<=[ \t])-p${VALUE}`, "gd");
 const mysqlPasswords = (text: string): Hit[] => {
   const out: Hit[] = [];
   for (const words of commandWords(text, MYSQL_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds })) {
@@ -2152,14 +2218,10 @@ const mysqlPasswords = (text: string): Hit[] => {
 /** --password=<pw> or --password <pw>, and the same of --*-password, --passwd, --token, --api-key and kin. */
 const PASSWORD_FLAG = new RegExp(String.raw`(?<![A-Za-z0-9-])(--(?:[a-z0-9]{1,20}-){0,3}(?:password|passwd|pass|token|api-key|apikey|auth-token|secret-key|access-key))(?:=|[ \t]{1,3}(?!-))${VALUE}`, "gdi");
 /** A registry login (`docker login -p <pw>`), redis-cli's `-a <pw>`: each command read as one (commandWords), its
- *  short password flag inside. */
-const LOGIN_COMMAND = new RegExp(String.raw`${shellName("docker|podman|nerdctl|buildah|skopeo")}[ \t]{1,3}${shellName("login", false)}`, "g");
+ *  short password flag inside; a registry tool's only when it runs `login`. */
+const LOGIN_COMMAND = new RegExp(shellName("docker|podman|nerdctl|buildah|skopeo"), "g");
+const LOGIN = subcommandAt([["login"]]);
 const REDIS_COMMAND = new RegExp(shellName("redis-cli"), "g");
-/** The same two, as the span scan reads them (inside), and the flag and value it finds there. */
-const LOGIN_SCAN = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login\b/g;
-const LOGIN_P = new RegExp(String.raw`(?<=[ \t])(-p)(?:=|[ \t]{1,3})${VALUE}`, "gd");
-const REDIS_SCAN = /\bredis-cli\b/g;
-const REDIS_A = new RegExp(String.raw`(?<=[ \t])(-a)[ \t]{1,3}${VALUE}`, "gd");
 /** openssl's `-passin pass:<pw>` (and -passout, -pass, -k pass:): the password after `pass:`. */
 const OPENSSL_PASS = /(?<![A-Za-z0-9-])(-(?:passin|passout|pass|k))[ \t]{1,3}(["']?)pass:([^\s"']{1,1024})\2/dg;
 /** A .netrc line: `machine <host>` (or `default`), maybe `login`/`account`, then `password <pw>`. */
@@ -2169,10 +2231,10 @@ const flagValue = (hit: Hit | undefined): Hit | undefined => (hit ? { ...hit, co
 function passwordFlags(text: string): Hit[] {
   return [
     ...each(text, PASSWORD_FLAG, (m) => flagValue(valueHit(m, 2, 3, m[1]))),
-    ...flagWords(text, commandWords(text, LOGIN_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds }), "-p", true, 1),
+    ...flagWords(text, commandWords(text, LOGIN_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds, after: LOGIN }), "-p", true, 1),
     ...flagWords(text, commandWords(text, REDIS_COMMAND, { max: SHELL_LINE_MAX, ends: shellEnds }), "-a", false, 1),
-    ...inside(text, LOGIN_SCAN, LOGIN_P, (m) => flagValue(valueHit(m, 2, 1, m[1]))),
-    ...inside(text, REDIS_SCAN, REDIS_A, (m) => flagValue(valueHit(m, 2, 1, m[1]))),
+    ...scanLogin(text),
+    ...scanRedis(text),
     ...each(text, OPENSSL_PASS, (m) => ({ start: m.indices![3]![0], end: m.indices![3]![1], name: m[1]!, quoted: true })),
     ...each(text, NETRC, (m) => ({ start: m.indices![2]![0], end: m.indices![2]![1], name: m[1]!, quoted: true })),
   ];
@@ -2229,20 +2291,14 @@ const cookieHeader = (text: string) => (m: RegExpExecArray): Hit | undefined => 
  *  a line's end, none of them quoted; a lone `&` does not end it, ruling XXIV); its `-u user:pass`, `-uuser:pass`,
  *  `--user user:pass` or `--user=user:pass` password read inside. */
 const CURL_COMMAND = new RegExp(shellName("curl"), "g");
-/** The same, as the span scan reads it (inside), and the `-u user:pass` it finds there. */
-const CURL_SCAN = /\bcurl\b/g;
-const CURL_USER = /(?<=\s)(?:-u[ \t]{0,3}|--user(?:=|[ \t]{1,3}))(?:(["'])[^\s:"']{0,256}:([^"'\n]{1,512})\1|[^\s:"']{0,256}:([^\s"']{1,512}))/gd;
-const curlUser = (m: RegExpExecArray): Hit => {
-  const [start, end] = m.indices![m[2] !== undefined ? 2 : 3]!;
-  return { start, end, name: "user", quoted: true, whole: true };
-};
 /** How long a curl `-u` user may be before its `:`. */
 const CURL_USER_MAX = 256;
-/** How far a curl `-u` password runs on over the characters glued to it, and the characters that end that run. */
-const CURL_PASSWORD_MAX = 1024;
+/** The characters that end the run a curl `-u` password is glued into. */
 const GLUED_STOP = /[\s"']/;
 const curlUsers = (text: string): Hit[] => {
   const out: Hit[] = [];
+  // The last glued run read, [from, to): a password inside it ends where it does, so each run is read once.
+  let run = [0, 0];
   for (const words of commandWords(text, CURL_COMMAND, { max: CURL_MAX, ends: curlEnds, own: true })) {
     for (let i = 0; i < words.length; i++) {
       const flag = wordText(text, words[i]!);
@@ -2257,10 +2313,16 @@ const curlUsers = (text: string): Hit[] => {
       const password = colon < 0 || colon - skip > CURL_USER_MAX ? undefined : wordFrom(text, arg, colon + 1);
       if (!password) continue;
       // The shell ends a word at `&`, `(`, `)`, `<`, `>`; a password written with one (`admin:Copper&9lumen9`) runs on
-      // to the next blank or quote, as the span scan reads it (CURL_USER): the cut takes the glued run.
+      // to the next blank or quote, as the span scan reads it (CURL_USER): the cut takes the glued run, to its end
+      // however long (fail closed: no tail is left).
       let end = password.end;
-      while (end < text.length && end - password.start < CURL_PASSWORD_MAX && !GLUED_STOP.test(text.charAt(end))) end++;
-      out.push({ start: password.start, end, name: "user", quoted: true, whole: true });
+      if (run[0]! <= end && end < run[1]!) end = run[1]!;
+      else {
+        const from = end;
+        while (end < text.length && !GLUED_STOP.test(text.charAt(end))) end++;
+        run = [from, end];
+      }
+      out.push({ start: password.start, end, name: "user", quoted: true });
     }
   }
   return out;
@@ -2622,10 +2684,10 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   // naming their file (ssh-keyscan's public host keys) are not cut (ruling G).
   rule("ssh-file", "dump", (text, ctx) => [...wholeText(text, ctx, sshFilePath), ...fileReads(text, sshFilePath, sshLine)]),
   rule("sshpass", "label", (text) => each(text, SSHPASS, (m) => flagValue(valueHit(m, 1, 1, "sshpass -p")))),
-  rule("mysql-password", "label", (text) => [...mysqlPasswords(text), ...inside(text, MYSQL_SCAN, MYSQL_P, (m) => flagValue(valueHit(m, 1, 1, "-p")))]),
+  rule("mysql-password", "label", (text) => [...mysqlPasswords(text), ...scanMysql(text)]),
   rule("password-flag", "label", passwordFlags),
   rule("auth-header", "label", (text) => [...each(text, AUTH_HEADER, authHeader(text)), ...each(text, COOKIE_HEADER, cookieHeader(text))]),
-  rule("curl-user", "label", (text) => [...curlUsers(text), ...inside(text, CURL_SCAN, CURL_USER, curlUser, true)]),
+  rule("curl-user", "label", (text) => [...curlUsers(text), ...scanCurl(text)]),
   // The generic label comes after the labels a command or a header names, so where both read one value (a header
   // in a string, ruling XXXIX), the cut is named for the narrower label.
   rule("secret-assign", "label", (text, ctx) => {
@@ -2639,7 +2701,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
       ...helmSetLists(text),
       ...each(text, NPMRC_AUTH, npmAuth),
       ...npmSet(text),
-      ...inside(text, NPM_SET_SCAN, NPM_SET_AUTH, npmAuth),
+      ...scanNpm(text),
     ];
   }),
   rule("k8s-secret", "label", (text) => [
@@ -2662,7 +2724,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
-  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_SET_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
+  UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
