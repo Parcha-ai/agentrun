@@ -5,6 +5,8 @@
 // endpoint, triggers and their webhook hooks (all but a firing's release, which the launch hook's host sends), the rest
 // of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
+
+export { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
@@ -35,9 +37,11 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
  *    its key by api_key_env (COMPOSIO_API_KEY, on the launcher's list of secrets, read at each use through secrets.ts
  *    secret, sent to Composio's origin alone: composio-made.ts composioEnvKey), and its body names no address or headers.
- *    There is no list or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
- *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's
- *    triggers stay refused;
+ *    There is no list or read of the servers here (listMcpServerNames above is the listing). The generic save
+ *    (saveMcpServer) is served only when the operator names MCP origins (API_ONLY_MCP_ORIGINS_ENV), and then saves a
+ *    per_run server (which keeps no credential) at one of those origins alone (apiOnlyMcpSave); unset, it is refused as
+ *    any other route, so the token saves no server at an address or with headers of its own. Previews, refreshes,
+ *    sign-ins and Composio's triggers stay refused;
  *  - the launch hook's host (the backend in front of this server) releases a firing it took and will start no run for
  *    (releaseTriggerFiring, triggers.ts release), so its trigger's room frees at once; with no launch hook the route is
  *    the route's own 422. */
@@ -76,17 +80,35 @@ export function apiOnlyTriggerSkipped(packageName: string, trigger: { name?: unk
   return { reason: NOT_SET_UP, message: `${named} and has no launch hook, so its firings have nowhere to go. Start its runs through the API, or set the launch hook (${LAUNCH_HOOK_URL_ENV} and ${LAUNCH_HOOK_SECRET_ENV}) and apply again: each firing then goes to your backend, which starts its run.` };
 }
 
+/** Whether an API-only server saves `body` through the generic save (saveMcpServer) over the name its path gives: a
+ *  per_run server (no credential kept) whose url's origin is one of `origins`, under a name that is not a Composio
+ *  preset's (`preset`; Composio's own route saves those). Checked before anything reaches the address. A body that
+ *  carries a credential never gets here: the secret-write gate refuses it first (403), as it refuses the token's save
+ *  over a server it did not save or one that seals a credential (mcp-secret-writes.ts tokenWriteOverRefused). */
+export function apiOnlyMcpSave(body: unknown, preset: boolean, origins: readonly string[]): boolean {
+  if (preset || origins.length === 0 || body === null || typeof body !== "object") return false;
+  const { url, auth } = body as { url?: unknown; auth?: unknown };
+  if (auth === null || typeof auth !== "object" || (auth as { type?: unknown }).type !== "per_run" || typeof url !== "string") return false;
+  try {
+    return origins.includes(new URL(url).origin);
+  } catch {
+    return false;
+  }
+}
+
 /** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
 const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
- *  API_ONLY_ROUTES matches for that method (HEAD as GET), or a GET of a run's computer live view. */
-export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string): boolean {
+ *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save when the operator names MCP origins
+ *  (`mcpOrigins`, its body checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
+export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpOrigins: readonly string[] = []): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
   if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
-  return routes.some((route) => API_ONLY_ROUTES.has(route.name) && route.method === asked && route.pattern.test(path));
+  const served = (name: string) => API_ONLY_ROUTES.has(name) || (name === "saveMcpServer" && mcpOrigins.length > 0);
+  return routes.some((route) => served(route.name) && route.method === asked && route.pattern.test(path));
 }
 
 /** The refusal's words for `raw` on an API-only server. */

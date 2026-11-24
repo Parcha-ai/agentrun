@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, switchFrom } from "./env-switch.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -119,7 +119,9 @@ version, the platform and how many runs as a range, never prompts, files or keys
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
-other address is a 404, and there are no accounts).
+other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
+as http://127.0.0.1:4001) lets the token save a per_run MCP server at one of those origins (PUT
+/v2/settings/mcp-servers/NAME); unset, that save is a 404. A loopback origin also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1.
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -535,11 +537,14 @@ process.on("SIGINT", signalled);
 process.on("SIGTERM", signalled);
 // AGENTRUN_API_ONLY=1: the run routes alone (api-only.ts), and no owner; a value that is neither on nor off stops here.
 // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
+// AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
 let apiOnly: boolean;
 let runKeys: boolean;
+let apiOnlyMcpOrigins: string[];
 try {
   apiOnly = switchFrom(API_ONLY_ENV);
   runKeys = switchFrom(RUN_KEYS_ENV);
+  apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
@@ -594,6 +599,7 @@ try {
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+    ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
