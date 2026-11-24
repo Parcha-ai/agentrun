@@ -733,11 +733,23 @@ test("a renewal whose write-back loses to a new sign-in revokes its own pair and
   assert.equal(openai.revocationsOf(again.refresh), 0, "the new sign-in stays");
 });
 
-test("a second sign-in revokes the first before it takes its place", { timeout: 30_000 }, async (t) => {
+/** The row as `store` seals it, opened with `sealKey`: what a stop leaves for the next start. */
+async function openRow(store, sealKey) {
+  const { sealedAt, unsealColumn } = await import("../dist/store/seal.js");
+  const bytes = store.sealed.get(PLAN_ROW);
+  return bytes === undefined ? undefined : JSON.parse(unsealColumn(sealKey, sealedAt.sealedKey(PLAN_ROW), bytes).toString("utf8"));
+}
+
+/** Whether every pair live at OpenAI (its refresh token issued and neither spent nor revoked) is in `row`: its own, or
+ *  one it carries to revoke (`retired`). */
+const noneUnsaved = (openai, row) => [...openai.live].every((refresh) => row?.credential.refresh === refresh || (row?.retired ?? []).some((old) => old.refresh === refresh));
+
+test("a second sign-in takes the first's place and revokes it: the row then holds the second alone", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
   const store = mapStore();
-  const plan = new ChatGPTPlan({ store, sealKey: randomBytes(32) });
+  const sealKey = randomBytes(32);
+  const plan = new ChatGPTPlan({ store, sealKey });
   t.after(() => plan.close());
   const signIn = async () => {
     const { authorize_url } = await plan.startSignIn();
@@ -750,6 +762,86 @@ test("a second sign-in revokes the first before it takes its place", { timeout: 
   assert.equal(openai.revocationsOf(first.refresh), 1, "the first sign-in is revoked");
   assert.equal(openai.revocationsOf(second.refresh), 0, "the second is kept");
   assert.equal(await plan.token(), second.access);
+  const row = await openRow(store, sealKey);
+  assert.equal(row.credential.refresh, second.refresh);
+  assert.equal(row.retired, undefined, "the first, revoked, is no longer carried");
+  assert.equal(row.unlisted, undefined);
+  assert.deepEqual(row.models, ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"], "the plan's models, as OpenAI listed them");
+});
+
+test("a sign-in is saved as soon as OpenAI answers its code: cut off by a stop while its models are listed, no pair is live at OpenAI and saved nowhere, and the next start lists them and revokes the sign-in it replaced", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const plan = new ChatGPTPlan({ store, sealKey });
+  let release;
+  t.after(() => {
+    release?.();
+    return plan.close();
+  });
+  const { authorize_url } = await plan.startSignIn();
+  await plan.finishSignIn(callbackFor(authorize_url));
+  const first = openai.issued.at(-1);
+  // The second sign-in's model list never answers before the stop: the store is read as the stop leaves it.
+  openai.holdModels = new Promise((resolve) => (release = resolve));
+  const again = await plan.startSignIn();
+  plan.finishSignIn(callbackFor(again.authorize_url)).catch(() => undefined);
+  await until(() => openai.modelLists === 2, "the second sign-in's code was exchanged, and its models are being listed");
+  const second = openai.issued.at(-1);
+  const left = await openRow(store, sealKey);
+  assert.equal(left?.credential.refresh, second.refresh, "the second sign-in is saved before its model list answers");
+  assert.deepEqual((left.retired ?? []).map((old) => old.refresh), [first.refresh], "the first rides in the row until it is revoked");
+  assert.ok(noneUnsaved(openai, left), "every pair live at OpenAI is in the row");
+  // The next start: its models listed, the first revoked and dropped from the row.
+  openai.holdModels = undefined;
+  const next = await new ChatGPTPlan({ store, sealKey }).load();
+  t.after(() => next.close());
+  await until(() => openai.revocationsOf(first.refresh) === 1, "the next start revokes the sign-in the second replaced");
+  await next.close();
+  const settled = await openRow(store, sealKey);
+  assert.equal(settled.credential.refresh, second.refresh);
+  assert.equal(settled.retired, undefined);
+  assert.equal(settled.unlisted, undefined);
+  assert.equal(next.view().state, "signed_in");
+  assert.deepEqual(next.view().models, ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]);
+});
+
+test("a replaced sign-in whose revocation OpenAI doesn't confirm stays in the row: the next start revokes it again, and a sign-out revokes what the row carries", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const plan = new ChatGPTPlan({ store, sealKey });
+  t.after(() => plan.close());
+  const signIn = async () => {
+    const { authorize_url } = await plan.startSignIn();
+    assert.equal((await plan.finishSignIn(callbackFor(authorize_url))).state, "signed_in");
+    return openai.issued.at(-1);
+  };
+  const first = await signIn();
+  openai.revokeStatus = 503;
+  const second = await signIn();
+  assert.equal(openai.revocationsOf(first.refresh), 1, "asked once");
+  assert.deepEqual((await openRow(store, sealKey)).retired.map((old) => old.refresh), [first.refresh], "unconfirmed: still carried");
+  // The next start, with OpenAI answering again.
+  openai.revokeStatus = 200;
+  const next = await new ChatGPTPlan({ store, sealKey }).load();
+  t.after(() => next.close());
+  await until(() => openai.revocationsOf(first.refresh) === 2, "the next start revokes it again");
+  await next.close();
+  assert.equal((await openRow(store, sealKey)).retired, undefined, "confirmed: dropped");
+  // A third sign-in whose replaced pair OpenAI doesn't confirm, then a sign-out: it revokes the row's pair and the one
+  // it carries, and says revoked only once OpenAI confirmed both.
+  openai.revokeStatus = 503;
+  const third = await signIn();
+  assert.deepEqual((await openRow(store, sealKey)).retired.map((old) => old.refresh), [second.refresh]);
+  openai.revokeStatus = 200;
+  assert.deepEqual(await plan.signOut(), { revoked: true });
+  assert.equal(store.sealed.get(PLAN_ROW), undefined);
+  assert.equal(openai.revocationsOf(third.refresh), 1);
+  assert.equal(openai.revocationsOf(second.refresh), 2, "the carried pair is revoked by the sign-out");
+  assert.equal(openai.live.size, 0, "nothing left alive at OpenAI");
 });
 
 /** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */
