@@ -19,7 +19,8 @@
 // the runner that kept it can reach again (a Docker container, a machine that dials that runner: computer-kept.ts
 // pinnedOf) names that runner and its incarnation on its row (`ClaimLaunch.holder`), and the store's claim rule lets no
 // other runner claim the run while that runner is live and the keep lasts; one taken after it is gone and not reached
-// here is said to be lost with it (`lost`).
+// here is said to be lost with it (`lost`), and one taken while it is there but not claiming, and not reached here, is
+// given back for it to end and said so (`elsewhere`).
 //
 // A sandbox the claim made can be lost mid-run (its vendor deleted it, or no longer has it): the call that finds it lost
 // fails, saying so and that it was not run again (code gone, computer-lost.ts lostInCallWords), and is never sent to the
@@ -271,8 +272,10 @@ export type KeptKind = Kept["kind"];
 /** A computer the claim made fresh in place of an earlier claim's: its kind, and `folderKept`, the run's folder is on
  *  Archil (Mode 2) and mounted in it, so the folder is kept. `lapsed`: the earlier one was kept at a park, and its time
  *  (KEEP_MS) passed before this claim. `lost`: the earlier one was kept at a park pinned to another runner (or another
- *  process of this runner's name), that runner was gone by this claim, and this claim could not reach it. */
-export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true; readonly lost?: true };
+ *  process of this runner's name), that runner was gone by this claim, and this claim could not reach it. `elsewhere`:
+ *  the same, but that runner was still there (refusing claims, or its word late), so this claim gave the row back for
+ *  that runner to end the machine (restoreKept). */
+export type Replaced = { readonly kind: MadeKind; readonly folderKept: boolean; readonly lapsed?: true; readonly lost?: true; readonly elsewhere?: true };
 
 /** A computer that cannot be had, with the code the run fails with and the server's words. */
 const unavailable = (words: string): Error => Object.assign(new Error(words), { code: "computer_unavailable" });
@@ -919,6 +922,8 @@ export async function computerForClaim(
   /** The kept computer was pinned to another runner, gone by this claim, and this claim could not reach it: the new one
    *  says so (Replaced.lost). */
   let lost = false;
+  /** The same, but that runner was still there, and this claim gave its row back for it to end (Replaced.elsewhere). */
+  let heldThere = false;
   /** What a park of this claim keeps (ClaimComputer.park): a desktop, a phone or a sandbox it made through its provider, or took
    *  back, with its provider, its connection's close and the claim epoch its labels carry; `pinned`: only this runner can
    *  reach it again (computer-kept.ts pinnedOf), so the park names this claim's holder on its row. */
@@ -1047,12 +1052,14 @@ export async function computerForClaim(
       // row so marked) or its janitor's still finds it and deletes the machine. A row left off would leave the machine
       // running with nothing to end it.
       // Once that runner is gone, the row stays off: the machine went with it, or its host's janitor ends it. A failed
-      // read of who is there puts it back: any janitor ends a row whose runner is gone.
-      const giveBack = async (): Promise<void> => {
-        if (!took || !elsewhere) return;
+      // read of who is there puts it back: any janitor ends a row whose runner is gone. True when that runner was there,
+      // for the new one's words (Replaced.elsewhere, else lost).
+      const giveBack = async (): Promise<boolean> => {
+        if (!took || !elsewhere) return false;
         took = false;
         const there = await heldElsewhere({ ...(store.runners ? { runners: store.runners } : {}), ...(launch.holder ? { self: launch.holder } : {}) })(record);
         if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
+        return there;
       };
       try {
         // Its end begun before its time: a claim that could not reach it went on on a new machine and gave its row back so,
@@ -1071,8 +1078,8 @@ export async function computerForClaim(
         const provider = await vendorProvider(entry, keys, configuration);
         const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
         if (!taken) {
-          lost = elsewhere;
-          await giveBack();
+          heldThere = await giveBack();
+          lost = elsewhere && !heldThere;
           return undefined;
         }
         // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
@@ -1092,9 +1099,9 @@ export async function computerForClaim(
         return { ...again, epoch: record.epoch };
       } catch {
         // Taken off its row (or not), and not reached here: lost to this claim where it was pinned to another runner, its
-        // row given back while that runner is there.
-        lost = elsewhere && !lapsed;
-        await giveBack().catch(() => undefined);
+        // row given back while that runner is there, said so.
+        heldThere = await giveBack().catch(() => false);
+        lost = elsewhere && !lapsed && !heldThere;
         return undefined;
       }
     },
@@ -1155,7 +1162,7 @@ export async function computerForClaim(
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch };
-        if (!pairedRow && (releasedOlder || journalSays || lost)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : lapsed ? { lapsed: true as const } : {}) };
+        if (!pairedRow && (releasedOlder || journalSays || lost || heldThere)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : heldThere ? { elsewhere: true as const } : lapsed ? { lapsed: true as const } : {}) };
       }
       made = { id: launched.id, machine: launched.machine, ...(launched.watch ? { watch: launched.watch, ...(kind === "desktop" || kind === "phone" ? { gone: goneOf(provider, launched.id, listedUnder, kind) } : {}) } : {}) };
       madeBy = entry;

@@ -34,8 +34,9 @@
 // (store KEPT_PREFIX: no other runner's poll picks it, nothing is claimed and given back). A stop or cancel is exempt:
 // any runner claims the run at once and ends it with no loop, never taking the row (runner.ts claimMore), and the
 // row's runner ends the machine at its time, or at its janitor's pass once the run is over. Once it is gone (its row stale
-// for PRESENCE_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then finds the
-// machine gone says so (computerLostWords). A refusing runner is still there (store KEPT_PREFIX): the claim that could
+// for PRESENCE_STALE_MS, a new incarnation) or refusing claims, any runner claims the run; a claim that then can't reach
+// the machine says why: its runner is gone (computerLostWords), or it is there and ends it (computerHeldWords). A
+// refusing runner is still there (store KEPT_PREFIX): the claim that could
 // not reach its machine puts the row back marked ending (restoreKept: the claim goes on on a new machine, so that one is
 // the run's no more and no claim takes it back), and no janitor but that runner's ends a row pinned to a runner still
 // there (sweepKept): that runner's own timer (endKept finishes a row so marked) or janitor does. No park writes over a row
@@ -79,6 +80,12 @@ export const computerLapsedWords = (kind: string): string => `The ${kind} wasn't
  *  (pinnedOf), that runner was gone by the resume, and the claiming runner could not reach it. Never names the runner:
  *  a runner's name carries its host's. */
 export const computerLostWords = (kind: string): string => `The ${kind} wasn't kept: the runner that kept it is gone.`;
+
+/** Why the run's computer at its resume is a new one: the one kept at its park was pinned to the runner that kept it,
+ *  that runner was still there but could not take the run back (refusing claims, or its word late), and the claiming
+ *  runner could not reach the machine, so it went on on a new one and that runner ends the kept one (restoreKept). Never
+ *  names the runner. */
+export const computerHeldWords = (kind: string): string => `The ${kind} wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.`;
 
 /** The live view's words once the kept computer's time passed, the run still parked. */
 export const lapsedWords = (kind: string): string => `${computerLapsedWords(kind)} A new one starts when the run goes on.`;

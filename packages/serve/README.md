@@ -425,7 +425,10 @@ then. A stop or a cancel never waits: any runner claims the run at once and ends
 (also when the kept row can't be read then), which the runner that kept it ends at its time, or sooner at its janitor's
 next pass once the run is over; another runner's janitor leaves both the row and the machine. Once that runner
 is gone, any runner claims it, starts a new one, and the timeline says `The desktop wasn't kept: the runner that kept it
-is gone.` `agentrun-serve runner --check --data DIR --name N`
+is gone.` While that runner is there but not claiming (it refuses claims, or its word is late), any runner claims it too;
+one that can't reach the machine starts a new one, leaves the kept machine to that runner to end, and the timeline says
+`The desktop wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.` A later park of
+that run keeps nothing while that runner's row stands. `agentrun-serve runner --check --data DIR --name N`
 (or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
 every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
 heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
