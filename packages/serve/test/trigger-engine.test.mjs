@@ -1796,8 +1796,7 @@ test("a host start whose start_by push finds the firing moved, because its run w
   // Its check read the firing sent with no run and holds its push: the firing's run is written and starts it meanwhile.
   await store.runs.create({ id: "run-b", agentId: "a", revisionId: "rev-a", origin: { key }, firing: { triggerId: id, key } });
   go.resolve();
-  // A refusal is compared as a value, so a start that refuses instead of reading again fails on this assertion.
-  const answer = await start.then((ok) => ok, (error) => ({ refused: error?.code, reason: error?.extra?.fields?.[0]?.reason }));
+  const answer = await start.catch((error) => assert.fail(`the start refused (${error?.code}, ${error?.extra?.fields?.[0]?.reason}) where it reads the moved firing again and answers its run`));
   assert.deepEqual(answer, { run_id: "run-b", replayed: true });
   const row = await store.triggers.firing(id, key);
   assert.deepEqual([row.status, row.runId], ["started", "run-b"], JSON.stringify(row));
