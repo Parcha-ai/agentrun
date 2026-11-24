@@ -153,6 +153,29 @@ describe("Build agent page", () => {
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!.value).toBe("An agent that monitors my queue.");
   });
 
+  it("lists the marketplace's templates when this server's list fails, in the count and the search, beside the failure", async () => {
+    listTemplates.mockRejectedValueOnce(new Error("The template catalog is offline."));
+    listMarketplaceTemplates.mockResolvedValue({
+      url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z",
+      templates: [
+        { name: "company-brief", title: "Company research brief", tags: [], needs: [], page_url: "https://marketplace.example/templates/company-brief/" },
+        { name: "vendor-outage-watch", title: "Vendor outage watch", tags: [], needs: [], page_url: "https://marketplace.example/templates/vendor-outage-watch/" },
+      ],
+    });
+    await mount();
+    await act(async () => {});
+    expect(host.querySelector('[role="alert"]')).not.toBeNull();
+    expect([...host.querySelectorAll("article")].map((c) => c.getAttribute("aria-label"))).toEqual(["Company research brief from the marketplace", "Vendor outage watch from the marketplace"]);
+    expect([...host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain("2 of 2");
+    await act(async () => {
+      const input = host.querySelector<HTMLInputElement>('input[aria-label="Search templates"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "nothing like it");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.querySelectorAll("article")).toHaveLength(0);
+    expect([...host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain("No templates match “nothing like it”.");
+  });
+
   it("says a marketplace that failed, with Try again, and lists its templates once a try reads them; this server's own stay listed", async () => {
     const READ: MarketplaceList = { url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [{ name: "vendor-outage-watch", title: "Vendor outage watch", tags: [], needs: [], page_url: "https://marketplace.example/templates/vendor-outage-watch/" }] };
     listMarketplaceTemplates.mockRejectedValueOnce(new Error("The marketplace is offline.")).mockResolvedValue(READ);

@@ -38,6 +38,9 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
     return () => { live = false; };
   }, [v2, tries]);
   const listed = packages?.filter(inCatalog) ?? null;
+  // This server's read has ended, read or failed: the marketplace's cards follow it, so they never show before this server's
+  // own, and a failed read here does not hide them.
+  const settled = packages !== null || error !== null;
   const market = useMarketplace(v2);
   // A card the marketplace lists reads its one line there, as the marketplace's card does; else its description.
   const lineOf = (template: TemplateView) => market.list?.templates.find((m) => m.here === template.id)?.summary ?? template.description;
@@ -72,7 +75,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-baseline gap-3">
           <h2 id={`${id}-templates`} className="text-lead font-semibold">Start from a template</h2>
-          <span role="status" className="text-small text-muted-foreground">{packages === null && !error ? "Loading templates…" : listed ? `${shown.length + others.length} of ${listed.length + elsewhere.length}` : ""}</span>
+          <span role="status" className="text-small text-muted-foreground">{!settled ? "Loading templates…" : listed || elsewhere.length ? `${shown.length + others.length} of ${(listed?.length ?? 0) + elsewhere.length}` : ""}</span>
         </div>
         <div className={cn(fieldBoxClass, "flex w-full items-center gap-2 px-3 sm:w-72")}>
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -81,7 +84,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
       </div>
       {error && <ProblemCard problem={error} onRetry={() => setTries((value) => value + 1)} className="mb-5" />}
       {listed?.length === 0 && <p className="border border-border px-5 py-10 text-center text-lead text-muted-foreground">This server has no template packages yet. Describe the agent you want to build above.</p>}
-      {listed && listed.length + elsewhere.length > 0 && !shown.length && !others.length && <p role="status" className="border border-border px-5 py-10 text-center text-muted-foreground">No templates match “{search}”.</p>}
+      {settled && (listed?.length ?? 0) + elsewhere.length > 0 && !shown.length && !others.length && <p role="status" className="border border-border px-5 py-10 text-center text-muted-foreground">No templates match “{search}”.</p>}
       {/* The marketplace's own failure, and a list it could not read now, each with Try again, as the Templates page says them. */}
       {market.error && <ProblemCard problem={market.error} onRetry={market.retry} className="mb-5" />}
       {note && <p role="status" className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-1 text-small text-muted-foreground">{note}<Button size="sm" onClick={market.retry}>Try again</Button></p>}
@@ -100,7 +103,7 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
             </div>
           </article>;
         })}
-        {packages && others.map((template) => <article key={`marketplace:${template.name}`} aria-label={`${template.title} from the marketplace`} className="flex flex-col border bg-card" data-marketplace-template={template.name}>
+        {settled && others.map((template) => <article key={`marketplace:${template.name}`} aria-label={`${template.title} from the marketplace`} className="flex flex-col border bg-card" data-marketplace-template={template.name}>
           <div className="flex flex-1 flex-col p-5">
             <div className="flex items-start gap-2"><span data-template-icon className="flex h-7 shrink-0 items-center"><TemplateHarnessIcon harness={template.harness} /></span><h3 className="text-lg font-semibold leading-snug">{template.title}</h3></div>
             <p className="mt-3 line-clamp-3 text-lead leading-relaxed text-muted-foreground">{marketplaceLine(template)}</p>
