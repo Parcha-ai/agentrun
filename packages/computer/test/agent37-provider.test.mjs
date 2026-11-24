@@ -122,7 +122,14 @@ test("the provider takes the key and the SSH key as options, a key's contents ne
 		return true;
 	});
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2: {} }), /ssh2 package/);
-	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "http://api.agent37.com" }), /https URL/);
+	for (const apiUrl of ["http://api.agent37.com", "http://127.0.0.1:8080", "http://localhost:8080"]) {
+		assert.throws(
+			() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl }),
+			(error) => /^the Agent37 API URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(KEY),
+			apiUrl,
+		);
+	}
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "https://api.agent37.com/v1?x=1" }), /the Agent37 API URL takes no query or fragment/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, type: "gpu" }), /vm or default/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "mars" }), /us, eu or ap-south/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "eu", type: "default" }), /takes type vm/);

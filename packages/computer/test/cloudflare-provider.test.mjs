@@ -187,7 +187,10 @@ test("Cloudflare's desktop configuration, as serve builds it, makes a desktop ov
 
 test("the constructor refuses a relay URL that is not https and a missing token, never echoing the token", () => {
 	assert.throws(() => new CloudflareProvider({ relayUrl: RELAY }), /options.relayToken, the relay's RELAY_TOKEN, is required/);
-	assert.throws(() => new CloudflareProvider({ relayUrl: "http://relay.example.com", relayToken: TOKEN }), (error) => /options.relayUrl is the relay Worker's https address/.test(error.message) && !error.message.includes(TOKEN));
+	for (const relayUrl of ["http://relay.example.com", "http://127.0.0.1:8787", "http://localhost:8787"]) {
+		assert.throws(() => new CloudflareProvider({ relayUrl, relayToken: TOKEN }), (error) => /^the Cloudflare relay URL must be https, so the key never crosses in the clear/.test(error.message) && !error.message.includes(TOKEN), relayUrl);
+	}
+	assert.throws(() => new CloudflareProvider({ relayToken: TOKEN }), /options\.relayUrl, the relay Worker's https address as wrangler deploy printed it, is required/);
 	assert.ok(create({ relayUrl: RELAY, relayToken: TOKEN }) instanceof CloudflareProvider);
 });
 

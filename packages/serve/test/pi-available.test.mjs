@@ -131,7 +131,7 @@ test("the faux model, and the model gateway with its model: pi is available; a g
   assert.doesNotMatch(pi.reason ?? "", /Ollama/);
 });
 
-test("the Ollama words go only where a model of the Ollama here would give the harness its model: pi, on a server that asks one", async () => {
+test("the Ollama words go only where a model of the Ollama here would give the harness its model: pi and every harness on a wire the route translates (claude-agent on Messages), on a server that asks one; never codex or opencode", async () => {
   const { chooseModel, ollamaWouldRun } = await import("../dist/model.js");
   // The env a server hands its own reads and its runner's: OLLAMA_HOST set where it asks one (server.ts, ollamaHostOf).
   // A closed port: this file clears the suites' Ollama switch, and no test asks this box's Ollama.
@@ -139,12 +139,15 @@ test("the Ollama words go only where a model of the Ollama here would give the h
   assert.equal(ollamaWouldRun(asks, "pi"), true);
   assert.equal(ollamaWouldRun({}, "pi"), false, "no OLLAMA_HOST: a shared server asks no Ollama");
   assert.equal(ollamaWouldRun({ OLLAMA_HOST: "10.0.0.5:11434" }, "pi"), false, "a refused OLLAMA_HOST is never asked");
-  assert.equal(ollamaWouldRun(asks, "claude-agent"), false, "claude-agent runs Anthropic's models alone");
+  // The wire decides (wires.ts TRANSLATED): the route translates an Ollama model onto Anthropic's Messages, claude-agent's.
+  assert.equal(ollamaWouldRun(asks, "claude-agent"), true, "claude-agent, on Messages, runs an Ollama model through the route");
+  for (const harness of ["codex", "opencode"]) assert.equal(ollamaWouldRun(asks, harness), false, `${harness}, on OpenAI's Responses, runs none`);
   assert.equal(ollamaWouldRun({ ...asks, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9/v1" }, "pi"), false, "the model gateway takes every model");
   assert.equal(ollamaWouldRun({ ...asks, AGENTRUN_SERVE_FAUX: "/x" }, "pi"), false, "the faux model");
   assert.match((await chooseModel(asks, undefined, "default", "pi")).why, NAMES_OLLAMA);
   assert.match((await chooseModel({}, undefined, "default", "pi")).why, NAMES_KEY);
-  assert.doesNotMatch((await chooseModel(asks, undefined, "default", "claude-agent")).why, /Ollama/);
+  assert.match((await chooseModel(asks, undefined, "default", "claude-agent")).why, NAMES_OLLAMA);
+  assert.doesNotMatch((await chooseModel(asks, undefined, "default", "codex")).why, /Ollama/);
 });
 
 // The Ollama step is offered only where this server asks an Ollama (Greptile P2 on #3492): OLLAMA_HOST, else the default

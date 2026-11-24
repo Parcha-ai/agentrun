@@ -398,6 +398,13 @@ function lowered(text: string): () => string {
   };
 }
 
+/** Every span `shape` matches in `text`, each on its own (not merged), in order: the scrubber's known-format rules
+ *  (secret-rules.ts) read each match, a URL's password inside its `://user:password@`, a PEM header stretched to its
+ *  block's end. */
+export function shapeSpans(text: string, shape: Shape): Span[] {
+  return spansOf(text, lowered(text), shape);
+}
+
 /** The kinds of `shapes` in `text`, each once, in their order. */
 export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
   const lower = lowered(text);
