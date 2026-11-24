@@ -114,6 +114,34 @@ test("a key that is not a valid header value, a missing key and a base URL that 
   assert.equal(server.requests[0].headers.authorization, `Bearer ${KEY}`);
 });
 
+test("the base URL is the server's address with or without /v2, as the CLI takes it: /v2 is added to a path with no v2 segment, its prefix kept; AGENTRUN_TOKEN stands in for AGENTRUN_API_KEY, which wins", async (t) => {
+  const server = await listener(t);
+  const prefix = server.base.replace(/\/v2$/, "");
+  for (const baseUrl of [prefix, `${prefix}/`, `${prefix}//`, server.base, `${server.base}/`]) assert.equal(new AgentRun({ baseUrl, apiKey: KEY }).baseUrl, server.base, baseUrl);
+  assert.equal(new AgentRun({ baseUrl: server.origin, apiKey: KEY }).baseUrl, `${server.origin}/v2`);
+  assert.equal(new AgentRun({ baseUrl: `${server.base}/extra`, apiKey: KEY }).baseUrl, `${server.base}/extra`, "a path with a v2 segment is kept");
+  await new AgentRun({ baseUrl: prefix, apiKey: KEY }).agents.list();
+  assert.equal(server.requests.at(-1).url, "/v2/agents");
+  const names = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN"];
+  const saved = names.map((name) => process.env[name]);
+  t.after(() => names.forEach((name, i) => (saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]))));
+  process.env.AGENTRUN_BASE_URL = prefix;
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = KEY;
+  const fromToken = new AgentRun();
+  assert.equal(fromToken.baseUrl, server.base, "the environment's address without /v2");
+  await fromToken.agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}`, "AGENTRUN_TOKEN when AGENTRUN_API_KEY is not set");
+  process.env.AGENTRUN_API_KEY = `${KEY}-api`;
+  await new AgentRun().agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}-api`, "AGENTRUN_API_KEY wins");
+  await new AgentRun({ apiKey: `${KEY}-given` }).agents.list();
+  assert.equal(server.requests.at(-1).headers.authorization, `Bearer ${KEY}-given`, "apiKey wins over both");
+  delete process.env.AGENTRUN_API_KEY;
+  process.env.AGENTRUN_TOKEN = "";
+  assert.equal(thrownSync(() => new AgentRun()).reason, "no_token", "an empty AGENTRUN_TOKEN is no key");
+});
+
 test("a path argument is encoded whole, a file path keeps its slashes, and one that would read as another route is refused before any request", async (t) => {
   const server = await listener(t, (req) => (/\/files\//.test(req.url) && !req.url.includes("learning") ? [200, { "content-type": "application/octet-stream" }, "x"] : json(200, {})));
   const client = new AgentRun({ baseUrl: server.base, apiKey: KEY });

@@ -779,6 +779,33 @@ test("the token kept with an address is found with or without /v2, and is never 
   assert.equal(home.requests.length + other.requests.length, seen, "nothing was sent");
 });
 
+test("AGENTRUN_TOKEN, the name the setup page gives the server's token, stands in for AGENTRUN_API_KEY: AGENTRUN_API_KEY and a token kept for the address win, and a local server started with its token in the environment takes it", async (t) => {
+  const { dir, env } = scratch(t);
+  const server = await listener(t, () => [200, "application/json", '{"agents":[],"next_cursor":null}']);
+  const prefix = server.base.replace(/\/v2$/, "");
+  const nowhere = ["--data", join(dir, "nowhere")];
+  const sent = async (extra, args = ["--base-url", prefix, ...nowhere]) => {
+    const listed = await run(env, ["agents", "list", ...args], { extra });
+    assert.equal(listed.code, 0, listed.err);
+    assert.ok(!`${listed.out}${listed.err}`.includes("fake-test-"));
+    return server.requests.at(-1).headers.authorization;
+  };
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }), "Bearer fake-test-token");
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token", AGENTRUN_API_KEY: "fake-test-key" }), "Bearer fake-test-key");
+  const empty = await run(env, ["agents", "list", "--base-url", prefix, ...nowhere], { extra: { AGENTRUN_TOKEN: "" } });
+  assert.equal(empty.code, 4, empty.err);
+  assert.match(empty.err, /No token for/);
+  mkdirSync(join(dir, ".config", "agentrun"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, ".config", "agentrun", "config.json"), JSON.stringify({ base_url: prefix, api_key: "fake-test-kept" }), { mode: 0o600 });
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }), "Bearer fake-test-kept", "the token kept for this address wins");
+  // The server on this machine, started with AGENTRUN_TOKEN (no .token file): the same variable is its token here.
+  const data = join(dir, "data");
+  mkdirSync(data, { mode: 0o700 });
+  writeFileSync(join(data, ".server.json"), JSON.stringify({ base_url: server.base, pid: process.pid }), { mode: 0o600 });
+  rmSync(join(dir, ".config", "agentrun", "config.json"));
+  assert.equal(await sent({ AGENTRUN_TOKEN: "fake-test-token" }, ["--data", data]), "Bearer fake-test-token");
+});
+
 test("login --base-url takes the address without /v2 too: it checks the token at PREFIX/v2 and keeps the API base, which the next command finds", async (t) => {
   const { dir, env } = scratch(t);
   const server = await listener(t, (request) => (request.headers.authorization === "Bearer fake-test-key" ? [200, "application/json", '{"agents":[],"next_cursor":null}'] : [401, "application/json", "{}"]));

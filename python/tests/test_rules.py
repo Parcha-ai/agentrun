@@ -181,6 +181,32 @@ class Rules(unittest.TestCase):
         from_env.agents.list()
         self.assertEqual(server.requests[0].headers["authorization"], f"Bearer {KEY}")
 
+    def test_the_base_url_is_the_servers_address_with_or_without_v2_as_the_cli_takes_it_and_agentrun_token_stands_in_for_agentrun_api_key_which_wins(self) -> None:
+        server = Listener(self)
+        prefix = server.base[: -len("/v2")]
+        for base_url in (prefix, f"{prefix}/", f"{prefix}//", server.base, f"{server.base}/"):
+            self.assertEqual(AgentRun(base_url=base_url, api_key=KEY).base_url, server.base, base_url)
+        self.assertEqual(AgentRun(base_url=server.origin, api_key=KEY).base_url, f"{server.origin}/v2")
+        self.assertEqual(AgentRun(base_url=f"{server.base}/extra", api_key=KEY).base_url, f"{server.base}/extra", "a path with a v2 segment is kept")
+        AgentRun(base_url=prefix, api_key=KEY).agents.list()
+        self.assertEqual(server.requests[-1].url, "/v2/agents")
+        with mock.patch.dict(os.environ, {"AGENTRUN_BASE_URL": prefix, "AGENTRUN_TOKEN": KEY}):
+            os.environ.pop("AGENTRUN_API_KEY", None)
+            from_token = AgentRun()
+            self.assertEqual(from_token.base_url, server.base, "the environment's address without /v2")
+            from_token.agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}", "AGENTRUN_TOKEN when AGENTRUN_API_KEY is not set")
+            os.environ["AGENTRUN_API_KEY"] = f"{KEY}-api"
+            AgentRun().agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-api", "AGENTRUN_API_KEY wins")
+            AgentRun(api_key=f"{KEY}-given").agents.list()
+            self.assertEqual(server.requests[-1].headers["authorization"], f"Bearer {KEY}-given", "api_key wins over both")
+            os.environ.pop("AGENTRUN_API_KEY")
+            os.environ["AGENTRUN_TOKEN"] = ""
+            missing = self.thrown(AgentRun)
+            assert isinstance(missing, AgentRunAuthError)
+            self.assertEqual(missing.reason, "no_token", "an empty AGENTRUN_TOKEN is no key")
+
     def test_a_path_argument_is_encoded_whole_a_file_path_keeps_its_slashes_and_one_that_would_read_as_another_route_is_refused_before_any_request(self) -> None:
         def answer(request: Request, reply: Reply) -> Any:
             if "/files/" in request.url and "learning" not in request.url:
