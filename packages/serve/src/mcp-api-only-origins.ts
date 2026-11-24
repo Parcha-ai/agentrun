@@ -30,11 +30,12 @@ export async function heldApiOnlyMcpOrigins(store: SettingsReader): Promise<read
 }
 
 /** Why the saved server `name` (`row`) can't be used, or undefined when it can. It can't be used when it is a per_run
- *  server the API token saved, the store holds an API-only list, and its address's origin is not on that list. */
-export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; createdAt?: number }): Promise<string | undefined> {
+ *  server the API token saved, the store holds an API-only list, and its address's origin is not on that list. `held`:
+ *  the list a caller already read (heldApiOnlyMcpOrigins); without it, the list is read here, for a per_run row alone. */
+export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, row: { auth: string; url: string; createdAt?: number }, held?: readonly unknown[]): Promise<string | undefined> {
   if (row.auth !== "per_run") return undefined;
-  const held = await heldApiOnlyMcpOrigins(store);
-  if (!held) return undefined;
+  const origins = held ?? (await heldApiOnlyMcpOrigins(store));
+  if (!origins) return undefined;
   if (!savedByToken(await store.settings.get(mcpSourceKey(name)), row.createdAt)) return undefined;
   let origin: string;
   try {
@@ -42,6 +43,6 @@ export async function offApiOnlyMcpOrigins(store: SettingsReader, name: string, 
   } catch {
     origin = "";
   }
-  if (held.includes(origin)) return undefined;
+  if (origins.includes(origin)) return undefined;
   return `The MCP server ${name} can't be used: the API token saved it at an origin that is no longer on this server's AGENTRUN_API_ONLY_MCP_ORIGINS. Nothing was sent.`;
 }
