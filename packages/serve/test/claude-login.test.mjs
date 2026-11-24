@@ -140,6 +140,41 @@ test("a run on a signed-out login is refused in words, asked of the pinned CLI, 
   assert.ok(JSON.stringify(failed.error).includes(LOGIN_SIGNED_OUT), JSON.stringify(failed.error));
 });
 
+// The login is a model only for a run on the runner (loginForRun): an agent on Claude Agent in a box runs on the model
+// keys. With none, its run is refused for its model, and the refusal says why the login that reads signed in does not
+// run it, and that moving the agent to the runner does: in its words, and as `details.login_on_runner` for the console's
+// offer. The box is Docker on a fake `docker` first on PATH (fixtures/fake-docker.mjs): nothing is pulled or run.
+const FAKE_DOCKER = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+const RUNNER_ONLY = "Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box";
+test("a run of an agent on Claude Agent in a box, while the login is on and reads signed in, is refused in words that say the login runs agents on the runner only and that this one runs in the box, with details.login_on_runner", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-docker-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, "bin"));
+  mkdirSync(join(dir, "state"));
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker" }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  const { api } = await serve(t, { faux: undefined, harnesses: false });
+  const boxed = agent("boxed", { harness: "claude-agent", place: { mode: "sandbox", box: "docker" } });
+  assert.equal((await api("POST", "/agents", boxed)).status, 201);
+
+  // Off: refused for its model, with no word of the login.
+  const off = await api("POST", "/agents/boxed/runs", { input: { content: "Say hi." } });
+  assert.equal(off.status, 409, JSON.stringify(off.body));
+  assert.match(off.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
+  assert.doesNotMatch(off.body.error.message, /runner only/, "a refusal with the login off spoke of the login");
+  assert.equal(off.body.error.details.login_on_runner, undefined);
+
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  const on = await api("POST", "/agents/boxed/runs", { input: { content: "Say hi." } });
+  assert.equal(on.status, 409, JSON.stringify(on.body));
+  assert.equal(on.body.error.code, "agent_not_runnable");
+  assert.match(on.body.error.message, /No model yet for claude-agent/);
+  assert.ok(on.body.error.message.includes(RUNNER_ONLY), `the refusal of a box agent on Claude Agent while the login reads signed in does not say the login runs agents on the runner only: ${on.body.error.message}`);
+  assert.equal(on.body.error.details.login_on_runner, true, `the refusal's details do not offer the move to the runner: ${JSON.stringify(on.body.error.details)}`);
+});
+
 test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 127.0.0.1 has it; off wins on loopback, on turns it on past it", () => {
   assert.match(claudeLoginSwitchedOff({}, "0.0.0.0"), /listens on 0\.0\.0\.0, past loopback/);
   assert.match(claudeLoginSwitchedOff({}, "::"), /listens on ::/);
