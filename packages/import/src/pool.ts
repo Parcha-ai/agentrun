@@ -32,7 +32,7 @@ const LINE_SHARE = 8;
 export const BIG_FILE = 64 * 2 ** 20;
 
 /** The bytes of reads that may wait to be taken; at this, the pool reads only the one parseHome waits for. */
-export const READ_AHEAD_BYTES = 256 * 2 ** 20;
+export const READ_AHEAD_BYTES = 2 ** 30;
 
 /** Workers lost (out of memory, or ended) past this many times the threads: the pool stops, and parseHome reads the rest. */
 const LOSSES_PER_THREAD = 2;

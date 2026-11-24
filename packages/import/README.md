@@ -31,7 +31,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   reads them in order on the calling thread). A read is kept only when it is the one the import's order would make; any
   other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
   readers of its own, reads on the calling thread.
-- `readAhead` caps the bytes of finished reads waiting to be taken (default 256 MiB). Under it, files of 64 MiB and over
+- `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB). Under it, files of 64 MiB and over
   are read first, largest first, then the rest in order; at it, the threads read only the file the import waits on.
 - `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
