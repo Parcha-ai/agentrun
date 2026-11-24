@@ -960,6 +960,31 @@ test("a runner takes a lock as its own only by the mtime it set: a lock another 
   assert.equal(outcome.token, next.access, "the runner waits for the CLI's write and hands its token");
 });
 
+test("a runner that died mid-takeover never wedges the lock: the takeover marks a dead runner left behind, past the stale time, are cleared, and the next renewal takes the lock over, posts once and leaves no mark", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { data, login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  // A runner died mid-takeover of both locks: its dead lock in the folder, and its takeover mark beside each lock, all
+  // past the 60 s stale time.
+  const dead = new Date(Date.now() - 61_000);
+  for (const path of [current, `${current}.takeover`, `${legacy}.takeover`]) {
+    mkdirSync(path);
+    utimesSync(path, dead, dead);
+  }
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // A short wait: a renewal kept out by the marks gives up in 2 s, well inside the test's own time.
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, lockWaitMs: 2_000 });
+  const outcome = await new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "posted once: the dead runner's marks were cleared and the lock taken over");
+  assert.equal(outcome.token, next.access, "the renewal is handed");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no lock or takeover mark is left in the login folder");
+  assert.deepEqual(listing(data), ["claude-login"], "and none beside it");
+});
+
 test("a holder's heartbeat keeps the lock only by the mtime it set: one another holder sets on the same directory between the heartbeat's touch and its next read marks the lock lost, and nothing is posted under it", { timeout: 20_000 }, async (t) => {
   assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
   const { login, write } = loginFolder(t);
