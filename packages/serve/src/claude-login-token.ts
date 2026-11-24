@@ -9,12 +9,14 @@
 // flight per refresh token in this process, and across processes the renewer holds the CLI's own refresh lock on the
 // folder and reads the file again once it holds it, so a token another holder (the CLI, another runner) renewed is
 // taken and nothing is posted. It holds that lock as the CLI's lock library does, by the directory it made and the mtime
-// it set (that mtime alone, never a near one), and a lock another holder took over is never touched, removed or posted
-// under once a check reads it. Runners make or take over a lock one at a time, under a takeover mark beside it, so
-// between runners one holder at a time holds it. The CLI never sees the mark: between a runner and the CLI the lock is
-// as safe as the CLI's own (proper-lockfile), and the CLI's second lock, beside the folder, keeps a takeover's late
-// removal from letting both post where that lock can be made. The answer is written back only to the file it came
-// from, atomically (a temp file at mode 0600 in the same folder before any byte is in it, synced, then renamed over
+// it set (to the microsecond; on a filesystem that keeps whole seconds alone, any mtime in that second, as the CLI's
+// library reads its own there), and a lock another holder took over is never touched, removed or posted under once a
+// check reads it. Runners make or take over a lock one at a time, under a takeover mark beside it, so between runners
+// one holder at a time holds it, unless a runner stalls past the 60 s stale time inside a takeover or its release. The
+// CLI never sees the mark: between a runner and the CLI the lock is as safe as the CLI's own (proper-lockfile), and the
+// CLI's second lock, beside the folder, keeps a takeover's late removal (or, on such a filesystem, a lock made in the
+// runner's second) from letting both post where that lock can be made. The answer is written back only to the file it
+// came from, atomically (a temp file at mode 0600 in the same folder before any byte is in it, synced, then renamed over
 // it), every other field kept as it was. A
 // pair whose write fails is held in this process's memory until it is saved: every ask hands its token and tries the
 // write again, under the same refresh lock with the file read again under it, so it never lands over a newer pair, and
@@ -365,44 +367,23 @@ type OwnLock = { readonly dev: number; readonly ino: number; readonly set: numbe
 const sameLock = (read: LockIdentity, kept: LockIdentity): boolean => read.dev === kept.dev && read.ino === kept.ino && read.mtimeMs === kept.mtimeMs;
 
 /** Whether `read` is this holder's own lock: the directory it made (`kept`, once known) with the mtime it set (`set`)
- *  as the filesystem keeps it, within the float error of a nanosecond round trip, or cut to whole seconds on a
- *  filesystem that keeps seconds alone. Any other mtime, a millisecond off included, is another holder's. */
+ *  as the filesystem keeps it: within 10 µs (libuv keeps whole microseconds, and the round trip through a double is
+ *  under one more), or, on a filesystem that keeps whole seconds alone, any mtime in the second `set` falls in. That
+ *  second is the CLI's lock library's own rule there; between runners the takeover mark keeps a second holder out. */
 const ownRead = (read: LockIdentity, kept: { readonly dev: number; readonly ino: number } | undefined, set: number): boolean =>
   (kept === undefined || (read.dev === kept.dev && read.ino === kept.ino)) &&
-  (Math.abs(read.mtimeMs - set) < 1 || (read.mtimeMs % 1000 === 0 && read.mtimeMs === Math.floor(set / 1000) * 1000));
+  (Math.abs(read.mtimeMs - set) < 0.01 || (read.mtimeMs % 1000 === 0 && read.mtimeMs === Math.floor(set / 1000) * 1000));
 
-/** Beside each lock, the runners' takeover mark: a directory `<lock>.takeover`, never inside the lock. */
+/** Beside each lock, the runners' takeover mark: a directory `<lock>.takeover`, never inside the lock, made, taken over
+ *  when dead and released as a lock of its own (makeLock, ownRead). It is held for a few file operations, so a mark
+ *  older than lockStaleMs is a crashed (or 60 s stalled) runner's. */
 const TAKEOVER_MARK = ".takeover";
-
-/** Takes the runners' takeover mark beside lock `path`: the mark made here, as read just after its mkdir (lockDirectory
- *  removes it only while a read shows that same directory and mtime), or none while another runner holds it. A mark
- *  lasts a few file operations, so one older than lockStaleMs is a crashed (or 60 s stalled) runner's: it is removed
- *  only while a second read shows the same directory with the same mtime, then made again. Left open, each a read-to-rm
- *  gap needing a crash or 60 s stall mid-takeover with a race on top: two runners clearing one dead mark at once, one's
- *  removal landing after the other made it again; and a stalled runner's own release, its read showing its mark just
- *  before another runner clears it and makes its own. The lock then still has the CLI's rules and the own-mtime read. */
-async function takeoverMark(path: string, fs: LockFs): Promise<LockIdentity | undefined> {
-  const mark = `${path}${TAKEOVER_MARK}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await fs.mkdir(mark);
-      return await fs.stat(mark).catch(() => undefined);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-    }
-    const found = await fs.stat(mark).catch(() => undefined);
-    if (!found) continue;
-    if (Date.now() - found.mtimeMs <= loginRefresh.lockStaleMs) return undefined;
-    const again = await fs.stat(mark).catch(() => undefined);
-    if (again && sameLock(again, found)) await fs.rm(mark, { recursive: true, force: true }).catch(() => undefined);
-  }
-  return undefined;
-}
 
 /** A refresh lock this process took: whether it is still its own, and its release. */
 interface HeldLock {
-  /** Whether the lock is still this holder's: the directory it made, with the mtime it last set (ownRead). Once not,
-   *  never again: a holder paused past the stale time may have lost it to another, which took it over. */
+  /** Whether the lock is still this holder's: the directory it made, with the mtime it last set (ownRead). Once lost,
+   *  never again: a holder paused past the stale time may have lost it to another, which took it over. A read that
+   *  fails while the lock is there is not this holder's at that read alone. */
   owned(): Promise<boolean>;
   /** Stops its heartbeat and removes it, only while it is still this holder's: never another holder's lock. */
   release(): Promise<void>;
@@ -410,7 +391,10 @@ interface HeldLock {
 
 /** Lock `path` made, or a dead one (older than lockStaleMs) taken over, its mtime set and read back: this holder's own
  *  directory and mtime, or none while another holds it. A dead lock is removed only while a read right before the
- *  removal shows the same directory, still stale. Called only under the takeover mark. */
+ *  removal shows the same directory, still stale. One this holder made and could not touch or read back is removed
+ *  only while it can still be its own: never once a touch finds it gone (what is at the path then may be another
+ *  holder's), and after a failed read only while a second read shows the mtime this holder set. The takeover mark is
+ *  taken with it, and a lock only under the mark. */
 async function makeLock(path: string, fs: LockFs): Promise<OwnLock | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -430,12 +414,21 @@ async function makeLock(path: string, fs: LockFs): Promise<OwnLock | undefined> 
     try {
       await fs.utimes(path, new Date(set), new Date(set));
     } catch (error) {
-      await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
-    const made = await fs.stat(path).catch(() => undefined);
-    // Gone, or another's (an mtime this holder did not set): not this holder's to touch or remove.
-    return made && ownRead(made, undefined, set) ? { dev: made.dev, ino: made.ino, set } : undefined;
+    let made: LockIdentity;
+    try {
+      made = await fs.stat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        const again = await fs.stat(path).catch(() => undefined);
+        if (again && ownRead(again, undefined, set)) await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+      }
+      return undefined;
+    }
+    // Another's (an mtime this holder did not set): not this holder's to touch or remove.
+    return ownRead(made, undefined, set) ? { dev: made.dev, ino: made.ino, set } : undefined;
   }
   return undefined;
 }
@@ -443,25 +436,27 @@ async function makeLock(path: string, fs: LockFs): Promise<OwnLock | undefined> 
 /** A lock in proper-lockfile's form, as the pinned CLI takes it (login-refresh.ts): a directory made with mkdir, its
  *  mtime touched every `updateMs` while it is held, taken over once older than lockStaleMs. Nothing is ever put inside
  *  it: proper-lockfile removes a lock with rmdir. It is this holder's while a read shows the directory it made with the
- *  mtime it last set (ownRead); any other read (another directory, another mtime, none) marks it lost for good, the
- *  CLI's "compromised", and it is never touched or removed again. None while another holds it.
+ *  mtime it last set (ownRead); any other read (another directory, another mtime, the lock gone) marks it lost for
+ *  good, the CLI's "compromised", and it is never touched or removed again. None while another holds it.
  *  Runners make, take over and read back a lock only under the takeover mark beside it, one runner at a time, so
- *  between runners one holder at a time holds it. The pinned CLI never sees the mark: against the CLI the lock keeps
- *  proper-lockfile's rules, a takeover's late removal included (the second lock, beside the folder, keeps the two from
- *  both posting where it can be made). */
+ *  between runners one holder at a time holds it. Left open, as in every lease lock: a runner stalled past the stale
+ *  time inside a takeover (its mark taken over as dead, its removal then lands in another's lock), or between its
+ *  release's check and its removal. The pinned CLI never sees the mark: against the CLI the lock keeps proper-lockfile's
+ *  rules, a takeover's late removal included (the second lock, beside the folder, keeps the two from both posting where
+ *  it can be made). */
 async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promise<HeldLock | undefined> {
   const markPath = `${path}${TAKEOVER_MARK}`;
-  const mark = await takeoverMark(path, fs);
+  const mark = await makeLock(markPath, fs);
   // Another runner makes, takes over or reads back this lock now: as good as held.
   if (!mark) return undefined;
   let made: OwnLock | undefined;
   try {
     made = await makeLock(path, fs);
   } finally {
-    // Only the mark made here: one another runner made after clearing this one as dead (this runner stalled past the
+    // Only the mark made here: one another runner made after taking this one over as dead (this runner stalled past the
     // stale time) is that runner's.
     const still = await fs.stat(markPath).catch(() => undefined);
-    if (still && sameLock(still, mark)) await fs.rm(markPath, { recursive: true, force: true }).catch(() => undefined);
+    if (still && ownRead(still, mark, mark.set)) await fs.rm(markPath, { recursive: true, force: true }).catch(() => undefined);
   }
   if (!made) return undefined;
   let mine = made;
@@ -482,9 +477,12 @@ async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promis
     if (lost) return false;
     try {
       if (ownRead(await fs.stat(path), mine, mine.set)) return true;
-    } catch {
-      // Gone, or unreadable: not this holder's to touch or remove.
+    } catch (error) {
+      // Unread but not gone (a transient failure): not touched or removed at this read, and read again at the next, as
+      // proper-lockfile does.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") return false;
     }
+    // Gone, or another's: lost.
     lost = true;
     clearInterval(timer);
     return false;
