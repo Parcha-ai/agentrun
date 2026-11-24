@@ -11,6 +11,7 @@ import { EXPORT_CAPS, ExportFailed, exportBundle, restoreIdsOf, runExport, SHARE
 import { ApiError } from "../dist/errors.js";
 import { SCRUB_RULES, scrub } from "../dist/secret-cut.js";
 import { stable } from "../dist/validate.js";
+import { unixHome } from "./scrub-positives.mjs";
 
 const GOLDEN = fileURLToPath(new URL("./fixtures/run-export/golden.json", import.meta.url));
 const hex = (seed, n) => createHash("sha256").update(`run-export test ${seed}`).digest("hex").repeat(4).slice(0, n);
@@ -37,7 +38,7 @@ function viewOf(p = PLANTED) {
     title: `Connect with PGPASSWORD=${p.pg} psql -h db`, input: { content: "the first message" }, file_ids: ["file_1"],
     place: { mode: "runner" }, claim: null, effort: "medium", created_at: "2026-11-23T10:00:00.000Z", updated_at: "2026-11-23T10:05:00.000Z",
     ended_at: "2026-11-23T10:05:00.000Z",
-    result: { output: null, final_answer: `Done. Mail ${p.email} about /home/${p.user}/work; key ${p.sk}.` },
+    result: { output: null, final_answer: `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.` },
     error: null, review: null, pending: null, cost: { usd: 0.0123, basis: "booked" }, stopped_for: null, budget_refused_calls: 0,
     audit_of: null, approvals: "ask", archived_at: null, imported_from: { source: "claude-code", session: "session-golden" },
     trigger: { id: "trg_1", firing_key: "firing-golden" }, labels: { team: "golden" }, learning: null, recordings: [],
@@ -51,9 +52,9 @@ function rowsOf(p = PLANTED) {
   return [
     row(1, "message", `Connect with PGPASSWORD=${p.pg} psql -h db, then mail ${p.email}`),
     row(2, "text_block", `Set OPENAI_API_KEY=${p.sk} and GITHUB_TOKEN=${p.ghp}; the AWS id ${p.aws}.`),
-    row(3, "tool_result", ["$ env", `HOME=/home/${p.user}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
-    row(4, "text_block", `The host ${p.ip} answered from /home/${p.user}/work.`),
-    row(5, "final_answer", `Done. Mail ${p.email} about /home/${p.user}/work; key ${p.sk}.`),
+    row(3, "tool_result", ["$ env", `HOME=${unixHome(p.user)}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
+    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work.`),
+    row(5, "final_answer", `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.`),
   ];
 }
 
@@ -103,7 +104,8 @@ const valueAt = (doc, pointer) => pointer.split("/").slice(1).map((part) => part
 
 test("golden: the bundle of a synthetic run with a planted secret of every kind is the document on file", async () => {
   const { body } = await build();
-  const actual = `${JSON.stringify(JSON.parse(body), null, 2)}\n`;
+  // On file with the home root folded to `{home}/`: no file of the repository holds a home folder's path, a cut one's too.
+  const actual = `${JSON.stringify(JSON.parse(body), null, 2)}\n`.replaceAll(unixHome(""), "{home}/");
   if (process.env.UPDATE_GOLDEN) writeFileSync(GOLDEN, actual);
   assert.equal(actual, readFileSync(GOLDEN, "utf8"));
 });
