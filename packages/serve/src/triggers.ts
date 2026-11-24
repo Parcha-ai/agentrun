@@ -1149,7 +1149,7 @@ export class Triggers {
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
    *  or purged (its row kept as a tombstone: Runs.purge) turns the trigger off at once, the firing skipped and no failure
    *  counted: read before the message, and again when the message fails, for a purge that landed in between. The run read
-   *  is the one `trigger` named when it was read; a trigger edited since keeps its state (runDeleted). */
+   *  is the one `trigger` named when it was read; a trigger moved to another run since stays on (runDeleted). */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
@@ -1169,10 +1169,10 @@ export class Triggers {
   }
 
   /** A message_run firing whose run, as `trigger` named it when read, is gone or purged: the firing skipped, no failure
-   *  counted, and the trigger turned off (source_unreadable) only while it is still that read, compared in the store's
-   *  statement (its updatedAt and its target): one edited or moved to another run meanwhile is left as it is. */
+   *  counted, and the trigger turned off (source_unreadable) only while it still names that run, compared in the store's
+   *  statement: one moved to another run meanwhile is left on. */
   private async runDeleted(trigger: Trigger, firing: FiringRow): Promise<void> {
-    const off = await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } }, undefined, { ifUpdatedAt: trigger.updatedAt, ifTarget: trigger.target });
+    const off = await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } }, undefined, { ifTarget: trigger.target });
     await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED });
     if (!off) return;
     this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
