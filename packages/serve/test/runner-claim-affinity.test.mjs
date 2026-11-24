@@ -143,6 +143,12 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
         calls.n += 1;
         const n = calls.n;
         if (gate.shut) await gate.opened;
+        const hold = gate.hold;
+        if (hold) {
+          gate.hold = undefined;
+          hold.isWaiting();
+          await hold.released;
+        }
         const claims = await value.apply(target, args);
         if (claims.length > 0) calls.claimed.push({ n, runIds: claims.map((claim) => claim.runId) });
         return claims;
@@ -159,9 +165,11 @@ function watchedStore(store, gate = { shut: false }, calls = { n: 0, claimed: []
   });
 }
 
-/** A gate that starts open: close() holds every claimMany behind it until open(). */
+/** A gate that starts open: close() holds every claimMany behind it until open(). holdNext() holds the next claimMany
+ *  that gets past the gate, between the gate and the store's claim, until the test calls its release(): `waiting` says it
+ *  is held, `waitedOn` that a close() waits on it. */
 function claimGate() {
-  const gate = { shut: false, opened: Promise.resolve() };
+  const gate = { shut: false, opened: Promise.resolve(), hold: undefined };
   gate.close = () => {
     let open;
     gate.opened = new Promise((resolve) => (open = resolve));
@@ -170,6 +178,14 @@ function claimGate() {
       open();
     };
     gate.shut = true;
+  };
+  gate.holdNext = () => {
+    const hold = {};
+    hold.waiting = new Promise((resolve) => (hold.isWaiting = resolve));
+    hold.released = new Promise((resolve) => (hold.release = resolve));
+    hold.waitedOn = new Promise((resolve) => (hold.isWaitedOn = resolve));
+    gate.hold = hold;
+    return hold;
   };
   return gate;
 }
@@ -277,11 +293,23 @@ async function ends(server, state = "ended") {
   return (await runTimeline(server, RUN, ctx)).map((entry) => entry.summary ?? "");
 }
 
-/** B started on host b, A's polls held, the run answered; until B polls 25 times (or claims the run). */
-async function answeredWhileBPolls(one) {
+/** B started on host b, A's polls held, the run answered; until B polls 25 times (or claims the run). With
+ *  `pastTheGate`, one A poll is already past the gate, held before its claim, when the gate closes: it goes on once the
+ *  answer is sent or once the close waits on it, whichever comes first. */
+async function answeredWhileBPolls(one, { pastTheGate = false } = {}) {
   await one.start("runner-b", "b");
-  one.gate.close();
-  await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
+  const held = pastTheGate ? one.gate.holdNext() : undefined;
+  if (held) await held.waiting;
+  const closed = one.gate.close();
+  const answered = (async () => {
+    await closed;
+    await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
+  })();
+  if (held) {
+    await Promise.race([answered, held.waitedOn]);
+    held.release();
+  }
+  await answered;
   const polledFrom = one.claimManyCalls["runner-b"].n;
   await until(async () => one.claimManyCalls["runner-b"].n - polledFrom >= 25 || (await one.server.runs.get(RUN)).epoch !== one.parkedEpoch, "B polls 25 times");
 }
@@ -303,6 +331,20 @@ test("park on A, answered while A is alive and B polls: B claims nothing and mov
   assert.deepEqual(creates(one.hosts.b), [], "nothing on B's host");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.includes(NEW)), [], "never called a new one");
+});
+
+test("the gate holds a poll that was already past it when it closed: A's poll in flight at the close ends before the answer is sent, so it claims nothing, and B claims nothing while A's polls are held", { timeout: 120_000 }, async (t) => {
+  const one = await parkedOnA(t);
+  const claimedBefore = one.claimManyCalls["runner-a"].claimed.length;
+  await answeredWhileBPolls(one, { pastTheGate: true });
+  assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "B claimed nothing and gave nothing back: the epoch did not move");
+  assert.equal(one.claimManyCalls["runner-a"].claimed.length, claimedBefore, "A's poll past the gate claimed nothing: it ended before the answer was sent");
+  assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
+
+  one.gate.open();
+  const said = await ends(one.server);
+  assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: no create at the resume");
+  assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
 });
 
 test("park on A with the runners' clocks a keep and more behind the store's: the keep's end is stamped on the store's clock, so B claims nothing while A is live, and A gets the same desktop back", { timeout: 120_000 }, async (t) => {
