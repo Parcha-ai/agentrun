@@ -22,3 +22,12 @@ export const KIND_SKILLS: Readonly<Record<SkillKind, KindSkill>> = Object.freeze
 
 /** The skill a run's computer kind brings, if it brings one. */
 export const kindSkillOf = (kind: string | undefined): KindSkill | undefined => (kind === "desktop" || kind === "phone" ? KIND_SKILLS[kind] : undefined);
+
+/** A run's skill files without the one its computer kind brings: for a computer the claim did not start (every tool of
+ *  it set to deny: ClaimComputer.off), whose skill is named to no one. An authored skill of that name is the agent's own,
+ *  and stays. */
+export function withoutKindSkill(files: readonly string[], authored: Readonly<Record<string, unknown>>, kind: string | undefined): readonly string[] {
+  const skill = kindSkillOf(kind);
+  if (!skill || Object.keys(authored).some((path) => path.split("/")[0] === skill.name)) return files;
+  return files.filter((file) => file !== `${skill.name}/SKILL.md`);
+}

@@ -183,6 +183,7 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     const recordings = given.recordings as { say?: (words: string) => void } | undefined;
     const ask: HeldComputerAsk = {
       hadComputer: given.hadComputer as () => Promise<boolean>,
+      ...(typeof given.turnedOff === "string" ? { turnedOff: given.turnedOff } : {}),
       ...(given.signal instanceof AbortSignal ? { signal: given.signal } : {}),
       ...(recordings?.say ? { say: recordings.say } : {}),
       ...(typeof given.onImageWait === "function" ? { onImageWait: given.onImageWait as HeldComputerAsk["onImageWait"] } : {}),
