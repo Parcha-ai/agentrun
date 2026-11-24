@@ -1,14 +1,42 @@
 // Parallel on the run's key: Extract for web_fetch, Search for web_search. Every request is paid through the injected
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
-import { type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
+import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
 import { linksOf } from "../text-urls.js";
+import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from "./keyed.js";
 
 
 export const PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1/search";
 export const PARALLEL_EXTRACT_URL = "https://api.parallel.ai/v1/extract";
 const PARALLEL_TIMEOUT_MS = 60_000;
+
+/** How Parallel searches and reads, each setting optional (PARALLEL_DEFAULTS); with none, each request is the one the web
+ *  tools have always sent:
+ *  - `mode`: the search's depth and price (fees.ts PARALLEL_SEARCH_MODE_USD), default "fast";
+ *  - `maxCharsTotal`: the most characters of excerpts across a search's results; unset, Parallel's own;
+ *  - `includeDomains`, `excludeDomains` (at most 200 together): domains, domain/path prefixes or extensions (".gov") a
+ *    search keeps to or leaves out; `afterDate`: the earliest publish date a search keeps, YYYY-MM-DD;
+ *  - `maxAgeSeconds`: the oldest cached page a search or extract may answer from before Parallel fetches it live, 600 or
+ *    more; unset, Parallel's own (its cache, no live fetch). */
+export type ParallelSettings = { mode?: ParallelSearchMode; maxCharsTotal?: number; includeDomains?: string[]; excludeDomains?: string[]; afterDate?: string; maxAgeSeconds?: number };
+export const PARALLEL_DEFAULTS = Object.freeze({ mode: "fast" } as const);
+const PARALLEL_CHECKS: Readonly<Record<keyof ParallelSettings, Check>> = {
+  mode: oneOf(Object.keys(PARALLEL_SEARCH_MODE_USD)),
+  maxCharsTotal: wholeIn(1, 10_000_000),
+  includeDomains: domains(200),
+  excludeDomains: domains(200),
+  afterDate: matching(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, "a date, YYYY-MM-DD"),
+  maxAgeSeconds: wholeIn(600, 315_360_000),
+};
+export function parallelSettingsProblems(settings: unknown): string[] {
+  const problems = settingsProblems("Parallel", settings, PARALLEL_CHECKS);
+  const asked = settings as ParallelSettings;
+  if (!problems.length && (asked.includeDomains?.length ?? 0) + (asked.excludeDomains?.length ?? 0) > 200) problems.push("Parallel takes at most 200 includeDomains and excludeDomains together");
+  return problems;
+}
+/** The fetch policy `settings` ask, if any. */
+const fetchPolicy = (settings: ParallelSettings) => (settings.maxAgeSeconds === undefined ? {} : { fetch_policy: { max_age_seconds: settings.maxAgeSeconds } });
 
 const REFUSED = "Parallel refused this run's key (401 or 403): it is not asked again in this run";
 /** Parallel for one run, on one key: `read`, its extract of a page (one billed request), the page it read or, for any
@@ -19,7 +47,7 @@ export type Extract = { live(): boolean; read(url: string, signal?: AbortSignal)
 /** Parallel's extract on `apiKey`: one URL a request, each a billed extract, its full content to the most of a page
  *  web_fetch reads as the page's text (markdown), its links read from it, status 200 (Parallel answers a page it could
  *  not read in `errors`, with no content). */
-export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay: Pay = unmetered): Extract {
+export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay: Pay = unmetered, settings: ParallelSettings = {}): Extract {
   let refused = false;
   // Each request is a paid one, sent through `pay` (fees.ts; serve's paid-calls.ts holds it to the run's cap and books it
   // as the call's cost at its endpoint's price). One the cap refuses is not sent: it throws its refusal (PaidRefused).
@@ -45,7 +73,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
       try {
         // The most of a page a read reaches and one character more, so a page Parallel cut there shows as going on.
         const asked = PAGE_READ_MAX_CHARS + 1;
-        const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: asked } } }, signal);
+        const response = await post(PARALLEL_EXTRACT_URL, { urls: [url], advanced_settings: { full_content: { max_chars_per_result: asked }, ...fetchPolicy(settings) } }, signal);
         if (!response.ok) {
           await response.body?.cancel().catch(() => undefined);
           return response.status === 401 || response.status === 403 ? `refused the key (${response.status})` : `answered ${response.status}`;
@@ -72,16 +100,32 @@ const parallelLimit = (response: Response): Limit | undefined => {
   return response.status === 429 ? { kind: "rate", ...(retryAfter ? { retryAfter } : {}) } : undefined;
 };
 
-/** `{query, n?}` searched through `parallel` (null: the run holds no key), and the limit Parallel answered for the run's
- *  key, if any. */
-export async function parallelSearched(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal): Promise<Searched> {
+/** The /v1/search request for `query`, `n` results, under `settings`. */
+export function parallelSearchBody(query: string, n: number, settings: ParallelSettings = {}): Record<string, unknown> {
+  const source = {
+    ...(settings.includeDomains ? { include_domains: settings.includeDomains } : {}),
+    ...(settings.excludeDomains ? { exclude_domains: settings.excludeDomains } : {}),
+    ...(settings.afterDate ? { after_date: settings.afterDate } : {}),
+  };
+  return {
+    objective: query,
+    search_queries: [query],
+    mode: settings.mode ?? PARALLEL_DEFAULTS.mode,
+    ...(settings.maxCharsTotal === undefined ? {} : { max_chars_total: settings.maxCharsTotal }),
+    advanced_settings: { max_results: n, excerpt_settings: { max_chars_per_result: SNIPPET_MAX }, ...(Object.keys(source).length ? { source_policy: source } : {}), ...fetchPolicy(settings) },
+  };
+}
+
+/** `{query, n?}` searched through `parallel` (null: the run holds no key) under `settings`, and the limit Parallel
+ *  answered for the run's key, if any. */
+export async function parallelSearched(args: Record<string, unknown>, parallel: Extract | null, signal?: AbortSignal, settings: ParallelSettings = {}): Promise<Searched> {
   const answer = (search: Search): Searched => ({ answer: search });
   const { query, n } = searchArgs(args);
   if (!query) return answer({ error: "web_search needs a query" });
   if (!parallel) return answer({ error: "web_search searches through Parallel, and this run holds no Parallel key (PARALLEL_API_KEY)" });
   if (!parallel.live()) return answer({ error: REFUSED });
   try {
-    const response = await parallel.post(PARALLEL_SEARCH_URL, { objective: query, search_queries: [query], mode: "fast", advanced_settings: { max_results: n, excerpt_settings: { max_chars_per_result: SNIPPET_MAX } } }, signal);
+    const response = await parallel.post(PARALLEL_SEARCH_URL, parallelSearchBody(query, n, settings), signal);
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       const limit = parallelLimit(response);

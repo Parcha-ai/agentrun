@@ -5,13 +5,16 @@ import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, we
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
+import { EXA_API_URL, exaClient, exaRead, exaSearched, type ExaSettings, exaSettingsProblems } from "./providers/exa.js";
 import { exaLimitOf, exaSearch } from "./providers/exa-keyless.js";
+import { FIRECRAWL_API_URL, firecrawlClient, firecrawlRead, firecrawlSearched, type FirecrawlSettings, firecrawlSettingsProblems } from "./providers/firecrawl.js";
 import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFetch } from "./providers/firecrawl-keyless.js";
+import { type Keyed, type KeyedFetch, keyedFetch } from "./providers/keyed.js";
 import type { Words } from "./providers/mcp.js";
-import { type Extract, parallelExtract, parallelSearched } from "./providers/parallel.js";
-import { type Backend, type Breaker, breakers, fitSearch, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { type Extract, parallelExtract, parallelSearched, type ParallelSettings, parallelSettingsProblems } from "./providers/parallel.js";
+import { type Backend, type Breaker, breakers, fitSearch, type Limit, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
-export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "native" | "direct";
+export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "exa" | "firecrawl" | "native" | "direct";
 export type SearchProvider = Exclude<ProviderId, "direct">;
 /** The run's own model provider's hosted search. `signal` is the caller's; it keeps its own bounds. */
 export type NativeSearch = (query: string, n: number, signal?: AbortSignal) => Promise<Searched>;
@@ -31,16 +34,22 @@ export type Receipt = {
   cache?: "hit";
 };
 
-/** `order.fetch` names the providers ahead of the direct fetch ("direct" in it). No `keys.parallel`: Parallel answers
- *  that the run holds none. No `guard`: nothing is fetched directly and no URL goes to a provider. No `pay`: unmetered. */
+/** Each keyed provider's settings, typed with defaults (PARALLEL_DEFAULTS, EXA_DEFAULTS, FIRECRAWL_DEFAULTS). */
+export type ProviderSettings = { parallel?: ParallelSettings; exa?: ExaSettings; firecrawl?: FirecrawlSettings };
+
+/** `order.fetch` names the providers ahead of the direct fetch ("direct" in it). No key for a keyed provider in an order
+ *  (`keys.parallel`, `keys.exa`, `keys.firecrawl`): it answers that the run holds none, unsent. `settings`: each keyed
+ *  provider's (ProviderSettings); one a provider does not take throws here, before anything is sent. No `guard`:
+ *  nothing is fetched directly and no URL goes to a provider. No `pay`: unmetered. */
 export type WebConfig = {
   order: { search: readonly SearchProvider[]; fetch: readonly FetchProvider[] };
-  keys?: { parallel?: string };
+  keys?: { parallel?: string; exa?: string; firecrawl?: string };
+  settings?: ProviderSettings;
   native?: NativeSearch;
   guard?: Guard;
   pay?: Pay;
-  endpoints?: { "firecrawl-keyless"?: string };
-  send?: Partial<Record<"parallel" | "firecrawl-keyless" | "exa-keyless", typeof fetch>>;
+  endpoints?: { "firecrawl-keyless"?: string; exa?: string; firecrawl?: string };
+  send?: Partial<Record<"parallel" | "firecrawl-keyless" | "exa-keyless" | "exa" | "firecrawl", typeof fetch>>;
   words?: Words;
   now?: () => number;
   bounds?: SearchBounds & { checkMs?: number };
@@ -63,7 +72,18 @@ const judged = { classifier: "off", wall: { verdict: "unjudged" }, injection: "u
 /** A provider's failure: the error alone for the model, the limit it met for the breaker. */
 const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ answer: { error }, ...(limit ? { limit } : {}) });
 
+/** What is wrong with `settings`, one line each: a provider they name that takes none, or what its own check refuses. */
+function settingsProblemsOf(settings: unknown): string[] {
+  if (settings === undefined) return [];
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return ["settings must be an object of each provider's settings"];
+  const checks: Record<string, (one: unknown) => string[]> = { parallel: parallelSettingsProblems, exa: exaSettingsProblems, firecrawl: firecrawlSettingsProblems };
+  return Object.entries(settings).flatMap(([name, one]) => (one === undefined ? [] : checks[name]?.(one) ?? [`settings name ${name}, which takes no settings here (parallel, exa and firecrawl do)`]));
+}
+
 export function createWeb(config: WebConfig): Web {
+  const problems = settingsProblemsOf(config.settings);
+  if (problems.length) throw new Error(`web settings: ${problems.join("; ")}`);
+  const settings = config.settings ?? {};
   const now = config.now ?? Date.now;
   const runBreakers = breakers(now);
   const pages: Pages = new Map();
@@ -80,13 +100,26 @@ export function createWeb(config: WebConfig): Web {
   const firecrawlSearchMs = config.bounds?.firecrawlMs;
 
   let parallel: Extract | null | undefined;
-  const parallelOf = () => (parallel ??= config.keys?.parallel === undefined ? null : parallelExtract(config.keys.parallel, config.send?.parallel ?? fetch, pay));
+  const parallelOf = () => (parallel ??= config.keys?.parallel === undefined ? null : parallelExtract(config.keys.parallel, config.send?.parallel ?? fetch, pay, settings.parallel));
   let keyless: KeylessFetch | undefined;
   const firecrawlOf = () => (keyless ??= firecrawlFetch(firecrawl, now));
+  // The keyed providers' clients (null: no key), each shared by both tools, so a key refused by one is refused by both.
+  let exa_: Keyed | null | undefined;
+  const exaOf = () => (exa_ === undefined ? (exa_ = config.keys?.exa === undefined ? null : exaClient(config.keys.exa, config.send?.exa ?? fetch, pay, config.endpoints?.exa ?? EXA_API_URL)) : exa_);
+  let firecrawl_: Keyed | null | undefined;
+  const keyedFirecrawlOf = () => (firecrawl_ === undefined ? (firecrawl_ = config.keys?.firecrawl === undefined ? null : firecrawlClient(config.keys.firecrawl, config.send?.firecrawl ?? fetch, pay, config.endpoints?.firecrawl ?? FIRECRAWL_API_URL)) : firecrawl_);
+  let exaReader: KeyedFetch | undefined;
+  const exaReaderOf = () => (exaReader ??= keyedFetch(exaOf(), (url, signal) => exaRead(url, exaOf(), settings.exa, signal), now));
+  let firecrawlReader: KeyedFetch | undefined;
+  const firecrawlReaderOf = () => (firecrawlReader ??= keyedFetch(keyedFirecrawlOf(), (url, signal) => firecrawlRead(url, keyedFirecrawlOf(), settings.firecrawl, signal), now));
 
   const backendOf = (name: SearchProvider, args: Record<string, unknown>, signal: AbortSignal | undefined): Backend => {
     const { query, n } = searchArgs(args);
-    if (name === "parallel") return { name, ask: () => parallelSearched(args, parallelOf(), signal) };
+    if (name === "parallel") return { name, ask: () => parallelSearched(args, parallelOf(), signal, settings.parallel) };
+    // A keyed provider keeps the caller's signal and its own bound, as Parallel does: a paid request is not cut short by
+    // the keyless providers' deadline.
+    if (name === "exa") return { name, ask: () => exaSearched(args, exaOf(), settings.exa, signal) };
+    if (name === "firecrawl") return { name, ask: () => firecrawlSearched(args, keyedFirecrawlOf(), settings.firecrawl, signal) };
     if (name === "native") return { name, ask: async () => (config.native ? config.native(query, n, signal) : { answer: { error: "web_search: no native search was given" } }) };
     if (name === "firecrawl-keyless") {
       return { name, ask: async (deadline) => {
@@ -128,6 +161,7 @@ export function createWeb(config: WebConfig): Web {
       const cached = typeof url === "string" && pages.has(url);
       const log: WebLog = (event, fields) => {
         if (event === "web_fetch_firecrawl_failed") tries.push({ provider: "firecrawl-keyless", outcome: "error", ...(fields.said ? { error: fields.said } : {}) });
+        if (event === "web_fetch_provider_failed" && fields.provider) tries.push({ provider: fields.provider, outcome: "error", error: fields.said ?? "", ...(fields.limit ? { limit: JSON.parse(fields.limit) as Limit } : {}) });
         config.log?.(event, fields);
       };
       const order = config.order.fetch;
@@ -137,6 +171,7 @@ export function createWeb(config: WebConfig): Web {
           ...guarded,
           parallel: extract,
           firecrawl: order.includes("firecrawl-keyless") ? firecrawlOf() : null,
+          keyed: { exa: order.includes("exa") ? exaReaderOf() : null, firecrawl: order.includes("firecrawl") ? firecrawlReaderOf() : null },
           pages,
           order,
           ...(config.guard ? { guard: config.guard } : {}),
