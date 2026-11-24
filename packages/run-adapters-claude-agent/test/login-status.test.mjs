@@ -450,6 +450,90 @@ test("what status checks killed mid-way left (a SIGKILL runs no finally) is swep
   assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: Date.now() + 31_000 }), [fresh]);
 });
 
+/** A promise that rejects in `what`'s words after `ms`, and the clear() of its timer, so a regression fails the test at
+ *  its own bound rather than hanging it. */
+function within(ms, what) {
+  let timer;
+  const promise = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); });
+  return { promise, clear: () => clearTimeout(timer) };
+}
+
+// A harness caller may give a check a longer limit than the server's 15 s: another server starting on the host meanwhile
+// sweeps status folders, and must leave this one, which the check is still using.
+test("a live status check's folder is never swept, however long its limit: a check with a 2-minute limit, swept as if 60 s had passed, keeps its folder, and the folder goes once the check ends", { skip: process.platform === 'win32' ? 'no uid' : false, timeout: 30_000 }, async () => {
+  const { login } = defaultLogin();
+  const held = await gate(1);
+  const fake = fakeCli({ gate: held.port });
+  const tmp = scratch();
+  const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+  Object.assign(process.env, { TMPDIR: tmp, TMP: tmp, TEMP: tmp });
+  let pending;
+  try {
+    pending = claude.claudeLoginStatus(fake.cli, login, { timeoutMs: 120_000 });
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const outcome = pending.then((value) => ({ value }), (error) => ({ error }));
+  const early = outcome.then(() => { throw new Error('the status check ended before its CLI was running'); });
+  early.catch(() => {});
+  const bound = within(10_000, "the status check's CLI was not running within 10 s");
+  try {
+    // The CLI runs and has not answered: the check is live.
+    await Promise.race([held.arrived, early, bound.promise]);
+    const folders = readdirSync(tmp).map((name) => join(tmp, name));
+    assert.equal(folders.length, 1, `the check has one folder: ${folders}`);
+    assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir: tmp, now: Date.now() + 60_000 }), [], "the sweep took a live check's folder");
+    assert.ok(existsSync(join(folders[0], 'config')), "the live check's config dir is still there");
+  } finally {
+    bound.clear();
+    held.release();
+  }
+  assert.deepEqual(await outcome, { value: OUT });
+  assert.deepEqual(readdirSync(tmp), [], "the check's folder is gone once it ends");
+});
+
+/** A stand-in CLI (a shell script) that never answers: it notes its pid, and with `holder` its background child's, then
+ *  waits. `ignoreTerm`: it ignores SIGTERM (an ignored signal stays so across exec). `holder`: a process it starts keeps
+ *  its stdout open after it is gone. */
+function stuckCli({ ignoreTerm = false, holder = false } = {}) {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, [
+    '#!/bin/sh',
+    ...(ignoreTerm ? [`trap '' TERM`] : []),
+    ...(holder ? ['sleep 300 &', `echo $! > '${join(dir, 'holder')}'`] : []),
+    `echo $$ > '${join(dir, 'pid')}'`,
+    'exec sleep 300',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const pids = () => ['pid', 'holder'].filter((name) => existsSync(join(dir, name))).map((name) => Number(readFileSync(join(dir, name), 'utf8').trim()));
+  return { cli, pids };
+}
+
+for (const [what, options] of [['ignores SIGTERM', { ignoreTerm: true }], ['leaves a process holding its output open', { holder: true }]]) {
+  test(`a status check whose CLI ${what} still ends at its limit as timed_out, within the kill's grace, and never waits on it for ever`, { skip: process.platform === 'win32' ? 'a sh stand-in CLI' : false, timeout: 30_000 }, async (t) => {
+    const { login } = defaultLogin();
+    const stuck = stuckCli(options);
+    t.after(() => { for (const pid of stuck.pids()) try { process.kill(pid, 'SIGKILL'); } catch {} });
+    const limitMs = 1_000;
+    // The limit, then a 1 s grace before the kill and up to 1 s for the pipe: 3 s. The bound leaves 3 s more.
+    const bound = within(limitMs + 5_000, `the status check still ran 5 s after its ${limitMs / 1000} s limit`);
+    let ended;
+    try {
+      ended = await Promise.race([inOwnTmp(() => claude.claudeLoginStatus(stuck.cli, login, { timeoutMs: limitMs })), bound.promise]);
+    } finally {
+      bound.clear();
+    }
+    const { tmp, outcome } = ended;
+    assert.equal(outcome.error?.code, 'timed_out', `it ends as timed_out: ${outcome.error?.message ?? JSON.stringify(outcome.value)}`);
+    assert.deepEqual(readdirSync(tmp), [], "the check's folder is gone");
+    assert.equal(stuck.pids().length, options.holder ? 2 : 1, 'the stand-in reached its wait');
+  });
+}
+
 /** A stand-in CLI that rewrites the account file in its config dir as it starts, as the pinned CLI does when the file's
  *  migration number is not its own, then answers signed out. */
 function rewritingCli() {
