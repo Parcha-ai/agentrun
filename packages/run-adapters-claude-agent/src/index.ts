@@ -8,7 +8,7 @@ export { findClaudeExecutable as claudeAgentExecutable, platformSuffix as claude
 export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, OWN_TOOL_PREFIX, thinks, withWebSearches } from "./host/policy.js";
 export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
-export { claudeLoginStatus, loginCommand as claudeLoginCommand, loginEnv as claudeLoginEnv, parseLoginStatus as parseClaudeLoginStatus, startClaudeLogin } from "./login.js";
+export { claudeLoginStatus, sweepClaudeStatusFolders, loginCommand as claudeLoginCommand, loginEnv as claudeLoginEnv, parseLoginStatus as parseClaudeLoginStatus, startClaudeLogin } from "./login.js";
 export type { ClaudeAgentLogin, ClaudeLoginStatus } from "./login.js";
 export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer, type ToolServerModules } from "./host/tool-server.js";
 export type { ServedTool } from "./host/tool-server.js";

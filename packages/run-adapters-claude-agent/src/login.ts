@@ -10,7 +10,7 @@
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
 import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
-import { type FileHandle, mkdir, open, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
@@ -132,6 +132,44 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
 
+/** The name of a status check's own folder in the temporary folder, ahead of mkdtemp's six characters. */
+const STATUS_FOLDER = "agentrun-claude-status-";
+const STATUS_FOLDER_NAME = /^agentrun-claude-status-[A-Za-z0-9]{6}$/;
+
+/** Removes what status checks cut off mid-way left: a server killed outright (SIGKILL) runs no `finally`, so its check's
+ *  folder (claudeLoginStatus's `scratch`), with the copy of the account file in it, stays in the temporary folder. Takes
+ *  each folder there named as a check's (the prefix and mkdtemp's six characters, nothing longer) that is this user's
+ *  (`uid`, `process.getuid()` by default) and was last changed more than twice a check's limit (LOGIN_STATUS_MS) before
+ *  `now`. A check's folder changes as it starts and lives no longer than that limit, so a check another server on this
+ *  host is running is never taken; nor is another user's folder, a link or a file. `dir`: the temporary folder
+ *  (`os.tmpdir()` by default). Nothing on Windows, which has no uid to tell whose a folder is. Never throws: a folder
+ *  that can't be read or removed stays. Resolves to the folders it removed. The server runs it as it starts. */
+export async function sweepClaudeStatusFolders(options: { dir?: string; uid?: number; now?: number } = {}): Promise<string[]> {
+  const uid = options.uid ?? process.getuid?.();
+  if (uid === undefined) return [];
+  const dir = options.dir ?? tmpdir();
+  const before = (options.now ?? Date.now()) - 2 * LOGIN_STATUS_MS;
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const name of names.filter((entry) => STATUS_FOLDER_NAME.test(entry)).sort()) {
+    const path = join(dir, name);
+    try {
+      const stat = await lstat(path);
+      if (!stat.isDirectory() || stat.uid !== uid || stat.mtimeMs > before) continue;
+      await rm(path, { recursive: true, force: true });
+      removed.push(path);
+    } catch {
+      // It stays.
+    }
+  }
+  return removed;
+}
+
 /** The account file (`.claude.json`) the CLI keeps for `login`: in the person's home on the CLI's default folder
  *  (`home`), else in the login's folder (their `CLAUDE_CONFIG_DIR`, or AgentRun's own, where `auth login` writes it). */
 const accountFile = (login: ClaudeAgentLogin): string => join(login.home ?? login.dir, ".claude.json");
@@ -235,7 +273,7 @@ export const personHome = (login: ClaudeAgentLogin, given?: string): string => l
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
  *  Throws when the CLI gives no answer that reads as one. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform; home?: string } = {}): Promise<ClaudeLoginStatus> {
-  const scratch = mkdtempSync(join(tmpdir(), "agentrun-claude-status-"));
+  const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   try {
     const HOME = personHome(login, options.home);
     const where = { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(accountFile(login), join(scratch, "config")) };
