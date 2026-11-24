@@ -1610,8 +1610,10 @@ twice), and writes the answer back to the folder's `.credentials.json` alone, at
 kept. It holds that lock as the CLI does, by the mtime it set: a lock another holder took over while the runner was
 paused is never touched or removed, and the runner sends nothing under it. If the write back fails, the runner keeps the
 new pair in memory: each later ask gets its token, sends nothing (the old refresh token is spent and is never sent
-again) and tries the write again. Once that token has less than five minutes left and is still unsaved, the run fails
-in words that say the renewal could not be saved and what to fix. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
+again) and tries the write again, under the same refresh lock and after reading the file again, so a newer pair another
+holder wrote there is kept. Once that token has less than five minutes left and is still unsaved, the run fails
+in words that say the renewal could not be saved and what to fix. A held token Anthropic refuses is never handed again:
+the ask fails while the pair is unsaved, and once it is saved the runner renews from it. One ask sends at most one renewal and nothing retries it. A renewal that fails, a refresh token Anthropic refused
 included, fails the run at its start in words that say to open Claude Code once to renew it, and mid-run ends the turn
 in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
 No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
