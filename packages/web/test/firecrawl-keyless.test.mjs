@@ -6,7 +6,8 @@
 // firecrawl-keyless test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { firecrawlFetch, SEARCH_UNAVAILABLE, searchBreaker, searchInTurn } from "../dist/index.js";
+import { firecrawlFetch, searchInTurn } from "../dist/index.js";
+import { SEARCH_UNAVAILABLE, searchBreaker } from "../dist/search.js";
 import { firecrawlServer, refusal, answers } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { webFetch } from "./support.mjs";

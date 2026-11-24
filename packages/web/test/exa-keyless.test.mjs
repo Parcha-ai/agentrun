@@ -5,11 +5,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import * as keyless from "../dist/index.js";
+import { exaSearch } from "../dist/index.js";
+import * as keyless from "../dist/providers/exa-keyless.js";
+import { RATE_LIMITED } from "../dist/providers/mcp.js";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { withEnv } from "./support.mjs";
 
-const { exaSearch, RATE_LIMITED } = keyless;
 
 test("keyless Exa's free limit is said in web's own words unless the caller gives its own (words.rateLimited), never Exa's", async (t) => {
   withEnv(t, { AGENTRUN_TEST_FAUX_EXA: "429" });

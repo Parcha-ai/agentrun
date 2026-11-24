@@ -5,9 +5,10 @@
 // serve's web-search-breaker test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as webSearch from "../dist/index.js";
+import { exaLimitOf } from "../dist/providers/exa-keyless.js";
+import { RATE_LIMITED } from "../dist/providers/mcp.js";
+import * as webSearch from "../dist/search.js";
 
-const { RATE_LIMITED } = webSearch;
 /** What every web_search call of a run answers once its provider said the run is out of quota. */
 const UNAVAILABLE = "search is unavailable for the rest of this run; answer from what you have";
 /** What a call answers while a rate limit's wait holds, `n` seconds of it left. */
@@ -149,8 +150,8 @@ test("a rate limit not keyless Exa's (Parallel's 429, a hosted search's) that re
 });
 
 test("keyless Exa's limit as the breaker reads it: the daily count's answer, naming no wait, is marked repeatIsQuota; a 429 that names its wait is a timed limit, unmarked; a refused connection is no limit", () => {
-  assert.equal(typeof webSearch.exaLimitOf, "function", "the server's reading of keyless Exa's refusal");
-  assert.deepEqual(webSearch.exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited" }), { kind: "rate", repeatIsQuota: true });
-  assert.deepEqual(webSearch.exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited", retryAfterS: 2 }), { kind: "rate", retryAfter: 2 });
-  assert.equal(webSearch.exaLimitOf({ error: "refused", limit: "connection_refused" }), undefined);
+  assert.equal(typeof exaLimitOf, "function", "the server's reading of keyless Exa's refusal");
+  assert.deepEqual(exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited" }), { kind: "rate", repeatIsQuota: true });
+  assert.deepEqual(exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited", retryAfterS: 2 }), { kind: "rate", retryAfter: 2 });
+  assert.equal(exaLimitOf({ error: "refused", limit: "connection_refused" }), undefined);
 });
