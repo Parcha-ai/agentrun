@@ -633,8 +633,9 @@ const CASES = [
     ].map(([what, text]) => ({ name: `two encodings: a held value split by ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
   // The #3626 review's texts with no false positive, each kept so: a held value cut in place next to "é" and "—", as they
-  // are and as JSON's escapes; a Windows path with "\usersሴ" in it, with and without a held value; a held value
-  // that itself holds a literal "A", as it is and JSON-escaped. Each is cut in place, or shown as it came.
+  // are and as JSON's escapes; a Windows path with "\users" and then a "\u" escape (digits 1234) in it, with and without
+  // a held value; a held value that itself holds a literal "\u" escape (digits 0041), as it is and JSON-escaped. Each is
+  // cut in place, or shown as it came.
   ...(() => {
     const B = String.fromCharCode(92);
     const KEY = P24.join("");
@@ -649,6 +650,29 @@ const CASES = [
       ["a held value holding a literal \\u0041", `see ${literal} ok`, [literal], "see [redacted] ok"],
       ["a held value holding a literal \\u0041, JSON-escaped", JSON.stringify({ v: literal }), [literal], `{"v":"[redacted]"}`],
     ].map(([what, text, values, shown]) => ({ name: `no false positive: ${what} is cut in place or shown as it came (control)`, text, values, hides: [P24[0]], exact: all(shown) }));
+  })(),
+  // A combining mark (P2-B): NFKC composes a letter and the mark after it into one character, so a held value with a
+  // mark after its first or last letter, written as it is, escaped or percent-encoded, lost that letter. The squeeze
+  // decomposes and drops every combining mark, on the held value's side and the text's, so each withholds the text. A
+  // precomposed letter (Ź) decomposes the same. A held value with an accent in it, written as it is, is cut in place
+  // (control).
+  ...(() => {
+    const KEY = P24.join("");
+    const B = String.fromCharCode(92);
+    const MARK = String.fromCharCode(0x301);
+    const rest = KEY.slice(1);
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const accented = `${P24[0]}${String.fromCharCode(0xe9)}${P24[1]}`;
+    return [
+      ...[
+        ["its first letter escaped and an escaped mark after its last", `x ${B}u005a${rest}${B}u0301 y`],
+        ["an escaped mark after its first letter", `x Z${B}u0301${rest} y`],
+        ["its first letter and a mark after its last percent-encoded", `x %5A${rest}%CC%81 y`],
+        ["a mark after its first letter, as it is", `x Z${MARK}${rest} y`],
+        ["its first letter precomposed with a mark", `x ${String.fromCharCode(0x179)}${rest} y`],
+      ].map(([what, text]) => ({ name: `combining mark: a held value with ${what} withholds the text`, text, values: [KEY], hides: [rest.slice(0, 8), KEY.slice(17, 25)], exact: all("[redacted]") })),
+      { name: "combining mark: a held value with an accent in it, as it is, is cut in place (control)", text: `see ${accented} ok`, values: [accented], hides: [P24[0], P24[1]], exact: all("see [redacted] ok") },
+    ];
   })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
