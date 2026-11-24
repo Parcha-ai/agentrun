@@ -24,10 +24,13 @@ const hooks = registerHooks({
 });
 after(() => hooks.deregister());
 
+// The recording module loads in full before any of serve: serve's loader require()s it (through the hook), and Node
+// refuses a require() of an ES module still being import()-ed (ERR_REQUIRE_ESM_RACE_CONDITION), so the two can't overlap.
+const recording = await import(RECORDING);
 // Only now serve: its loader reads the package once, when it is first asked (adapter-facts.ts asks at import).
-const [{ harnessRecipesEnv, harnessTable }, { DATA_ENV }, recipes, { archivePlatform }, { layHarnessKeys }, { HarnessUnavailable }, recording, { scratch, withEnv }] = await Promise.all([
+const [{ harnessRecipesEnv, harnessTable }, { DATA_ENV }, recipes, { archivePlatform }, { layHarnessKeys }, { HarnessUnavailable }, { scratch, withEnv }] = await Promise.all([
   import("../dist/harness-table.js"), import("../dist/files.js"), import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
-  import("../dist/harness-keys.js"), import("../dist/provider.js"), import(RECORDING), import("./support.mjs"),
+  import("../dist/harness-keys.js"), import("../dist/provider.js"), import("./support.mjs"),
 ]);
 
 const { RECORDS } = recording;
