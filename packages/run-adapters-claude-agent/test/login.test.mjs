@@ -65,6 +65,18 @@ test("a run on a login on macOS runs its CLI in the person's real home, where th
   assert.equal(durableEnv({ ...dirs, baseUrl: 'http://127.0.0.1:1', token: 'k', platform: 'darwin' }).HOME, '/s/session', 'darwin: a run on a model key runs in the session\'s home');
 });
 
+test("a run on a login on macOS runs in the home the login names (`userHome`, which the host reads once where it makes the login), never one read again here; a status check and the sign-in take the same", async () => {
+  const userHome = scratch();
+  const own = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic', userHome };
+  const env = durableEnv({ home: '/s/session', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', login: own, platform: 'darwin', model: 'claude-haiku-5-5' });
+  assert.equal(env.HOME, userHome, "darwin: a run on AgentRun's own folder runs in the login's userHome");
+  const base = scratch();
+  const login = { dir: join(base, 'login'), profiles: join(base, 'login', 'anthropic'), userHome };
+  const status = fakeCli({ loggedIn: false, authMethod: 'none' });
+  await claudeLoginStatus(status.cli, login);
+  assert.equal(status.seen().env.HOME, userHome, "the status check runs in the login's userHome");
+});
+
 test('the login status reads loggedIn and the account words, and nothing that is not an answer', () => {
   assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"a@b.c","orgName":"Org","subscriptionType":"max"}'), { signedIn: true, method: 'claude.ai', email: 'a@b.c', organization: 'Org', plan: 'max' });
   assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":false,"authMethod":"none"}'), { signedIn: false, method: 'none' });

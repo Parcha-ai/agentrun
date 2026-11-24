@@ -9,11 +9,12 @@ import { spawnSync } from "node:child_process";
 import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { hostname, tmpdir } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, claudeLoginSwitchedOff, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, settingFor, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_SIGNED_OUT, loginAt, loginForRun, settingFor, startLoginHere, turnOnBody, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
@@ -613,6 +614,36 @@ test("the machine's id is a file of the owner's alone (0600) in the data folder,
   assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "other_machine");
   assert.equal((await second.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out", "turned on again, it is this machine's");
   assert.equal(readFileSync(file, "utf8"), id);
+});
+
+// The person's home: the status check, the sign-in and a run on macOS all run in it. It is read once, where the login is
+// made (loginAt: the server's HOME when absolute, else os.homedir()), and every use takes it from the login, so a server
+// handed an env whose HOME is not os.homedir()'s answer runs them all in one home.
+test("the person's home is read once, where the login is made: with the server's HOME apart from os.homedir(), the status check, the sign-in and a run's status check all run in that HOME, on AgentRun's own folder and on a CLAUDE_CONFIG_DIR folder", { skip: process.platform === "win32" ? "a sh stand-in CLI" : false, timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  const person = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-person-"));
+  assert.notEqual(person, homedir(), "the server's HOME is not os.homedir()'s answer");
+  const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
+  const signIns = new ClaudeSignIns();
+  t.after(() => signIns.close());
+  for (const [place, extra] of [["agentrun", {}], ["machine", { CLAUDE_CONFIG_DIR: folder }]]) {
+    const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
+    const env = { HOME: person, PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, ...extra };
+    const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor(place, data)]]);
+    const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
+    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
+    const from = fake.calls().length;
+    assert.equal((await claudeLoginView(deps)).state, "signed_out", place);
+    await startLoginHere(deps);
+    await until(() => fake.calls().slice(from).some((call) => call.argv === "auth login --claudeai"), `${place}: the CLI's sign-in started`);
+    // A run's status check, as the run spec asks it (cli-run-spec.ts), on the login loginForRun gives the run.
+    const login = await loginForRun(settings, data, env, "claude-agent", { mode: "runner" });
+    assert.ok(login, `${place}: a run here goes on the login`);
+    await claude.claudeLoginStatus(fake.cli, login, { path: env.PATH });
+    const calls = fake.calls().slice(from).filter((call) => call.argv.startsWith("auth "));
+    assert.ok(calls.some((call) => call.argv === "auth status --json") && calls.some((call) => call.argv === "auth login --claudeai"), JSON.stringify(calls));
+    for (const call of calls) assert.equal(call.home, person, `${place}: ${call.argv} runs in the server's HOME: ${JSON.stringify(call)}`);
+  }
 });
 
 // A status check copies the account file into a folder of its own in the temporary folder and removes it when it ends;
