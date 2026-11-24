@@ -586,6 +586,11 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   assert.equal((await seam(launch).savedModelKeys()).OPENROUTER_API_KEY, HOST_MODEL_KEY, "a run not held, granted subagent, is answered the host's model key for its tiers, as before");
   const held = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL } });
   assert.deepEqual(await held.savedModelKeys(), {}, "a held run its model kept from running is answered no saved model key, though its process asks: its model runs nowhere");
+  // A replay grades on its fast tier's model, whose provider's saved key its runner hands its process: not a held one's.
+  const graded = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
+  const replaySeam = (hold) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-2", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-2", signInHanded: null }, launch: { ...launch, replay: { of: "run-asked", workflow: "answer", digest: "d".repeat(16) }, ...hold }, revision: graded, claimed: {} }, (text) => text, () => {}).held;
+  assert.deepEqual(await replaySeam({}).savedModelKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a replay not held is answered its grader's provider's saved key, as before");
+  assert.deepEqual(await replaySeam({ hold: { minutes: 5, refused: REFUSAL } }).savedModelKeys(), {}, "a held replay its model kept from running is answered no grader's key either: it grades nothing");
   assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "nor a tier's key");
   assert.equal(await held.serverKeyless(), true, "its keyless check answers that no key of the server's pays for its spend, with no saved key read (this host has no gateway, so a read would answer false)");
   await assert.rejects(held.learnedFirst({ laid: false }), HELD_SPEND_WORDS, "nor a learning step: it settles no audit and starts no replay run");
