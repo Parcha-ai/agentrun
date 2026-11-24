@@ -19,7 +19,7 @@ import { paidBookings, toolLedger } from "./support.mjs";
 const { searchFor, webSearchTool } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
 const { webOf } = await import("../dist/web-run.js");
-const { handsJevWeb, explainsView, planeFor, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
+const { handsJevWeb, explainsView, planeFor, relaunchPlane, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { decisionKeysFor } = await import("../dist/decisions.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -247,6 +247,23 @@ test("a codex run on auto with web_search alone is handed TypeSafe's key: auto i
   const plane = planeFor({ OPENAI_API_KEY: "not-a-secret" }, { harness: "codex", tools: ["web_search"] }, {});
   assert.notEqual(plane.web_search, "native", `auto resolves to the run's own search on codex, not Codex's: ${JSON.stringify(plane)}`);
   assert.equal(await claim("codex", ["web_search"], plane), "the key", "the run's own web_search is ranked by Jev, so its key is handed");
+});
+
+test("Jev off on the server holds on a runner host without the switch: the run's plane carries it, so no key is handed and its Web has no decider", async (t) => {
+  const calls = jevCalls(t);
+  const claim = await nativeClaims(t);
+  const tooling = { harness: "pi", tools: ["web_search", "web_fetch"] };
+  // The plane the server resolves at launch under its own switch; the runner host that claims the run has none.
+  const server = { AGENTRUN_WEB_JEV_OFF: "1", PARALLEL_API_KEY: PARALLEL_KEY };
+  const plane = planeFor(server, tooling, {});
+  assert.equal(plane.jev, "off", `the server's plane says Jev is off: ${JSON.stringify(plane)}`);
+  assert.equal(await claim("pi", tooling.tools, plane), "none", "a runner host with no switch of its own hands no TypeSafe key on a plane that says Jev is off");
+  const toolEnv = claimEnv({ TYPESAFE_API_KEY: JEV_KEY, [TOOL_PLANE_ENV]: JSON.stringify({ ...plane, web_search: "parallel", web_fetch: "parallel" }) });
+  const found = (await onLedger(() => search(toolEnv))).got;
+  assert.equal(found.sift, undefined, "a run handed the key anyway still has no decider: its plane says Jev is off");
+  assert.deepEqual(calls(), [], "Jev was never asked");
+  assert.equal(relaunchPlane({ web_search: "parallel" }, server, tooling, {}).jev, "off", "a relaunch carries the server's switch as it is at that launch");
+  assert.equal(relaunchPlane(plane, { PARALLEL_API_KEY: PARALLEL_KEY }, tooling, {}).jev, undefined, "the switch turned back on: a relaunch's plane drops it");
 });
 
 test("capabilities' why says what Jev does with web_search: on with TypeSafe's key, off with an OpenRouter key alone or AGENTRUN_WEB_JEV_OFF; nothing with no key", () => {
