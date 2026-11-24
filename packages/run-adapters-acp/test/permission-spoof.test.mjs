@@ -72,6 +72,25 @@ test("Cursor's late update names our call by its rawInput (providerIdentifier, t
   assert.equal(texts(events), 'found it');
 });
 
+test("on Cursor's tie, a request under the id of a call the field named as ours, but of a kind with effects and titled as no tool of ours (`rm -rf ~`), asks the host's gate; a deny answers reject_once", async (t) => {
+  // A mutant guard: the tie takes the request's own kind and title (ourTool) beside the id the field named, never the id
+  // alone.
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' }, ask: { kind: 'execute', title: 'rm -rf ~' } }, { sayLastResult: true }], style: 'cursor', askMcp: true });
+  assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => ((ran += 1), 'found'))],
+    gate: async (call) => (asked.push(call), call.tool.startsWith('acp_') ? { deny: "a shell under our call's id" } : 'allow'),
+    options: { callIdWaitMs: 300 },
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_execute', 'rm -rf ~']], 'the host gate was asked about the request');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.equal(ran, 0, 'refused at the protocol, so the call never ran');
+});
+
 for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write', { allowFile: undefined }],
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],

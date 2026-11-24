@@ -164,6 +164,11 @@ test("the update's kind: a late update with an effect kind never names its call 
   assert.equal(await ours.take('look_up', { q: 'x' }, signal, 50), 'e');
 });
 
+test("announcedTool's prefix check: another server's tool whose prefix is as long as ours (`slackbot__look_up`) is never ours", () => {
+  // Without the check, slicing off ten characters turns `slackbot__look_up` into our look_up.
+  assert.equal(calls.announcedTool(gooseCall('c', 'slackbot__look_up', {}), GOOSE, TOOLS), null);
+});
+
 test("an announcement naming no tool with empty input (Cursor's untitled `MCP: tool`, rawInput {}) is never matched by its arguments: a parallel no-argument call of another tool never takes its id", async () => {
   // Before: it was kept under the arguments {}, so the first MCP call of any tool with no arguments took its id before
   // Cursor's late update named the call. Held so only on a recipe whose announces field names its calls (Cursor's).

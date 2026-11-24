@@ -26,6 +26,7 @@
 //             "early": one tool_call titled `agentrun-<tool>: <tool>` with the arguments as its rawInput, naming the
 //             tool in no field (no Cursor release measured sends this);
 //   lateTitle: with announce "late", that update's title instead (a release that words it otherwise);
+//   (a call step's `ask`, {kind, title}: what its permission request says instead of the call's own kind and title;)
 //   (styles "goose" and "goose-1.59": each tool_call names its tool in _meta.goose.toolCall.toolName, as Goose 1.59.2
 //   does: `agentrun__<tool>` for ours, a native step's `toolName` or `developer__<kind>` for the agent's own;)
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
@@ -292,7 +293,7 @@ async function takeTurn(client, session, prompt, signal) {
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: config.lateTitle ?? `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
       } else await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(`agentrun__${s.call}`) });
-      if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
+      if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, { ...(late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update), ...(s.ask ?? {}) }))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
         entry.result = "the client refused the call";
