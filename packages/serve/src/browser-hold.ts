@@ -3,8 +3,9 @@
 // through the server's command rows as a desktop or a phone is (computer-commands.ts), so the server learns it from one
 // small setting per run (`browser_hold:<run id>`: { session, at, epoch }), as it learns an ended wait
 // (browser-wait-ended.ts). The run's process writes it as a take goes live and removes it as the take ends, however it
-// ends; the runner removes it at the run's end, and the process as any browser session of the run opens, so a take a
-// crashed process never ended is not read as still in force.
+// ends, one change after another (browserHoldWriter); it removes any row an earlier process of the run left as it
+// starts, since its viewers start with nobody holding the browser, so a take a crashed process never ended is not read as
+// still in force. The runner removes it at the run's end.
 
 import type { WaitEndedSettings } from "./browser-wait-ended.js";
 
@@ -39,4 +40,15 @@ export async function browserHeld(settings: Pick<WaitEndedSettings, "get">, runI
   if (!value || typeof value !== "object") return false;
   const { session, at } = value as { session?: unknown; at?: unknown };
   return typeof session === "string" && typeof at === "string";
+}
+
+/** The run's process's writes of its browser's take, each after the one before it, so a quick take and hand-back can never
+ *  land backward (the hand-back's removal reading before the take's write is in). The first removes any take an earlier
+ *  process of the run left: this process's viewers start with nobody holding the browser. A write that fails leaves the
+ *  ones after it to run. */
+export function browserHoldWriter(settings: WaitEndedSettings, runId: string, epoch?: number): { held(tag: string, on: boolean, at: number): Promise<void> } {
+  let last: Promise<void> = clearBrowserHeld(settings, runId, epoch).catch(() => undefined);
+  return {
+    held: (tag, on, at) => (last = last.then(() => (on ? markBrowserHeld(settings, runId, { session: tag, at: new Date(at).toISOString() }, epoch) : clearBrowserHeld(settings, runId, epoch, tag))).catch(() => undefined)),
+  };
 }
