@@ -4013,7 +4013,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_input: {
       type: "object", additionalProperties: true,
-      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`) and cut at ${CALL_RESULT_CHARS} characters, as \`tool_result_text\` is. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
+      description: `On a \`tool_use\` row of a timeline read with \`calls=whole\` alone: the call's arguments as the agent sent them, each string through the run's redaction (a value this server holds, or text shaped like a key, reads \`[redacted]\`). Its strings together are cut at ${CALL_RESULT_CHARS} characters, the bound \`tool_result_text\` has, in order: the string that reaches it is cut there, and each non-empty one after shows as \`...\`. Its URLs keep their query values, as an approval's arguments do. Absent otherwise.`,
       "x-agentrun-serve": "callswhole/1",
     },
     tool_result_text: {
