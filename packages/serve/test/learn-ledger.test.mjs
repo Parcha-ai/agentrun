@@ -5,8 +5,9 @@
 //     stopped, a bound, a replay, an audit's shadow, a money-rule stop;
 //   - figuresOf: the series' learning (the look-back and the shadow) against the run read's (the follow-ups, the shadow
 //     and the share: its compile turns are its revision's);
-//   - summarize: the by-hand side is one function (the summary's `before`, the money rule's by_hand), and a compile's
-//     spend sits on its revision whether or not a promotion record names it;
+//   - summarize: a compile's spend sits on its revision whether or not a promotion record names it;
+//   - pastRunsOf: the money rule's by-hand side is the job's own cost over the same runs as its served side (the newest
+//     PAST_RUNS on no named disk since the reset), never a wider set;
 //   - over HTTP: every run of the cost route reads the same figures on GET /runs/{id}, and every run's all-in and the
 //     bill's unattributed add up to its booked total.
 import assert from "node:assert/strict";
@@ -15,8 +16,8 @@ import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 const { figuresOf, record, summarize } = await import("../dist/learn/ledger.js");
-const { byHandSide } = await import("../dist/learning-cost.js");
 const { pastRunsOf } = await import("../dist/store-reads/learning.js");
+const { PAST_RUNS } = await import("../dist/runner/workflow-first.js");
 const { promotionsKey } = await import("../dist/learn/promote.js");
 
 const C = "c".repeat(16);
@@ -43,6 +44,8 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
     ["a check's replay: its cost is its revision's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay" } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", workflow: "answer", digest: C, usd: 0.3 })] }],
     ["an audit's shadow: its cost is the run it audits'", endOf({ costUsd: 0.05, metrics: { path: "audit", audit: { of: "s", workflow: "answer", digest: C } } }), { row: row({ path: "audit", workflow: "answer", digest: C, jobUsd: 0.05 }), spend: [spendRow({ kind: "audit", ofRun: "s", workflow: "answer", digest: C, usd: 0.05 })] }],
     ["the money rule stopped its workflow", endOf({ costUsd: 0.4, metrics: { path: "agent", not_served: "cost_stop" } }), { row: row({ notServed: "cost_stop", jobUsd: 0.4 }), spend: [] }],
+    ["a restart cut its workflow's call: handed back, cut, never the workflow's own hand-back", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back", workflow_cut: true } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, notServed: "cut", jobUsd: 0.2 }), spend: [] }],
+    ["a hand-back of the workflow's own: no reason", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back" } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, jobUsd: 0.2 }), spend: [] }],
     ["a path no one knows names none", endOf({ costUsd: 0.4, metrics: { path: "sideways" } }), { row: row({ path: null, jobUsd: 0.4 }), spend: [] }],
   ]) assert.deepEqual(record(end), want, why);
 });
@@ -96,15 +99,39 @@ test("summarize: a compile's spend sits on its revision whether or not a record 
   assert.equal(bare.figures.get("r3").learning_usd, 0.35);
 });
 
-test("summarize: the by-hand side is one function: the mean job $ of the agent runs before the first served run, the summary's before and the money rule's by_hand", () => {
-  const out = summarize({ ...SERIES, revisions: [] });
-  const jobs = byHandSide(out.runs).map((run) => run.cost_usd);
-  assert.deepEqual(jobs, [1, 1], "r1, and r2's job without its compile turn");
-  assert.deepEqual(out.summary.before, { runs: 2, mean_usd: 1 });
-  const past = pastRunsOf(out, [], () => true);
-  assert.deepEqual([past.by_hand, past.by_hand_unknown], [out.summary.before, 0], "the money rule's by-hand side is the cost page's");
-  const unknown = summarize({ ...SERIES, rows: SERIES.rows.map((one) => (one.runId === "r1" ? { ...one, jobUsd: null, cost: "unknown" } : one)), revisions: [] });
-  assert.deepEqual([unknown.summary.before, pastRunsOf(unknown, [], () => true).by_hand_unknown], [{ runs: 1, mean_usd: 1 }, 1], "an unknown cost is left out of the mean and counted");
+test("pastRunsOf: the by-hand side is the job's own cost of the agent's runs on its own path among the same runs as the served side: its newest PAST_RUNS on no named disk since its learning's reset", () => {
+  assert.equal(typeof PAST_RUNS, "number");
+  const minute = (i) => Date.UTC(2026, 10, 24, 0, i);
+  const served = { path: "workflow", workflow: "answer", workflow_digest: C };
+  // [id, minute, end, disk]: a run before the reset, one whose job is $1 and its compile turn $0.30, one on a named disk,
+  // three served, one by hand after them.
+  const series = [
+    ["old", 1, { costUsd: 5 }], ["r1", 2, { costUsd: 1.3, rounds: [round(1, 0.3)] }], ["on-disk", 3, { costUsd: 9 }, "disk-a"],
+    ["s1", 4, { costUsd: 0.1, metrics: served }], ["s2", 5, { costUsd: 0.1, metrics: served }], ["s3", 6, { costUsd: 0.1, metrics: served }], ["late", 7, { costUsd: 2 }],
+  ];
+  const ends = series.map(([id, at, end]) => record(endOf({ id, startedAt: minute(at), ...end })));
+  const out = summarize({ rows: ends.map((one) => one.row), spend: ends.flatMap((one) => one.spend), shadows: new Map(), learning: new Set(series.filter(([, , , disk]) => !disk).map(([id]) => id)), revisions: [], compileAfter: 2 });
+  // As runs.list reads them: newest first.
+  const listed = series.map(([id, at, end, disk]) => ({ id, startedAt: minute(at), disk: disk ?? null, metrics: end.metrics ?? { path: "agent" } })).reverse();
+  const past = pastRunsOf(out, listed, (run) => run.startedAt >= minute(2));
+  assert.deepEqual(past.runs.map((run) => run.startedAt), [7, 6, 5, 4, 2].map(minute), "the served side's runs: since the reset, on no named disk");
+  assert.deepEqual([past.by_hand, past.by_hand_unknown], [{ runs: 2, mean_usd: 1.5 }, 0], "r1's job and late's, over those same runs");
+  assert.notDeepEqual(past.by_hand, out.summary.before, "the series' before reads every run it shows (the one before the reset, the one on a disk)");
+  const allIn = [1.3, 2].reduce((a, b) => a + b) / 2;
+  assert.notEqual(past.by_hand.mean_usd, allIn, "the job's own cost, never its all-in with its compile turn");
+  // An unknown cost among them is left out of the mean and counted.
+  const unknown = summarize({ rows: ends.map((one) => (one.row.runId === "late" ? { ...one.row, jobUsd: null, cost: "unknown" } : one.row)), spend: [], shadows: new Map(), revisions: [], compileAfter: 2 });
+  const read = pastRunsOf(unknown, listed, (run) => run.startedAt >= minute(2));
+  assert.deepEqual([read.by_hand, read.by_hand_unknown], [{ runs: 1, mean_usd: 1 }, 1]);
+});
+
+test("pastRunsOf: the window is the newest PAST_RUNS runs on no named disk: an older run is in neither side", () => {
+  const rows = Array.from({ length: PAST_RUNS + 1 }, (_, i) => record(endOf({ id: `r${i}`, startedAt: i, costUsd: i === 0 ? 100 : 1 })).row);
+  const out = summarize({ rows, spend: [], shadows: new Map(), revisions: [], compileAfter: 2 });
+  const listed = rows.map((one) => ({ id: one.runId, startedAt: one.startedAt, disk: null, metrics: { path: "agent" } })).reverse();
+  const past = pastRunsOf(out, listed, () => true);
+  assert.equal(past.runs.length, PAST_RUNS);
+  assert.deepEqual(past.by_hand, { runs: PAST_RUNS, mean_usd: 1 }, "the oldest, out of the window, is left out of the by-hand side too");
 });
 
 const LEARNS = { input: { content: "What is 1 plus 41?" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0, workflows: ["answer"] } };

@@ -1219,6 +1219,15 @@ test("workflowFirstOf: one fitting workflow serves; none, two, a workflow run, n
   assert.deepEqual(servedOf([{ kind: WORKFLOW_FIRST, data: { workflow: "answer", digest: "d", outcome: "handed_back" } }]), { outcome: "handed_back", workflow: "answer", digest: "d" });
 });
 
+test("workflowFirstOf: past runs it can't read stop nothing, and it says so: the run is served unchecked and the log names why", async () => {
+  const flow = { name: "answer", description: "", workflow: JSON.stringify({ ...answerFlow, name: "answer", schemas: { ...answerFlow.schemas, In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } } }) };
+  const launch = { input: { question: "q" }, learning: { seed: "abc" } };
+  const logs = [];
+  const { serve } = await workflowFirstOf("agentic", [flow], launch, (line) => logs.push(line), () => Promise.reject(new Error("the store is gone")));
+  assert.equal(serve?.name, "answer", "it serves");
+  assert.ok(logs.some((line) => /money rule could not read/.test(line) && line.includes("the store is gone") && line.includes("unchecked")), JSON.stringify(logs));
+});
+
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
 const HARNESS = "codex";
 
