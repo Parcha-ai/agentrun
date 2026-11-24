@@ -436,8 +436,10 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [name, setName] = useState(add?.name ?? "");
   const [listed, setListed] = useState<ComposioTools | null>(null);
   // The toolkits Composio offers, for the picker: loaded with the key typed (none until then). A template's toolkit is
-  // picked before any list is loaded.
+  // picked before any list is loaded. `typed`: the toolkit is typed as its slug instead, when the list failed or leaves
+  // it out; the actions route still checks it.
   const [kits, setKits] = useState<ComposioToolkit[] | null>(null);
+  const [typed, setTyped] = useState(false);
   const [hasKey, setHasKey] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const [query, setQuery] = useState("");
@@ -448,30 +450,32 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [busy, setBusy] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
-  // Each change of the key or toolkit (and each load) is a new ask: an answer to an older one is dropped, never shown
-  // under the toolkit now in the field.
+  // Each edit of the key or toolkit, and each load, is a new ask: the request under way is aborted, and an answer or a
+  // refusal to an older ask is dropped, never shown under the key or toolkit now in the form.
   const asked = useRef(0);
-  const changed = () => { asked.current++; setListed(null); };
-  const load = () => act(async () => {
-    const mine = ++asked.current;
-    setListed(null); setPicked([]); setQuery("");
-    const answer = await v2.composioTools(key(), toolkit.trim().toLowerCase());
-    if (mine !== asked.current) return;
+  const running = useRef<AbortController | null>(null);
+  const stale = () => { asked.current++; running.current?.abort(); running.current = null; };
+  useEffect(() => stale, []);
+  const asking = <T,>(send: (signal: AbortSignal) => Promise<T>, take: (answer: T) => void) => act(async () => {
+    stale();
+    const mine = asked.current;
+    const control = (running.current = new AbortController());
+    try {
+      const answer = await send(control.signal);
+      if (mine === asked.current) take(answer);
+    } catch (e) { if (mine === asked.current) throw e; }
+  });
+  const changed = () => { stale(); setListed(null); };
+  const load = () => { setListed(null); setPicked([]); setQuery(""); return asking((signal) => v2.composioTools(key(), toolkit.trim().toLowerCase(), signal), (answer) => {
     setListed(answer);
     // The template's actions ticked, those of them the toolkit lists, while the toolkit is still the one it needs.
     if (add?.tools && answer.toolkit === add.toolkit) setPicked(answer.tools.map((t) => t.slug).filter((slug) => add.tools!.includes(slug)));
-  });
-  // The toolkit list is the key's: each edit of the key drops it, the toolkit picked from it (a template's stays), and an
-  // answer to a list asked with the key before.
-  const askedKits = useRef(0);
-  const keyChanged = () => { askedKits.current++; setKits(null); setToolkit((now) => (add?.toolkit && now === add.toolkit ? now : "")); };
-  const loadKits = () => act(async () => {
-    const mine = ++askedKits.current;
-    try {
-      const answer = await v2.composioToolkits(key());
-      if (mine === askedKits.current) setKits(answer.toolkits);
-    } catch (e) { if (mine === askedKits.current) throw e; }
-  });
+  }); };
+  // The toolkit list is the key's: each edit of the key drops it and the toolkit picked from it (a template's, or one
+  // typed, stays).
+  const keyChanged = () => { stale(); setKits(null); setToolkit((now) => (typed || (add?.toolkit && now === add.toolkit) ? now : "")); };
+  // A list that fails leaves the slug to be typed.
+  const loadKits = () => asking((signal) => v2.composioToolkits(key(), signal).catch((e: unknown) => { if (!signal.aborted) setTyped(true); throw e; }), (answer) => { setKits(answer.toolkits); setTyped(false); });
   const kitOptions: PickerOption[] = (kits ?? []).map((k) => ({ value: k.slug, label: `${k.name} · ${k.slug}` }));
   // A toolkit already chosen (a template's) that the list doesn't have stays an option, so the field still shows it.
   if (toolkit && !kitOptions.some((o) => o.value === toolkit)) kitOptions.unshift({ value: toolkit, label: toolkit });
@@ -501,13 +505,17 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
       {add?.tools && <p role="note" className="text-small text-muted-foreground">A template uses {add.tools.join(", ")}: enter your key and load the actions, and those are ticked.</p>}
       <label className="block"><span className="caps mb-2 block text-small font-semibold">Composio API key</span><Input name="composio-key" {...secret} /></label>
       <div className="block" {...(kits ? { "data-toolkits-loaded": "" } : {})}><span className="caps mb-2 block text-small font-semibold">Toolkit</span>
-        {/* Composio's list, by name: a slug it doesn't list can't be typed here (the picker takes no free entry). */}
+        {/* Composio's list, by name; or the slug typed, when the list failed or leaves the toolkit out. */}
         <div className="flex gap-2">
-          <Picker label="Toolkit" className="min-w-0 flex-1" value={toolkit} options={kitOptions} disabled={!kitOptions.length}
-            placeholder={kits ? "Pick a toolkit" : "Load the toolkits with your key"} onChange={(next) => { setToolkit(next); changed(); }} />
+          {typed
+            ? <Input name="composio-toolkit" aria-label="Toolkit slug" className="min-w-0 flex-1" value={toolkit} placeholder="github" spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                onChange={(e) => { setToolkit(e.target.value); changed(); }} />
+            : <Picker label="Toolkit" className="min-w-0 flex-1" value={toolkit} options={kitOptions} disabled={!kitOptions.length}
+                placeholder={kits ? "Pick a toolkit" : "Load the toolkits with your key"} onChange={(next) => { setToolkit(next); changed(); }} />}
           <Button type="button" size="md" disabled={busy || !hasKey} onClick={() => void loadKits()}>Load toolkits</Button>
         </div>
         {kits && !kits.length && <p className="mt-1 font-mono text-small text-muted-foreground">Composio lists no toolkit for this key.</p>}
+        {kits && <Button type="button" size="xs" variant="ghost" className="mt-1" onClick={() => setTyped((now) => !now)}>{typed ? "Pick from the list" : "Not listed? Type its slug"}</Button>}
       </div>
       {problem && <Said problem={problem} />}
       {listed && (
@@ -530,7 +538,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" disabled={busy || !toolkit.trim()} onClick={() => void load()}>Load actions</Button>
         {listed && <Button type="submit" size="sm" variant="solid" disabled={busy || !picked.length || !name.trim()}>{busy ? "Working" : "Save"}</Button>}
-        <Button type="button" size="sm" disabled={busy} onClick={() => { form.current?.reset(); onClose(); }}>Cancel</Button>
+        <Button type="button" size="sm" onClick={() => { stale(); form.current?.reset(); onClose(); }}>Cancel</Button>
       </div>
     </form>
   );

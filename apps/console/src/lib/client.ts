@@ -437,9 +437,9 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** A change that moves a Composio server off Composio answers `composio` beside it: what it removed there. */
     saveMcpServer: (name: string, url: string, auth: McpAuth, kind: { toolkit?: string | null } = {}) => call<McpServer & { composio?: { removed: boolean; note: string } }>("PUT", mcpServer(name), { body: { url, auth, ...kind } }),
     /** The Composio preset: a toolkit's actions, for the picker (the owner's session alone; the key goes to Composio). */
-    composioTools: (api_key: string, toolkit: string) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit } }),
+    composioTools: (api_key: string, toolkit: string, signal?: AbortSignal) => call<ComposioTools>("POST", "/settings/mcp-servers/composio/tools", { body: { api_key, toolkit }, signal }),
     /** The Composio preset's toolkit picker: the toolkits Composio offers, by name (the owner's session alone). */
-    composioToolkits: (api_key: string) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key } }),
+    composioToolkits: (api_key: string, signal?: AbortSignal) => call<{ toolkits: ComposioToolkit[] }>("POST", "/settings/mcp-servers/composio/toolkits", { body: { api_key }, signal }),
     /** Has Composio make a managed MCP server for the chosen actions and saves it as an MCP server; `connect_url` when the
      *  toolkit needs the person's account connected; `not_served` names chosen actions Composio's server left out. */
     saveComposioServer: (name: string, api_key: string, toolkit: string, tools: string[]) => call<{ server: McpServer; connect_url?: string; not_served?: string[]; composio?: { removed: boolean; note: string } }>("PUT", `${mcpServer(name)}/composio`, { body: { api_key, toolkit, tools } }),
