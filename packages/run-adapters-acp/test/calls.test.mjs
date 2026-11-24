@@ -71,3 +71,15 @@ test('an announcement whose title names no tool of ours is matched by the argume
   assert.equal(await ids.take('write', { path: 'd' }, signal, 50), undefined);
   assert.equal(ids.has('call_4'), true, 'still announced, still waiting for its own call');
 });
+
+// Known limit (PR body): an announcement whose title names no tool of ours is matched by its arguments alone, so a call of
+// the agent's own (Goose's load_skill) announced first with the same arguments takes our MCP call's id. Only the id the
+// resume memo keys the call by moves; the gate is asked at the MCP call either way. Kept red until announcements carry a
+// field the adapter reads.
+test("an agent's own call announced with the same arguments as ours never takes our MCP call's id", { skip: "known limit, in the PR body: an untitled announcement is matched by its arguments alone" }, async () => {
+  const ids = new CallIds();
+  const signal = new AbortController().signal;
+  ids.add('call_skill', undefined, { name: 'notes' });
+  ids.add('call_ours', undefined, { name: 'notes' });
+  assert.equal(await ids.take('look_up', { name: 'notes' }, signal, 50), 'call_ours');
+});
