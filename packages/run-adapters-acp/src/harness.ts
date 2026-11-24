@@ -487,6 +487,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     }
     let refused: { deny: string } | undefined;
     if (options.gate) {
+      // The gate gets the request under its journal id, not the agent's toolCallId: said with both, so a host
+      // (harness-check) ties the gate's question to the request the agent made.
+      log("acp: the agent's permission request goes to the gate", { toolCallId: call.toolCallId, callId });
       try {
         refused = await askGate(options.gate, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {

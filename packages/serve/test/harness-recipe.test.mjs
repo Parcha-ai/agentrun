@@ -429,8 +429,8 @@ test("harness-check fails an agent whose own tools are on: its model request is 
 
 test("harness-check fails an agent that asks permission for our tool on a recipe with no allowFile and no title tie: refused at the host's gate, and mcp_tool says it asked", { skip: linux, timeout: 120_000 }, async (t) => {
   // Before: the adapter answered allow_once on the title (`agentrun__check_echo`) and the check passed. The stand-in
-  // runs check_echo after the refusal (ask-anyway), under the toolCallId it asked with: that id is how the check knows
-  // the request was for our tool.
+  // runs check_echo after the refusal (ask-anyway), under the toolCallId it asked with: the request is ours by that id
+  // and by check_echo's arguments, and counts once.
   const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined, env: { MODEL_AGENT_MODE: "ask-anyway" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);

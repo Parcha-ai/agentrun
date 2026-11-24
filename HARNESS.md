@@ -394,8 +394,9 @@ a harness row carries:
 
 The report's `gate` lists each permission the agent asked for and each question the gate was asked. `mcp_tool` fails
 when the agent asked permission for `check_echo` and the recipe declares no title tie (`quirks.permissionTie`): give it
-an `allowFile` so it runs AgentRun's tools unasked. A request counts as one for `check_echo` by its `toolCallId`, the
-id the `check_echo` call reached the gate under, never by its title. The row counts every request (`permissionAsks`)
+an `allowFile` so it runs AgentRun's tools unasked. A request counts as one for `check_echo` by its `toolCallId` (the
+id a `check_echo` call reached the gate under) or by its input (the check's nonce, `check_echo`'s `text`), never by its
+title, so a refused request the agent never ran still counts. The row counts every request (`permissionAsks`)
 and those for `check_echo` (`ourAsks`). A request for a call of the agent's own is refused and listed, and fails no
 stage. A request whose title the adapter can't tie to an AgentRun tool is refused, and fails `mcp_tool` too. Turn 1
 asks for `check_echo` with a `path` argument, the kind of argument an agent may summarize in its call's title.

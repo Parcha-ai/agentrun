@@ -253,15 +253,21 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   ];
   // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
   // server's gate answers them: a permission request for a call of ours, on a recipe with no title tie or one whose title
-  // the adapter can't tie, is one of those: refused, so check_echo never runs and mcp_tool fails, or it runs anyway under
-  // the request's id and mcp_tool fails on ourAsks.
+  // the adapter can't tie, is one of those: refused, so mcp_tool fails (on calls 0, or on ourAsks where the agent runs it
+  // anyway), and the row counts it in ourAsks either way.
   const gateAsked: { tool: string; answer: string }[] = [];
   // The ids of check_echo's MCP calls, as the gate got them: the agent's announced toolCallId where the adapter matched
   // the call to one. A permission request under one of these ids was for our tool.
   const echoIds = new Set<string>();
-  const gate = async (call: { tool: string; callId: string }) => {
+  // The gate ids of the permission requests (`acp_<kind>`) whose input carries the nonce, check_echo's text argument:
+  // requests for our tool by its arguments, as the adapter matches a call to its MCP call (CallIds), never by a title.
+  // The nonce is new for each check, so nothing else the agent does carries it. This catches a request the gate refused
+  // and the agent never ran, which no check_echo id ever names.
+  const nonceGateIds = new Set<string>();
+  const gate = async (call: { tool: string; callId: string; args?: Record<string, unknown> }) => {
     const answer = call.tool === "check_echo" ? "allow" : "deny";
     if (call.tool === "check_echo") echoIds.add(call.callId);
+    else if (call.tool.startsWith("acp_") && JSON.stringify(call.args?.input ?? null).includes(nonce)) nonceGateIds.add(call.callId);
     gateAsked.push({ tool: call.tool, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
@@ -373,17 +379,20 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     say(`${recipe.label}: turn 1, a call of our check_echo tool over MCP`);
     const first = await sessionOn(join(work, "runner-a"));
     const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce} and the path argument set to proof.txt. Then reply with exactly what it returned and nothing else.`);
-    // The permissions the agent asked for in turn 1 (permissionAsks), and of those the ones for our tool (ourAsks): a
-    // request whose toolCallId is the id a check_echo MCP call reached the gate under. Matched by id, never by title. The
-    // adapter answers a request for our tool only where the recipe declares the title tie (quirks.permissionTie,
-    // Cursor's); any other agent must ask nothing for our tools (an allowFile, Goose's), since the server's gate asks at
-    // the MCP call. A request under any other id is the agent's own call: the gate denied it and lists it
-    // (gate.permissionsAsked), and it fails no stage.
+    // The permissions the agent asked for in turn 1 (permissionAsks), and of those the ones for our tool (ourAsks), each
+    // counted once: a request whose toolCallId is the id a check_echo MCP call reached the gate under, or one whose gate
+    // question carried check_echo's nonce in its input (nonceGateIds; the adapter's log ties the gate's id to the
+    // toolCallId). Matched by id and arguments, never by title. The adapter answers a request for our tool only where
+    // the recipe declares the title tie (quirks.permissionTie, Cursor's); any other agent must ask nothing for our tools
+    // (an allowFile, Goose's), since the server's gate asks at the MCP call. Any other request is the agent's own call:
+    // the gate denied it and lists it (gate.permissionsAsked), and it fails no stage.
     const turnAsks = asked();
     const permissionAsks = turnAsks.length;
-    const ourAsks = turnAsks.filter((l) => typeof l.toolCallId === "string" && echoIds.has(l.toolCallId)).length;
+    const ourIds = new Set(echoIds);
+    for (const l of logs) if (l.message === "acp: the agent's permission request goes to the gate" && typeof l.callId === "string" && nonceGateIds.has(l.callId) && typeof l.toolCallId === "string") ourIds.add(l.toolCallId);
+    const ourAsks = turnAsks.filter((l) => typeof l.toolCallId === "string" && ourIds.has(l.toolCallId)).length;
     const tied = recipe.quirks.permissionTie === "title";
-    const askedProblem = ourAsks > 0 && !tied ? `the agent asked permission for our tool ${ourAsks} time(s), under the id it then called check_echo with: its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
+    const askedProblem = ourAsks > 0 && !tied ? `the agent asked permission for our tool ${ourAsks} time(s) (a request under the id of a check_echo call, or with check_echo's arguments): its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
     const firstOpen = opened()[0];
     // The environment while the agent runs.
     const environ = firstOpen?.pid ? environOf(firstOpen.pid) : undefined;
