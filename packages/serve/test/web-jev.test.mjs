@@ -199,6 +199,35 @@ test("a claim whose web tools run is handed the runner's TypeSafe key in its own
   assert.equal(handed(await claim({}, ["read"], {})), "none", "no web tool: no key");
 });
 
+/** A claim store holding TypeSafe's key sealed, and a claim of a revision on `harness` with `tools` on `plane`: whether
+ *  its environment was handed the key ("the key"), compared and never printed. */
+async function nativeClaims(t) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "web-jev-native-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await store.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); });
+  const seal = randomBytes(32);
+  await putSealedKey(store, seal, "TYPESAFE_API_KEY", JEV_KEY);
+  return async (harness, tools, plane) => {
+    const env = await claimSecrets({ store, sealKey: seal, env: {}, redact: { carry() {} } }, { kind: "agentic", body: { harness, tools } }, { plane });
+    return env.TYPESAFE_API_KEY === undefined ? "none" : env.TYPESAFE_API_KEY === JEV_KEY ? "the key" : "another value";
+  };
+}
+
+test("a codex run on its own (native) search with web_fetch is handed TypeSafe's key, for the fetch", async (t) => {
+  const claim = await nativeClaims(t);
+  assert.equal(await claim("codex", ["web_search", "web_fetch"], { web_search: "native", web_fetch: "firecrawl-keyless" }), "the key", "web_fetch is always the run's own, so Jev may run on it");
+});
+
+test("a codex run on its own (native) search with no web_fetch is not handed TypeSafe's key: no Jev call can happen", async (t) => {
+  const claim = await nativeClaims(t);
+  assert.equal(await claim("codex", ["web_search"], { web_search: "native" }), "none", "codex native search runs inside the CLI, so no key for it");
+});
+
+test("a pi run on native search is handed TypeSafe's key: its hosted search goes through the run's own web_search", async (t) => {
+  const claim = await nativeClaims(t);
+  assert.equal(await claim("pi", ["web_search"], { web_search: "native" }), "the key", "pi native search is ours, ranked by Jev");
+});
+
 test("capabilities' why says what Jev does with web_search: on with TypeSafe's key, off with an OpenRouter key alone or AGENTRUN_WEB_JEV_OFF; nothing with no key", () => {
   const why = (env) => explainsView(env, {}).web_search.why;
   const resolves = explainsView({}, {}).web_search.resolves;
