@@ -1,5 +1,5 @@
 // The one live sweep (dist/conformance/sweep.js) against the adapter's fake host: --before records the labelled
-// machines and mints the run's id, --after deletes only that run's new ones and reads each back gone, never touching one
+// machines and mints the run's id, into a file that is not there yet, --after deletes only that run's new ones and reads each back gone, never touching one
 // that was there before, one another user of the account made, or one of another conformance run. No vendor, no network.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -66,6 +66,57 @@ test("two runs on one account, each between its own sweeps: one's --after never 
 	assert.equal(after.code, 0, after.err);
 	assert.deepEqual(JSON.parse(after.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 1 });
 	assert.deepEqual([a.deleted, b.deleted], [true, false], "the second run's computer runs on");
+});
+
+test("--before never writes over a before file: a second --before into the same path exits 2 with nothing listed, and the first run's file is as it was", async () => {
+	const fake = fakeHost();
+	const file = join(DIR, "once.json");
+	const first = await sweep(["--provider", "fakehost", "--before", file], fake.host);
+	assert.equal(first.code, 0, first.err);
+	const recorded = readFileSync(file, "utf8");
+	const a = fake.add({ labels: { ...OURS, ...runOf(file) } });
+	fake.calls.length = 0;
+	const second = await sweep(["--provider", "fakehost", "--before", file], fake.host);
+	assert.equal(second.code, 2, `the second --before into ${file} exited ${second.code}: ${second.out}${second.err}`);
+	assert.match(second.err, /once\.json is there already, and --before never writes over a before file/);
+	assert.match(second.err, /nothing was listed/);
+	assert.equal(second.out, "");
+	assert.equal(readFileSync(file, "utf8"), recorded, "the first run's before file, its run and its ids, as it was");
+	assert.deepEqual(fake.calls.filter(([name]) => name === "list" || name === "delete"), [], "nothing listed, nothing deleted");
+	const after = await sweep(["--provider", "fakehost", "--after", file], fake.host);
+	assert.deepEqual(JSON.parse(after.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 0 }, "the first run's --after still sweeps the first run");
+	assert.equal(a.deleted, true);
+});
+
+test("a --before whose listing the vendor refused leaves no file behind, so the same path takes the next --before", async () => {
+	const fake = fakeHost();
+	const listing = fake.host.list;
+	fake.host.list = async () => {
+		throw new Error("503: the listing is down");
+	};
+	const file = join(DIR, "refused-listing.json");
+	const refused = await sweep(["--provider", "fakehost", "--before", file], fake.host);
+	assert.equal(refused.code, 2, refused.err);
+	assert.match(refused.err, /so nothing was recorded/);
+	assert.throws(() => readFileSync(file, "utf8"), { code: "ENOENT" }, "no before file is left");
+	fake.host.list = listing;
+	const again = await sweep(["--provider", "fakehost", "--before", file], fake.host);
+	assert.equal(again.code, 0, again.err);
+	assert.match(JSON.parse(readFileSync(file, "utf8")).run, /^[0-9a-f]{12}$/);
+});
+
+test("--after matches the run's id exactly: a label that only starts with it, or that it starts with, is another run's and left alone", async () => {
+	const fake = fakeHost();
+	const file = join(DIR, "prefix.json");
+	assert.equal((await sweep(["--provider", "fakehost", "--before", file], fake.host)).code, 0);
+	const { "agentrun.conformance": run } = runOf(file);
+	const ours = fake.add({ labels: { ...OURS, "agentrun.conformance": run } });
+	const longer = fake.add({ labels: { ...OURS, "agentrun.conformance": `${run}0` } });
+	const shorter = fake.add({ labels: { ...OURS, "agentrun.conformance": run.slice(0, -1) } });
+	const after = await sweep(["--provider", "fakehost", "--after", file], fake.host);
+	assert.equal(after.code, 0, after.err);
+	assert.deepEqual(JSON.parse(after.out), { swept: 1, gone: 1, stillThere: [], leftAlone: 2 });
+	assert.deepEqual([ours.deleted, longer.deleted, shorter.deleted], [true, false, false], "only the run's own machine");
 });
 
 test("a machine still there after the wait is named, and the sweep exits 1", async () => {
