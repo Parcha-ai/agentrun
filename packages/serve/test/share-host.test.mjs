@@ -25,7 +25,7 @@ import { builtConsole, call, serve } from "./support.mjs";
 const { exportBundle } = await import("../dist/run-export.js");
 const { packageSha256 } = await import("../dist/agent-package.js");
 const { stable } = await import("../dist/validate.js");
-const { checkShareBundle, SHARE_QUOTA, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { checkShareBundle, screenShare, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
 const { SHARE_HOST_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { banner } = await import("../dist/print.js");
 const { startServe } = await import("../dist/server.js");
@@ -382,6 +382,54 @@ test("each string is read alone too: a label its JSON escaping hides from the wh
   const res = await upload(s, body);
   assert.equal(res.status, 422, res.text);
   assert.equal(res.json.error.details.counts["secret-assign"], 1);
+});
+
+test("a restored record of Jev's rule that names no value the host finds is taken unchecked and counted; one over a value the rules catch still refuses", async (t) => {
+  const s = await shareHost(t);
+  // Jev runs on the owner's server alone: the host finds nothing where the record says, and takes the record unchecked.
+  const clean = JSON.parse(await bundleOf());
+  const jev = { ...clean, restored: [{ id: "c_1111111111111111", at: "/rows/0/text", start: 0, end: 4, rule: "jev", kind: "jev" }] };
+  const body = resigned(jev);
+  const taken = await upload(s, body);
+  assert.equal(taken.status, 201, taken.text);
+  assert.deepEqual(taken.json.restored_unchecked, { jev: 1 });
+  assert.equal((await send(s.port, { path: `/r/${taken.json.id}/bundle.json` })).text, body);
+  // The value under a Jev record is scrubbed as any other: a password there needs its own record of its own rule.
+  const planted = plantedRestorable();
+  const doc = JSON.parse(await restoredBundleOf(planted.content));
+  const relabelled = { ...doc, restored: doc.restored.map((record) => (record.rule === "secret-assign" ? { ...record, rule: "jev", kind: "jev" } : record)) };
+  const refused = await upload(s, resigned(relabelled));
+  assert.equal(refused.status, 422, refused.text);
+  assert.equal(refused.json.error.details.reason, "scrub_found");
+  assert.equal(refused.json.error.details.counts["secret-assign"], 1);
+  assert.deepEqual(refused.json.error.details.unchecked, { jev: 1 });
+  assert.ok(!refused.text.includes(planted.password));
+  // Any other rule's record that names nothing is still refused.
+  const other = await upload(s, resigned({ ...clean, restored: [{ ...jev.restored[0], rule: "email", kind: "personal" }] }));
+  assert.equal(other.status, 422, other.text);
+  assert.equal(other.json.error.details.reason, "restored_unmatched");
+  assert.deepEqual((await send(s.port, { path: "/r/v2/shares", token: s.alice.token })).json.shares.length, 1);
+});
+
+test(`an upload of more than SHARE_STRINGS (${SHARE_STRINGS}) distinct strings is 413 before any scrub; at the cap it is read`, async (t) => {
+  let scrubs = 0;
+  const s = await shareHost(t, { shareScrub: async (text, opts) => (scrubs++, scrub(text, opts)) });
+  const doc = JSON.parse(await bundleOf());
+  for (let index = 0; index <= SHARE_STRINGS; index++) doc.rows.push({ type: "message", role: "user", text: `n${index}` });
+  const res = await upload(s, resigned(doc));
+  assert.equal(res.status, 413, res.text);
+  assert.equal(res.json.error.details.reason, "share_strings");
+  assert.equal(res.json.error.details.limit, SHARE_STRINGS);
+  assert.ok(res.json.error.details.strings > SHARE_STRINGS);
+  assert.equal(scrubs, 0, "nothing was scrubbed");
+  assert.deepEqual(sharesIn(s.shares), []);
+  // The cap counts distinct non-empty strings: a bundle at it is read, one over it is not.
+  const clean = await bundleOf();
+  const strings = new Set();
+  const walk = (value) => (typeof value === "string" ? value && strings.add(value) : value && typeof value === "object" && Object.values(value).forEach(walk));
+  walk(JSON.parse(clean));
+  assert.deepEqual(await screenShare(clean, [], undefined, strings.size), { unchecked: {} });
+  await assert.rejects(screenShare(clean, [], undefined, strings.size - 1), (error) => error.code === "payload_too_large" && error.extra.details.strings === strings.size);
 });
 
 test("the sha256 is checked: a tampered digest, a file whose digest or size is wrong, or a body that is not canonical is 400 and stores nothing", async (t) => {

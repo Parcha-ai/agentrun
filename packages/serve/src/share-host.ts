@@ -37,6 +37,14 @@ export const SHARE_ROOT = "/r/";
 export const SHARE_API = "/r/v2/";
 /** The most shares one token keeps (Miguel, 11-23): a delete makes room. No share expires. */
 export const SHARE_QUOTA = 100;
+/** The most distinct strings one upload's per-string scrub reads: each is a scrub of its own (about 0.1 ms), so past it
+ *  the upload is 413 before any is read. With the body's cap it bounds what one upload asks of the scrubber: the whole
+ *  body once, and at most this many strings, which together hold no more than the body. */
+export const SHARE_STRINGS = 50_000;
+/** The rule ids of Jev's cuts (Scrubber beta 3; "jev" until its id is fixed). A share host never runs Jev (it holds no
+ *  model key), so a restored record of one names a value the host can't find: it is not checked, and counted in the
+ *  answer, never refused. The value itself is scrubbed as every other, and a hit there needs its own record. */
+export const SHARE_JEV_RULES: ReadonlySet<string> = new Set(["jev", ...SCRUB_RULES.filter((rule) => rule.kind === "jev").map((rule) => rule.id)]);
 /** The most bytes an upload's body may hold: the export's document cap, and room for nothing else. */
 export const SHARE_BODY_BYTES = EXPORT_CAPS.documentBytes;
 /** A share's id: 128 bits of randomness in base32 (lowercase, no padding). The URL is the capability. */
@@ -170,7 +178,7 @@ export function checkShareBundle(text: string): { sha256: string } {
  *  (its format, source, cuts, restored or sha256). */
 const RESTORED_AT = /^\/(?:agent|run|rows|graph|omitted)\/|^\/files\/\d+\/(?:path|content)$/;
 /** A rule id a refusal may name: the scrubber's own; anything else a record says is "unknown". */
-const RULE_IDS: ReadonlySet<string> = new Set(SCRUB_RULES.map((rule) => rule.id));
+const RULE_IDS: ReadonlySet<string> = new Set([...SCRUB_RULES.map((rule) => rule.id), ...SHARE_JEV_RULES]);
 /** Whether a cut of `kind` may be restored: the scrubber's table for the kind alone, never a record's or a cut's word. */
 const restorable = (kind: unknown): boolean => typeof kind === "string" && Object.hasOwn(RESTORABLE, kind) && RESTORABLE[kind as keyof typeof RESTORABLE];
 const pointer = (key: string): string => key.replaceAll("~", "~0").replaceAll("/", "~1");
@@ -231,9 +239,11 @@ function encodedOffsets(value: string): number[] {
  *  filter over those hits: a hit of one string is excused when the scrubber's table says its kind restores (label,
  *  personal, jev; never format, held or dump) AND one `restored` record names it exactly (at, rule, start, end); a hit of
  *  the whole body is excused when it lies in one string and overlaps an excused hit there of its rule. Any hit left is
- *  `scrub_found`; a `restored` record that excuses no hit (a stale or edited bundle) is `restored_unmatched`. The kind a
- *  record says is never read. The cut text is never used: the host stores what was sent or nothing. */
-export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts)): Promise<void> {
+ *  `scrub_found`; a `restored` record that excuses no hit (a stale or edited bundle) is `restored_unmatched`, unless its
+ *  rule is Jev's (SHARE_JEV_RULES), which the host never runs: that one is counted in `unchecked`, by rule, and taken.
+ *  The kind a record says is never read. More than `strings` distinct strings is 413 before any scrub. The cut text is
+ *  never used: the host stores what was sent or nothing. */
+export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
   const pass = async (body: string) => {
     let result: Awaited<ReturnType<CutScrub>>;
@@ -245,9 +255,11 @@ export async function screenShare(text: string, held: readonly string[], cutPass
     if (!result.ok) throw failed();
     return result.cuts;
   };
-  const whole = await pass(text);
   const doc = JSON.parse(text) as Record<string, unknown>;
   const { text: rebuilt, places } = placesOf(doc);
+  const distinct = new Set(places.map((place) => place.value).filter(Boolean)).size;
+  if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings, over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
+  const whole = await pass(text);
 
   // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time).
   const byValue = new Map<string, Awaited<ReturnType<typeof pass>>>();
@@ -268,10 +280,12 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   // The exception: each restored record excuses the one restorable hit it names exactly, once.
   const excused = new Set<StringHit>();
   const unmatched: Record<string, number> = {};
+  const unchecked: Record<string, number> = {};
   for (const entry of Array.isArray(doc.restored) ? doc.restored : []) {
     const record = isObject(entry) ? entry : {};
     const hit = typeof record.at === "string" && RESTORED_AT.test(record.at) ? hits.get(key(record.at, record.rule, record.start, record.end)) : undefined;
     if (hit && hit.restorable && !excused.has(hit)) excused.add(hit);
+    else if (typeof record.rule === "string" && SHARE_JEV_RULES.has(record.rule)) bump(unchecked, record.rule);
     else bump(unmatched, typeof record.rule === "string" && RULE_IDS.has(record.rule) ? record.rule : "unknown");
   }
 
@@ -293,12 +307,13 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   const total = (counts: Record<string, number>) => Object.values(counts).reduce((sum, n) => sum + n, 0);
   if (total(found) > 0) {
     const n = total(found);
-    throw new ApiError("input_invalid", `The share host's scrub found ${n} value${n === 1 ? "" : "s"} in this bundle that no restore declares (by rule: ${words(found)}), so it is refused. A restore keeps a label, personal or jev cut, never a known key format, a held value or a dump. Nothing was stored; export the run again with the cuts in place.`, { details: { reason: "scrub_found", counts: found, ...(total(unmatched) ? { unmatched } : {}) } });
+    throw new ApiError("input_invalid", `The share host's scrub found ${n} value${n === 1 ? "" : "s"} in this bundle that no restore declares (by rule: ${words(found)}), so it is refused. A restore keeps a label, personal or jev cut, never a known key format, a held value or a dump. Nothing was stored; export the run again with the cuts in place.`, { details: { reason: "scrub_found", counts: found, ...(total(unmatched) ? { unmatched } : {}), ...(total(unchecked) ? { unchecked } : {}) } });
   }
   if (total(unmatched) > 0) {
     const n = total(unmatched);
-    throw new ApiError("input_invalid", `${n} restored record${n === 1 ? "" : "s"} of this bundle name${n === 1 ? "s" : ""} no value the share host's scrub finds there (by rule: ${words(unmatched)}): a stale or edited bundle, so it is refused. Nothing was stored; export the run again.`, { details: { reason: "restored_unmatched", counts: unmatched } });
+    throw new ApiError("input_invalid", `${n} restored record${n === 1 ? "" : "s"} of this bundle name${n === 1 ? "s" : ""} no value the share host's scrub finds there (by rule: ${words(unmatched)}): a stale or edited bundle, so it is refused. Nothing was stored; export the run again.`, { details: { reason: "restored_unmatched", counts: unmatched, ...(total(unchecked) ? { unchecked } : {}) } });
   }
+  return { unchecked };
 }
 
 /** The number of sorted `values` at or below `at`. */
@@ -432,6 +447,8 @@ export interface ShareHostDeps {
   /** The scrubber in cut mode, or a test's stand-in. */
   scrub?: CutScrub;
   quota?: number;
+  /** The most distinct strings an upload may hold (SHARE_STRINGS), for a test. */
+  strings?: number;
 }
 
 const json = (res: ServerResponse, status: number, body: unknown) => {
@@ -488,9 +505,10 @@ export function shareHost(deps: ShareHostDeps): (req: IncomingMessage, res: Serv
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) throw new ApiError("unsupported_media_type", "a share's body is its bundle, application/json");
       const text = (await readCapped(req, SHARE_BODY_BYTES)).toString("utf8");
       const { sha256 } = checkShareBundle(text);
-      await screenShare(text, deps.held(), deps.scrub);
+      const { unchecked } = await screenShare(text, deps.held(), deps.scrub, deps.strings);
       const meta = await store.create(tokenId, text, sha256, quota);
-      return json(res, 201, { id: meta.id, url: urlOf(meta.id), sha256: meta.sha256 });
+      // Restores of Jev's cuts the host took unchecked (it never runs Jev), by rule, when there are any.
+      return json(res, 201, { id: meta.id, url: urlOf(meta.id), sha256: meta.sha256, ...(Object.keys(unchecked).length ? { restored_unchecked: unchecked } : {}) });
     }
     const rest = raw.slice(SHARE_ROOT.length);
     if (method !== "GET") throw allow("GET, HEAD");

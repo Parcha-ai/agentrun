@@ -3281,12 +3281,22 @@ declares it restored: a `restored` record naming it exactly (its string's pointe
 host's own scrub says may be restored (label, personal, jev; never a key format, a held value or a dump, whatever the
 record says). Each refusal is `422 input_invalid` with `details.reason` and counts by rule id, never a value:
 `scrub_found` (a value no restore declares), `restored_unmatched` (a restored record naming no value the host finds: a
-stale or edited bundle) or `scrub_failed` (the scrub failed or threw). The host never repairs a bundle:
+stale or edited bundle) or `scrub_failed` (the scrub failed or threw). The one record taken unchecked is a restore of
+Jev's rule (Scrubber beta 3): the host never runs Jev, so it can't find that value, and the answer counts such records
+in `restored_unchecked`; the value is still scrubbed by every other rule, and a hit there needs its own record.
+
+The bounds on what one upload asks of the host: the body is at most 8 MiB (`413` past it, from its `Content-Length`
+before a byte is read), the scrubber reads that body once whole, and then reads each distinct string alone, at most
+50,000 of them (`SHARE_STRINGS`; `413` with `details.reason: share_strings` past it, before any scrub), which together
+hold no more than the body. The host never repairs a bundle:
 what it serves is what was uploaded and scanned. Shares are kept in `DIR/shares/<id>/` (`bundle.json` and `meta.json`,
 `0600`). Only the token that made a share deletes it (`204`); its bytes go, and its page and bundle then answer `410`.
 
 A share's URL is on `AGENTRUN_PUBLIC_URL`, never a request's Host header. A share host on an address other than
 loopback refuses to start without it.
+
+Not yet checked: the share page drawn in a real browser. Its HTML, CSP and every asset it references were fetched from a
+real console build on a loopback share host; the page's own reads are covered by the console's unit tests.
 
 Run one replica, with `DIR` on a persistent volume. The quota and the share index are kept by the one process (a
 second replica would neither see the other's shares nor hold the quota), and a share lives only in `DIR`.
