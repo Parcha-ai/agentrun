@@ -300,7 +300,10 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
   if (!cli) return { state: "no_cli", ...base };
   try {
+    // Asked once: a person waits on this read. Its answer is a run's too (loginBeforeRun), so one who just saw the
+    // login signed in here has a run on a slow host go on.
     const said = await (await deps.claude()).claudeLoginStatus(cli, login, pathOf(deps.env));
+    noteAnswer(login, said, Date.now());
     return said.signedIn ? { state: "signed_in", ...base, account: accountOf(said) } : { state: "signed_out", ...base };
   } catch {
     return { state: "unknown", ...base };
@@ -361,16 +364,48 @@ export async function dropRefusedLogin(settings: Pick<Settings, "get" | "remove"
 export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
+/** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */
+export const LOGIN_ANSWER_STANDS_MS = 10 * 60_000;
+
+/** When each login last answered signed in, in this server process: in memory only, never on disk, and nothing but the
+ *  time. A signed-out answer removes its entry. */
+const signedInAt = new Map<string, number>();
+
+/** What tells one login from another here: its folder and its credentials dir. */
+const loginKey = (login: ClaudeAgentLogin): string => JSON.stringify([login.dir, login.secure ?? null, login.unsuffixed === true]);
+
+/** Notes what the CLI said of `login` at `now`: signed in, the time; signed out, nothing (the earlier time goes). */
+function noteAnswer(login: ClaudeAgentLogin, said: ClaudeLoginStatus, now: number): void {
+  if (said.signedIn) signedInAt.set(loginKey(login), now);
+  else signedInAt.delete(loginKey(login));
+}
+
 /** Before a run on the login: its CLI says it is signed in, or the run is refused in words (never a silent switch to a
  *  key). `cli`: the CLI that answers (loginCli); none, nothing to ask yet. `status`: the CLI's status check (the harness's
- *  claudeLoginStatus). */
-export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>): Promise<void> {
+ *  claudeLoginStatus, which asks once and, on a CLI that outlasts its limit, throws with `code` "timed_out").
+ *  A check that gives no answer (it timed out, or the CLI said nothing that reads as a status) is asked once more, since
+ *  a loaded host can take past the limit with the login fine. Still none: the run goes on when this login answered
+ *  signed in within LOGIN_ANSWER_STANDS_MS in this server process (a run's check here, or the Settings view's), as its
+ *  own CLI still fails in words if the login is gone; else it is refused with LOGIN_UNKNOWN and why. A signed-out answer
+ *  is the answer: never asked again nor overridden, refused at once, and the earlier signed-in time goes. `now`: the
+ *  clock (Date.now). */
+export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, options: { now?: () => number } = {}): Promise<void> {
   if (!login || !cli) return;
-  let said: ClaudeLoginStatus;
-  try {
-    said = await status(cli, login);
-  } catch (error) {
-    throw new Error(`${LOGIN_UNKNOWN}: ${String((error as Error)?.message ?? error).slice(0, 200)}`);
+  const now = options.now ?? Date.now;
+  let said: ClaudeLoginStatus | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2 && said === undefined; attempt++) {
+    try {
+      said = await status(cli, login);
+    } catch (error) {
+      lastError = error;
+    }
   }
+  if (said === undefined) {
+    const at = signedInAt.get(loginKey(login));
+    if (at !== undefined && now() - at <= LOGIN_ANSWER_STANDS_MS) return;
+    throw new Error(`${LOGIN_UNKNOWN}: ${String((lastError as Error)?.message ?? lastError).slice(0, 200)}`);
+  }
+  noteAnswer(login, said, now());
   if (!said.signedIn) throw new Error(LOGIN_SIGNED_OUT);
 }

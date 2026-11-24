@@ -136,6 +136,17 @@ export function parseLoginStatus(stdout: string): ClaudeLoginStatus | undefined 
 /** The longest a status check may take. */
 export const LOGIN_STATUS_MS = 15_000;
 
+/** A status check the CLI outlasted: ended at its limit (`limitMs`) with no answer, which says nothing of the login (a
+ *  loaded host can take that long), apart from a CLI that answered, in time, what reads as no status. `code` is
+ *  `timed_out`, so a caller that loads the harness lazily can tell it without the class. */
+export class ClaudeLoginTimedOut extends Error {
+  readonly code = "timed_out";
+  constructor(readonly limitMs: number) {
+    super(`the claude CLI gave no login status: the check timed out after ${Number((limitMs / 1000).toFixed(1))} s`);
+    this.name = "ClaudeLoginTimedOut";
+  }
+}
+
 /** The name of a status check's own folder in the temporary folder, ahead of mkdtemp's six characters. */
 const STATUS_FOLDER = "agentrun-claude-status-";
 const STATUS_FOLDER_NAME = /^agentrun-claude-status-[A-Za-z0-9]{6}$/;
@@ -276,29 +287,43 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  (loginEnv): on macOS it names the Keychain item ahead of the config dir (empty: the item with no suffix, the default
  *  folder's; else hashed from the login's folder, as the sign-in there named it), so the copy never renames it.
  *  A status check is no session: nothing resumes in its config dir. `platform`: the one the CLI runs on, this host's.
- *  Throws when the CLI gives no answer that reads as one. */
+ *  Asks once. Throws when the CLI gives no answer that reads as one: ClaudeLoginTimedOut when it was still running at
+ *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else a plain error. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
+  const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   try {
     const HOME = personHome(login);
     const where = { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(accountFile(login), join(scratch, "config")) };
-    const stdout = await new Promise<string>((resolve, reject) => {
+    const { stdout, timedOut } = await new Promise<{ stdout: string; timedOut: boolean }>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
         env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
         stdio: ["ignore", "pipe", "ignore"],
-        timeout: options.timeoutMs ?? LOGIN_STATUS_MS,
       });
+      // The limit is kept here, not by spawn's `timeout`, so the check knows it ended the CLI.
+      let timedOut = false;
+      const limit = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, limitMs);
       let out = "";
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         if (out.length < 64 * 1024) out += chunk;
       });
-      child.once("error", reject);
+      child.once("error", (error) => {
+        clearTimeout(limit);
+        reject(error);
+      });
       // The CLI exits 1 when signed out, its answer said all the same.
-      child.once("close", () => resolve(out));
+      child.once("close", () => {
+        clearTimeout(limit);
+        resolve({ stdout: out, timedOut });
+      });
     });
     const status = parseLoginStatus(stdout.trim());
-    if (!status) throw new Error("the claude CLI gave no login status");
+    // A whole answer written just before the limit still counts.
+    if (!status) throw timedOut ? new ClaudeLoginTimedOut(limitMs) : new Error("the claude CLI gave no login status");
     return status;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
