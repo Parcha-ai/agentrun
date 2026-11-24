@@ -12,7 +12,7 @@ import { capShortOf } from "./cap-short.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
-import { boxAvailability, newAgentPlace, placeFix, RUN_BOXES } from "./place.js";
+import { boxAvailability, newAgentPlace, placeFix } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
@@ -129,7 +129,7 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
-    const box = boxAvailability(boxes).find((b) => RUN_BOXES.includes(b.id) && b.available);
+    const box = boxAvailability(boxes).find((b) => b.available);
     if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has}: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
     const fresh = newAgentPlace(boxes);
     const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";

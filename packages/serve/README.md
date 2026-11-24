@@ -455,11 +455,16 @@ one off.
 ## Sandbox
 
 A sandbox agent's `bash` runs in a box, a machine apart from this server. Docker is the default box and the only one offered
-with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. A Daytona or Modal box
-runs on a computer from that provider, offered once `AGENTRUN_BOXES` lists it and the keys its computer provider needs are
-set (the environment, or Settings → Computers). No box holds a key. A Docker box on Linux reaches the package registries
-and GitHub through a proxy, and nothing else; so does a Daytona or Modal box, through the egress proxy its computer's
-init starts, and capabilities say so in its `places.boxes` entry. Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
+with no setup: a Docker container made for each run, which binds the run's `work/` and nothing else. Every other provider
+whose sandbox can hold the run's folder is a box too: `daytona`, `modal`, `e2b`, `agent37`, `morph`, `cloudflare`, `fly`,
+`boxd` and `groundbox`. Such a box runs on a sandbox computer from that provider, offered once `AGENTRUN_BOXES` lists it
+and the keys its computer provider needs are set (the environment, or Settings → Computers): `AGENTRUN_BOXES=docker,e2b`
+with `E2B_API_KEY` set offers both. A box is a provider that serves a sandbox, takes the run's folder (a bind, an Archil
+mount or a synced folder), starts with no image named and keeps to the allow-list or has no network; Orgo (desktops), the
+phone, the hosted browsers and smol cloud (whose disk sits where the folder would) are not. No box holds a key. A Docker
+box on Linux reaches the package registries and GitHub through a proxy, and nothing else; so does a vendor's box, through
+the egress proxy its computer's init starts, and capabilities say so in its `places.boxes` entry (`none` for boxd, whose
+computers have no network). Its `read`, `write` and `edit` work on that same `work/`: on this server, where the box binds it and this server
 holds directory handles (Docker on Linux), else in the box. The agent's loop, its log, its model calls and every key stay
 on the server. An agent says so in its [place](#place); the server says which boxes it has (`places.boxes` in its capabilities); [a run in a Docker
 box](#a-run-in-a-docker-box) is what the container gets; [the box's image](#the-boxs-image) is what it starts from.
