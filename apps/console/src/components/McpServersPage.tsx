@@ -448,6 +448,8 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   const [after, setAfter] = useState<{ connect?: string; notServed?: string[]; composio?: { removed: boolean; note: string } } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [busy, setBusy] = useState(false);
+  // Cancel is off only while a save is out (its answer decides what the form shows next); a load never locks it.
+  const [saving, setSaving] = useState(false);
   const key = () => ((form.current?.elements.namedItem("composio-key") as HTMLInputElement | null)?.value ?? "").trim();
   const act = async (work: () => Promise<void>) => { setBusy(true); setProblem(null); try { await work(); } catch (e) { setProblem(mcpProblem(e)); } setBusy(false); };
   // Each edit of the key or toolkit, and each load, is a new ask: the request under way is aborted, and an answer or a
@@ -480,7 +482,8 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
   // A toolkit already chosen (a template's) that the list doesn't have stays an option, so the field still shows it.
   if (toolkit && !kitOptions.some((o) => o.value === toolkit)) kitOptions.unshift({ value: toolkit, label: toolkit });
   const save = () => act(async () => {
-    const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked);
+    setSaving(true);
+    const answer = await v2.saveComposioServer(name.trim(), key(), listed!.toolkit, picked).finally(() => setSaving(false));
     form.current?.reset();
     onSaved();
     if (answer.connect_url || answer.not_served?.length || answer.composio) setAfter({ connect: answer.connect_url, notServed: answer.not_served, composio: answer.composio }); else onClose();
@@ -538,7 +541,7 @@ function ComposioForm({ v2, add, onClose, onSaved }: { v2: Client; add?: Add; on
       <div className="flex flex-wrap gap-2">
         <Button type="button" size="sm" disabled={busy || !toolkit.trim()} onClick={() => void load()}>Load actions</Button>
         {listed && <Button type="submit" size="sm" variant="solid" disabled={busy || !picked.length || !name.trim()}>{busy ? "Working" : "Save"}</Button>}
-        <Button type="button" size="sm" onClick={() => { stale(); form.current?.reset(); onClose(); }}>Cancel</Button>
+        <Button type="button" size="sm" disabled={saving} onClick={() => { stale(); form.current?.reset(); onClose(); }}>Cancel</Button>
       </div>
     </form>
   );
