@@ -17,7 +17,9 @@
 //   untied     titles each call of ours under another server's name (`github: check echo`), a title the adapter does
 //              not tie to our tool even on a recipe that declares the title tie, so its permission reaches the host's
 //              gate as the agent's own (`acp_other`);
-//   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
+//   own-ask    before each call of ours, announces a call of its own (`read`, toolCallId `own-<id>`) and asks permission
+//              for it, then runs ours as the other modes do: an agent whose own tools ask while its allowFile covers ours;
+//   plan      billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
 //              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback;
 //   leak-key   at each prompt, says on stderr that its vendor refused its key, its key (vendorKey) written out,
 //              and exits 1: a vendor CLI that echoes its key on an auth failure. MODEL_AGENT_LEAK_AFTER: that many
@@ -225,14 +227,22 @@ async function takeTurn(client, session, prompt) {
       return { stopReason: "end_turn" };
     }
     const results = [];
+    const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
+    const allowedBy = (answer) => answer?.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once";
     for (const use of uses) {
+      if (mode === "own-ask" && use.name.startsWith("agentrun__")) {
+        // own-ask: a call of its own first, asked about under its own id, whatever the answer.
+        const own = { toolCallId: `own-${use.id}`, title: "Read notes.txt", kind: "read", status: "pending", rawInput: { path: "notes.txt" } };
+        await notify({ sessionUpdate: "tool_call", ...own });
+        const ownAnswer = await client.request("session/request_permission", { sessionId: session.id, toolCall: own, options });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: own.toolCallId, status: allowedBy(ownAnswer) ? "completed" : "failed" });
+      }
       // untied: the call titled under another server's name, `github: check echo`.
       const title = mode === "untied" && use.name.startsWith("agentrun__") ? `github: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
       const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
       await notify({ sessionUpdate: "tool_call", ...update });
-      const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
       const answer = alwaysAllowed?.includes(use.name) ? undefined : await client.request("session/request_permission", { sessionId: session.id, toolCall: update, options });
-      const allowed = answer === undefined || (answer.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once");
+      const allowed = answer === undefined || allowedBy(answer);
       let result = "the client refused the call";
       let failed = !allowed;
       if (allowed && use.name.startsWith("agentrun__") && session.mcp) {

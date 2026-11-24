@@ -439,6 +439,21 @@ test("harness-check fails an agent that asks permission for our tool on a recipe
   assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
 });
 
+test("harness-check counts an agent's permission request for a call of its own apart from ours: refused at the host's gate, it fails no stage when our tool then runs unasked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: every request counted as one for our tool, so an agent asking about its own `read` failed mcp_tool.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "own-ask" } }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(row?.permissionAsks, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ok, true, JSON.stringify(row));
+  assert.equal(row.ourAsks, 0);
+  assert.equal(row.problem, undefined);
+  assert.equal(row.calls, 1);
+  assert.equal(row.turn, "completed");
+  assert.ok(run.report.gate.permissionsAsked.some((p) => p.kind === "read" && String(p.toolCallId).startsWith("own-")), JSON.stringify(run.report.gate.permissionsAsked));
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_read" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
 test("harness-check passes an agent that asks for each of our calls on a recipe that declares the title tie (quirks.permissionTie, Cursor's way): the loader passes it through", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, env } = await installed(t, recipeOf(undefined, TIED));
   const run = await check(t, file, data, env);
