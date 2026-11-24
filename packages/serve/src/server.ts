@@ -1554,8 +1554,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
-  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. One that failed
-  // stays, so the next change probes again.
+  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
+  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
+  // when they are made from them, and a change with any other inputs probes again.
   let probing: readonly (string | undefined)[] | undefined;
   const probe = async (why: string) => {
     const mine = ++probes;
@@ -1598,7 +1599,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
-    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops.
+    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
+    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
+    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
     if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
     else await probe("key");
   };
