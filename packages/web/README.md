@@ -48,13 +48,14 @@ answer, model text and receipt is byte-identical to a web that has no step (`tes
 
 ```js
 import { createWeb, deciderFrom } from "@parcha/agentrun-web";
-import { jevProvider } from "@parcha/agentrun-jev";
+import { JEV_PUBLISHED_PRICING, jevProvider } from "@parcha/agentrun-jev";
 
-const web = createWeb({ order, guard, decider: deciderFrom(jevProvider()), bounds: { decideMs: 30_000 } });
+const decider = deciderFrom(jevProvider(), { price: JEV_PUBLISHED_PRICING });
+const web = createWeb({ order, guard, pay, decider, bounds: { decideMs: 30_000 } });
 const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "Where is Widgets, Inc. registered?" });
 ```
 
-- `deciderFrom(provider, { threshold?, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
+- `deciderFrom(provider, { price, threshold?, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
   `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
   calls (`DecisionAsker`), so it depends on no provider. Each call is one request of noul questions, one per result or
   passage, in fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
@@ -71,7 +72,11 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   basis }, questions_sha256, error?, skipped? }`. `tokens` are the provider's when it reports them, else counted on
   the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
-  The decider's cost is the record's; `receipt.cost` stays the search and fetch fees.
+- Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
+  `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
+  `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
+  cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
+  figure for what was spent, `requests` how many were sent.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in

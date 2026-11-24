@@ -10,7 +10,7 @@ import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFet
 import type { Words } from "./providers/mcp.js";
 import { type Extract, parallelExtract, parallelSearched } from "./providers/parallel.js";
 import type { WebDecider } from "./decide/decider.js";
-import { type DecisionRecord, judgePart, siftSearch } from "./decide/step.js";
+import { decisionPay, type DecisionRecord, judgePart, siftSearch } from "./decide/step.js";
 import { type Backend, type Breaker, breakers, fitSearch, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "native" | "direct";
@@ -119,7 +119,7 @@ export function createWeb(config: WebConfig): Web {
         : !order.length ? { error: "web_search has no provider to ask" }
         : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal)), breakerOf, signal, config.bounds?.searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
-      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs }) : { answer: found, classifier: "off" as const };
+      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
       const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
@@ -164,7 +164,7 @@ export function createWeb(config: WebConfig): Web {
       }
       const provider = read.ok && read.via !== "stopped" && read.via !== "none" ? read.via : null;
       const signal = guarded.signal;
-      const { answer, classifier } = config.decider ? await judgePart(config.decider, asked, read, { task, signal, ms: config.bounds?.decideMs }) : { answer: read, classifier: "off" as const };
+      const { answer, classifier } = config.decider ? await judgePart(config.decider, asked, read, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) }) : { answer: read, classifier: "off" as const };
       const receipt: Receipt = { op: "fetch", asked, provider, tries, classifier, ...unjudged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
       return { answer, receipt };
     },

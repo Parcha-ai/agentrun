@@ -1,5 +1,6 @@
 // Every provider is asked the same questions in the same words, so the arms differ only in who answers them.
 import { createHash } from "node:crypto";
+import type { Fee } from "../fees.js";
 import type { Hit } from "../search.js";
 
 export type Verdict = { keep: boolean; score: number | null; reason: string };
@@ -11,7 +12,10 @@ export type Cost = { usd: number | null; basis: "reported" | "estimate" | "unkno
 export type Temperature = { temperature_sent: number | null; temperature_applied: boolean | "unknown" };
 /** One verdict per item asked about, in order. */
 export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string } & Temperature;
-export type DecideContext = { signal: AbortSignal; deadlineMs: number };
+/** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request. */
+export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>) => Promise<T>;
+/** `pay` absent: the request is sent unmetered. */
+export type DecideContext = { signal: AbortSignal; deadlineMs: number; pay?: DecisionPay };
 
 export interface WebDecider {
   readonly id: string;
@@ -66,20 +70,53 @@ export function judgeRequest(url: string, task: string, passages: readonly strin
 
 /** How sure a decider must be that an item is not needed before it is dropped: dropped when 1 - p(needed) >= it. */
 export const THRESHOLD = 0.8;
-export type DeciderOptions = { threshold?: number; model?: string; count?: (text: string) => number };
+
+/** A provider's published price, as a request is held to it before it is sent: a fee per request, and per million
+ *  tokens in and out (the long rates past `longPromptTokens` input tokens). The input is bounded by the request's
+ *  UTF-8 bytes, times `inputTokensPerByte` (1: a token is at least a byte), plus `extraInputTokens` the provider adds
+ *  (its own prompt); the output by `maxOutputTokens`. */
+export type DecisionPrice = {
+  requestUsd?: number;
+  inputUsdPerMillionTokens?: number;
+  outputUsdPerMillionTokens?: number;
+  maxOutputTokens?: number;
+  inputTokensPerByte?: number;
+  extraInputTokens?: number;
+  longPromptTokens?: number;
+  longInputUsdPerMillionTokens?: number;
+  longOutputUsdPerMillionTokens?: number;
+};
+
+/** The most a request of `bytes` may cost at `price`, rounded up to a millionth of a dollar. */
+export function holdOf(price: DecisionPrice, bytes: number): number {
+  const tokens = Math.ceil(bytes * (price.inputTokensPerByte ?? 1)) + (price.extraInputTokens ?? 0);
+  const long = price.longPromptTokens !== undefined && tokens > price.longPromptTokens;
+  const input = (long ? price.longInputUsdPerMillionTokens : undefined) ?? price.inputUsdPerMillionTokens ?? 0;
+  const output = (long ? price.longOutputUsdPerMillionTokens : undefined) ?? price.outputUsdPerMillionTokens ?? 0;
+  const usd = (price.requestUsd ?? 0) + (tokens * input + (price.maxOutputTokens ?? 0) * output) / 1e6;
+  return Math.ceil(Math.round(usd * 1e9) / 1e3) / 1e6;
+}
+
+/** `price` is required: a request the run's cap cannot price would be a paid step it cannot see. */
+export type DeciderOptions = { price: DecisionPrice; threshold?: number; model?: string; count?: (text: string) => number };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isUnit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 const shown = (p: number) => String(Math.round(p * 1000) / 1000);
 
-export function deciderFrom(provider: DecisionAsker, options: DeciderOptions = {}): WebDecider {
+export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
+  if (options?.price === null || typeof options?.price !== "object") throw new TypeError(`deciderFrom needs ${provider.id}'s price, so the run's cap can hold each request`);
+  const { price } = options;
   const threshold = options.threshold ?? THRESHOLD;
   if (!(threshold > 0.5 && threshold <= 1)) throw new RangeError(`threshold must be above 0.5 and at most 1 (it was ${threshold})`);
   const ask = async (asked: DecisionAsk, ctx: DecideContext): Promise<Verdicts> => {
     const request = options.model ? { ...asked, model: options.model } : asked;
     const text = JSON.stringify({ state: request.state, questions: request.questions });
-    const outcome = await provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    const bytes = Buffer.byteLength(text);
+    const fee: Fee = { name: `${provider.id}'s decision`, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
+    const send = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
+    const outcome = await (ctx.pay ? ctx.pay(fee, send) : send());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const ids = Object.keys(request.questions);
     let refused = 0;

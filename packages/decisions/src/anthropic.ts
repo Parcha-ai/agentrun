@@ -29,6 +29,14 @@ export const ANTHROPIC_SYSTEM = [
   "Reply with the JSON object the schema describes, keyed by question id, and nothing else.",
 ].join("\n");
 
+/** A request's price as web's classifier step holds it (deciderFrom's `price`), at the most it may cost: its input
+ *  tokens bounded by twice its bytes (the JSON schema the answers are held to adds about as many again) with the system
+ *  prompt, its output by max_tokens. Undefined for a model with no price here and none given. */
+export function anthropicDecisionPrice(model: string = MODEL, pricing?: AnthropicPrice) {
+  const price = ANTHROPIC_PUBLISHED_PRICING[model] ?? pricing;
+  return price && { ...price, maxOutputTokens: MAX_TOKENS, inputTokensPerByte: 2, extraInputTokens: Buffer.byteLength(ANTHROPIC_SYSTEM) + 1024 };
+}
+
 export interface AnthropicOptions {
   /** The key; otherwise ANTHROPIC_API_KEY, read when a request is made. */
   apiKey?: string;
