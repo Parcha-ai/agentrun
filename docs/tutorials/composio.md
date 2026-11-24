@@ -34,7 +34,7 @@ In **Settings → MCP servers → Add from Composio**, paste your Composio API k
 toolkit (`Hacker News · hackernews`) and press **Load actions**.
 
 <p align="center">
-  <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit hackernews" src="../assets/tutorials/composio-1-key.png" width="100%">
+  <img alt="The Add from Composio form: the Composio API key field, masked, and the toolkit typed as hackernews" src="../assets/tutorials/composio-1-key.png" width="100%">
 </p>
 
 <details>
