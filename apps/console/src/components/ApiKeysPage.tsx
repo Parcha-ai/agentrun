@@ -20,9 +20,9 @@ const NAME_MAX = 64;
 export const envLines = (origin: string, key: string): string => `AGENTRUN_URL=${origin}\nAGENTRUN_API_KEY=${key}`;
 
 /** Settings → AgentRun API keys (GET and POST /v2/settings/api-keys, DELETE .../{id}, a serve extension): the keys an
- *  app sends to call this server. Each key's name, when it was made and when it was last used; a form that makes one,
- *  whose value is shown only in the answer that made it, copied with one press, and never kept in the page after Done;
- *  and Revoke for each, asked first. Making and revoking take the owner's session (`writable`); any session reads the
+ *  app sends to call this server. Each key's name, when it was created and when it was last used; a form that creates one,
+ *  whose value is shown only in the answer that created it, copied with one press, and never kept in the page after Done;
+ *  and Revoke for each, asked first. Creating and revoking take the owner's session (`writable`); any session reads the
  *  list. `origin`: the address this console is open at, which the copied lines name as AGENTRUN_URL. */
 export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: Client; writable: boolean; whyNot?: SecretsWhyNot; origin: string }) {
   const [keys, setKeys] = useState<ApiKey[] | null>(null);
@@ -77,7 +77,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
   };
   const create = (e: FormEvent) => {
     e.preventDefault();
-    void act("The key was not made", async () => {
+    void act("The key was not created", async () => {
       // Shown this once: the answer that made it holds it, and nothing reads it again.
       setMade(await v2.createApiKey(name.trim()));
       setName("");
@@ -129,7 +129,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
             <section ref={madeBox} tabIndex={-1} className="border border-warning/50 bg-warning/5 p-4 outline-none" aria-label="New API key">
               <p className="caps text-small font-semibold text-warning-text">The key for {made.name}, shown this once</p>
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-body">{made.api_key}</code><CopyButton text={made.api_key} label="Copy key" /></div>
-              <p className="mt-3 text-body text-muted-foreground">Keep it in your app's secrets, never in a repository. This server never shows it again: if it is lost, revoke it and make another.</p>
+              <p className="mt-3 text-body text-muted-foreground">Keep it in your app's secrets, never in a repository. This server never shows it again: if it is lost, revoke it and create another.</p>
               <p className="mt-3 text-body text-muted-foreground">As environment variables, for an app that reads them:</p>
               <div className="mt-2 flex min-w-0 flex-col items-start gap-2 sm:flex-row">
                 <pre className="w-full min-w-0 overflow-x-auto border bg-card p-3 font-mono text-small sm:w-auto sm:flex-1" aria-label="Environment variables">{envLines(origin, made.api_key)}</pre>
@@ -138,16 +138,16 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
               <Button type="button" variant="outline" className="mt-3" onClick={() => setMade(null)}>Done</Button>
             </section>
           )}
-          <SettingsSection title="Make a key" note={<p>One key for each app, so revoking one stops that app alone. The key is shown once, here, when it is made.</p>}>
-            <form className="border bg-card p-4" onSubmit={create} aria-label="Make an API key">
+          <SettingsSection title="Create API key" note={<p>One key for each app, so revoking one stops that app alone. The key is shown once, here, when it is created.</p>}>
+            <form className="border bg-card p-4" onSubmit={create} aria-label="Create an API key">
               {!writable && <p role="status" className="mb-3 text-body text-muted-foreground">{WHY_NOT_WORDS[whyNot]}</p>}
               {refused && <p role="status" className="mb-3 text-body text-warning-text">{refused}</p>}
-              {full && <p role="status" className="mb-3 text-body text-warning-text">This server keeps at most {limit} {limit === 1 ? "key" : "keys"}. Revoke one you no longer use to make another.</p>}
-              {shown && <p role="status" className="mb-3 text-body text-muted-foreground">Copy the key above and press Done to make another.</p>}
+              {full && <p role="status" className="mb-3 text-body text-warning-text">This server keeps at most {limit} {limit === 1 ? "key" : "keys"}. Revoke one you no longer use to create another.</p>}
+              {shown && <p role="status" className="mb-3 text-body text-muted-foreground">Copy the key above and press Done to create another.</p>}
               <Field label="Name" note="What the key is for: the app or the person that will hold it.">
                 <div className="flex flex-wrap gap-2">
                   <Input name="name" required maxLength={NAME_MAX} autoComplete="off" placeholder="For example: billing app" value={name} disabled={!writable || full || !!refused || shown} onChange={(e) => setName(e.target.value)} className="min-w-56 flex-1" />
-                  <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || shown || !name.trim()}>Make key</Button>
+                  <Button type="submit" variant="primary" disabled={busy || !writable || full || !!refused || shown || !name.trim()}>Create key</Button>
                 </div>
               </Field>
             </form>
@@ -155,7 +155,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
           <SettingsSection label="Keys" title={limit === null ? "Keys" : `Keys · ${held} of ${limit}`} note={<p>A token this server was started with (<span className="font-mono">AGENTRUN_TOKEN</span>) is set in its environment and is not listed here.</p>}>
             <div ref={listBox} tabIndex={-1} role="group" aria-label="API keys" className="outline-none">
             {held === 0
-              ? <p className="border p-4 text-body text-muted-foreground">No key has been made yet.</p>
+              ? <p className="border p-4 text-body text-muted-foreground">No key has been created yet.</p>
               : (
                 <ul className="border">
                   {keys.map((key) => (
@@ -167,7 +167,7 @@ export function ApiKeysPage({ v2, writable, whyNot = "sign_in", origin }: { v2: 
                         <div className="min-w-0 flex-1 lg:flex lg:items-center lg:gap-4">
                           <span className="block min-w-0 break-words font-semibold lg:flex-1">{key.name}</span>
                           <span className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-small text-muted-foreground lg:mt-0 lg:shrink-0 lg:flex-nowrap">
-                            <span className="lg:w-36">Made {when(key.created_at)}</span>
+                            <span className="lg:w-40">Created {when(key.created_at)}</span>
                             <span className="lg:w-44">{key.last_used_at ? `Last used ${when(key.last_used_at)}` : "Never used"}</span>
                           </span>
                         </div>

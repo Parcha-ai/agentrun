@@ -264,7 +264,7 @@ describe("App, Settings", () => {
     expect(page.asked).toContain("GET /v2/settings/api-keys");
     expect(page.host.querySelector('[aria-label="Keys"]')?.textContent).toContain("billing app");
     // The owner's session (the session read's secrets_writable) makes one here.
-    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Make key")).toBe(true);
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Create key")).toBe(true);
     act(() => root?.unmount());
     document.body.innerHTML = "";
     const none = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");

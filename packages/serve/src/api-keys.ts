@@ -170,7 +170,7 @@ export class ApiKeys {
       const mac = this.#mac(`Bearer ${value}`);
       const kept: Kept = { v: 1, id, name, mac: mac.toString("hex"), created_at: new Date(this.#now()).toISOString(), last_used_at: null };
       const saved = await this.#settings.putIfAbsent(API_KEY_SETTING + id, kept, { prefix: API_KEY_SETTING, limit: API_KEYS_LIMIT });
-      if (saved === undefined) throw new ApiError("api_keys_full", `This server keeps at most ${API_KEYS_LIMIT} API keys. Revoke one you no longer use, then make this one.`);
+      if (saved === undefined) throw new ApiError("api_keys_full", `This server keeps at most ${API_KEYS_LIMIT} API keys. Revoke one you no longer use, then create this one.`);
       const held: Held = { row: kept, mac, usedAt: null, triedAt: null, saving: false };
       this.#keys.set(id, held);
       return { ...this.#view(held), api_key: value };
@@ -189,7 +189,7 @@ export class ApiKeys {
         this.#unreadable.delete(id);
         return;
       }
-      if (!held) throw new ApiError("not_found", "No API key has that id: it was revoked, or never made.");
+      if (!held) throw new ApiError("not_found", "No API key has that id: it was revoked, or never created.");
       // Out of this process first, so a request that races the store's write is refused already.
       this.#keys.delete(id);
       try {

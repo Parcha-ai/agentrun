@@ -1204,7 +1204,7 @@ function integerParam(value: string | null, name: string, max: number): number {
 }
 
 /** Why a server started on its owner's own sign-in makes no API key for an app, in one line. */
-export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it makes no API key for an app, and a key made before opens nothing here. Revoke the ones listed that you no longer want.";
+export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it creates no API key for an app, and a key created before opens nothing here. Revoke the ones listed that you no longer want.";
 
 /** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
 export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";

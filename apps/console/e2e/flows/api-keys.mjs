@@ -33,7 +33,7 @@ export default {
       // Made by its name: the answer's key is on the page, with the two lines an app's environment takes.
       await page.getByLabel("Name", { exact: true }).fill(NAMES[theme]);
       const posted = page.waitForResponse((r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/v2/settings/api-keys");
-      await page.getByRole("button", { name: "Make key", exact: true }).click();
+      await page.getByRole("button", { name: "Create key", exact: true }).click();
       const answer = await posted;
       check(answer.status() === 201, `the create answered ${answer.status()}: ${await answer.text()}`);
       await made.waitFor();
@@ -55,6 +55,22 @@ export default {
       const row = rows.filter({ hasText: NAMES[theme] });
       await row.getByText(/^Last used /).waitFor();
       check(!(await page.content()).includes("ar_key_"), "a reload shows a key");
+
+      // From `lg` each date has a column of its own: the widest date a row can say fits it on one line.
+      const cut = await row.evaluate((li) => {
+        const short = (start, text) => {
+          const column = [...li.querySelectorAll("span")].find((s) => s.children.length === 0 && s.textContent.startsWith(start));
+          const probe = column.cloneNode(false);
+          probe.textContent = text;
+          probe.style.cssText = "position:absolute;visibility:hidden;width:auto;white-space:nowrap";
+          column.parentElement.append(probe);
+          const [needs, has] = [probe.getBoundingClientRect().width, column.getBoundingClientRect().width];
+          probe.remove();
+          return needs <= has ? [] : [`"${text}" needs ${Math.ceil(needs)}px of ${Math.round(has)}px`];
+        };
+        return [...short("Created ", "Created May 30, 10:00 AM"), ...short("Last used ", "Last used May 30, 10:00 AM")];
+      });
+      check(cut.length === 0, `${theme} 1440px: a date wraps in its column: ${cut.join("; ")}`);
 
       // Revoke is asked first; Cancel keeps the key.
       await row.getByRole("button", { name: `Revoke ${NAMES[theme]}`, exact: true }).click();

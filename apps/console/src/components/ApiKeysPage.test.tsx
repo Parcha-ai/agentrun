@@ -40,7 +40,7 @@ function server(state: { keys: ApiKey[]; limit?: number; refused?: string; unrea
       if (state.revokeFails) return json(500, { error: { code: "internal", message: "the store is away", retryable: true } });
       const id = decodeURIComponent(one[1]!);
       // Revoked from another window since this page read the list: the server has no such key.
-      if (state.goneElsewhere) { state.keys = state.keys.filter((k) => k.id !== id); return json(404, { error: { code: "not_found", message: "No API key has that id: it was revoked, or never made.", retryable: false } }); }
+      if (state.goneElsewhere) { state.keys = state.keys.filter((k) => k.id !== id); return json(404, { error: { code: "not_found", message: "No API key has that id: it was revoked, or never created.", retryable: false } }); }
       state.keys = state.keys.filter((k) => k.id !== id);
       state.unreadable = state.unreadable?.filter((u) => u !== id);
       return new Response(null, { status: 204 });
@@ -77,6 +77,7 @@ describe("Settings → AgentRun API keys", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("AgentRun API keys");
     const [first, second] = page.rows();
     expect(first!.textContent).toContain("billing app");
+    expect(first!.textContent).toMatch(/Created Nov 3/);
     expect(first!.textContent).toContain("Never used");
     expect(second!.textContent).toContain("ci");
     expect(second!.textContent).toMatch(/Last used Nov 4/);
@@ -87,16 +88,16 @@ describe("Settings → AgentRun API keys", () => {
 
   it("with no key yet, says so", async () => {
     const page = await open(server({ keys: [] }).v2);
-    expect(page.host.textContent).toContain("No key has been made yet.");
+    expect(page.host.textContent).toContain("No key has been created yet.");
     expect(page.rows()).toHaveLength(0);
   });
 
   it("makes a key by its name and shows it once, with the two lines an app's environment takes; Done forgets it", async () => {
     const { v2, calls } = server({ keys: [] });
     const page = await open(v2);
-    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    expect(page.button(/^Create key$/)!.disabled).toBe(true);
     await page.type("  billing app ");
-    await page.click(/^Make key$/);
+    await page.click(/^Create key$/);
     expect(calls.filter((c) => c.method === "POST")).toEqual([{ method: "POST", path: "/v2/settings/api-keys", body: { name: "billing app" } }]);
     const shown = page.shown()!;
     expect(shown.querySelector("code")?.textContent).toBe(MADE);
@@ -117,16 +118,16 @@ describe("Settings → AgentRun API keys", () => {
     const { v2, calls } = server({ keys: [] });
     const page = await open(v2);
     await page.type("first");
-    await page.click(/^Make key$/);
+    await page.click(/^Create key$/);
     expect(page.shown()).not.toBeNull();
-    expect(page.host.querySelector('form[aria-label="Make an API key"]')?.textContent).toContain("Copy the key above and press Done to make another.");
+    expect(page.host.querySelector('form[aria-label="Create an API key"]')?.textContent).toContain("Copy the key above and press Done to create another.");
     expect(page.input().disabled).toBe(true);
-    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    expect(page.button(/^Create key$/)!.disabled).toBe(true);
     await page.click(/^Done$/);
     expect(page.input().disabled).toBe(false);
-    expect(page.host.textContent).not.toContain("press Done to make another");
+    expect(page.host.textContent).not.toContain("press Done to create another");
     await page.type("second");
-    await page.click(/^Make key$/);
+    await page.click(/^Create key$/);
     expect(calls.filter((c) => c.method === "POST").map((c) => (c.body as { name: string }).name)).toEqual(["first", "second"]);
   });
 
@@ -135,7 +136,7 @@ describe("Settings → AgentRun API keys", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     const page = await open(server({ keys: [] }).v2);
     await page.type("ci");
-    await page.click(/^Make key$/);
+    await page.click(/^Create key$/);
     await page.click(/Copy key/, page.shown()!);
     expect(writeText).toHaveBeenCalledWith(MADE);
     await page.click(/Copy both/, page.shown()!);
@@ -205,7 +206,7 @@ describe("Settings → AgentRun API keys", () => {
   it("revoking the key just made takes its panel away: it would offer a key that opens nothing", async () => {
     const page = await open(server({ keys: [] }).v2);
     await page.type("short lived");
-    await page.click(/^Make key$/);
+    await page.click(/^Create key$/);
     expect(page.shown()).not.toBeNull();
     await page.click(/^Revoke short lived$/);
     await page.click(/^Revoke the key$/);
@@ -219,25 +220,25 @@ describe("Settings → AgentRun API keys", () => {
     expect(page.rows()).toHaveLength(1);
     expect(page.host.textContent).toContain("Sign in with your password to change secrets.");
     expect(page.input().disabled).toBe(true);
-    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    expect(page.button(/^Create key$/)!.disabled).toBe(true);
     expect(page.button(/^Revoke /)).toBeUndefined();
     expect(calls.every((c) => c.method === "GET")).toBe(true);
   });
 
   it("at the server's limit, says so and makes none", async () => {
     const page = await open(server({ keys: [key()], limit: 1 }).v2);
-    expect(page.host.textContent).toContain("This server keeps at most 1 key. Revoke one you no longer use to make another.");
+    expect(page.host.textContent).toContain("This server keeps at most 1 key. Revoke one you no longer use to create another.");
     expect(page.input().disabled).toBe(true);
-    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    expect(page.button(/^Create key$/)!.disabled).toBe(true);
   });
 
   it("on a server that is one person's, says why in the server's words and makes none; a key there can still be revoked", async () => {
     const why = "Claude Code's login on this machine is on, and a Claude plan is one person's.";
     const { v2, calls } = server({ keys: [key()], refused: why });
     const page = await open(v2);
-    expect(page.host.querySelector('form[aria-label="Make an API key"]')?.textContent).toContain(why);
+    expect(page.host.querySelector('form[aria-label="Create an API key"]')?.textContent).toContain(why);
     expect(page.input().disabled).toBe(true);
-    expect(page.button(/^Make key$/)!.disabled).toBe(true);
+    expect(page.button(/^Create key$/)!.disabled).toBe(true);
     expect(calls.some((c) => c.method === "POST")).toBe(false);
     expect(page.button(/^Revoke billing app$/)).toBeDefined();
   });
@@ -245,8 +246,8 @@ describe("Settings → AgentRun API keys", () => {
   it("says a refused create in the server's words, and shows no key", async () => {
     const page = await open(server({ keys: [], createFails: true }).v2);
     await page.type("one too many");
-    await page.click(/^Make key$/);
-    expect(page.host.textContent).toContain("The key was not made");
+    await page.click(/^Create key$/);
+    expect(page.host.textContent).toContain("The key was not created");
     expect(page.host.textContent).toContain("This server keeps at most 50 API keys.");
     expect(page.shown()).toBeNull();
     expect(page.input().value).toBe("one too many");
