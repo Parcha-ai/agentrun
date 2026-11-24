@@ -78,6 +78,27 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	assert.ok(redirects.every((redirect) => redirect === "error"), JSON.stringify(redirects));
 });
 
+test("a redirect is an answer, refused in the REST client's words: a create it meets is not uncertain, asks no recovery and keeps no key", async () => {
+	const fake = fakePhoneHarness();
+	const ledger = memoryLedger();
+	const heard = [];
+	// fetch told never to follow a redirect rejects a 3xx as undici does: "fetch failed", caused by "unexpected redirect".
+	const fetch = async (url, init = {}) => {
+		heard.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+		if (init.method === "POST") throw new TypeError("fetch failed", { cause: new Error("unexpected redirect") });
+		return fake.fetch(url, init);
+	};
+	const provider = await create({ apiKey: KEY, fetch, adb: fake.adb, ledger, now: fake.clock.now, sleep: fake.clock.sleep, phoned: PHONED_JAR });
+	const created = await provider.create(SPEC, req());
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.deepEqual([created.error.code, created.error.vendor], ["vendor", "phone-harness"]);
+	assert.match(created.error.message, /^POST \/sessions: the API answered with a redirect, which is never followed: it would carry the key$/);
+	assert.doesNotMatch(created.error.message, /could not be reached/);
+	assert.deepEqual(heard, ["POST /sessions"], "a refusal: no recovery by the Idempotency-Key");
+	assert.deepEqual(await ledger.list(), [], "and the request's key is forgotten");
+	noKey(created);
+});
+
 test("check() refuses in words what a cloud phone cannot be, with no call", async () => {
 	const { provider, fake } = await setup();
 	assert.deepEqual(provider.check(SPEC), []);
