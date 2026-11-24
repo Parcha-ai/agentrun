@@ -417,3 +417,14 @@ test("LVI: a restore of a cut id a context-free read named on a call's output an
   assert.ok(label, `a restorable cut there without context: ${JSON.stringify(bare.cuts)}`);
   await assert.rejects(exported(readsOf({ rows, calls }), [label.id]), (error) => error instanceof ApiError && error.status === 400 && /no cut/.test(error.message) && !error.message.includes(CTX_PW));
 });
+
+test("LVI: an env command a person approved: its outcome row's text holds one env-dump cut below the outcome's head line, and no planted value", async () => {
+  for (const [tool, input] of [["Bash", { command: "env | sort" }], ["shell", { command: ["bash", "-lc", "printenv"] }], ["Bash", { command: "printenv" }]]) {
+    const { doc, body } = await exported(readsOf(callRows(tool, input, CTX_ENV, { approved: true })));
+    const at = doc.rows.findIndex((row) => row.id === "approval:toolu_01:after:outcome");
+    assert.deepEqual(cutsAt(doc, `/rows/${at}/text`).map((cut) => [cut.kind, cut.rule, cut.restorable]), [["dump", "env-dump", false]], `${JSON.stringify(input)}: ${JSON.stringify(doc.cuts)}`);
+    assert.equal(doc.rows[at].text, `${tool} ran once you allowed it. Its result:\n[redacted:env-dump 2 lines]`);
+    oneDump(doc, `/rows/${doc.rows.findIndex((row) => row.kind === "tool_result")}/tool_result_preview`, "env-dump");
+    assertNoPlanted(body, { pw: CTX_PW });
+  }
+});
