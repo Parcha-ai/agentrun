@@ -423,7 +423,8 @@ test("text.format json_schema reaches Ollama as its format, json_object as an ob
   assert.equal(ollama.got.chat.at(-1).tools, undefined);
   const before = ollama.got.chat.length;
   for (const [body, words] of [
-    [{ ...ASK, text: { format: asked[0][0] } }, /text\.format json_schema beside tools is not taken on this model's route/],
+    // codex's --output-schema sends tools and a format on every turn: the words say what to do instead.
+    [{ ...ASK, text: { format: asked[0][0] } }, /text\.format json_schema beside tools is not taken on this model's route: .*drop the output schema, or use a model route that takes tools with a format/],
     [{ ...ASK, text: { format: { type: "json_object" } } }, /text\.format json_object beside tools/],
     [{ ...plain, text: { format: { type: "json_schema", name: "review" } } }, /text\.format json_schema with no schema object/],
     [{ ...plain, text: { format: { type: "grammar", syntax: "lark" } } }, /text\.format "grammar" is not taken on this model's route/],
@@ -508,4 +509,24 @@ test("reasoning.effort reaches a thinking model as Ollama's think: a level asks 
   const { status, text } = await answerOf(thinker, { ...ASK, reasoning: { effort: "extreme" } });
   assert.equal(status, 400, text);
   assert.match(JSON.parse(text).error.message, /reasoning\.effort "extreme" is not taken on this model's route/);
+});
+
+// The calls parallel_tool_calls false keeps from the client are said, never dropped in silence: the edge's warn line
+// (responsesFetch's `warn`, stderr by default) names how many and which tools, never their arguments.
+test("parallel_tool_calls false: the calls an answer loses are warned by count and tool name, never their arguments; an answer of one call warns nothing", async (t) => {
+  const ollama = await fakeOllama(t, { reply: (_body, n) => (n === 1 ? { calls: [{ name: "read", arguments: { path: "a.ts" } }, { name: "list", arguments: { dir: "private-dir" } }, { name: "read", arguments: { path: "b.ts" } }] } : { calls: [{ name: "read", arguments: { path: "c.ts" } }] }) });
+  const route = await routeOf(`ollama/${TOOLS}`, { OLLAMA_HOST: ollama.host }, "default", undefined, undefined, redact);
+  const lines = [];
+  const fetcher = responsesFetch(route.fetch, { reasons: true, warn: (line) => lines.push(line) });
+  const { events, text } = await answerOf(fetcher, ASK);
+  const calls = events.at(-1).response.output.filter((item) => item.type === "function_call");
+  assert.deepEqual(calls.map((item) => [item.name, JSON.parse(item.arguments)]), [["read", { path: "a.ts" }]], "the later calls are absent from the response");
+  assert.doesNotMatch(text, /private-dir|b\.ts/, "nor anywhere in the stream");
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.match(lines[0], /parallel_tool_calls false/);
+  assert.match(lines[0], /dropped 2 /);
+  assert.match(lines[0], /list, read/);
+  assert.doesNotMatch(lines[0], /private-dir|b\.ts|a\.ts|path|dir/, "names only, never arguments");
+  await answerOf(fetcher, ASK);
+  assert.equal(lines.length, 1, "an answer of one call warns nothing");
 });

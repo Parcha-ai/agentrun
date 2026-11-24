@@ -303,3 +303,22 @@ test("a Goose run on an Ollama model through serve: its requests reach /api/chat
   const lines = (await api("GET", `/runs/${run.body.run_id}/usage`)).body.lines.filter((line) => line.meter === "tokens");
   assert.deepEqual([...new Set(lines.map((line) => `${line.provider}/${line.model}`))], [`ollama/${TOOLS}`]);
 });
+
+// The Messages wire stays as #3619 proved it: what the Responses edge asks Ollama past the Messages body (a format, its
+// sampling, no thinking) rides that edge's own in-process call (responses-fetch.ts EdgeAsks), so a Messages client's
+// own temperature, top_p, output_config.format and effort "none" reach Ollama as they did: not at all.
+test("guard: a Messages client's temperature, top_p, output_config.format and effort \"none\" never reach Ollama, with tools or without", async (t) => {
+  const { ollama, env } = await onOllama(t);
+  const { fetch: send } = await moduleLaunch(env, TOOLS);
+  const asked = { temperature: 0.3, top_p: 0.5, thinking: { type: "disabled" }, output_config: { effort: "none", format: { type: "json_schema", schema: { type: "object" } } } };
+  for (const body of [request(asked), request({ ...asked, tools: undefined })]) {
+    const events = await eventsOf(await post(send, body));
+    assert.equal(events.at(-1)?.type, "message_stop", JSON.stringify(events));
+    const sent = ollama.got.chat.at(-1);
+    assert.equal(sent.options?.temperature, undefined, "temperature");
+    assert.equal(sent.options?.top_p, undefined, "top_p");
+    assert.equal(sent.format, undefined, "format");
+    assert.equal(sent.think, undefined, "think");
+  }
+  assert.equal(ollama.got.chat.length, 2);
+});
