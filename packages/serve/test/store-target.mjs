@@ -251,11 +251,12 @@ export async function storeAtRest(place) {
 }
 
 /** Direct access to a store's rows at `place` (raw SQL with `?` parameters, on either database): run (its changes), get,
- *  all, exec (statements with no parameters), close. Bytes read back as Uint8Array on both. */
-export async function raw(place, { readOnly = false } = {}) {
+ *  all, exec (statements with no parameters), close. Bytes read back as Uint8Array on both. `timeout`: how long a SQLite
+ *  write waits for a live server's or runner's write to end (a loaded box can hold one past the default). */
+export async function raw(place, { readOnly = false, timeout = 5_000 } = {}) {
   const schema = schemaOf(place);
   if (schema === undefined) {
-    const db = new DatabaseSync(place, { readOnly, timeout: 5_000 });
+    const db = new DatabaseSync(place, { readOnly, timeout });
     return {
       kind: "sqlite",
       run: async (sql, ...params) => ({ changes: Number(db.prepare(sql).run(...params).changes) }),

@@ -34,6 +34,23 @@ describe("AgentEditor, a save's warnings", () => {
     expect(settings.split(PLACE.message).length - 1).toBe(1);
   });
 
+  it("lists a warning a run goes on under (a computer every tool of which is set to deny, which no run starts) apart from what refuses a run", () => {
+    const DENIED: SaveWarning = { field: "definition.computer", reason: "not_allowed", message: "Every tool for this agent's phone is set to deny, so a run never starts it: allow one, or set the computer to none." };
+    // As the static markup writes it (an apostrophe escaped).
+    const said = DENIED.message.replace(/'/g, "&#x27;");
+    const alone = renderToStaticMarkup(createElement(AgentEditor, { agent: agentAt("r2", [DENIED]), caps, step: "settings" }));
+    expect(alone).toContain("Saved. A run of this revision goes on, as each line says:");
+    expect(alone).toContain(said);
+    expect(alone).not.toContain("is refused until the server has");
+    const both = renderToStaticMarkup(createElement(AgentEditor, { agent: agentAt("r2", [MODEL, DENIED]), caps, step: "settings" }));
+    const refused = both.indexOf("is refused until the server has");
+    const goesOn = both.indexOf("goes on, as each line says");
+    expect(refused).toBeGreaterThan(-1);
+    expect(both.indexOf(MODEL.message)).toBeGreaterThan(refused);
+    expect(both.indexOf(MODEL.message)).toBeLessThan(goesOn);
+    expect(both.indexOf(said)).toBeGreaterThan(goesOn);
+  });
+
   it("shows none when the answer had none, or for an agent read back (a read carries no warnings)", () => {
     for (const agent of [agentAt("r2", []), agentAt("r2")]) expect(renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "settings" }))).not.toContain("Save warnings");
   });

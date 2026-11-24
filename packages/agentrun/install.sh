@@ -13,9 +13,10 @@
 # installer keeps to bin, lib, node, logs and agentrun.pid, names the server never uses. No sudo. Running it again
 # installs the version asked for (the latest by default) and removes the others, except one a running server still uses.
 #
-# Then it starts AgentRun as a service of this user (`agentrun service install`: launchd on macOS, systemd --user on
-# Linux), so it keeps running after the terminal closes and starts again at login. Where this user has no service
-# manager (a container, say), it starts AgentRun in the background until the machine stops (`agentrun stop` stops it).
+# Then it starts AgentRun: as a service of this user (`agentrun service install`: launchd on macOS, systemd --user on
+# Linux), so it keeps running after the terminal closes and starts again at login, when the person says so in the
+# terminal (want_service; with no terminal to ask in, as before); else, and where this user has no service manager (a
+# container, say), in the background until the machine stops (`agentrun stop` stops it).
 # Either way it returns once AgentRun answers, and prints its address. With --tailscale it is also served over HTTPS on
 # the person's own tailnet (lib/tailscale.mjs), on port 7340. Options: --help.
 #
@@ -38,6 +39,7 @@ main() {
   tarball=
   node_version=
   start=default
+  no_service=
   ts_flag=
   vps=
   vps_public=
@@ -54,6 +56,7 @@ main() {
       --node-version=*) node_version=${1#--node-version=}; node_version=${node_version#v}; this_computer=--node-version ;;
       --no-start) start=none; this_computer=$1 ;;
       --service) start=service; this_computer=$1 ;;
+      --no-service) no_service=1; this_computer=$1 ;;
       --tailscale | --no-tailscale) ts_flag=$1; this_computer=$1 ;;
       --vps) vps=1 ;;
       --public) vps_public=1 ;;
@@ -70,6 +73,7 @@ main() {
     return 0
   fi
   [ -z "$vps_public$image" ] || fail "--public and --image go with --vps (see --help)"
+  [ -z "$no_service" ] || [ "$start" != service ] || fail "--service and --no-service ask for opposite things; give one of them (see --help)"
   if [ -n "$node_version" ] && ! printf '%s\n' "$node_version" | grep -qx '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*'; then
     fail "--node-version $node_version is not a Node.js version (X.Y.Z)"
   fi
@@ -82,6 +86,9 @@ main() {
   need tar
   need gzip
   root=$HOME/.agentrun
+  # Before anything is downloaded, so a refusal changes nothing.
+  shim=$root/bin/agentrun
+  [ ! -x "$shim" ] || no_service_over_service
 
   # The launcher's version and its Node floor: from the tarball given, or from the registry's document for that version.
   if [ -n "$tarball" ]; then
@@ -177,13 +184,22 @@ EOF
     default)
       # A service already installed restarts on this version, or installs again to go on or off the tailnet; status
       # exits 3 when there is none.
+      no_service_over_service
       code=0
       "$shim" service status > /dev/null 2>&1 || code=$?
       if { [ "$code" = 0 ] || [ "$code" = 1 ]; } && [ -z "$ts_flag" ]; then
         "$shim" service restart
-      elif [ "$code" = 0 ] || [ "$code" = 1 ] || { [ "$code" = 3 ] && service_manager; }; then
+      elif [ "$code" = 0 ] || [ "$code" = 1 ]; then
         stop_background
         "$shim" service install ${ts_flag:+"$ts_flag"}
+      elif [ "$code" = 3 ] && service_manager && want_service /dev/tty; then
+        stop_background
+        "$shim" service install ${ts_flag:+"$ts_flag"}
+      elif [ "$code" = 3 ] && service_manager; then
+        # Asked, and not wanted (or --no-service): it runs now, in the background, until this machine stops.
+        say "Starting AgentRun in the background, without a service: it stops when this machine does."
+        say "To keep it running after a restart: $(shown_shim) service install"
+        start_background
       else
         [ "$code" = 3 ] || why="AgentRun $version has no service command"
         say "AgentRun can't run as a service here ($why), so it runs in the background."
@@ -203,9 +219,12 @@ AgentRun's installer, for macOS and Linux (x64, arm64):
   curl -fsSL https://agentrun.ai/install | sh
   curl -fsSL https://agentrun.ai/install | sh -s -- [options]
 
-It installs AgentRun, with a Node.js of its own, in ~/.agentrun, and starts it as a service of this user (launchd on
-macOS, systemd --user on Linux), which keeps running after the terminal closes. Where there is no service manager, it
-starts AgentRun in the background until the machine stops; `agentrun stop` stops it. It returns once AgentRun answers.
+It installs AgentRun, with a Node.js of its own, in ~/.agentrun, and starts it. In a terminal it asks first whether to
+make it a service of this user (launchd on macOS, systemd --user on Linux), which keeps running after the terminal
+closes and starts again at login; the answer is No unless you say yes, and then AgentRun runs in the background until
+the machine stops (`agentrun stop` stops it). With no terminal to ask in, or its output going to a pipe or a file, it
+installs the service, as --service does; --no-service says no there. Where there is no service manager, it runs in the
+background. It returns once AgentRun answers.
 
 AgentRun counts itself anonymously (a random id, version and platform; never prompts, files or keys). To turn that
 off, put AGENTRUN_TELEMETRY=0 before sh: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md
@@ -216,7 +235,9 @@ Options:
   --node-version V  the Node.js version to install, at least the launcher's floor (default: the newest release on the
                     floor's major line, from nodejs.org/dist/index.json)
   --no-start        install only
-  --service         install the service, and fail if this machine can't run one
+  --service         install the service without asking, and fail if this machine can't run one
+  --no-service      never install the service: run AgentRun in the background until the machine stops. Where it is a
+                    service already, it stops before changing anything (`agentrun service uninstall` first)
   --tailscale       also serve it over HTTPS on your own tailnet only, at this machine's name there
                     (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
                     not); --no-tailscale takes it off
@@ -361,6 +382,40 @@ $(cat "$dir/.node")"
 in_use() {
   case $running in *"$1/"*) return 0 ;; esac
   return 1
+}
+
+# --no-service where AgentRun is a service of this user already (`service status` exits 0 or 1; 3 for none, and an
+# AgentRun with no service command something else). A background start would run without what the service was installed
+# with (--data, --port, --tailscale, --env, --public-url), and `service uninstall` takes its tailnet address off, so the
+# installer stops and leaves the service as it is.
+no_service_over_service() {
+  [ -n "$no_service" ] || return 0
+  code=0
+  "$shim" service status > /dev/null 2>&1 || code=$?
+  case $code in 0 | 1) ;; *) return 0 ;; esac
+  fail "--no-service, but AgentRun is a service of this user already. Running it in the background instead would drop what the service runs with (--data, --port, --tailscale, --env, --public-url), so the service is left as it is.
+  To run AgentRun without a service: $(shown_shim) service uninstall (the data directory stays), then this installer with --no-service.
+  To update the service: this installer without --no-service."
+}
+
+# Whether to make AgentRun a service of this user (GRE-4837: a service nobody asked for surprised the person who ran
+# the installer). Asked on the terminal $1 (/dev/tty: `curl | sh` reads this script from its stdin, so the answer comes
+# from the terminal), No unless they say yes. With no terminal to ask in (CI, a script), yes, as before; --no-service
+# says no there.
+want_service() {
+  [ -z "$no_service" ] || return 1
+  # Output to a pipe or a file (an agent's or a program's shell that captures it, `| tee`): nobody reads the question,
+  # though a terminal may still be attached, and the read would wait on it for good. Not asked, as with no terminal. A
+  # file standing in for the terminal is asked.
+  [ -t 1 ] || [ -t 2 ] || [ ! -c "$1" ] || return 0
+  # No terminal to open: nobody to ask. Appended (a terminal takes either; a file standing in for one keeps its answer).
+  { printf 'Keep AgentRun running as a service of this user (it starts again at login)? [y/N] ' >> "$1"; } 2> /dev/null || return 0
+  answer=
+  read -r answer < "$1" 2> /dev/null || return 1
+  case $answer in
+    [yY] | [yY][eE][sS]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Whether this user has a service manager AgentRun can be a service of; $why says why not.

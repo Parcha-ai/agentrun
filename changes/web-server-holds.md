@@ -1,6 +1,6 @@
 ---
 packages: @parcha/agentrun-web, @parcha/agentrun-serve, @parcha/agentrun-client
-kind: feat
+kind: feature
 ---
 A keyless provider's limit now holds it for the whole server, not only the run that met it. Keyless Firecrawl and keyless Exa run on the host's free allowance, so when one run is rate-limited or out of quota, the next run should not pay another refusal to learn it.
 

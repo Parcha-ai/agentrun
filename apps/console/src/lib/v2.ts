@@ -57,12 +57,18 @@ export type TemplateApply = Body<"applyTemplate">;
 export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
 /** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
+/** The marketplace's list as the server read it (GET /v2/marketplace/templates, serve's marketplace/1): its state, and
+ *  each template with the package here that it is. */
+export type MarketplaceList = Answer<"listMarketplaceTemplates">;
+export type MarketplaceTemplate = MarketplaceList["templates"][number];
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
  *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
+/** POST /v2/runs' body: a run of an agent the request carries whole (`definition`), kept here under `external`. */
+export type RunCreateInline = components["RunCreateInline"];
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
@@ -201,6 +207,12 @@ export type ChatGPTView = Answer<"getChatGPTSignIn">;
 export type ChatGPTStart = Answer<"startChatGPTSignIn">;
 /** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
 export type ChatGPTSignOut = Answer<"signOutChatGPT">;
+
+/** The API keys made for this server's apps (GET /v2/settings/api-keys, a serve extension). Never a key. */
+export type ApiKeys = Answer<"listApiKeys">;
+export type ApiKey = ApiKeys["keys"][number];
+/** A create's answer (POST /v2/settings/api-keys): the key, with its value as `api_key`, shown this once. */
+export type ApiKeyMade = Answer<"createApiKey">;
 
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { FIRECRAWL_CANARY, FIRECRAWL_HITS, firecrawlPage, firecrawlResults, keyedServer, ok, refused } from "./fixtures/fake-keyed.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 
@@ -99,7 +100,7 @@ test("Firecrawl's limits, read by status: a 429 holds its search for the Retry-A
   const spent = await w.search("gadgets");
   assert.deepEqual(spent.receipt.tries.map((one) => [one.outcome, one.limit]), [["error", { kind: "quota" }]]);
   clock.now += 86_400_000;
-  assert.deepEqual((await w.search("sprockets")).answer, { error: web.SEARCH_UNAVAILABLE });
+  assert.deepEqual((await w.search("sprockets")).answer, { error: SEARCH_UNAVAILABLE });
   assert.equal(fc.got.length, 2);
 });
 
@@ -115,6 +116,24 @@ test("a 401 says the run's key is refused, and Firecrawl is not asked again by e
   const unkeyed = await none.w.fetch(PUBLIC);
   assert.deepEqual(unkeyed.receipt.tries.map((one) => [one.provider, one.outcome]), [["firecrawl", "error"], ["direct", "ok"]]);
   assert.equal(none.fc.got.length, 0);
+});
+
+// Firecrawl names the URL it read, and its read cuts that url at URL_MAX. A password running past the cut leaves no "@"
+// for a later scrub to find, and the cut url no longer parses: Firecrawl's read clears them before its cut.
+test("Firecrawl's page url whose password runs past where a url is cut: the page web_fetch returns names it without any part of them", async (t) => {
+  // Synthetic, built in code: a user name and a password padded past the cut.
+  const at = new URL(`${PUBLIC}landed`);
+  at.username = "web-user";
+  at.password = `not-a-secret${"x".repeat(web.URL_MAX)}`;
+  const landed = at.href;
+  assert.ok(landed.indexOf("not-a-secret") < web.URL_MAX && landed.indexOf("@") > web.URL_MAX, "the cut of the url ends inside them");
+  const { w, logs } = await firecrawlWeb(t, (path) => (path === "/v2/scrape" ? firecrawlPage(landed, "Read after a redirect.") : undefined), { order: { search: [], fetch: ["firecrawl", "direct"] } });
+  const { answer, receipt } = await w.fetch(PUBLIC);
+  assert.deepEqual([answer.ok, answer.via], [true, "firecrawl"], "Firecrawl read the page");
+  const where = { "firecrawl: the receipt turns": receipt.tries, "firecrawl: the page": answer, "firecrawl: the text the model reads": receipt.out, "firecrawl: the log": logs };
+  const leaks = Object.entries(where).filter(([, what]) => /web-user|not-a-secr/.test(typeof what === "string" ? what : JSON.stringify(what))).map(([name]) => name);
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.equal(answer.url, `${PUBLIC}landed`, "the page's url, without them");
 });
 
 test("Firecrawl's answer of something other than its results is a failed turn, never thrown", async (t) => {

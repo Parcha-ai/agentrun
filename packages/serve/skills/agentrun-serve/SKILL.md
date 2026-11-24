@@ -20,6 +20,10 @@ forbidden` with `error.details.console_url`, the console's form with the rest fi
 Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
 secret in the chat.
 
+An API key for an app (`AGENTRUN_API_KEY`) is made the same way: the owner makes it in the console at
+`<console>/#/settings/api-keys`, where it is shown once. `POST /v2/settings/api-keys` with the token is `403
+forbidden`. A key the owner hands you is sent as the token is, as `Authorization: Bearer <key>`.
+
 ## Choose the onboarding path
 
 For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.

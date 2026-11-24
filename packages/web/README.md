@@ -156,8 +156,8 @@ change to one is a change to the package's API.
 - links: `linksWritten`, `TRAILING`, `trimmed` and `wholeUrl`.
 
 The entry also names the provider contract and its registry (`WebProvider`, `defineProvider`, `readerOf`,
-`holdingWords`, `HELD_CODE`, `PROVIDERS`, `providerOf`, `providerName`, `isProviderId`, `serves`, `settingsProblemsOf`,
-`AHEAD`, `SAID`), the readers and breakers a server builds (`parallelReads`, `searchBreaker`, `SEARCH_UNAVAILABLE`),
+`holdingWords`, `PROVIDERS`, `providerOf`, `providerName`, `isProviderId`, `serves`, `settingsProblemsOf`,
+`AHEAD`, `SAID`), the readers and breakers a server builds (`parallelReads`, `searchBreaker`),
 each keyed provider's settings and defaults (`EXA_DEFAULTS`, `FIRECRAWL_DEFAULTS`, `PARALLEL_DEFAULTS`), Exa's and
 Firecrawl's prices and fees (`exaFeeOf`, `firecrawlFeeOf`), a run's destinations (`destinationsLine`,
 `destinationsWords`, `Hold`), and the classifier step's names above.

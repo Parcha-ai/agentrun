@@ -174,11 +174,9 @@ export class FolderSync {
 	}
 
 	/**
-	 * `entries` (the sink's copy of the folder) pushed into the computer's folder as one streaming tar, each file at
-	 * PUSHED_MTIME, then the baseline taken: the rule a push into a synced folder keeps, in one place. `entries` is read
-	 * only as pushTar reads it, so an abort or a failing source ends it as it ends any push (a source that throws is a
-	 * failed push, and the source is let go). A failure says which step it was: "could not be pushed into the computer:
-	 * ..." or "pushed into the computer could not be listed: ...", its code kept.
+	 * Pushes `entries` into the folder as one tar (none: an empty tar), each file at PUSHED_MTIME, then takes the
+	 * baseline. A failure names its step ("could not be pushed into the computer: ..." or "pushed into the computer could
+	 * not be listed: ..."), its code kept; a source that throws or an abort ends it as any push ends.
 	 */
 	async push(entries: AsyncIterable<TarEntry> | Iterable<TarEntry>, options: { signal?: AbortSignal } = {}): Promise<Result<void>> {
 		const stamped = (async function* () {

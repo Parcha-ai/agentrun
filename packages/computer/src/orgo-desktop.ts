@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { checkActions } from "./actions.js";
 import { readPng } from "./conformance/png.js";
 import { MACOS_GROUPS, ORGO_MACOS_IMAGE, ORGO_WINDOWS_IMAGE, WINDOWS_GROUPS } from "./descriptors/orgo.js";
+import { httpsBase } from "./hosted/rest.js";
 import { EPOCH_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import { checkMount } from "./mount.js";
 import { ORGO_API_URL, type OrgoRest, orgoRest } from "./orgo-channel.js";
@@ -505,13 +506,8 @@ export class OrgoDesktopProvider implements ComputerProvider {
 		if (os !== "windows" && os !== "macos") throw new Error(`os is "windows" or "macos" for an Orgo desktop Orgo's API answers, not ${JSON.stringify(os)}`);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
-		let url: URL;
-		try {
-			url = new URL(apiUrl);
-		} catch {
-			throw new Error("options.apiUrl is not a URL");
-		}
-		if (url.protocol !== "https:" || url.username !== "" || url.password !== "") throw new Error("options.apiUrl must be https, with no credentials in it: the key goes to it");
+		const url = new URL(httpsBase(apiUrl, "the Orgo API URL"));
+		if (url.username !== "" || url.password !== "") throw new Error("the Orgo API URL holds no credentials: the key goes to it");
 		if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most 720 h (${MAX_LIFETIME_MS} ms)`);
 		const merged = { ...DEFAULTS, ...timeouts };
 		for (const [key, value] of Object.entries(merged)) {

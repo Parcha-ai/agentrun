@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, RUN_KEYS_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -36,6 +36,7 @@ installEnvProxy();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
+       agentrun-serve check-upload < BODY.json
        agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
@@ -118,8 +119,14 @@ AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (d
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
+AGENTRUN_MARKETPLACE=off stops the console listing marketplace.agentrun.ai's templates beside this server's own (the list
+is read only when a page asks for it, kept 5 minutes); an https address reads that site's list instead. Under --faux it
+is off unless set to an address.
+
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
-other address is a 404, and there are no accounts).
+other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
+as https://mcp.example.com) lets the token save a per_run MCP server at one of those origins (PUT
+/v2/settings/mcp-servers/NAME); unset, that save is a 404. A loopback origin also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1.
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -245,12 +252,12 @@ if (process.argv[2] === "install-harness") {
     const data = resolve(values.data ?? defaultData());
     try {
       const { recipe, file } = loadRecipe(values.recipe);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
-      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -335,6 +342,35 @@ if (process.argv[2] === "check-harness") {
   for (const line of printedFacts(report)) console.log(line);
   console.log(`report: ${file}`);
   process.exit(report.ok ? 0 : 1);
+}
+
+// An upload's body ({files}, as `agentrun deploy` sends POST /v2/templates/import) read from stdin and checked by the
+// import's own check (template-import.ts checkUpload), storing nothing: the package's name and sha as one JSON line and
+// 0, or each reason the import would refuse it, a line each, and 1; 2 when stdin is not JSON. Nothing in it runs. Stdin
+// is decoded once, whole: a character split between two of its chunks reads back as itself.
+if (process.argv[2] === "check-upload") {
+  const { checkUpload } = await import("./template-import.js");
+  const { ApiError } = await import("./errors.js");
+  parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } } });
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    console.error("agentrun-serve check-upload reads an upload's body, {files}, as JSON on stdin.");
+    process.exit(2);
+  }
+  try {
+    const { pkg } = checkUpload(typeof body === "object" && body !== null ? (body as { files?: unknown }).files : undefined);
+    console.log(JSON.stringify({ valid: true, name: pkg.name, sha: pkg.origin!.sha }));
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    const reasons = error.extra.fields?.map((field) => field.message) ?? [];
+    for (const reason of reasons.length ? reasons : [error.message]) console.error(reason);
+    process.exit(1);
+  }
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
@@ -537,12 +573,15 @@ process.on("SIGTERM", signalled);
 // AGENTRUN_RUN_KEYS=1: each run brings the tool keys this server does not hold (run-keys.ts), read the same way.
 // AGENTRUN_WEB_JEV_OFF=1: the web tools run without Jev (web-run.ts jevWebOf); read where each run's Web is made, and
 // only checked here.
+// AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
 let apiOnly: boolean;
 let runKeys: boolean;
+let apiOnlyMcpOrigins: string[];
 try {
   apiOnly = switchFrom(API_ONLY_ENV);
   runKeys = switchFrom(RUN_KEYS_ENV);
   switchFrom(WEB_JEV_OFF_ENV);
+  apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
 } catch (error) {
   console.error(`${(error as Error).message}\n\n${USAGE}`);
   process.exit(2);
@@ -597,6 +636,7 @@ try {
     // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
     ...(publicUrl ? { publicUrl } : {}),
     ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+    ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
     // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
     ...(trustedProxies.length ? { trustedProxies } : {}),
     // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
