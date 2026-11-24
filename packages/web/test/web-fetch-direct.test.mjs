@@ -22,6 +22,10 @@ const HOSTILE = [
   ["http://[::1]/", false],
   ["http://[fc00::1]/", false], // key-gate: denylist a private target the guard must refuse
   ["http://[::ffff:127.0.0.1]/", false],
+  ["http://2130706433/", false],
+  ["http://0x7f.0.0.1/", false],
+  ["http://0177.0.0.1/", false],
+  ["http://[::ffff:7f00:1]/", false],
   ["http://evil.example/", false],
   ["http://mixed.example/", false],
   ["http://redirect.example/", true],
@@ -58,6 +62,10 @@ test("the tool refuses every private, local and non-http(s) target before it is 
   for (const url of ["http://public.example:80/", "http://public.example:443/", "https://public.example:443/"]) assert.notEqual((await fetchPage(url, network())).refused?.startsWith("refused: port"), true, url);
   assert.deepEqual(await fetchPage("http://public.example/missing", network()), { ok: false, url: "http://public.example/missing", status: 404, title: "", text: "", links: [], error: "the page answered 404" });
   assert.deepEqual(await fetchPage("not a url", network()), { ok: false, url: "not a url", status: 0, title: "", text: "", links: [], error: "url is not an absolute URL" });
+  const zoned = network();
+  const zone = "http://[fe80::1%25eth0]/"; // key-gate: denylist a link-local address with a zone id, which no URL may name
+  assert.equal((await fetchPage(zone, zoned)).error, "url is not an absolute URL", "a v6 zone id is no URL");
+  assert.deepEqual(zoned.dialled, []);
   assert.match((await fetchPage("http://nowhere.example/", network())).error, /ENOTFOUND/);
 });
 
