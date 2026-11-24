@@ -105,6 +105,19 @@ test("with TypeSafe's key handed, web_search's results are ranked by Jev on jev-
   }
 });
 
+test("web_search's objective is what Jev ranks against: the call's objective in, each sift request's query out, its keyword queries not", async (t) => {
+  const calls = jevCalls(t);
+  const objective = "Which state is Widgets, Inc. incorporated in, and in what year?";
+  const queries = ["widgets inc delaware", "widgets incorporation year"];
+  const { got: found } = await onLedger(() => searchFor(claimEnv({ TYPESAFE_API_KEY: JEV_KEY }), { objective, queries, n: 4 }));
+  assert.equal(found.error, undefined, `the search ran on its objective and queries: ${JSON.stringify(found).slice(0, 300)}`);
+  assert.match(found.sift ?? "", /^jev ordered \d+ results by relevance/, `Jev reranked the results: sift ${JSON.stringify(found.sift)}`);
+  const sent = calls();
+  assert.ok(sent.length >= 1, "Jev was asked");
+  assert.deepEqual([...new Set(sent.map((c) => c.query))], [objective], "Jev ranked the results against the objective, not a keyword query");
+  assert.deepEqual([...new Set(sent.map((c) => c.task))], [null], "no task given: the objective is the whole need");
+});
+
 test("Jev's requests are booked on the run's ledger at the cost Jev reported, under their hold; at the hold when it reports none", async (t) => {
   jevCalls(t);
   processEnv(t, "AGENTRUN_TEST_FAUX_JEV_COST", "0.000001");
