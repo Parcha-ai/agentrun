@@ -257,6 +257,22 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
   }
 }
 
+/** The login a run starts on: Claude Code's login on this machine, where the owner turned it on for claude-agent here
+ *  (claude-login.ts), the run carrying only where it is, its CLI saying it is signed in before the run starts. A run that
+ *  brought its own key (`keyed`) runs on that key, and a run in a sandbox place on the model keys. A run's own process (no
+ *  seal key: a user of its own, which cannot open the login's folder) goes on its runner's reader of the login's access
+ *  token alone (held.ts claudeLogin), each token it hands held by `hold` (the redactors) and this process's own; its CLI
+ *  then never gets a refresh token. Such a process never reads the login's setting itself: whether its run is on the
+ *  login is its claim's one read (run-child-host.ts staysInRunner), which its runner hands down, so a turn-on after the
+ *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder).
+ *  A run in the runner itself (a seal key) reads the setting here. */
+export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
+  if (keyed) return undefined;
+  if (deps.sealKey) return loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, place);
+  const handed = await runnerSeam()?.claudeLogin();
+  return handed && heldTokenLogin(handed, hold);
+}
+
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
  *
@@ -481,16 +497,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
-  // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
-  // runs on that key, and a run in a sandbox place on the model keys. A run's own process (a user of its own, which
-  // cannot open the login's folder) goes on its runner's reader of the login's access token alone (held.ts claudeLogin),
-  // each token it hands held by the redactors and this process's own; its CLI then never gets a refresh token. Such a
-  // process never reads the login's setting itself: whether its run is on the login is its claim's one read (run-child-host.ts
-  // staysInRunner), which its runner hands down, so a turn-on after the claim never moves it onto a login the claim did
-  // not check (a user of its own, a process runner on the same folder).
-  const handed = keyed || deps.sealKey ? undefined : await runnerSeam()?.claudeLogin();
-  const login: RunLogin | undefined = keyed ? undefined : deps.sealKey ? await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place) : handed && heldTokenLogin(handed, hold);
+  const login = await runLoginOf(deps, keyed, name, launch.place, hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the

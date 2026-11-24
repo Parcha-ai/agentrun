@@ -531,3 +531,29 @@ test("a Mode 2 run's process writes a file bigger than its channel's frame throu
   await ws.write("media/small.txt", "small");
   assert.equal(Buffer.from(await (await side.held.archil()).workspace.read("media/small.txt")).toString(), "small");
 });
+
+test("a run's own process never reads the login's setting itself: with the login turned on since its claim and its runner handing it no login, it starts on none; one its runner hands a reader starts on that reader alone, each token held; a run in the runner reads the setting", async (t) => {
+  const spec = await import("../dist/runner/cli-run-spec.js");
+  assert.equal(typeof spec.runLoginOf, "function", "the login a run starts on is one step (cli-run-spec.ts runLoginOf)");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-start-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  t.after(() => setHeld(undefined));
+  // The owner turned the login on (AgentRun's own folder) after the run's claim read it as off: its runner hands none.
+  await store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  const place = { mode: "runner" };
+  const held = [];
+  const hold = (values) => void held.push(...values);
+  setHeld({ claudeLogin: async () => undefined });
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold), undefined, "a run's own process whose runner handed it no login starts on none: it never reads the login's setting, turned on since its claim, itself");
+  // Claimed on the login: its runner hands its reader of the access token, which the process holds before its CLI has a token.
+  const token = `not-a-secret-login-access-${randomBytes(6).toString("hex")}`;
+  setHeld({ claudeLogin: async () => ({ token: async () => token, refused: async () => {} }) });
+  const handed = await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold);
+  assert.equal(await handed?.token(), token, "the reader its runner handed");
+  assert.deepEqual(held, [token], "each token held by the run's redactors");
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, true, "claude-agent", place, hold), undefined, "a run on its own model key starts on no login");
+  // A run in the runner itself (a seal key) reads the setting: AgentRun's own login folder.
+  const inRunner = await spec.runLoginOf({ store, data, env: {}, sealKey: KEY }, false, "claude-agent", place, hold);
+  assert.equal(inRunner?.dir, join(data, "claude-login"), "a run in the runner starts on the login's folder, as the setting names it");
+});
