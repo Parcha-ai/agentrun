@@ -616,8 +616,8 @@ test("pi (adapter-run-spec), end of run: a held run its model kept from running 
 
 test("CLI (cli-run-spec), end of run: a held opencode run its model kept from running that learns carries no end-of-run step; the same run not held carries one", async (t) => {
   withEnv(t, {}, KEYLESS);
-  // The control's key, opencode's, so the claim that is not held opens: never a real one.
-  const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: "not-a-secret-held-openai-key" } });
+  // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
+  const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: HOST_MODEL_KEY } });
   assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
   const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
   assert.equal(spec.endOfRun, undefined, "a held run its model kept from running carries no end-of-run step, though it learns");
