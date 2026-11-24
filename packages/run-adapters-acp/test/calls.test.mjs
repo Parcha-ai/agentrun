@@ -150,16 +150,17 @@ test("the update's kind: a late update with an effect kind never names its call 
   const naming = { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } };
   const shell = new CallIds();
   calls.announceCall(shell, { toolCallId: 'c', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
-  calls.nameCall(shell, { toolCallId: 'c', kind: 'execute', rawInput: naming }, 'other', CURSOR, TOOLS);
+  calls.nameCall(shell, { toolCallId: 'c', kind: 'execute', rawInput: naming }, CURSOR, TOOLS);
   assert.equal(shell.announced('c'), undefined, "the update's kind has effects of its own");
   assert.equal(await shell.take('look_up', { q: 'x' }, signal, 50), undefined);
   const announcedAsShell = new CallIds();
-  calls.nameCall(announcedAsShell, { toolCallId: 'd', rawInput: naming }, 'execute', CURSOR, TOOLS);
+  calls.announceCall(announcedAsShell, { toolCallId: 'd', title: 'MCP: tool', kind: 'execute', rawInput: {} }, CURSOR, TOOLS);
+  calls.nameCall(announcedAsShell, { toolCallId: 'd', rawInput: naming }, CURSOR, TOOLS);
   assert.equal(announcedAsShell.announced('d'), undefined, "the tool_call's kind has effects of its own");
   // The same update with no effect kind names it, and the MCP call runs under its id.
   const ours = new CallIds();
   calls.announceCall(ours, { toolCallId: 'e', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
-  calls.nameCall(ours, { toolCallId: 'e', rawInput: naming }, 'other', CURSOR, TOOLS);
+  calls.nameCall(ours, { toolCallId: 'e', rawInput: naming }, CURSOR, TOOLS);
   assert.equal(ours.announced('e'), 'look_up');
   assert.equal(await ours.take('look_up', { q: 'x' }, signal, 50), 'e');
 });
@@ -177,7 +178,7 @@ test("an announcement naming no tool with empty input (Cursor's untitled `MCP: t
   calls.announceCall(ids, { toolCallId: 'call_cursor', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
   assert.equal(await ids.take('check_echo', {}, signal, 50), undefined, "another tool's call with no arguments");
   // The late update names it; then its own MCP call takes it.
-  calls.nameCall(ids, { toolCallId: 'call_cursor', rawInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: {} } }, 'other', CURSOR, TOOLS);
+  calls.nameCall(ids, { toolCallId: 'call_cursor', rawInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: {} } }, CURSOR, TOOLS);
   assert.equal(await ids.take('look_up', {}, signal, 50), 'call_cursor');
 });
 

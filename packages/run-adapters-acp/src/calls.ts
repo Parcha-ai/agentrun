@@ -113,18 +113,21 @@ export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: A
   if (tool === null) return;
   // Named by nothing and reporting no arguments, on a recipe that declares the field (Cursor's untitled `MCP: tool`,
   // rawInput {}, before its late update names it): {} would tie it to any call with no arguments, of any tool, so it
-  // waits to be named (nameCall). On a recipe without the field nothing names it later: it is matched by {} at once.
-  if (tool === undefined && announces && isPlain(update.rawInput) && Object.keys(update.rawInput).length === 0) return;
+  // is held for the update that names it (nameCall), and only that. On a recipe without the field nothing names it
+  // later: it is matched by {} at once.
+  const raw = update.rawInput;
+  if (tool === undefined && announces && (raw === undefined || raw === null || (isPlain(raw) && Object.keys(raw).length === 0))) return calls.hold(update.toolCallId);
   calls.add(update.toolCallId, tool, tool === undefined ? update.rawInput : announcedArgs(update, announces));
 }
 
-/** A tool_call_update naming a call its tool_call left unnamed (Cursor's MCP calls: a tool_call titled "MCP: tool" with
- *  no input, then this update with rawInput {providerIdentifier, toolName, args}): kept as that tool, under the id its
- *  tool_call already counted, by the recipe's field. Held to both kinds, the tool_call's (`kindAtCall`) and the
- *  update's: a shell renamed by a later update is never ours. */
-export function nameCall(calls: CallIds, update: AcpCallUpdate, kindAtCall: string | undefined, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): void {
-  if (calls.announced(update.toolCallId) !== undefined) return;
-  if (hasEffects(kindAtCall) || hasEffects(update.kind)) return;
+/** A tool_call_update naming a call its tool_call left unnamed with no input (Cursor's MCP calls: a tool_call titled
+ *  "MCP: tool" with rawInput {}, then this update with rawInput {providerIdentifier, toolName, args}): kept as that
+ *  tool, under the id its tool_call already counted, by the recipe's field. Only a call announceCall held for its name
+ *  (CallIds.held): one whose tool_call reported input, or named a tool, is never named later, so a native read whose
+ *  update echoes the model's arguments stays the agent's own. The tool_call's kind was checked before it was held;
+ *  the update's is checked here: a shell renamed by a later update is never ours. */
+export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): void {
+  if (!calls.held(update.toolCallId) || hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (typeof tool !== "string") return;
   calls.add(update.toolCallId, tool, announcedArgs(update, announces));
@@ -138,6 +141,19 @@ export class CallIds {
   private readonly tools = new Map<string, string>();
   /** The key each announcement still waiting for its MCP call is kept under. */
   private readonly keyOf = new Map<string, string>();
+  /** The calls announced naming no tool and reporting no input, held for the update that names them (hold). */
+  private readonly unnamed = new Set<string>();
+
+  /** The agent announced call `id` naming no tool and reporting no input, on a recipe whose field names calls: held for
+   *  the later update that names it (nameCall), and matched to nothing until then. */
+  hold(id: string): void {
+    if (!this.used.has(id) && !this.tools.has(id)) this.unnamed.add(id);
+  }
+
+  /** Whether `id` is held for its name (hold) and no update has named it yet. */
+  held(id: string): boolean {
+    return this.unnamed.has(id);
+  }
 
   /** The agent announced call `id` with `input`, its recipe's field naming `tool` of ours, or none (undefined). Input
    *  that is not an object (none reported, or a value that is not an argument object) is no input. One with no tool is
@@ -146,6 +162,7 @@ export class CallIds {
    *  announced without one (a call the agent named in a later update) keys it again. */
   add(id: string, tool: string | undefined, input: unknown): void {
     if (this.used.has(id)) return;
+    if (tool !== undefined) this.unnamed.delete(id);
     if (tool === undefined && !isPlain(input)) return;
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
     // An announced call with input is matched only by that input (and its tool, where the field named one), so it never

@@ -139,8 +139,6 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
-  /** The kind each tool_call was announced with: an update that names the call later is held to it (nameCall). */
-  kinds: Map<string, string>;
   mirror: StateMirror;
   /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
   wiped: boolean;
@@ -334,15 +332,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
-        if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
         // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
         announceCall(rt.calls, update, recipe.announces, names);
         return;
       }
       case "tool_call_update": {
         if (!cur) return;
-        // A call the agent named only after announcing it (Cursor's): by the recipe's field, held to both kinds (nameCall).
-        nameCall(rt.calls, update, rt.kinds.get(update.toolCallId), recipe.announces, names);
+        // A call the agent named only after announcing it with no input (Cursor's): by the recipe's field (nameCall).
+        nameCall(rt.calls, update, recipe.announces, names);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
@@ -583,7 +580,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
