@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { bookedIn } from "../dist/paid-calls.js";
-import { parallelExtract, webFetch } from "../dist/web-fetch.js";
+import { parallelExtract, webFetch } from "./fixtures/serve-web.mjs";
 import * as kernel from "@parcha/agentrun-kernel";
 import * as web from "@parcha/agentrun-web";
 import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_URL, PARALLEL_SEARCH_USD, parallelSearched } from "@parcha/agentrun-web";

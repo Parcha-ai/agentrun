@@ -10,9 +10,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { explainCapability, planeFor, PROVIDERS, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
-import { FAUX_FIRECRAWL_ENV, RATE_LIMITED } from "../dist/web-run.js";
+import { FAUX_FIRECRAWL_ENV, ordersOf, RATE_LIMITED } from "../dist/web-run.js";
 import { firecrawlFetch, firecrawlScrape, firecrawlSearch } from "@parcha/agentrun-web";
-import { fetchFor, firecrawlOf, webFetch, webFetchTool } from "../dist/web-fetch.js";
+import { fetchFor, webFetchTool } from "../dist/web-fetch.js";
+import { webFetch } from "./fixtures/serve-web.mjs";
 import { webSearchTool } from "../dist/web-search.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { withoutFaux } from "../dist/model.js";
@@ -272,7 +273,7 @@ test("a private, loopback, link-local or intranet URL, or one holding a user nam
 
 test("under --faux with no fake named, keyless Firecrawl is never asked: web_fetch fetches directly and web_search answers why it cannot search", async () => {
   const env = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "firecrawl-keyless", web_fetch: "firecrawl-keyless" }), AGENTRUN_SERVE_FAUX: FAUX };
-  assert.equal(await firecrawlOf(env), null);
+  assert.deepEqual(ordersOf(env), { search: [], fetch: ["direct"] });
   const net = network();
   assert.equal((await fetchFor(env, PUBLIC, net)).via, "direct");
   assert.match(said(await searchRun(env)("widgets")).error, /under --faux/);

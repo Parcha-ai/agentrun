@@ -11,9 +11,8 @@
 //
 // Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
 // no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
-import { RATE_LIMITED } from "./web-run.js";
-import { clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, URL_MAX, type WebPage } from "@parcha/agentrun-web";
-import { webFetch } from "./web-fetch.js";
+import { GUARD, RATE_LIMITED } from "./web-run.js";
+import { clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, URL_MAX, webFetch, type WebPage } from "@parcha/agentrun-web";
 import type { Plane } from "./tool-plane.js";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 
@@ -102,6 +101,7 @@ export async function fakeFetch(fake: WebFake, url: unknown, part: Part & { sign
   const answer = fake === "unavailable" ? undefined : (fake.fetch.answers.find((one) => one.url === url) ?? fake.fetch.default);
   const page = await webFetch(url, {
     ...part,
+    guard: GUARD,
     lookup: async () => [PUBLIC_ADDRESS],
     fetchImpl: async () => {
       // As undici's fetch rejects when a connection is refused: the guarded fetch says it in its own words.

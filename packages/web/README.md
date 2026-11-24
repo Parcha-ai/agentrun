@@ -2,7 +2,7 @@
 
 Web search and web fetch for agents. Each provider is asked in an order given as data, behind a breaker of its own. A
 run keeps a page cache it reads in parts. A direct fetch goes only through a public-host guard the caller injects.
-AgentRun's server answers `web_search` and `web_fetch` through it.
+AgentRun's server answers `web_search` and `web_fetch` through one `createWeb` per run.
 
 It imports nothing from the server, a browser or a vendor SDK. Everything from outside comes in through `WebConfig`:
 the provider order, the keys, the guard, the run's cap and the words a provider's refusal is told in.
@@ -14,7 +14,7 @@ import { createWeb } from "@parcha/agentrun-web";
 
 const web = createWeb({
   order: { search: ["firecrawl-keyless", "exa-keyless"], fetch: ["firecrawl-keyless", "direct"] },
-  guard, // { fetch(url, options), html?(html, url, options) }: the public-host guard and its HTML reader
+  guard, // { fetch(url, options), check(url, options), html?(html, url, options) }: the public-host guard
 });
 const { answer, receipt } = await web.search("agentrun durable workflows", { n: 5 });
 const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_000 });
@@ -32,27 +32,16 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or address
   (a test's fakes). `now` is the breakers' clock. `bounds` sets a search's deadline. `log` receives what a fetch notes
   that the model is not told.
+- A search's answer is fitted to `SEARCH_MAX_CHARS`: past it, its least relevant results are left out and `omitted`
+  counts them. `search(query, { breakers })` reads and trips the given breakers instead of the Web's own (AgentRun's
+  server gives a call node fresh ones each call). `fetch(url, { lookup, fetchImpl })` dials through the given resolver
+  and transport.
 
 Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every
 provider asked, with its outcome. `cost` holds the fees of the requests sent. `classifier` is `"off"`; `wall` and
 `injection` are `"unjudged"`.
 
-The pieces `createWeb` is built from are exported too: `searchWith`, `searchInTurn` and `breakers` for search,
+The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
 `fees`, and `linksOf`, the links a page's text holds. `@parcha/agentrun-web/text-urls` holds the link finder alone, for
 code that only finds the URLs in a text (the console's timeline compiles it from source).
-
-## Known differences from serve's composition
-
-AgentRun's server composes these pieces itself rather than calling `createWeb`. Its `test/web-composition.test.mjs`
-drives both on the same fakes, the same clock and the same steps, for every search and fetch order the server has, and
-holds them to the same answers, providers reached, `tries` and breaker holds. Four differences stand by design:
-
-- The server fits a search's answer to the model (its `fitSearch`) in the tool. `createWeb`'s answer is unfitted; the
-  test compares the server's answer with `fitSearch` of `createWeb`'s.
-- The server's fetch-side Firecrawl breaker reads `Date.now`. `createWeb`'s reads `now` from `WebConfig`. Under a real
-  clock they are the same.
-- The server keeps its breakers and its page cache per tool binding and per run's environment. `createWeb` keeps them
-  per `Web`.
-- The server's words for a tool plane that is unavailable, and for an order that names no provider in its faux mode,
-  are the server's alone: `createWeb` has neither case.

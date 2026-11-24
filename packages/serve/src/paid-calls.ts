@@ -2,7 +2,7 @@
 // call is (monid.ts): on the run's one ledger (the kernel cap's paid tool calls, RunTools), admitted at the request's price
 // before it is sent (refused unsent in the cap's words when the cap does not hold it) and settled after at what it
 // charged. A charge is the run's cost, a line of its own on its timeline and /usage's `tools` meter. Every request goes
-// through the run's one Parallel client's `post` (web-fetch.ts parallelExtract), which books it here at the fee web's
+// through the run's one Parallel client's `post` (the run's Web, web-run.ts webOf), which books it here at the fee web's
 // fees.ts prices it at. PaidRefused is web's, so web's client reads a refusal as its own.
 // Parallel's answers report what they used as SKU counts, never an amount, so each request is booked at Parallel's
 // published price, an estimate: its price on a 2xx; nothing on a 4xx other than a 408 (Parallel refused it before any

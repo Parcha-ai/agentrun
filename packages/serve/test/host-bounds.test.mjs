@@ -36,7 +36,7 @@ import { localWorkspace } from "../dist/workspace/index.js";
 import { bashTool, fileTools, piEnv } from "../dist/workspace/pi-env.js";
 import { hostToolsOf } from "./host-tools-of.mjs";
 import { LEARNED_CLIP, learnedText, learnedWorkflowTool } from "../dist/learned-workflow.js";
-const web = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch.js")) };
+const web = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-fetch.js")), ...(await import("./fixtures/serve-web.mjs")) };
 const search = { ...(await import("@parcha/agentrun-web")), ...(await import("../dist/web-search.js")) };
 import { emailError, emailText } from "../dist/email/answer.js";
 import { emailRegistrations } from "../dist/email/tools.js";

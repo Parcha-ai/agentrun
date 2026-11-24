@@ -9,7 +9,7 @@ import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
-import { parallelExtract } from "../dist/web-fetch.js";
+import { parallelExtract } from "./fixtures/serve-web.mjs";
 import { parallelSearched } from "@parcha/agentrun-web";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { calls as monidCalls, KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
