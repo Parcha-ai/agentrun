@@ -116,7 +116,8 @@ export function createWeb(config: WebConfig): Web {
       const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, ...judged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
       return { answer, receipt };
     },
-    async fetch(url, { offset, maxChars, ...guarded } = {}) {
+    // Only the call's part, resolver, transport and signal are read: the guard, its bound and the order stay the Web's.
+    async fetch(url, { offset, maxChars, lookup, fetchImpl, signal } = {}) {
       const asked = typeof url === "string" ? url : "";
       const lines: Fee[] = [];
       const tries: Try[] = [];
@@ -135,7 +136,9 @@ export function createWeb(config: WebConfig): Web {
       const extract = order.includes("parallel") ? parallelOf() : null;
       const page = await feesOfCall.run(lines, () =>
         webFetch(url, {
-          ...guarded,
+          ...(lookup ? { lookup } : {}),
+          ...(fetchImpl ? { fetchImpl } : {}),
+          ...(signal ? { signal } : {}),
           parallel: extract,
           firecrawl: order.includes("firecrawl-keyless") ? firecrawlOf() : null,
           pages,
