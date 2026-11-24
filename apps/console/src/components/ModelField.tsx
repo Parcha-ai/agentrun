@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Field, Input } from "@/components/ui/field";
 import { type PickerOption, Picker } from "@/components/ui/picker";
+import type { ChipTone } from "@/components/ui/chip";
 import { Switch } from "@/components/ui/switch";
 import { contextSize, harnessDefault, harnessFree, harnessModels, harnessReady, type HarnessInfo, modelLabel, NO_DEFAULT, providerLabel } from "@/lib/models";
 
@@ -58,7 +59,9 @@ export function ModelField({ id, harness, model, onModel, harnesses, routePrefix
   // Each by its provider (a tag), with Free and its context, and "needs a key" for one whose provider is not connected.
   // The provider tag comes with the filter (a server that says which are ready); a plan's model's label names its plan.
   const tagOf = (m: string) => [...(ready && !m.startsWith("chatgpt/") ? [providerLabel(m)] : []), ...(free.has(m) ? [`Free · ${contextSize(free.get(m)!.context_window)} context`] : []), ...(ready && !ready.includes(m) ? ["needs a key"] : [])].join(" · ");
-  const options: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...listed.map((m) => { const tag = tagOf(m); return { value: m, label: modelLabel(m, routePrefix).text, ...(tag ? { tag } : {}) }; }), { value: CUSTOM_MODEL, label: "Custom..." }];
+  // A model that needs a key is a warning, a free one a good fact; a provider's name alone is neither.
+  const tagToneOf = (m: string): ChipTone => ready && !ready.includes(m) ? "warning" : free.has(m) ? "success" : "plain";
+  const options: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...listed.map((m) => { const tag = tagOf(m); return { value: m, label: modelLabel(m, routePrefix).text, ...(tag ? { tag, tagTone: tagToneOf(m) } : {}) }; }), { value: CUSTOM_MODEL, label: "Custom..." }];
   return (
     <Field label="Model" id={id} optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={now(error)} warning={now(warning)}>
       <Picker id={id} label="Model" className="w-full" value={customModel ? CUSTOM_MODEL : model ?? ""} options={options}

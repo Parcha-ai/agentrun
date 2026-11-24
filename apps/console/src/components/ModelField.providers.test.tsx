@@ -37,6 +37,8 @@ describe("the Model field, by the providers connected here", () => {
     const all = await optionsOf(picker(host, "Model")!);
     expect(all.map((o) => o.value)).toEqual(["", ...MODELS, "custom"]);
     expect(all.find((o) => o.value === "anthropic/claude-sonnet-5-5")!.text).toContain("Anthropic · needs a key");
+    expect(all.find((o) => o.value === "anthropic/claude-sonnet-5-5")!.tagTone, "a model that needs a key is a warning, not a good fact").toBe("warning");
+    expect(all.find((o) => o.value === "openai/gpt-6.1-sol")!.tagTone, "a ready model's provider alone is neither").toBe("plain");
   });
   it("says where to connect a provider when none is, and lists the models that need a key only on asking", async () => {
     const host = await draw([{ id: "pi", default_model: null, models: MODELS, ready_models: [] }]);
