@@ -94,7 +94,8 @@ export interface AcpHarnessOptions {
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
   /** Log each call the agent announces ("acp: the agent announced a call": its toolCallId, kind, the word at the
-   *  recipe's announces.tool and the tool of ours it named), on a recipe that declares announces. Ids and names only. */
+   *  recipe's announces.tool and the tool of ours it named), on a recipe that declares announces, and again when a later
+   *  update names a call announced with no name. Ids and names only. */
   debug?: boolean;
 }
 
@@ -319,6 +320,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     return turn?.limitHit ?? `${ACP_CODES.toolCallLimit}: the plan's limit of ${plan.maxToolCalls} tool calls is reached`;
   };
 
+  /** Debug only (serve's AGENTRUN_LOG=debug), on a recipe that declares announces: a call the agent announced, by its
+   *  ids and names, never its input or the agent's text. Written at its tool_call, and again at the later update that
+   *  names a call announced with no name (Cursor's). */
+  const logAnnounced = (rt: Runtime, said: { readonly toolCallId: string; readonly kind?: string | null }) => {
+    if (!options.debug || !recipe.announces) return;
+    log("acp: the agent announced a call", { toolCallId: said.toolCallId, kind: said.kind ?? null, field: announcedField(said, recipe.announces), ours: rt.calls.announced(said.toolCallId) ?? null });
+  };
+
   const onUpdate = (rt: Runtime, notification: SessionNotification) => {
     if (rt.loading || notification.sessionId !== rt.sessionId) return;
     const cur = rt.current;
@@ -337,16 +346,15 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         countCall(rt, cur, update.toolCallId);
         // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
         announceCall(rt.calls, update, recipe.announces, names);
-        // Debug only (serve's AGENTRUN_LOG=debug): ids and names, never the call's input or the agent's text.
-        if (options.debug && recipe.announces) {
-          log("acp: the agent announced a call", { toolCallId: update.toolCallId, kind: update.kind ?? null, field: announcedField(update, recipe.announces), ours: rt.calls.announced(update.toolCallId) ?? null });
-        }
+        logAnnounced(rt, update);
         return;
       }
       case "tool_call_update": {
         if (!cur) return;
         // A call the agent named only after announcing it with no input (Cursor's): by the recipe's field (nameCall).
+        const held = rt.calls.held(update.toolCallId);
         nameCall(rt.calls, update, recipe.announces, names);
+        if (held && !rt.calls.held(update.toolCallId)) logAnnounced(rt, update);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
