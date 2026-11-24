@@ -302,8 +302,9 @@ test("under --faux with no fake named, keyless Firecrawl is never asked: web_fet
   const net = network();
   assert.equal((await fetchFor(env, PUBLIC, net)).via, "direct");
   assert.match(said(await searchRun(env)("widgets")).error, /under --faux/);
-  // The tool's words name the third party where it may be asked.
-  assert.match(webFetchTool(env).description, /firecrawl-keyless when Firecrawl's keyless service read it \(it is sent the URL\)/);
+  // The tool's words say a URL may be sent to a reading service, and name none: every provider is asked through one text.
+  assert.match(webFetchTool(env).description, /else the name of the reading service the URL was sent to/);
+  assert.doesNotMatch(webFetchTool(env).description, /firecrawl/i);
 });
 
 test("the server hands a run the fake's URL as given, under --faux only, and its own environment's never reaches a run", () => {
