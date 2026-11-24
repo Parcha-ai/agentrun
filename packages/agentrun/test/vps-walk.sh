@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The installer's --vps walk, as root on a GitHub runner standing in for a fresh rented server (CI: install-walk.yml's vps
 # job). The runner's own Docker is purged first, so the installer installs Docker Engine from Docker's apt repository.
-#   1. Tailscale missing: AgentRun on loopback only, the steps and the command to run again said, exit 0. Health, the
+#   1. A DigitalOcean Droplet's user data (deploy/digitalocean/user-data.sh) as cloud-init runs it, the installer from this
+#      checkout. Tailscale missing: AgentRun on loopback only, the steps and the command to run again said, exit 0. Health, the
 #      API refused with no token (401), the first visit asking for the setup code, .env at mode 600.
 #   2. Run again: the same Docker left alone, the same token and seal key, the same container.
 #   3. An upgrade (--build: to this checkout's image) on the faux model (vps-faux-shell.mjs, through compose.override.yaml):
@@ -50,6 +51,31 @@ piped_install() {
   }
   cat "$out"
 }
+# A DigitalOcean Droplet's first boot (deploy/README.md): cloud-init runs deploy/digitalocean/user-data.sh as root in its
+# service's environment, with no HOME, no terminal and the default PATH. It returns 0 within $1 seconds, or the walk
+# fails; its output goes to $2. The script fetches https://agentrun.ai/install. A curl ahead of the real one on PATH
+# answers that address with this checkout's installer, notes the fetch, and passes every other call through.
+# AGENTRUN_TELEMETRY=0 is the one setting added: the walk's server sends no usage counts.
+cloud_init() {
+  local bound=$1 out=$2 real shim
+  real=$(command -v curl)
+  shim=$(mktemp -d)
+  cat > "$shim/curl" << EOF
+#!/bin/sh
+for arg; do
+  if [ "\$arg" = https://agentrun.ai/install ]; then echo "\$*" >> "$shim/fetched"; exec cat "$here/install.sh"; fi
+done
+exec "$real" "\$@"
+EOF
+  chmod 755 "$shim/curl"
+  timeout "$bound" env -i PATH="$shim:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" AGENTRUN_TELEMETRY=0 \
+    /bin/bash "$repo/deploy/digitalocean/user-data.sh" < /dev/null > "$out" 2>&1 || {
+    cat "$out"
+    die "the Droplet's user data did not return 0 within $bound s"
+  }
+  cat "$out"
+  [ -s "$shim/fetched" ] || die "the user data did not fetch https://agentrun.ai/install"
+}
 healthy() { curl -fsS --max-time 5 "$api/health" | grep -q '"status": *"ok"' || die "/v2/health is not ok"; }
 # Where the port is published: the one address Docker binds 7340 on.
 bound() { dc port agentrun 7340; }
@@ -67,8 +93,9 @@ hash -r
 if command -v docker; then die "docker is still on PATH"; fi
 if command -v tailscale; then die "tailscale is on PATH"; fi
 
-step "1. --vps with no Docker and no Tailscale: Docker from its apt repository, AgentRun on loopback, the steps said, exit 0"
-piped_install 900 "$logs/1.log" --vps
+step "1. a Droplet's user data, as cloud-init runs it (--vps with no HOME, no terminal, no Docker and no Tailscale):"
+echo "Docker from its apt repository, AgentRun on loopback, the steps said, exit 0"
+cloud_init 900 "$logs/1.log"
 said "$logs/1.log" "Installing Docker Engine and its compose plugin from Docker's apt repository (https://download.docker.com/linux/ubuntu)"
 said "$logs/1.log" "Installed Docker Engine"
 said "$logs/1.log" "Tailscale is not installed here, so AgentRun is on this machine only for now."

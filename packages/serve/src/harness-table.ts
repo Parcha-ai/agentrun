@@ -24,9 +24,9 @@ import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, cursorCardOf, cursorHidden, cursorLim
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
-import { chooseModel } from "./model.js";
+import { chooseModel, hostModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
-import { modelWire, wireOf, WIRES } from "./wires.js";
+import { modelWire, routedId, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
@@ -122,6 +122,10 @@ export interface HarnessEntry {
 export interface ModuleLaunch {
   readonly model: string;
   readonly provider: { readonly origin: string; readonly credential: () => string | Promise<string>; readonly auth?: "bearer" | "x-api-key" };
+  /** What the session's proxy forwards with, for a model the route translates onto the harness's wire (an Ollama model on
+   *  Anthropic's Messages: provider.ts routedProvider): the route's own fetch, answering at `provider.origin`. A module
+   *  hands it to its model proxy (startModelProxy's `fetch`); absent, the network. */
+  readonly fetch?: typeof fetch;
   readonly price: (model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) => number | null;
   readonly log: (message: string, fields?: Record<string, unknown>) => void;
   readonly confine?: AdapterNeeds["confine"];
@@ -227,7 +231,8 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -237,13 +242,16 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
       const provider = providerFor(wire, env, needs.model, id);
       // A person's Claude Code login is its CLI's alone: no request of serve's own goes on it.
       if (provider.login) throw new HarnessUnavailable(`${id} runs on Claude Code's login on this machine, which only its CLI uses: this request needs a model key.`);
-      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(facts, env), ...(provider.billing === "plan" ? { plan: true } : {}) });
-      return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }) } };
+      const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...(provider.fetch ? {} : nativeOptions(facts, env)), ...(provider.billing === "plan" ? { plan: true } : {}) });
+      return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }), ...(provider.fetch ? { fetch: provider.fetch } : {}) } };
     },
     refusal: async (env, given, { atStart }) => {
       const { harnessInstalled, startReason } = await import("./adapters.js");
-      // Signed in to a ChatGPT plan, a harness that runs on it is asked of the plan's route, which needs no key.
-      const needs = given ?? { model: { provider: onPlan && signedIn(env) ? PLAN_PROVIDER : vendor, modelId: "default" }, models: { getModel: () => undefined } };
+      // Signed in to a ChatGPT plan, a harness that runs on it is asked of the plan's route, which needs no key. One whose
+      // default here is a model the route translates onto its wire (the Ollama here, no key held) is asked of that one.
+      const local = given ? undefined : hostModel(env, "default", id);
+      const probe = local && routedId(wire, local) ? { provider: local.slice(0, local.indexOf("/")), modelId: local.slice(local.indexOf("/") + 1) } : { provider: onPlan && signedIn(env) ? PLAN_PROVIDER : vendor, modelId: "default" };
+      const needs = given ?? { model: probe, models: { getModel: () => undefined } };
       try {
         // Not installed yet installs on first use (harness-install.ts): until then the provider decides, as it would for
         // a session.
@@ -283,6 +291,7 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       return await build({
         model: provider.modelId,
         provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
+        ...(provider.fetch ? { fetch: provider.fetch } : {}),
         price: priceOf({ ...needs, model: provider.priceModel }),
         log: host.log ?? harnessLog(facts.id, env),
         ...(needs.confine ? { confine: needs.confine } : {}),
@@ -478,6 +487,7 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
   return acpPackage()!.gooseAdapter({
     binary: found.binary, sha256: found.sha256, model: launch.model, provider: launch.provider, price: launch.price, log: launch.log,
     ...(launch.confine ? { confine: launch.confine } : {}),
+    ...(launch.fetch ? { fetch: launch.fetch } : {}),
   });
 }
 
