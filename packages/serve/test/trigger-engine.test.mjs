@@ -1008,7 +1008,10 @@ test("two host starts of one firing at once start one run: the second waits on t
   const first = heldStart(triggers, store, made.id, a, "run-a");
   await until(() => first.entered, "the first start is writing a's run");
   const looked = reads.looked.n;
-  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => assert.fail("the second start writes no run"));
+  // Settled as a value at once: a second start that runs its own start fails the deepEqual below, not as an unhandled
+  // rejection while the first is still held.
+  const second = triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", async () => assert.fail("the second start writes no run"))
+    .then((ok) => ok, (error) => ({ refused: error?.message }));
   await until(() => reads.looked.n > looked, "the second start found no run under a's key and follows the first");
   first.writing.resolve();
   assert.deepEqual(await first.done, { run_id: "run-a", replayed: false });
