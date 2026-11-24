@@ -273,7 +273,7 @@ export function Playground({ lead, notice, agents, revisions = [], efforts, orig
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment. Create a key under <a className="underline" href="#/settings/api-keys">Settings → AgentRun API keys</a>.</footer>
             </>
           ) : result && (
             <>

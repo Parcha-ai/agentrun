@@ -36,6 +36,7 @@ installEnvProxy();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
+       agentrun-serve check-upload < BODY.json
        agentrun-serve install-harness goose|cursor [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
@@ -341,6 +342,35 @@ if (process.argv[2] === "check-harness") {
   for (const line of printedFacts(report)) console.log(line);
   console.log(`report: ${file}`);
   process.exit(report.ok ? 0 : 1);
+}
+
+// An upload's body ({files}, as `agentrun deploy` sends POST /v2/templates/import) read from stdin and checked by the
+// import's own check (template-import.ts checkUpload), storing nothing: the package's name and sha as one JSON line and
+// 0, or each reason the import would refuse it, a line each, and 1; 2 when stdin is not JSON. Nothing in it runs. Stdin
+// is decoded once, whole: a character split between two of its chunks reads back as itself.
+if (process.argv[2] === "check-upload") {
+  const { checkUpload } = await import("./template-import.js");
+  const { ApiError } = await import("./errors.js");
+  parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } } });
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  let body: unknown;
+  try {
+    body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    console.error("agentrun-serve check-upload reads an upload's body, {files}, as JSON on stdin.");
+    process.exit(2);
+  }
+  try {
+    const { pkg } = checkUpload(typeof body === "object" && body !== null ? (body as { files?: unknown }).files : undefined);
+    console.log(JSON.stringify({ valid: true, name: pkg.name, sha: pkg.origin!.sha }));
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof ApiError)) throw error;
+    const reasons = error.extra.fields?.map((field) => field.message) ?? [];
+    for (const reason of reasons.length ? reasons : [error.message]) console.error(reason);
+    process.exit(1);
+  }
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what

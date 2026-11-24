@@ -212,6 +212,14 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## api-keys
+
+### `agentrun api-keys list`
+
+The API keys made for this server's apps; never a key.
+
+Route: `GET /settings/api-keys`.
+
 ## capabilities
 
 ### `agentrun capabilities get-capacity`
@@ -433,8 +441,8 @@ Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
-- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
-- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)
 
 ### `agentrun deploy delete SOURCE`
 
@@ -472,7 +480,7 @@ Write an agent's current revision as a template package folder, and say what the
 
 Route: `GET /agents/{agent_id}/package`.
 
-- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)
 
 ## files
 
