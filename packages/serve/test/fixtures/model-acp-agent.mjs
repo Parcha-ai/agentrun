@@ -19,6 +19,9 @@
 //              gate as the agent's own (`acp_other`);
 //   own-ask    before each call of ours, announces a call of its own (`read`, toolCallId `own-<id>`) and asks permission
 //              for it, then runs ours as the other modes do: an agent whose own tools ask while its allowFile covers ours;
+//   own-write  as own-ask, but its own call writes our call's `text` into its `path` (kind `other`, the kind Goose
+//              1.59.2 asks with for every call; rawInput {command: "write", path, file_text}, as Goose's text editor
+//              takes it): an agent whose own edit carries check_echo's text in another field;
 //   ask-anyway asks permission for each call as the other modes do, then runs it whatever the answer, ours over MCP
 //              under the toolCallId it asked with: so a host sees the request was for the call it then got;
 //   plan      billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
@@ -232,10 +235,14 @@ async function takeTurn(client, session, prompt) {
     const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
     const allowedBy = (answer) => answer?.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once";
     for (const use of uses) {
-      if (mode === "own-ask" && use.name.startsWith("agentrun__")) {
-        // own-ask: a call of its own first, asked about under its own id, whatever the answer.
-        const own = { toolCallId: `own-${use.id}`, title: "Read notes.txt", kind: "read", status: "pending", rawInput: { path: "notes.txt" } };
-        await notify({ sessionUpdate: "tool_call", ...own, _meta: { goose: { toolCall: { toolName: "developer__read", extensionName: "developer" } } } });
+      if ((mode === "own-ask" || mode === "own-write") && use.name.startsWith("agentrun__")) {
+        // own-ask, own-write: a call of its own first, asked about under its own id, whatever the answer.
+        const path = typeof use.input?.path === "string" ? use.input.path : "proof.txt";
+        const own = mode === "own-ask"
+          ? { toolCallId: `own-${use.id}`, title: "Read notes.txt", kind: "read", status: "pending", rawInput: { path: "notes.txt" } }
+          : { toolCallId: `own-${use.id}`, title: `Write ${path}`, kind: "other", status: "pending", rawInput: { command: "write", path, file_text: String(use.input?.text ?? "") } };
+        const toolName = mode === "own-ask" ? "developer__read" : "developer__text_editor";
+        await notify({ sessionUpdate: "tool_call", ...own, _meta: { goose: { toolCall: { toolName, extensionName: "developer" } } } });
         const ownAnswer = await client.request("session/request_permission", { sessionId: session.id, toolCall: own, options });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: own.toolCallId, status: allowedBy(ownAnswer) ? "completed" : "failed" });
       }

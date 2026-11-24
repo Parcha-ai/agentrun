@@ -506,6 +506,20 @@ test("harness-check counts an agent's permission request for a call of its own a
   assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_read" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
 });
 
+test("harness-check counts an agent's own write of check_echo's text apart from our tool: its request carries the nonce in another field, refused, and fails no stage when our tool then runs unasked", { skip: linux, timeout: 120_000 }, async (t) => {
+  // Before: a request whose input held the nonce anywhere counted as one for check_echo, so an agent that also writes
+  // proof.txt with the nonce through its own editor (Goose's developer__text_editor, file_text) failed mcp_tool.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "own-write" } }));
+  const run = await check(t, file, data, env);
+  const row = run.report?.stage3?.mcp_tool;
+  assert.equal(row?.permissionAsks, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
+  assert.equal(row.ourAsks, 0, JSON.stringify(row));
+  assert.equal(row.ok, true, JSON.stringify(row));
+  assert.equal(row.problem, undefined);
+  assert.equal(row.calls, 1);
+  assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
+});
+
 test("harness-check passes an agent that asks for each of our calls on a recipe that declares the title tie (quirks.permissionTie, Cursor's way): the loader passes it through", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, env } = await installed(t, recipeOf(undefined, TIED));
   const run = await check(t, file, data, env);
