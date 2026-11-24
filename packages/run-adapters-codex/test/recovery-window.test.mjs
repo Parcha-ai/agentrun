@@ -39,7 +39,7 @@ test("a resumed wait's output, a 16k model: the parked call's 50k answer quoted 
   assert.ok(waitResumedText('1', resumed).length > 50_000, 'no window: whole, within the host bound');
 });
 
-test('a window too small for any of it: the recovered output passes none of the result through, and still says the exec was cut short', () => {
+test('a window too small for any of it: the recovered output passes none of the result through, and stays short', () => {
   for (const budget of [{ contextWindow: 100 }, { contextWindow: 16_384, baseInputTokens: 16_384 }]) {
     const text = execRecoveryOutput([nested('e1', 'lookup', done(BIG))], [], budget);
     assert.ok(!text.includes('rrrr'), `${JSON.stringify(budget)}: none of the result: ${text.slice(0, 300)}`);

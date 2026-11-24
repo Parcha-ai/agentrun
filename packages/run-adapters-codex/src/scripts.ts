@@ -12,7 +12,7 @@
 // `exec` anyway makes two live, and then a nested call cannot be told from the other's.
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
 import type { DriveContext } from "@parcha/agentrun-kernel/kernel";
-import { boundOf, boundResult } from "./host/process.js";
+import { boundOf, boundResult, resultMaxChars, type ResultBudget } from "./host/process.js";
 import { parseLine } from "./rollout.js";
 
 /** The id Codex gives a host tool called from a code-mode script. */
@@ -186,6 +186,15 @@ export function settle(fact: NestedFact): Settled {
  *  the cut are not in it, and the recovery note does not say they are (`Recovered.shown`). */
 export const EXEC_RECOVERY_MAX_CHARS = HOST_RESULT_MAX_CHARS + 2_000;
 
+/** The most a recovered output holds for a model of `budget` (the session's window): EXEC_RECOVERY_MAX_CHARS with none, or
+ *  one too large to bind (as it always was); else the per-model bound itself (the kernel's resultMaxChars), words and all,
+ *  since the output is one tool result the model reads. */
+export function recoveryMaxChars(budget?: ResultBudget): number {
+  const max = resultMaxChars(budget);
+  // The recovered output takes the window's bound (MUTATION: returning EXEC_RECOVERY_MAX_CHARS here fails the 16k recovery tests).
+  return max < HOST_RESULT_MAX_CHARS ? max : EXEC_RECOVERY_MAX_CHARS;
+}
+
 /** A last line longer than this is not kept when a result is cut: it is the result's own text, not a pointer to the rest. */
 const LAST_LINE_MAX = 1_000;
 
@@ -219,10 +228,11 @@ export interface Recovered {
 }
 
 /** A recovered output built by `build` from its calls' lines (`told`, in the order `build` writes them) at a cap on each
- *  quoted text: whole when it fits in EXEC_RECOVERY_MAX_CHARS; else at the largest cap that fits (the same for every quoted
+ *  quoted text: whole when it fits in recoveryMaxChars(budget); else at the largest cap that fits (the same for every quoted
  *  text); else, the lines alone passing the bound, the output cut to the bound with its note, and the calls past the cut
  *  not in it. */
-function fitted(told: readonly Told[], build: (cap: number) => string): Recovered {
+function fitted(told: readonly Told[], build: (cap: number) => string, budget?: ResultBudget): Recovered {
+  const max = recoveryMaxChars(budget);
   const at = (cap: number, output: string, limit = output.length): Recovered => {
     const shown: string[] = [];
     let from = 0;
@@ -236,17 +246,20 @@ function fitted(told: readonly Told[], build: (cap: number) => string): Recovere
     return { output, shown };
   };
   const whole = build(Number.POSITIVE_INFINITY);
-  if (whole.length <= EXEC_RECOVERY_MAX_CHARS) return at(Number.POSITIVE_INFINITY, whole);
+  if (whole.length <= max) return at(Number.POSITIVE_INFINITY, whole);
   const least = build(0);
-  if (least.length > EXEC_RECOVERY_MAX_CHARS) {
-    const { text, kept } = cut(least, EXEC_RECOVERY_MAX_CHARS);
-    return at(0, text, kept);
+  if (least.length > max) {
+    const { text, kept } = cut(least, max);
+    // A window too small for even the lines (cut keeps a short last line past its cap): held to the kernel's bound, which
+    // refuses it in words, and then it tells no call's outcome.
+    const bounded = boundResult(text, budget);
+    return bounded.truncated ? { output: bounded.text, shown: [] } : at(0, text, kept);
   }
   let lo = 0;
   let hi = whole.length;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
-    if (build(mid).length <= EXEC_RECOVERY_MAX_CHARS) lo = mid;
+    if (build(mid).length <= max) lo = mid;
     else hi = mid - 1;
   }
   return at(lo, build(lo));
@@ -271,11 +284,12 @@ export function recoveryFacts<T>(execs: readonly string[], ties: readonly Nested
 }
 
 /** What a call of a recovered script came to, as its line tells it. A result or an error it quotes is the one the script was
- *  handed live: held to the host's bound as the bridge holds it (`boundResult`); the session's record keeps it whole. */
-const describeCall = (fact: NestedFact, label: string): Told => {
+ *  handed live: held to the bound for the session's model as the bridge holds it (`boundResult` at `budget`); the
+ *  session's record keeps it whole. */
+const describeCall = (fact: NestedFact, label: string, budget?: ResultBudget): Told => {
   const settled = settle(fact);
   const shows = outcomeShown(fact);
-  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text).text, tail, callId: fact.callId, shows });
+  const told = (head: string, text: string, tail: string): Told => ({ head, text: boundResult(text, budget).text, tail, callId: fact.callId, shows });
   if (settled.kind === "parked") return { head: `${label} was waiting for a person's approval and did not run; it was not run again.`, tail: "" };
   const again = fact.resumed;
   if (again && !again.ran) return told(`${label} waited for a person's approval, then: `, again.text, ". It did not run.");
@@ -301,14 +315,14 @@ export function outcomeShown(fact: NestedFact): boolean {
  *  whose script could not be told (given to the last cut-off exec only), listed apart under their own heading. */
 /** What a dangling `wait` on a yielded exec's cell is told when calls of that script that waited for a person's approval
  *  were answered on this resume (code-mode.ts recoverItems): each call's outcome, in order. */
-export function waitResumedText(cell: string, resumed: readonly NestedFact[]): string {
-  return waitResumed(cell, resumed).output;
+export function waitResumedText(cell: string, resumed: readonly NestedFact[], budget?: ResultBudget): string {
+  return waitResumed(cell, resumed, budget).output;
 }
 
 /** waitResumedText, and the calls whose outcome it tells. */
-export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
-  const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+export function waitResumed(cell: string, resumed: readonly NestedFact[], budget?: ResultBudget): Recovered {
+  const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
+  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`, budget);
 }
 
 /** The words a resumed `wait`'s output opens with (waitResumed): the model is told its cell's script went with the session. */
@@ -337,22 +351,22 @@ export function recoveredFailed(own: readonly NestedFact[]): boolean {
   return settle(last).kind !== "completed";
 }
 
-export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): string {
-  return execRecovery(facts, loose).output;
+export function execRecoveryOutput(facts: readonly NestedFact[], loose: readonly NestedFact[] = [], budget?: ResultBudget): string {
+  return execRecovery(facts, loose, budget).output;
 }
 
 /** execRecoveryOutput, and the calls whose outcome it tells: only those the recovery note may say are above. */
-export function execRecovery(facts: readonly NestedFact[], loose: readonly NestedFact[] = []): Recovered {
+export function execRecovery(facts: readonly NestedFact[], loose: readonly NestedFact[] = [], budget?: ResultBudget): Recovered {
   if (facts.length === 0 && loose.length === 0) return { output: `The exec was cut short before any tool call of it was recorded; it ran none. Run it again if it is still needed.`, shown: [] };
-  const own = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  const others = loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
+  const own = facts.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
+  const others = loose.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`, budget));
   return fitted([...own, ...others], (cap) => {
     const apart = others.length
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
     if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
     return `${EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}`;
-  });
+  }, budget);
 }
 
 /** The text of a tool's recorded output (a string, or `{ text }` with images). */

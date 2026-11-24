@@ -7,7 +7,7 @@ import type { TomlValue } from "../config.js";
 import type { DriveContext } from "./kernel.js";
 
 export {
-  boundOf, boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, resumeUnstartedCalls, toolKey, transcriptOf,
+  boundOf, boundResult, BuiltinCalls, failureText, Mutex, NativeJournal, openTurn, placeSubmissions, recoveryNote, recoverySystemNote, recoveryUserTurn, restartEvent, resultMaxChars, resumeUnstartedCalls, toolKey, transcriptOf,
 } from "@parcha/agentrun-kernel/process";
 export type { BuiltinStart, ResultBudget, ToolResult, TranscriptEntry } from "@parcha/agentrun-kernel/process";
 

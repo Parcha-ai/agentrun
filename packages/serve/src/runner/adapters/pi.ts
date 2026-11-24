@@ -18,7 +18,7 @@ import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claud
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundResult } from "@parcha/agentrun-kernel/process";
+import { boundResult, resultMaxChars } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -637,6 +637,36 @@ export function boundPiResult<R extends { readonly output?: readonly { readonly 
   return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
 }
 
+/** The line a tool's live output ends with where boundedProgress stopped passing it on. */
+const progressCutNote = (kept: number): string => `\n[live output cut at ${kept} characters: the rest is not kept, past what this model's context window takes]`;
+
+/**
+ * `forward` passing on at most `max` characters of a tool's live output in all (the kernel's resultMaxChars for the calling
+ * agent's model), the line saying where it stopped counted in them; nothing past that, and nothing at all for a bound too
+ * small for that line. pi keeps what a tool streams in its slot, and the one result it writes without its afterTool hook
+ * (a call cut off its restart limit times: pi-durable's tool task, endCutOff and abort's last attempt, from the slot) is
+ * that text, so this is what holds that result to the bound. A chunk is never cut between the halves of a surrogate pair.
+ */
+export function boundedProgress(forward: (chunk: string) => void, max: number): (chunk: string) => void {
+  const room = max - progressCutNote(max).length;
+  let sent = 0;
+  let stopped = false;
+  return (chunk) => {
+    if (stopped) return;
+    // Only within the room (MUTATION: passing every chunk on here fails test/pi-progress-bound.test.mjs's 16k test).
+    if (sent + chunk.length <= room) {
+      sent += chunk.length;
+      forward(chunk);
+      return;
+    }
+    stopped = true;
+    if (room <= 0) return;
+    let take = room - sent;
+    if (take > 0 && (chunk.charCodeAt(take - 1) & 0xfc00) === 0xd800 && (chunk.charCodeAt(take) & 0xfc00) === 0xdc00) take -= 1;
+    forward(`${chunk.slice(0, take)}${progressCutNote(sent + take)}`);
+  };
+}
+
 /** A host tool as a pi tool: replay-safe or at most once, its answer the host's text and any images it shows, its text
  *  held to the kernel's bound for the calling agent's model (boundResult, at `windowOf` its model: the window's share,
  *  under the host's bound, HOST_TOOL_OUTPUT), as every bridged harness's tool bridge holds it. Each call gets what pi's
@@ -660,17 +690,20 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
       const attempt = attemptOf(api.callId);
       const ref = (await api.agent(toolContext)).model;
       const model = ref === undefined ? undefined : api.models.getModel(ref.provider, ref.modelId);
+      const window = windowOf(ref);
+      const budget = window === undefined ? undefined : { contextWindow: window };
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
         ...(model ? { model } : {}),
-        output: (chunk: string) => api.output(chunk),
+        // What the tool streams is what pi's slot keeps, and the result pi writes without its hooks (past its restart
+        // limit) is that text: held to the same bound as the answer (boundedProgress).
+        output: boundedProgress((chunk) => api.output(chunk), resultMaxChars(budget)),
         ...(attempt === undefined ? {} : { attempt }),
         ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
       });
       // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
       // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
-      const window = windowOf(ref);
-      const { text, truncated } = boundResult(answer.text, window === undefined ? undefined : { contextWindow: window });
+      const { text, truncated } = boundResult(answer.text, budget);
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded

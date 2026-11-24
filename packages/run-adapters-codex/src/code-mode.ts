@@ -358,7 +358,7 @@ export function codeMode(deps: CodeModeDeps) {
      *  held to the host's bound as the tool bridge holds a call's result (`boundResult`): these come from the log, not through the bridge, and
      *  both repairs (with a recovery note and without) inject what this leaves. A recovered script's output (a cut-off exec's, a resumed
      *  `wait`'s) quotes each finished call's result as the script was handed it and holds its whole to its own bound
-     *  (scripts.ts EXEC_RECOVERY_MAX_CHARS); on a resume, the calls it tells the outcome of are recorded for the note (SHOWN_STREAM). `resume`: the open turn a recovery note resumes, whose
+     *  (scripts.ts recoveryMaxChars, at the session's window); on a resume, the calls it tells the outcome of are recorded for the note (SHOWN_STREAM). `resume`: the open turn a recovery note resumes, whose
      *  parked nested calls run now; the repair of an ended turn (repairUnnoted) only tells, and runs nothing. */
     async recoverItems(items: Record<string, unknown>[], dangling: readonly Dangling[], lines: readonly string[], since: number, resume = false): Promise<void> {
       const ties = (await journal.read<Tie>(NESTED_STREAM)).map((r) => r.data);
@@ -406,7 +406,7 @@ export function codeMode(deps: CodeModeDeps) {
       // The exec each dangling `wait`'s cell belongs to, as the rollout has it.
       const yielders = new Scripts();
       for (const line of lines) yielders.note(line);
-      // The outputs built here hold their quoted results to their own bound (scripts.ts EXEC_RECOVERY_MAX_CHARS): every other is
+      // The outputs built here hold their quoted results to their own bound (scripts.ts recoveryMaxChars, at the session's window): every other is
       // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
       const built = new Set<number>();
       const shown: string[] = [];
@@ -420,7 +420,7 @@ export function codeMode(deps: CodeModeDeps) {
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
           const answered = cell !== undefined && i === carrier && yieldedTies.length > 0 ? yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! })) : undefined;
-          const recovered = answered && cell !== undefined ? waitResumed(cell, answered) : undefined;
+          const recovered = answered && cell !== undefined ? waitResumed(cell, answered, deps.budget) : undefined;
           const waited = cell === undefined ? undefined : recovered ? recovered.output : waitStoppedText(cell);
           if (recovered) {
             built.add(i);
@@ -434,7 +434,7 @@ export function codeMode(deps: CodeModeDeps) {
         }
         const { own, loose } = listed.get(c.callId)!;
         // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
-        const recovered = execRecovery(own, loose);
+        const recovered = execRecovery(own, loose, deps.budget);
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
         journal.append(RECOVERED_END_STREAM, { exec: c.callId, failed: recoveredFailed(own) });
         built.add(i);
