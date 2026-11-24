@@ -119,14 +119,15 @@ test("Firecrawl, keyed and keyless: two queries answering and one rate-limited p
   const hits = { [QUERIES[0]]: [row("a")], [QUERIES[1]]: [row("b")] };
   const paid = keyed((_path, body) => (hits[body.query] ? firecrawlRows(hits[body.query]) : json({ error: "slow" }, 429, { "retry-after": String(LONG) })));
   const free = mcp((_name, args) => (hits[args.query] ? toolText({ success: true, data: { web: hits[args.query] } }) : { isError: true, content: [{ type: "text", text: "rate limited" }], structuredContent: { code: "KEYLESS_LIMIT_REACHED", retry_after_seconds: LONG } }));
+  // Keyed Firecrawl's wait is its retry-after header's words; keyless Firecrawl's, its payload's number.
   const runs = [
-    ["firecrawl", web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: paid.send } }), () => paid.sent.length],
-    ["firecrawl-keyless", web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: [] }, send: { "firecrawl-keyless": free.send } }), () => free.calls.length],
+    ["firecrawl", web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: paid.send } }), () => paid.sent.length, String(LONG)],
+    ["firecrawl-keyless", web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: [] }, send: { "firecrawl-keyless": free.send } }), () => free.calls.length, LONG],
   ];
-  for (const [provider, w, asked] of runs) {
+  for (const [provider, w, asked, wait] of runs) {
     const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
     assert.deepEqual([first.answer.provider, (first.answer.results ?? []).map((hit) => hit.url)], [provider, ["https://a.example/", "https://b.example/"]], `${provider}: the two queries' hits are answered, not dropped for the third's long rate limit`);
-    assert.deepEqual([asked(), first.receipt.tries[0]?.limit], [3, { kind: "rate", retryAfter: LONG }], `${provider}: three requests sent, the long rate limit on the receipt`);
+    assert.deepEqual([asked(), first.receipt.tries[0]?.limit], [3, { kind: "rate", retryAfter: wait }], `${provider}: three requests sent, the long rate limit on the receipt`);
     const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
     assert.deepEqual([again.answer, asked()], [{ error: SEARCH_UNAVAILABLE }, 3], `${provider}: the long rate limit still holds the next search: it is not sent`);
   }
