@@ -37,6 +37,22 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   request by request: one OpenCode session can mix claude-agent requests with other providers'. When it does not, the
   request counts in OpenCode's.
 
+## A year of work
+
+```js
+import { wrappedHome } from "@parcha/agentrun-import";
+
+const year = await wrappedHome(homedir(), 2026); // the same options as parseHome, but `state`
+```
+
+`wrappedHome(home, year)` buckets by each request's time, in the machine's local zone, so a session that spans New Year
+splits: `tokens`, `requests`, `days` (`{day, requests, tokens}`), `hours` (24) and `weekdays` (7, Sunday first),
+`activeMs` (the gaps between a session's requests of the year, each counted when under 15 minutes), `models`,
+`harnesses` and `sources`. A session counts in `sessions` (and its prompts in `turns`) for the year its first request is in.
+`cost` is the catalog's list price of the requests it could price; `unpricedRequests` counts the rest. Like the totals, it
+holds counts, names and times only: no prompt, title, path or project. `parseHome`'s `requests` option is the hook it is
+built on: each session's totals and its requests, as they are totalled.
+
 ## Known answer
 
 ```sh
@@ -82,7 +98,7 @@ type Reader<S extends string, C> = {
   name: string;
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
   stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number; parent?: string } | null>;
@@ -110,6 +126,32 @@ tokens and cost as written, a prompt's time and text. `order` reads a home's ses
 before its forks, and the cursor keeps the fingerprints its read took, so a session read again is no copy of itself.
 A row time past now reads as its database's last write (its file's or its `-wal`'s, never past now): the same at each look, so the session ages out as its file does. A `turns: false` read keeps a request's error as `failed`, never its text. A database session's `stat` is the bytes of its messages' and parts' `data` and the latest
 `time_updated` of its rows; a storage session's, its files' together. It reads SQLite with `node:sqlite` under Node and `bun:sqlite` under Bun, read-only, waiting up to 5 s on a write lock.
+
+With `turns: false`, `totals: true` asks for only what `parseHome` totals: each session read then has `counts` set and
+`requests` empty. Only a `lineReader` whose source sets `totals: true` (one that sets no turn's model, usage or time after
+adding it) reads so; Claude Code's, Codex's and pi's do. Any other reader ignores the option, and its sessions have
+`requests` whole and no `counts`. `Counts` holds the requests in typed arrays, in order:
+
+- `n`: the number of requests.
+- `models`: each model name once; `model[i]` is request `i`'s index into it, or -1 for none named.
+- `values`: seven numbers a request, from `i * 7`: input, output, cacheRead, cacheWrite, cacheWrite1h and reasoning
+  tokens, then the request's time (the `at` a read of turns gives it, in ms since the epoch).
+- `has[i]`: which usage request `i` has, as bits: 1 its usage at all, 2 cacheWrite1h, 4 reasoning.
+
+`atOf(counts, i)` reads request `i`'s time:
+
+```ts
+import { atOf, READERS } from "@parcha/agentrun-import";
+
+const reader = READERS["claude-code"];
+for (const locator of await reader.discover(home)) {
+  const { sessions } = await reader.read(locator, undefined, { turns: false, totals: true });
+  for (const read of sessions) {
+    if (!read.counts) continue; // a reader with no totals read: read.requests holds its requests whole
+    for (let i = 0; i < read.counts.n; i++) console.log(read.session.id, new Date(atOf(read.counts, i)).toISOString());
+  }
+}
+```
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` (each locator with its
 `locatorSize`; one whose size query throws is kept, marked `failed`, for the caller to read or report), `locatorSize(locator, source)` (null when the session is gone, any other error thrown), `locatorParent(locator, source)` and `childrenOf(home, source)` are what

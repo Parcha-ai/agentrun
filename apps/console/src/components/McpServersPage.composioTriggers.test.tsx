@@ -99,3 +99,29 @@ describe("Settings → MCP servers: a Composio server's triggers", () => {
     expect(s.calls.some((c) => c.path.includes("/composio/triggers"))).toBe(false);
   });
 });
+
+describe("Settings → MCP servers: a Composio server's account", () => {
+  const checked = "2026-11-24T10:00:00Z";
+  const account = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-server="gh"] [data-composio-account]');
+  it("a connected account shows as a success chip with each account's label, never an id", async () => {
+    const p = await open(server([saved({ composio_account: { state: "connected", labels: ["person@example.com", "work@example.com"], checked_at: checked } })]).v2);
+    expect(account(p.host)?.dataset.composioAccount).toBe("connected");
+    const said = account(p.host)!;
+    expect(said.querySelector(".text-success-text")?.textContent, "a success chip").toBe("connected");
+    expect(said.textContent).toContain("person@example.com, work@example.com");
+  });
+  it.each([
+    ["pending", "not connected"],
+    ["expired", "connection expired"],
+    ["none", "no account connected"],
+    ["unknown", "account unknown"],
+  ] as const)("a %s account says %s", async (state, words) => {
+    const p = await open(server([saved({ composio_account: { state, checked_at: checked } })]).v2);
+    expect(account(p.host)?.dataset.composioAccount).toBe(state);
+    expect(account(p.host)?.textContent).toContain(words);
+  });
+  it("a server whose read says nothing of an account (a no-auth toolkit, a per-run one, or never refreshed) shows none", async () => {
+    const p = await open(server([saved()]).v2);
+    expect(account(p.host)).toBeNull();
+  });
+});

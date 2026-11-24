@@ -18,6 +18,7 @@
 // server's, made when a person presses Create, and its token is never the run's. Decisions are kept in the store's
 // settings (suggestions.item.<id>, suggestions.scan.<repo>), so every server on one store sees the same list.
 import { createHash, randomUUID } from "node:crypto";
+import { API_KEYS_PAGE } from "./api-keys.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import type { GitHubConnectionView, RepoInstallation } from "./github-connection.js";
 import { githubCall } from "./github.js";
@@ -342,7 +343,7 @@ function header(s: Suggestion, repo: string, commit: string, mark: string): stri
     `wire it in at ${oneLine(s.integration.call_site.path)}:${s.integration.call_site.line}. ${oneLine(s.integration.call_site.note)}`,
     "",
     "Configure in the app's environment (never commit the key):",
-    ...[["AGENTRUN_URL", "the AgentRun server, like https://agentrun.example.com"], ["AGENTRUN_API_KEY", "an API key of that server"], [agentVariable(s.key), "the agent's id there (the pull request that added this file names it)"]].map(([name, what], _, all) => `  ${name!.padEnd(Math.max(...all.map(([n]) => n!.length)) + 2)}${what}`),
+    ...[["AGENTRUN_URL", "the AgentRun server, like https://agentrun.example.com"], ["AGENTRUN_API_KEY", "an API key of that server (make one in its console: Settings > AgentRun API keys)"], [agentVariable(s.key), "the agent's id there (the pull request that added this file names it)"]].map(([name, what], _, all) => `  ${name!.padEnd(Math.max(...all.map(([n]) => n!.length)) + 2)}${what}`),
   ];
   return lines.map((line) => (line ? `${mark} ${line}` : mark)).join("\n");
 }
@@ -517,7 +518,7 @@ The app's own code is not changed: nothing calls the agent until you wire it in.
 | Variable | Value |
 | --- | --- |
 | \`AGENTRUN_URL\` | ${at.publicUrl ? `\`${at.publicUrl}\`` : "your AgentRun server's address"} |
-| \`AGENTRUN_API_KEY\` | an API key of that server: keep it in your secrets, never in the repository |
+| \`AGENTRUN_API_KEY\` | an API key of that server, made in its console under ${at.publicUrl ? `[Settings → AgentRun API keys](${at.publicUrl.replace(/\/+$/, "")}${API_KEYS_PAGE})` : "Settings → AgentRun API keys"} and shown once: keep it in your secrets, never in the repository |
 | \`${agentVariable(s.key)}\` | \`${at.agentId}\` |
 
 The agent is already made on the AgentRun server as \`${at.agentId}\`, from these same files: try it there before you merge.

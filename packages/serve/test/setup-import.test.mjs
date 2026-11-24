@@ -326,8 +326,7 @@ test("a server that fails to listen takes up no import and starts no count: it h
   assert.ok(existsSync(join(data, ".import-at-setup")), "the yes is kept for a start that listens");
 });
 
-// SKIP (follow-up #2432): under its launcher setup writes a line to stderr (a refused worker or node:sqlite warning)
-test.skip("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
+test("under its launcher (node started from a string), setup counts this machine's sessions and imports them, and the worker prints nothing", { timeout: 90_000 }, async (t) => {
   const root = await scratch(t);
   const home = join(root, "home");
   const site = join(home, "code", "acme-site");
@@ -364,8 +363,10 @@ test.skip("under its launcher (node started from a string), setup counts this ma
   const state = async () => (await call(port, { path: "/v2/setup/import", headers: { cookie: cookieOf(made) } })).json;
   for (const deadline = Date.now() + 30_000; (await state()).state === "running" && Date.now() < deadline; ) await sleep(100);
   assert.deepEqual(await state(), { state: "done", agents: 1, runs: 3, skipped: 0 }, err);
-  // The one line a first start says: where it made the seal key (seal-key.ts), only its path.
-  const others = err.split("\n").filter((line) => line && !/^agentrun-serve: made a new seal key at \S+ \(0600\), beside the store/.test(line));
+  // The one line a first start says: where it made the seal key (seal-key.ts), only its path. The runner's computer
+  // janitor speaks of this host's Docker (no Docker, or no computer daemon built), never of the worker: not counted.
+  const host = /^agentrun-serve runner: the computer janitor could not sweep \S+ computers: /;
+  const others = err.split("\n").filter((line) => line && !/^agentrun-serve: made a new seal key at \S+ \(0600\), beside the store/.test(line) && !host.test(line));
   assert.deepEqual(others, [], "no other line on stderr: no refused worker, no node:sqlite warning");
 });
 

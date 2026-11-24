@@ -14,6 +14,15 @@ const SEND_CHUNK = 4 * 1024 * 1024;
 /** The CSP a served HTML file runs under: an opaque origin, no scripts, no network. */
 export const FILE_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox; form-action 'none'";
 
+/** The largest file a cut read (`?cut=run`) answers, in bytes: 256 KiB. redactSecrets runs synchronously over the whole
+ *  text, on the server's event loop. At this size each shape's adversarial input (its prefix repeated with no end, in
+ *  secrets-linear.test.mjs) takes under 100 ms here, and prose with 100 held values at most 162 ms. A bigger file is 413. */
+export const RUN_FILE_CUT_MAX = 256 * 1024;
+
+/** A type the cut read (?cut=run) and a run's census (run-census.ts) take as text: one the table names text, JSON or NDJSON, or one it doesn't know (its bytes are
+ *  then read as UTF-8, and a file that isn't is 415). */
+export const cutsAsText = (type: string | undefined): boolean => type === undefined || type.startsWith("text/") || type === "application/json" || type === "application/x-ndjson";
+
 export type FileView = { path: string; size_bytes: number; modified_at: string; content_type: string | null; unreadable?: true };
 
 /** File `path` as the API lists it, from its Workspace listing entry. */
