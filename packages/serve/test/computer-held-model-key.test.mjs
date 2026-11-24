@@ -252,7 +252,7 @@ test("served, no model key: a held run that a non-model blocker keeps from runni
 const opencodeOffer = (extra) => ({ id: "opencode", label: "OpenCode", promises: {}, available: false, steer: false, default_model: null, models: [], free_models: [], run_memory_mib: 704, ...extra });
 
 test("run check (blockersOf): a CLI harness unavailable here for want of a model key alone (its offer's keys) is its model's blocker, which a held create defers; one unavailable for another reason (its binary missing) is not", async () => {
-  const revision = { kind: "agentic", harness: "opencode", model: "openai/gpt-6.1-sol", tools: [] };
+  const revision = { kind: "agentic", instructions: "Answer.", harness: "opencode", model: "openai/gpt-6.1-sol", tools: [], place: { mode: "runner" } };
   const env = { PATH: process.env.PATH };
   const keyed = await blockersOf(env, revision, {}, { offers: [opencodeOffer({ reason: "opencode needs OPENAI_API_KEY, OPENROUTER_API_KEY (OpenAI's models through OpenRouter), or a gateway in AGENT_MODEL_BASE_URL.", keys: ["OPENAI_API_KEY", "OPENROUTER_API_KEY"] })] });
   const lacksKey = keyed.find((b) => b.field === "definition.harness");
