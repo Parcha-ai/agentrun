@@ -155,6 +155,27 @@ test("an address is refused by the one rule AGENT_MODEL_BASE_URL is, in its word
   assert.deepEqual([noModel.status, noModel.body.error?.fields?.[0]?.field], [422, "models.default"]);
 });
 
+// A run refuses more than the one address rule: Particle's API speaks Chat Completions, not a gateway's Responses
+// (provider.ts modelGatewayBase). The view's `problem`, which the console's first screen shows, is a run's refusal.
+test("the view's problem is the one a run meets: Particle's API, which the address rule takes, is refused in a run's words, set at the start or saved", { timeout: 60_000 }, async (t) => {
+  const particle = "https://api.particle.ai/v1";
+  withEnv(t, { AGENT_MODEL_BASE_URL: particle }, NAMES);
+  const atStart = await serve(t, { faux: undefined });
+  const env = (await atStart.api("GET", "/settings/model-gateway")).body;
+  assert.deepEqual([env.source, env.base_url], ["env", particle]);
+  assert.match(env.problem ?? "", /Particle.*Chat Completions/, JSON.stringify(env));
+  const models = (await atStart.api("GET", "/capabilities")).body.models;
+  assert.deepEqual([models.source, models.ready, models.needs], ["gateway", false, "key"]);
+  await atStart.stop();
+
+  withEnv(t, {}, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const saved = await api("PUT", "/settings/model-gateway", { base_url: particle, models: { default: MODEL } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.match(saved.body.problem ?? "", /Particle.*Chat Completions/, JSON.stringify(saved.body));
+  assert.match((await api("GET", "/settings/model-gateway")).body.problem ?? "", /Particle.*Chat Completions/);
+});
+
 test("the test follows no redirect: a gateway that redirects is said so, and the key never reaches the address it names", { timeout: 60_000 }, async (t) => {
   const elsewhere = await startFauxGateway({ models: ["m-1"] });
   t.after(() => elsewhere.close());
