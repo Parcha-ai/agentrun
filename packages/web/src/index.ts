@@ -30,7 +30,6 @@ export {
   type SettingsSpec,
   type WebProvider,
   defineProvider,
-  HELD_CODE,
   holdingWords,
   readerOf,
 } from "./provider.js";
@@ -98,7 +97,6 @@ export {
   RESULTS_DEFAULT,
   RESULTS_MAX,
   SEARCH_MAX_CHARS,
-  SEARCH_UNAVAILABLE,
   SNIPPET_MAX,
   searchArgs,
   searchBreaker,
