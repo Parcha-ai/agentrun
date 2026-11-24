@@ -792,6 +792,36 @@ export function jsonEscapeAt(text: string, at: number): { char: string; end: num
   return end < 0 ? undefined : { char, end };
 }
 
+const DECIMAL = only(DIGIT);
+/** The character an HTML numeric character reference at `at` stands for ("&#" and 1 to 7 decimal digits, or "&#x" or
+ *  "&#X" and 1 to 6 hex digits, then ";"), and where it ends; undefined where none starts, or it stands for no
+ *  character (zero, a surrogate, past U+10FFFF). It reads at most 11 characters. key-refusal.ts's peek counts a
+ *  reference by it, so the read past a call's stop and the views see the same characters. */
+export function entityAt(text: string, at: number): { char: string; end: number } | undefined {
+  scanned.chars += Math.min(11, text.length - at);
+  if (text[at] !== "&" || text[at + 1] !== "#") return undefined;
+  const hex = text[at + 2] === "x" || text[at + 2] === "X";
+  const from = at + (hex ? 3 : 2);
+  const digit = hex ? HEX : DECIMAL;
+  let end = from;
+  while (end < text.length && end - from < (hex ? 6 : 7) && digit(text.charCodeAt(end))) end++;
+  if (end === from || text[end] !== ";") return undefined;
+  const code = Number.parseInt(text.slice(from, end), hex ? 16 : 10);
+  if (code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return undefined;
+  return { char: String.fromCodePoint(code), end: end + 1 };
+}
+/** An HTML numeric character reference (entityAt), as the character it stands for (a character past U+FFFF as its two
+ *  UTF-16 units, each from the whole reference). */
+const ENTITY: Decoder = {
+  trigger: "&",
+  decode(text, at, unit) {
+    const found = entityAt(text, at);
+    if (!found) return -1;
+    for (let i = 0; i < found.char.length; i++) unit(found.char[i]!, at, found.end);
+    return found.end;
+  },
+};
+
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. `join`: the view
  *  reads the text's JSON strings joined (joinView). */
@@ -802,17 +832,17 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[],
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
   ...(join ? { join } : {}),
 });
-/** The views of a text read for each held value, in order: squeezed; decoded, its percent-encoded bytes and JSON's
- *  escapes (twice) each where it stands, so a value split by an encoded space of one and an escaped one of the other, or
- *  written half in each, reads whole; the same with "+" as a space; and, for a text with a quote in it, its JSON
- *  strings joined (joinView), decoded the same. The decoders stack in one pass: each reads at its own trigger
- *  character, so a view costs one read of the text whatever it decodes. Each is lowered for hexes and flattened for
- *  folded identifiers in holds. */
+/** The views of a text read for each held value, in order: squeezed; decoded, its percent-encoded bytes, JSON's
+ *  escapes (twice) and HTML's numeric character references each where it stands, so a value split by an encoded space
+ *  of one and an escaped one of another, or written half in each, reads whole; the same with "+" as a space; and, for a
+ *  text with a quote in it, its JSON strings joined (joinView), decoded the same. The decoders stack in one pass: each
+ *  reads at its own trigger character, so a view costs one read of the text whatever it decodes. Each is lowered for
+ *  hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
-  viewSpec((text) => /%[0-9a-fA-F]{2}|\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [PERCENT, JSON_ESCAPE]),
-  viewSpec((text) => text.includes("+"), [PERCENT, PLUS, JSON_ESCAPE]),
-  viewSpec((text) => text.includes('"'), [PERCENT, JSON_ESCAPE], true),
+  viewSpec((text) => /%[0-9a-fA-F]{2}|\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])|&#/.test(text), [PERCENT, JSON_ESCAPE, ENTITY]),
+  viewSpec((text) => text.includes("+"), [PERCENT, PLUS, JSON_ESCAPE, ENTITY]),
+  viewSpec((text) => text.includes('"'), [PERCENT, JSON_ESCAPE, ENTITY], true),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.

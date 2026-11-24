@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
+import { entityAt, jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -243,8 +243,9 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's escapes
- *  (one level and two, as the JSON view reads them), so a "+", an encoded byte and an escape that decodes to whitespace
+ *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
+ *  level and two, as the JSON view reads them) and HTML's numeric character references, so a "+", an encoded byte, an
+ *  escape and a reference that decode to whitespace
  *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
  *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
  *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
@@ -266,7 +267,7 @@ function peek(text: string, from: number, count: number, fold: boolean): string 
     } else {
       while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
-      else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
+      else if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)) {
         end = escape.end;
         found += kept(escape.char, fold);
       } else {
