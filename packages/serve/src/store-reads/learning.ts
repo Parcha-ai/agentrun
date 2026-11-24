@@ -244,6 +244,8 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const rows: Omit<CostRun, "took_over">[] = [];
   let unknownPath = 0;
+  // The hand-backs a restart cut (metrics.workflow_cut: pathMetrics), counted apart from the workflow's own (costSummary).
+  const cut = new Set<string>();
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
   for (const run of ended) {
@@ -255,6 +257,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
       unknownPath += 1;
       continue;
     }
+    if (placed.path === "handed_back" && (run.metrics as { workflow_cut?: unknown } | null | undefined)?.workflow_cut === true) cut.add(run.id);
     rows.push(await costRunOf(records, run, JOB_PATHS.includes(placed.path) ? (jobs += 1) : null, placed));
   }
   // Where each revision took over, over every run before the limit cuts the read (the first is the summary's takeover).
@@ -271,7 +274,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // not be the first promotion), and each revision's compile and check over the served runs that carry it: runs on no
   // named disk alone, as a run on one learns nothing and serves nothing (learn/learning-of.ts).
   const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId), skip);
-  const summary = costSummary(runs, replay);
+  const summary = costSummary(runs, replay, cut);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
   // feed lands here, never nowhere: unknown while any run's figures are.
@@ -573,8 +576,9 @@ export const costStopOverStore = async (store: Store, agentId: string) => costSt
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
- *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
+ *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. `cut` on a
+ *  hand-back a restart cut (servedOf: the workflow's call ended `interrupted`), never one the workflow made itself. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
@@ -588,7 +592,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
     const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
-    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}) };
+    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.

@@ -2927,6 +2927,7 @@ export interface operations {
         hand_backs: {
           ran: number;
           back: number;
+          cut: number;
         } | null;
         withheld: {
           unknown: number;
