@@ -1343,6 +1343,14 @@ export interface components {
     final: boolean;
     cost: components["Cost"];
     poll_after_ms?: number;
+    in_flight?: {
+      kind: "model" | "tool";
+      name: string;
+      started_at: string | null;
+      tool_use_id?: string;
+      for_tool?: string;
+      input_tokens_max?: number;
+    }[];
   };
   TimelineRow: {
     id: string;

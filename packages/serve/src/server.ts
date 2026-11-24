@@ -1,3 +1,4 @@
+import { modelsInFlight } from "./in-flight.js";
 import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
@@ -2220,6 +2221,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // from its journal, which keeps what the run said whole.
     timelineRows: (forStore, runId, context, calls) => servedTimelineRows(servedTimelineDeps, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
+    // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
+    inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),

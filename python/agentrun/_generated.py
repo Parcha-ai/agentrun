@@ -1178,6 +1178,7 @@ __all__ = [
     "TestWorkspaceArchilResponseObject2",
     "TimelineKind",
     "TimelinePage",
+    "TimelinePageInFlightItem",
     "TimelineRow",
     "TimelineRowComputerCallsItem",
     "TimelineRowComputerCallsItemStepsItem",
@@ -7563,6 +7564,7 @@ class _TimelinePageRequired(TypedDict):
 
 class TimelinePage(_TimelinePageRequired, total=False):
     poll_after_ms: int
+    in_flight: list[TimelinePageInFlightItem]
 
 
 class _TimelineRowRequired(TypedDict):
@@ -7678,6 +7680,18 @@ class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
     reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
     detail: str | None
+
+
+class _TimelinePageInFlightItemRequired(TypedDict):
+    kind: Literal["model", "tool"]
+    name: str
+    started_at: str | None
+
+
+class TimelinePageInFlightItem(_TimelinePageInFlightItemRequired, total=False):
+    tool_use_id: str
+    for_tool: str
+    input_tokens_max: int
 
 
 class GetRunTraceResponse(TypedDict):
