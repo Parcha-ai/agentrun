@@ -159,12 +159,19 @@ test("the loader refuses a recipe with the title tie and no announces field, in 
   assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, TIED))).quirks, { permissionTie: "title" }, "with the field it loads");
 });
 
-test("the loader refuses an announces path outside the update's _meta and rawInput: one through its title, id, kind or status would let a title name a call again", () => {
+test("the loader refuses an announces path that starts at the update's title, toolCallId, kind or status: one through them would let a title name a call again", () => {
   // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
-  for (const said of [{ tool: "title" }, { tool: "title.text" }, { tool: "toolCallId" }, { tool: "rawInput.toolName", server: "kind" }, { tool: "rawInput.toolName", args: "status" }]) {
+  for (const said of [{ tool: "title" }, { tool: "title.text" }, { tool: "toolCallId" }, { tool: "toolCallId.x" }, { tool: "kind.name" }, { tool: "status" }, { tool: "rawInput.toolName", server: "kind" }, { tool: "rawInput.toolName", args: "status" }]) {
     const refused = refusalOf(recipeOf(undefined, { announces: said }));
     assert.equal(refused.code, RECIPE_CODES.invalid, JSON.stringify(said));
     assert.match(refused.message, /announces is \{ "tool"/, JSON.stringify(said));
+  }
+});
+
+test("the loader takes an announces path anywhere else in the update: only Goose's _meta path is read from a real release, so no other agent's shape is pinned", () => {
+  // Before: only paths under _meta or rawInput loaded, a rule fitted to Cursor's rawInput as only our fake sends it.
+  for (const said of [{ tool: "toolName" }, { tool: "titled.toolName" }, { tool: "statusOf.tool" }, { tool: "rawInput.toolName", args: "rawInput" }]) {
+    assert.deepEqual(parseRecipe(JSON.stringify(recipeOf(undefined, { announces: said }))).announces, said, JSON.stringify(said));
   }
 });
 

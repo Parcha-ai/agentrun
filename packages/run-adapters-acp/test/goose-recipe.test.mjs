@@ -89,11 +89,19 @@ test('recipeProblems refuses the title tie without an announces field: the tie a
   assert.deepEqual(recipeProblems({ ...base, announces: { tool: 'rawInput.toolName', server: 'rawInput.providerIdentifier', args: 'rawInput.args' }, quirks: { permissionTie: 'title' } }), []);
 });
 
-test("recipeProblems refuses an announces path outside the update's _meta and rawInput: one through its title, id, kind or status would let a title name a call again", () => {
+test("recipeProblems refuses an announces path that starts at the update's title, toolCallId, kind or status: one through them would let a title name a call again", () => {
   // Before: any dotted path loaded, so `{ "tool": "title" }` named a call by a title of exactly `agentrun__write`.
   const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
-  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }]) {
+  for (const said of [{ tool: 'title' }, { tool: 'title.text' }, { tool: 'toolCallId' }, { tool: 'toolCallId.x' }, { tool: 'kind.name' }, { tool: 'status' }, { tool: 'rawInput.toolName', server: 'kind' }, { tool: 'rawInput.toolName', args: 'status' }]) {
     assert.match(recipeProblems({ ...base, announces: said }).join(' '), /announces is/, JSON.stringify(said));
+  }
+});
+
+test("recipeProblems takes an announces path anywhere else in the update: only Goose's _meta path is read from a real release, so no other agent's shape is pinned", () => {
+  // Before: only paths under _meta or rawInput loaded, a rule fitted to Cursor's rawInput as only our fake sends it.
+  const base = { id: 'x', command: BINARY, declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } };
+  for (const said of [{ tool: 'toolName' }, { tool: 'titled.toolName' }, { tool: 'statusOf.tool' }, { tool: 'rawInput.toolName', args: 'rawInput' }]) {
+    assert.deepEqual(recipeProblems({ ...base, announces: said }), [], JSON.stringify(said));
   }
 });
 
