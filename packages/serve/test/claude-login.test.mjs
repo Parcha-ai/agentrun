@@ -950,6 +950,28 @@ test("while the offers held are behind the inputs and the probe out was made fro
   assert.equal(offer.reason, ON_REASON, `${WAITED_WHY}: ${JSON.stringify(offer)}`);
 });
 
+// The wait above is only for a probe out made from the inputs the change reads. A change to other inputs while the offers
+// lag (the login turned on while a model key's save has its probe out) probes them, and the probe out is dropped: the
+// offers end made from the turn-on's inputs, not from the ones the key's save read.
+const OTHER_WHY = "a change to other inputs than the probe out's waited for that probe: the offers ended made from the inputs it read";
+test("while the offers held are behind the inputs, a change to inputs other than the probe out's probes them and does not wait for that probe", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes, logged } = await heldServer(t, { faux: FAUX });
+  const probe = held.hold((env) => env.OPENAI_API_KEY !== undefined, KEY_REASON);
+  t.after(() => probe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await probe.reached;
+  const turningOn = api("PUT", "/settings/claude-login", { only_me: true });
+  // Waiting, the change logs that it waits; probing, it answers on its own.
+  await Promise.race([logged("harness_offers_wait"), turningOn]);
+  probe.release();
+  const [saved, on] = await Promise.all([saving, turningOn]);
+  assert.equal(saved.status, 204, JSON.stringify(saved.body));
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  const offer = claudeAgentIn(await harnesses());
+  assert.notEqual(offer.reason, KEY_REASON, `${OTHER_WHY}: ${JSON.stringify(offer)}`);
+  assert.equal(probes("key"), 2, "the key's save and the turn-on each probe once");
+});
+
 // A probe that fails never lands. When it was the latest one, no probe is out after it, so a change back to the inputs
 // the offers held were made from reuses them and starts none. A model key saved (its probe held, then failing) and
 // deleted. A failed probe logs no harness_offers line, so the delete's would be the only one for `key`.
