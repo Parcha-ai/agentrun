@@ -111,3 +111,49 @@ test("a server that is not Composio's, a no-auth toolkit's and a per-run one say
   assert.equal(each.body.server.composio_account, undefined, "each run names its own account");
   assert.equal(s.composio.to("/api/v3/connected_accounts", "GET").length, 0, "no account was asked for either");
 });
+
+test("the toolkits listing ends on a cursor Composio repeats, after the page that repeated it", async (t) => {
+  const s = await setup(t, { toolkitsPage: 1, toolkitsCursor: "same-cursor" });
+  const res = await s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(s.composio.to("/api/v3/toolkits", "GET").length, 2, "the page a repeated cursor names is never asked for again");
+  assert.deepEqual(res.body.toolkits, [{ slug: "github", name: "GitHub" }]);
+});
+
+test("the toolkits listing reads at most so many bytes of Composio's answers, then refuses in words", async (t) => {
+  // Three pages of 3 MiB each: over the 8 MiB the listing reads in all.
+  const s = await setup(t, { toolkitsPage: 1, toolkitsPad: 3 * 1024 * 1024 });
+  const res = await s.api("POST", "/settings/mcp-servers/composio/toolkits", { api_key: s.composio.apiKey });
+  assert.equal(res.status, 424, `the answers over the cap are refused: ${res.status}`);
+  assert.match(res.body.error.message, /Composio's answers while listing the toolkits were over 8 MiB: no toolkit was listed\./);
+  assert.ok(s.composio.to("/api/v3/toolkits", "GET").length <= 3, "no page is asked for after the cap");
+});
+
+test("an account of another Composio user under the same auth config is never the server's: not connected, and no label shown or kept", async (t) => {
+  // A Composio that answers every user's accounts under the config, whatever user_ids names.
+  const accounts = {};
+  const s = await setup(t, { accounts, ignoreUserIds: true });
+  assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+  const config = s.composio.to("/api/v3.1/mcp/servers/custom")[0].body.auth_config_ids[0];
+  accounts.gmail = [{ id: "ca_other01", user: "someone-else", status: "ACTIVE", auth_config: config, shown: { alias: "other@example.com" } }];
+  const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.notEqual(res.body.server.composio_account?.state, "connected", "another user's account does not connect this server's");
+  assert.equal(res.body.server.composio_account?.labels, undefined, "no label of another user's account is shown");
+  assert.ok(!storeBytes(s.server.data).includes("other@example.com"), "nor kept");
+});
+
+for (const [what, user] of [["empty", ""], ["the per-run sentinel", "per_run"]]) {
+  test(`a server whose recorded Composio user is ${what} never has its accounts asked for, and says unknown`, async (t) => {
+    const s = await setup(t, { active: ["gmail"] });
+    assert.equal((await s.api("PUT", "/settings/mcp-servers/gmail/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"] })).status, 200);
+    // A damaged record (or one a later writer made): its user is no Composio user a single account belongs to.
+    const record = await s.server.store.settings.get("mcp.composio/gmail");
+    await s.server.store.settings.put("mcp.composio/gmail", { ...record, user });
+    const asked = s.composio.to("/api/v3/connected_accounts", "GET").length;
+    const res = await s.api("POST", "/settings/mcp-servers/gmail/refresh");
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(s.composio.to("/api/v3/connected_accounts", "GET").length, asked, "Composio's connected accounts were never asked for");
+    assert.deepEqual(res.body.server.composio_account, { state: "unknown", checked_at: res.body.server.composio_account?.checked_at });
+  });
+}
