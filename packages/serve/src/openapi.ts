@@ -256,7 +256,10 @@ const RUN_GRAPH = {
       properties: { id: { type: "string" }, agent: { type: "string" }, revision: { type: "string" }, status: ref("schemas/RunStatus"), paused: { type: "boolean" }, startedAt: { type: "string", format: "date-time" }, endedAt: { type: ["string", "null"], format: "date-time" } },
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
-    graph: { type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }." },
+    graph: {
+      type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
+      properties: { withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." } },
+    },
     nodes: {
       type: "object", description: "Each graph node's state, by its path.",
       additionalProperties: {

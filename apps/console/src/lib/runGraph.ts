@@ -61,7 +61,9 @@ export type Effect = { node: string | null; executionPath: string; item: number 
 export type RunGraph = {
   run: { id: string; agent: string; revision: string; status: string; paused: boolean; startedAt: string; endedAt: string | null };
   workflow: unknown;
-  graph: WorkflowGraph;
+  /** `withheld`: the server found a saved secret split across two of the graph's words and served it with no nodes and
+   *  no edges. */
+  graph: WorkflowGraph & { withheld?: true };
   nodes: Record<string, NodeRun>;
   decisions: Decision[];
   effects: Effect[];

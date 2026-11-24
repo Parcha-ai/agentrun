@@ -45,6 +45,11 @@ export function servedPart(kind: PartKind, value: unknown, values: readonly stri
 export const graphWalks = { part: 0, rest: 0 };
 
 const isRecordOrArray = (value: unknown): boolean => typeof value === "object" && value !== null;
+
+/** The graph's structure (`graph`) when its JSON holds a held value split across two of its strings (a question's
+ *  instructions ending with the value's head and its first option starting with the rest): the shape the contract gives
+ *  the field, no nodes and no edges, and `withheld`, so a reader draws nothing and can say why. */
+const WITHHELD_GRAPH = { nodes: [], edges: [], withheld: true } as const;
 /** A time as Date's toISOString writes it, and nothing else: digits, its fixed separators and Z. */
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -53,7 +58,8 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  *  - its nodes, each decision and each call through servedPart (a map item's label and an error cut short after);
  *  - every other top-level field (its run, its workflow, its structure `graph`, which echoes the workflow's nodes and their
  *    words, its totals, and any field added later) through redactedOutputWhole, each by itself, its keys included: a
- *    field whose JSON holds a held value split across two of its strings is "[redacted]";
+ *    field whose JSON holds a held value split across two of its strings is "[redacted]", but for `graph`, which is
+ *    served in the graph's own shape, WITHHELD_GRAPH, so every reader that draws it still reads its nodes and edges;
  *  - `read_at`, which moves with every read: the server's clock as toISOString writes it, served as it is, never kept;
  *    anything else under the name is cut each read.
  *  Each part and each field, its name and its value, scalar or not, is cut once per content and held set and kept in
@@ -77,7 +83,11 @@ export function servedGraphView<T extends { nodes: unknown; decisions: unknown[]
     // A field's name and its value, scalar or not, each cut once per content and held set: a poll walks none again.
     // (graphWalks.rest counts the walks of a field that holds more than one value, as before.)
     const cutName = kept(`name:${keys}:${digest(name)}`, () => redactedOutput(name, values)) as string;
-    fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => (isRecordOrArray(value) && graphWalks.rest++, redactedOutputWhole(value, values)));
+    fields[cutName] = kept(`field:${keys}:${digest(name)}:${digest(value)}`, () => {
+      if (isRecordOrArray(value)) graphWalks.rest++;
+      const cut = redactedOutputWhole(value, values);
+      return name === "graph" && isRecordOrArray(value) && cut === "[redacted]" ? { ...WITHHELD_GRAPH } : cut;
+    });
   }
   return {
     // The read's own time, the server's clock as toISOString writes it, holds nothing of the run: served as it is. Any other
