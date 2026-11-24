@@ -2871,6 +2871,27 @@ test("CVII: a password after `npm config set` is cut whatever option words stand
   }
 });
 
+test("CVIII: `c`, npm's and pnpm's alias of `config`, reads as `config` (`npm c set //r/:_authToken <pw>`), raw and in a JSON string; `npm config get set <key> <pw>` stays cut, an over-cut kept", async () => {
+  // Main's scan reads only `set` or `config set` right after the name, and the lexer read took `c` for another
+  // subcommand: the password was left on both. `set` is looked up after `c` as after `config` (subcommandAt).
+  const pw = ["Copper9", "lumen9"].join("");
+  const left = [];
+  let rows = 0;
+  for (const command of ["npm c set //r/:_authToken", "pnpm c set //r/:_authToken", "npm c --global set //r/:_authToken", "npm --userconfig x c set //r/:_password"]) {
+    for (const [wrap, text] of [["raw", `$ ${command} ${pw}\n`], ["json", `${JSON.stringify({ command: `${command} ${pw}` })}\n`]]) {
+      rows++;
+      const out = await scrub(text, { mode: "cut" });
+      assert.equal(out.ok, true, `failed closed on ${JSON.stringify(text)}`);
+      if (out.text.includes(pw)) left.push(`${command} (${wrap})`);
+    }
+  }
+  assert.deepEqual(left, [], `npm c set: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
+  // `set` is looked up past any word after `config`, so this nonsense command's value is cut: the side a leak is not.
+  const over = await scrub(`$ npm config get set //r/:_authToken ${pw}\n`, { mode: "cut" });
+  assert.equal(over.ok, true, "failed closed on npm config get set");
+  assert.ok(!over.text.includes(pw), "npm config get set //r/:_authToken <pw>: the over-cut the look-up makes is gone (subcommandAt's doc names it)");
+});
+
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
   const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
   const units = [
