@@ -55,13 +55,31 @@ test('a 16k window, 4,000 tokens held, four parallel 10k results: together they 
   }
 });
 
-test('a long history leaving 3k of a 16k window: a 10k result does not overflow it, and is never passed whole', async () => {
+test("a 200k window: the room kept for the model's answer is capped at 16,384 tokens, not a quarter of the window (50,000)", async () => {
+  const BIG_WINDOW = 200_000;
+  const CAP = 16_384;
+  const HELD = 150_000;
+  const turn = new TurnBudget();
+  const tools = ['a', 'b', 'c', 'd'].map((n) => bigTool(n, 40_000));
+  const bridge = toolBridge(await driveOf('big-window'), tools, { budget: { contextWindow: BIG_WINDOW, turn } });
+  turn.open({ inputTokens: HELD, outputTokens: 0, calls: 4 });
+  const results = await Promise.all(tools.map((t, i) => bridge.call(t.name, {}, `call-${i}`)));
+  // With a quarter of the window held back, 150,000 + 50,000 leaves nothing, and each result would be refused.
+  for (const r of results) assertCut(r, 40_000);
+  const total = contextAfter(HELD, results);
+  assert.ok(total <= BIG_WINDOW - CAP, `${total} tokens after the results: the ${CAP} kept for the answer are not left`);
+  assert.ok(total > BIG_WINDOW - CAP - 300, `${total} tokens after the results: more than ${CAP} held back for the answer`);
+});
+
+test('a long history leaving 3k of a 16k window: a 10k result does not overflow it, is never passed whole, and is refused in words (the 4,096 kept for the answer take more than is left)', async () => {
   const turn = new TurnBudget();
   const bridge = toolBridge(await driveOf('history'), [bigTool('big', 10_000)], { budget: { contextWindow: WINDOW, turn } });
   turn.open({ inputTokens: 13_384, outputTokens: 0, calls: 1 });
   const result = await bridge.call('big', {}, 'call-1');
   assert.equal(result.truncated, true);
   assert.ok(contextAfter(13_384, [result]) <= WINDOW, `${contextAfter(13_384, [result])} tokens, past the window`);
+  assert.ok(!result.text.includes('START') && !result.text.includes('rrrr'), `refused, none of it shown: ${result.text.slice(0, 200)}`);
+  assert.match(result.text, /context window/);
 });
 
 test("what is left under the least a cut keeps: the result is refused in words, none of it shown", async () => {
