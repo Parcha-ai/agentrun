@@ -475,6 +475,24 @@ const CASES = [
       },
     ];
   })(),
+  // An array's items have no key: a one-line string in an array is not held by the key the array is under, only by
+  // the line-break rule.
+  ...(() => {
+    const labels = ["made-up-label-one", "made-up-label-two"];
+    const secret = ["made", "up", "client", "secret", "R2mT7kPzq8Vx"].join("-");
+    const held = JSON.stringify({ secret: labels, client_secret: secret });
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const shown = `$ jq -r '.secret[]' held.json\n${labels.join("\n")}\n`;
+    return [
+      {
+        name: "a held JSON value's one-line strings in an array under a credential key, printed alone, show (control)",
+        text: shown,
+        values: [held],
+        hides: [],
+        exact: all(shown),
+      },
+    ];
+  })(),
   // A held value with line breaks written in JSON: escaped once ("\n"), it is cut in place where it stands; escaped
   // twice (JSON in a JSON string, "\\n"), or with its line breaks written "\r\n", it is found in the text decoded and
   // withholds the text.
