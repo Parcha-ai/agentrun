@@ -36,16 +36,37 @@ export const WRAPPED_WAIT_MS = 15_000;
  *  listed, or one this user cannot open): the numbers are short by those, and say so. */
 export type WrappedRead = { wrapped: Wrapped; unread: number };
 
-/** `read` (one year's read, on the server's import worker), each year's shared: a read still going is shared however long
- *  it takes; once it ends, the current year's is kept for a minute and a year already over is kept until the server
- *  stops (its requests are all in). A read that fails is dropped, so the next ask reads again. One per server. */
+/** `read` (one year's read, on the server's import worker), each year's shared: a read still going, or waiting its turn,
+ *  is shared however long it takes; once it ends, a year already over when its read began is kept until the server stops
+ *  (its requests were all in), and any other (this year's, or one that ended while it was read) for a minute. One read at
+ *  a time: each is a worker holding a year's sessions, so a year asked while another is read waits for it to end. A read
+ *  that fails is dropped, so the next ask reads again, and frees the turn. One per server. */
 export function keptReads(read: (year: number) => Promise<WrappedRead>): (year: number) => Promise<WrappedRead> {
-  const kept = new Map<number, { read: Promise<WrappedRead>; at?: number }>();
+  type Entry = { read: Promise<WrappedRead>; began?: number; at?: number };
+  const kept = new Map<number, Entry>();
+  // The read whose turn it is or the last one given a turn, until it ends: the next starts after it.
+  let turn: Promise<void> | undefined;
+  const inTurn = (start: () => Promise<WrappedRead>): Promise<WrappedRead> => {
+    const started = turn ? turn.then(start) : start();
+    const mine = started.then(
+      () => undefined,
+      () => undefined,
+    );
+    turn = mine;
+    void mine.then(() => {
+      if (turn === mine) turn = undefined;
+    });
+    return started;
+  };
   return (year) => {
     const held = kept.get(year);
     const now = Date.now();
-    if (held && (held.at === undefined || year < new Date(now).getFullYear() || now - held.at < KEEP_MS)) return held.read;
-    const entry: { read: Promise<WrappedRead>; at?: number } = { read: read(year) };
+    if (held && (held.at === undefined || year < held.began! || now - held.at < KEEP_MS)) return held.read;
+    const entry: Entry = {} as Entry;
+    entry.read = inTurn(() => {
+      entry.began = new Date(Date.now()).getFullYear();
+      return read(year);
+    });
     kept.set(year, entry);
     entry.read.then(
       () => {

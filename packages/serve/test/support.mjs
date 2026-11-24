@@ -47,6 +47,9 @@ import { stranger } from "./fixtures/stranger.mjs";
 // of those reads passes its own `sessionsHome`.
 const SESSIONS_HOME = { home: mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-home-")) };
 process.on("exit", () => rmSync(SESSIONS_HOME.home, { recursive: true, force: true }));
+// The same empty home is HOME, as the config home above: a CLI a test starts with the test's environment ({ ...process.env })
+// starts a server that reads sessions under HOME, and must not read the runner's.
+process.env.HOME = SESSIONS_HOME.home;
 
 // No test asks an Ollama this machine may run (ollama-provider.ts lists its models, and with no key one is the default),
 // whatever env it passes: the process's own switch (OLLAMA_OFF_ENV) turns every Ollama off. A test of Ollama clears it
