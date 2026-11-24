@@ -349,8 +349,8 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
   // A run's end writes its ledger row and spend rows (run-patch.ts applyRunPatch) in its own transaction.
-  { table: "learning_ledger", columns: ["run_id"], why: "keep each run's learning ledger row and spend (learning_ledger, learning_spend)" },
-  { table: "learning_spend", columns: ["run_id"], why: "keep each run's learning ledger row and spend (learning_ledger, learning_spend)" },
+  { table: "learning_ledger", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
+  { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -531,7 +531,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
     // a runner waits for the server that adds the tables (STORE_DDL at its start).
     if (role === "runner" && (await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2) {
-      throw new StoreAwaitsServer("keep each run's learning ledger row and spend (learning_ledger, learning_spend)");
+      throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -2062,14 +2062,14 @@ class SqliteStore implements Store {
       ledger: async (agentId, runIds) => {
         // One statement over both tables (a UNION ALL, each row marked by its table): one snapshot on either database, so
         // an end committed between two reads never mixes its row with another end's spend.
-        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; at: number | string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
+        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; epoch: number | string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
         if (runIds !== undefined && runIds.length === 0) return { rows: [], spend: [] };
         const list = runIds === undefined ? "" : runIds.map(() => "?").join(", ");
         const rowsOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND run_id IN (${list})`, params: [...runIds] };
         const spendOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND (run_id IN (${list}) OR of_run IN (${list}))`, params: [...runIds, ...runIds] };
         const text = "CAST(NULL AS TEXT)", whole = "CAST(NULL AS BIGINT)", usd = "CAST(NULL AS DOUBLE PRECISION)";
         const parts = await db.all<Part>(
-          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, at, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
+          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
              FROM learning_ledger WHERE agent_id = ?${rowsOf.sql}
            UNION ALL
            SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, ${whole}, kind, round, of_run, usd
@@ -2077,9 +2077,9 @@ class SqliteStore implements Store {
           agentId, ...rowsOf.params, agentId, ...spendOf.params,
         );
         const usdOf = (value: number | null) => (value === null ? null : Number(value));
-        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow & { at: number } => ({
+        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow & { epoch: number } => ({
           runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
-          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"], at: Number(row.at),
+          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"], epoch: Number(row.epoch),
         }));
         const spend = parts.filter((one) => one.part === "spend").map((row): SpendRow => ({
           runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),

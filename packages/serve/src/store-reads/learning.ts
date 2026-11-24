@@ -253,6 +253,19 @@ export async function agentLedgerOverStore(store: Store, agentId: string, refuse
   return { out: summarize({ ...read, revisions }), promotions, skip, listed };
 }
 
+/** How many runs a ledger read reads at once (ledgerReadOf: a run's rounds, its launch, its revision). */
+const READS_AT_ONCE = 16;
+
+/** `each` of `items`, READS_AT_ONCE at a time, in their order. */
+async function inBatches<T, R>(items: readonly T[], each: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let at = 0; at < items.length; at += READS_AT_ONCE) out.push(...(await Promise.all(items.slice(at, at + READS_AT_ONCE).map(each))));
+  return out;
+}
+
+/** `keys` paired with `values`, by place. */
+const zipWith = <K, V>(keys: readonly K[], values: readonly V[]): [K, V][] => keys.map((key, at) => [key, values[at]!]);
+
 /** What summarize reads of agent `agentId` (LedgerRead, its revisions aside), over `listed` (its runs, as runs.list read
  *  them): the ledger rows of its ended runs that do a job or check one (neither imported nor archived, no workflow
  *  revision's run, no shadow), a run that does not learn on the `agent` path, each with the workflow name its launch
@@ -270,48 +283,51 @@ async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunR
   const stale = new Set(ledger.rows.flatMap((row) => (byId.has(row.runId) && !ledgerRowStands(row, byId.get(row.runId)!) ? [row.runId] : [])));
   const recorded = new Map<string, LedgerRow>(ledger.rows.flatMap((row) => (stale.has(row.runId) ? [] : [[row.runId, row] as const])));
   const spend: SpendRow[] = ledger.spend.filter((one) => !stale.has(one.runId));
-  for (const run of listed) {
-    if (run.importedFrom || !FINAL_STATES.includes(run.state) || recorded.has(run.id)) continue;
-    const made = record(await runEndOf(records, run));
-    recorded.set(run.id, made.row);
-    spend.push(...made.spend);
-  }
-  const kinds = new Map<string, string | undefined>();
+  // The rest are read a few at a time (READS_AT_ONCE), each run's reads in one batch: a claim reads up to PAST_RUNS runs.
+  const unrecorded = listed.filter((run) => !run.importedFrom && FINAL_STATES.includes(run.state) && !recorded.has(run.id));
+  const made = await inBatches(unrecorded, async (run) => record(await runEndOf(records, run)));
+  unrecorded.forEach((run, at) => {
+    recorded.set(run.id, made[at]!.row);
+    spend.push(...made[at]!.spend);
+  });
+  const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id));
+  const revisionIds = [...new Set(ended.map((run) => run.revisionId))];
+  const kinds = new Map(zipWith(revisionIds, await inBatches(revisionIds, async (id) => (await store.agents.revision(id))?.kind)));
+  const jobs = ended.filter((run) => kinds.get(run.revisionId) !== "workflow");
+  // Its launch's learning start: the workflow names it offered, and, for a row whose end named no path, whether it learns.
+  const starts = await inBatches(jobs, async (run) => (named || recorded.get(run.id)!.path === null ? learningStartOfRun(records, run.id) : undefined));
   const offered = new Map<string, readonly string[] | undefined>();
   const rows: LedgerRow[] = [];
   const shadows = new Map<string, Shadow>();
   const learning = new Set<string>();
   const audited = new Set(spend.flatMap((one) => (one.kind === "audit" && one.ofRun !== null ? [one.ofRun] : [])));
-  for (const run of listed) {
-    if (!FINAL_STATES.includes(run.state) || run.importedFrom || run.archivedAt !== null || isShadowRun(run.id)) continue;
-    if (!kinds.has(run.revisionId)) kinds.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind);
-    if (kinds.get(run.revisionId) === "workflow") continue;
+  for (const [run, started] of zipWith(jobs, starts)) {
     const row = recorded.get(run.id)!;
-    // Its launch's learning start: the workflow names it offered, and, for a row whose end named no path, whether it learns.
-    const started = named || row.path === null ? await learningStartOfRun(records, run.id) : undefined;
     // A run that does not learn names no path: it is the agent's. One that learns and names none is unknown.
     rows.push(row.path === null && !started ? { ...row, path: "agent" } : row);
     if (named) offered.set(run.id, started?.workflows);
     if (run.disk === null) learning.add(run.id);
     const shadow = byId.get(shadowRunId(run.id));
     if (!shadow) continue;
-    const ended = FINAL_STATES.includes(shadow.state);
-    shadows.set(run.id, ended ? "ended" : "open");
+    const over = FINAL_STATES.includes(shadow.state);
+    shadows.set(run.id, over ? "ended" : "open");
     // A shadow that ended with no audit row (its end named no audit: it failed before its end wrote its metrics) is the
     // run's by its id.
-    if (ended && !audited.has(run.id)) spend.push(shadowSpend(shadow, run.id));
+    if (over && !audited.has(run.id)) spend.push(shadowSpend(shadow, run.id));
   }
   // Only a name the launch offered is shown.
   return { rows, spend, shadows, learning, compileAfter: COMPILE_AFTER_DEFAULT, ...(named ? { named: (row: LedgerRow) => offeredName(row.workflow, offered.get(row.runId)) } : {}) };
 }
 
-/** Whether run `run`'s ledger row stands for it as it is now: written for the end the run has (`at`, its ended_at when
- *  the row was written: run-patch.ts recordLedger), with no cost healed since. A runner or server of the build before the
- *  ledger writes none: its end of a run again (after a follow-up) moves the run's ended_at, and its heal of a cost
- *  (Runs.healCost: only over an unknown cost, at the same end) makes the cost known. Either leaves the row for the run as
- *  it was, and its reader records it again from the run's row (record), as for a run with no row. */
-export function ledgerRowStands(row: Pick<LedgerRow, "cost"> & { readonly at: number }, run: Pick<RunRecord, "endedAt" | "costUsd" | "costAtMostUsd">): boolean {
-  return row.at === run.endedAt && (row.cost !== "unknown" || (run.costUsd === null && run.costAtMostUsd === null));
+/** Whether run `run`'s ledger row stands for it as it is now: written for the end the run has (`epoch`, the run's epoch
+ *  after the end that wrote it: run-patch.ts recordLedger), with no cost healed since. A runner or server of the build
+ *  before the ledger writes none: its end of a run again (a follow-up's, or a grade's round that keeps the end it had, at
+ *  the same ended_at) moves the run's epoch, as every end and every claim does, and its heal of a cost (Runs.healCost:
+ *  only over an unknown cost, at the same epoch and end) makes the cost known. Either leaves the row for the run as it
+ *  was, and its reader records it again from the run's row (record), as for a run with no row. A cancel that wins an
+ *  end moves its ended_at alone (run-patch.ts refuseLeftovers): the row stands. */
+export function ledgerRowStands(row: Pick<LedgerRow, "cost"> & { readonly epoch: number }, run: Pick<RunRecord, "epoch" | "costUsd" | "costAtMostUsd">): boolean {
+  return row.epoch === run.epoch && (row.cost !== "unknown" || (run.costUsd === null && run.costAtMostUsd === null));
 }
 
 /** What record() reads of an ended run: its row and every round its learning kept. */

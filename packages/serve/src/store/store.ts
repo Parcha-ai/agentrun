@@ -484,11 +484,11 @@ export interface Learning {
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
-   *  recorded, oldest first, each with the end it was recorded for (`at`, its run's ended_at then), and every spend row.
+   *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
    *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
    *  only beside a run's end and a heal of its cost (run-patch.ts recordLedger); a purge or a delete of the run takes its
    *  row and its spend. */
-  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly at: number })[]; spend: SpendRow[] }>;
+  ledger(agentId: string, runIds?: readonly string[]): Promise<{ rows: (LedgerRow & { readonly epoch: number })[]; spend: SpendRow[] }>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */

@@ -238,10 +238,11 @@ export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
 /** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
  *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
  *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
- *  known (`cost`), and the end it was written for (`at`: the run's ended_at). Gone with the run's purge or delete (its
- *  cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL, and made at a server open on a store an
- *  earlier build of this version made: a run that ended before it has no row, and one a runner of that build ended again
- *  has a row for an earlier end; its reader records it from its run row either way (store-reads/learning.ts). */
+ *  known (`cost`), and the end it was written for (`epoch`: the run's epoch after that end, which every end moves).
+ *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
+ *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
+ *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
+ *  either way (store-reads/learning.ts). */
 export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     run_id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL,
@@ -253,7 +254,7 @@ export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
     job_usd REAL,
     look_back_usd REAL,
     cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
-    at INTEGER NOT NULL
+    epoch INTEGER NOT NULL
   ) STRICT`;
 export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
