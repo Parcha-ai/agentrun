@@ -1,8 +1,9 @@
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RowTitle, rowLabel } from "@/components/Timeline";
+import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { clock } from "@/lib/format";
-import { stepAt, videoClock, type VideoStep } from "@/lib/runVideo";
+import { stepAt, stepAtClock, stepCall, videoClock, type VideoStep } from "@/lib/runVideo";
 import { rowFailed, steps as stepsOf } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import type { TimelineRow } from "@/lib/v2";
@@ -13,7 +14,7 @@ export const SCREEN_WITH_STEPS = "grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_2
 /** The box a list of steps sits in, beside the screen or under it: its title line, then the list. Beside the screen it is
  *  as tall as the screen and the list scrolls in it; under it, the list scrolls in a short box, so the screen stays in
  *  sight. */
-function StepsBox({ hint, children }: { hint: string; children: ReactNode }) {
+function StepsBox({ hint, children, foot }: { hint: string; children: ReactNode; foot?: ReactNode }) {
   return (
     <div className="relative min-h-0 border-t xl:border-l xl:border-t-0">
       <div className="flex flex-col xl:absolute xl:inset-0">
@@ -22,6 +23,7 @@ function StepsBox({ hint, children }: { hint: string; children: ReactNode }) {
           <p className="text-label text-muted-foreground">{hint}</p>
         </div>
         {children}
+        {foot && <div className="shrink-0 border-t px-4 py-2">{foot}</div>}
       </div>
     </div>
   );
@@ -45,13 +47,17 @@ function StepWords({ when, row, wide = false }: { when: string; row: TimelineRow
 /** A recording's steps, beside its player: what the run did while the file was recorded (lib/runVideo's videoSteps: the
  *  timeline's own steps and words), each at its time on the video. A step is a button that moves the video there, playing
  *  or paused as it was; the step the video is at is marked, and kept in sight as the video plays. `video` is the player's
- *  element (null until it is drawn). A step's time is its time on the timeline since the recording began. */
-export function RunVideoSteps({ video, steps }: { video: HTMLVideoElement | null; steps: readonly VideoStep[] }) {
+ *  element (null until it is drawn). A step's time is its time on the timeline since the recording began.
+ *  `onOpenCall`: where the run's trace can be read, the step the video is at opens in the Dev tools tab when it is a tool
+ *  call (by its call row's id on the timeline, which names that call and no other of the same call id): what it was
+ *  given, what it returned, how long it took and what it cost. The button is under
+ *  the list and always there, so the list keeps its height as the video plays. */
+export function RunVideoSteps({ video, steps, onOpenCall }: { video: HTMLVideoElement | null; steps: readonly VideoStep[]; onOpenCall?: (rowId: string) => void }) {
   const [now, setNow] = useState(-1);
   const list = useRef<HTMLOListElement | null>(null);
   useEffect(() => {
     if (!video) return;
-    const read = () => setNow(stepAt(steps, video.currentTime));
+    const read = () => setNow(stepAtClock(steps, video.currentTime));
     read();
     video.addEventListener("timeupdate", read);
     video.addEventListener("seeked", read);
@@ -70,8 +76,11 @@ export function RunVideoSteps({ video, steps }: { video: HTMLVideoElement | null
     video.currentTime = at;
     setNow(stepAt(steps, at));
   };
+  const call = now >= 0 && steps[now] && stepCall(steps[now].step) ? steps[now].step.row.id : null;
   return (
-    <StepsBox hint="Click a step to jump to it">
+    <StepsBox hint="Click a step to jump to it" foot={onOpenCall && (
+      <Button size="xs" disabled={!call} onClick={() => call && onOpenCall(call)} title={call ? undefined : "The step the video is at is not a tool call"}>Open this step in Dev tools</Button>
+    )}>
       <ol ref={list} aria-label="The recording's steps" className={cn(LIST, "divide-y")}>
         {steps.map(({ step, at }, i) => (
           <li key={step.row.id}>
