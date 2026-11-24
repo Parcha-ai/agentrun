@@ -63,7 +63,7 @@ import { stepsBack, trackHistory } from "@/lib/back";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { allPages, type Capabilities, ClientError, createClient, type ImportOffer, type ImportState, problemOf, type RunsFilter } from "@/lib/client";
 import { chatGPTView } from "@/lib/chatgpt";
-import { claudeLoginView, LOGIN_HARNESS } from "@/lib/claudeLogin";
+import { claudeLoginView, LOGIN_HARNESS, loginServes } from "@/lib/claudeLogin";
 import { createConnection } from "@/lib/connection";
 import type { ChatGPTView } from "@/lib/v2";
 import { appendRuns, keeper, keepersByRun, sendOnce, uuid } from "@/lib/idempotency";
@@ -782,7 +782,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // the server's default place for a revision with a shell tool, else the runner). Not known (the server's places not
   // read yet), the bar stays.
   const runPlace = runDefinition && selectedAgent ? runsWhere({ kind: selectedAgent.kind, definition: runDefinition as Agent["definition"] }, placesOf(caps))?.place : undefined;
-  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS && runPlace?.mode === "runner";
+  // And only for a model the login serves (loginServes): one naming an OpenRouter model still needs OpenRouter's key.
+  const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner";
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   return (
     <ScheduleNames.Provider value={scheduleNames}>

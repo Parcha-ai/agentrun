@@ -210,6 +210,9 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.deepEqual(onLogin.login, at);
   assert.equal(onLogin.billing, "plan");
   assert.equal(onLogin.priceModel.provider, "claude-login");
+  // Anthropic's own models go on the login, an OpenRouter one (Anthropic's included) on its key, and a revision naming
+  // none gets Anthropic's: the console's No model bar copies this rule (its lib/claudeLogin.ts loginServes), so a change
+  // here changes it there.
   assert.equal(providerFor("anthropic-messages", env, { provider: "openrouter", modelId: "anthropic/claude-haiku-5.5" }, "claude-agent").login, undefined);
   assert.equal(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "opencode").login, undefined);
   assert.equal(hostModel(env, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
