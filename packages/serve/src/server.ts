@@ -110,7 +110,7 @@ import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-serv
 import { servedRunTrace } from "./run-trace.js";
 import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
-import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_MAX, retiredValues, WITHHELD_LEARNING } from "./handed-values.js";
+import { agentPointers, cutHanded, handedSecretValues, launchValuesOf, RETIRED_MAX, retiredValues, WITHHELD_LEARNING, WITHHELD_MESSAGE } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
@@ -2308,14 +2308,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
   /** `text` as a message to run `runId` is written: cut of `handed` (what the message itself hands) and of what the run
-   *  holds now (its turn's end erases those, and a read after it could no longer cut them); a run whose seal doesn't
-   *  open is withheld till then anyway. Read inside the turn that writes the message (runWrite), never before it: a
-   *  message written first in that turn (one that hands a new key) is in the seal read here, so a message that says
-   *  that key without handing it is cut of it too. Both writers of a message read it: a person's (sendMessage) and a
-   *  trigger's (trigger-targets.ts message_run). */
+   *  holds now (its turn's end erases those, and a read after it could no longer cut them). A run whose seal doesn't
+   *  open here (its seal key changed or is missing, or what was sealed is damaged or lost) takes no message: 409
+   *  not_continuable, reason withheld (WITHHELD_MESSAGE), and nothing is written, since what it can't read it can't
+   *  cut, and a message written uncut would show those values once the run's end lets its reads go uncut-withheld.
+   *  Read inside the turn that writes the message (runWrite), never before it: a message written first in that turn
+   *  (one that hands a new key) is in the seal read here, so a message that says that key without handing it is cut of
+   *  it too. Both writers of a message read it: a person's (sendMessage) and a trigger's (trigger-targets.ts
+   *  message_run, which skips with those words). */
   async function cutHeld(runId: string, text: string, handed: readonly string[] = []): Promise<string> {
     const held = launchValuesOf(sealKey, runId, (await store.runs.launch(runId)).sealed);
-    return cutHanded(text, [...handed, ...(held === "unreadable" ? [] : held)]);
+    if (held === "unreadable") throw new ApiError("not_continuable", WITHHELD_MESSAGE, { details: { reason: "withheld" } });
+    return cutHanded(text, [...handed, ...held]);
   }
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
