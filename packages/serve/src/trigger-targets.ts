@@ -260,7 +260,9 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         entry,
         { ...body, ...(cap !== undefined ? { max_cost_usd: cap } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
-        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}), ...(host?.sealed ? { sealed: host.sealed } : {}), ...(host?.keys ? { keys: host.keys } : {}) },
+        // A host's start (`host`) starts the firing it was handed in the run's own write: refused, with nothing written,
+        // once that firing has moved (its host released it meanwhile).
+        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}), ...(host?.sealed ? { sealed: host.sealed } : {}), ...(host?.keys ? { keys: host.keys } : {}), ...(host ? { firing: { triggerId: trigger.id, key: trigger.firing_key } } : {}) },
       );
       return { run_id: run.id };
     },
