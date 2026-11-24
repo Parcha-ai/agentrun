@@ -52,7 +52,8 @@ export function ChatGPTSignIn({ v2, view, onView, writable = true, whyNot = "sig
   const field = useRef<HTMLInputElement>(null);
   // Only the newest read or write lands: a read sent before a finish never undoes it.
   const asked = useRef(0);
-  useEffect(() => { setV(view); }, [view]);
+  // A new view from the page is newer than any read's hint: its own hint (or none) shows.
+  useEffect(() => { setV(view); setHint(undefined); }, [view]);
   const set = (next: ChatGPTView) => { setV(next); onView?.(next); };
 
   const pending = v.state === "pending";
