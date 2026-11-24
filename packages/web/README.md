@@ -37,9 +37,39 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   server gives a call node fresh ones each call). `fetch(url, { lookup, fetchImpl })` dials through the given resolver
   and transport.
 
-Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every
-provider asked, with its outcome. `cost` holds the fees of the requests sent. `classifier` is `"off"`; `wall` and
-`injection` are `"unjudged"`.
+Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, classifier, wall, injection, out, cost,
+cache? }`. `tries` lists every provider asked, with its outcome. `cost` holds the fees of the requests sent.
+`classifier` is `"off"` unless a decider is given (below); `wall` and `injection` are `"unjudged"`.
+
+## The classifier step
+
+`decider` sifts each search's results and judges each fetched part before the model reads them. Without one, every
+answer, model text and receipt is byte-identical to a web that has no step (`test/web-decide-off.test.mjs`).
+
+```js
+import { createWeb, deciderFrom } from "@parcha/agentrun-web";
+import { jevProvider } from "@parcha/agentrun-jev";
+
+const web = createWeb({ order, guard, decider: deciderFrom(jevProvider()), bounds: { decideMs: 30_000 } });
+const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "Where is Widgets, Inc. registered?" });
+```
+
+- `deciderFrom(provider, { threshold?, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
+  `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
+  calls (`DecisionAsker`), so it depends on no provider. Each call is one request of noul questions, one per result or
+  passage, in fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
+- An item is dropped when `1 - p(needed) >= threshold` (`THRESHOLD`, 0.8 by default; a threshold is above 0.5 and at
+  most 1). A refused question keeps its item.
+- A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
+  The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
+  `next_offset` are unchanged. A fetch with no `task` is not judged.
+- The answer's `sift` tells the model what was done: `"jev kept 3 of 5 results"`, or `"not run (timeout); these results
+  are unsifted"`. A decider that fails, refuses every question, answers out of shape or passes `bounds.decideMs`
+  (`DECIDE_MS`, 30 s) never drops anything silently: the items pass unsifted and the record says why.
+- `receipt.classifier` is the decision's record: `{ provider, op, ran, items: { in, kept }, dropped: [{ id, score,
+  reason, at? }], model, tokens: { in, out, basis }, latency_ms, cost: { usd, basis }, questions_sha256, error?,
+  skipped? }`. `tokens` are the provider's when it reports them, else counted on the request by `count`, else null.
+  The decider's cost is the record's; `receipt.cost` stays the search and fetch fees.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
