@@ -11,10 +11,12 @@ the provider order, the keys, the guard, the run's cap and the words a provider'
 
 ```js
 import { createWeb } from "@parcha/agentrun-web";
+import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 
 const web = createWeb({
   order: { search: ["firecrawl-keyless", "exa-keyless"], fetch: ["firecrawl-keyless", "direct"] },
-  guard, // { fetch(url, options), check(url, options), html?(html, url, options) }: the public-host guard
+  // The public-host guard: pi-browser's, the one AgentRun's server gives it.
+  guard: { fetch: publicFetch, check: publicCheck, html: readPage },
 });
 const { answer, receipt } = await web.search("agentrun durable workflows", { n: 5 });
 const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_000 });
@@ -25,7 +27,9 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   providers, with `direct` for the guarded direct fetch. An order without `direct` never fetches a page itself.
 - `guard` is the only way a page is fetched directly. Without one, nothing is fetched directly and no URL goes to a
   provider: the read fails closed. A guard failure shaped `{ failure: { code: "refused" } }` is a refusal: the page is
-  not read, and the model is told why.
+  not read, and the model is told why. `guard.check` decides which URLs go to Firecrawl and Parallel, so it must refuse
+  every URL `guard.fetch` would refuse: a check that passes everything sends private and internal URLs to a provider.
+  A guard is the Web's alone; one passed with a `fetch` call is ignored.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
   throws a `PaidRefused`. Without it, a request is unmetered.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model.
@@ -44,5 +48,6 @@ provider asked, with its outcome. `cost` holds the fees of the requests sent. `c
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
-`fees`, and `linksOf`, the links a page's text holds. `@parcha/agentrun-web/text-urls` holds the link finder alone, for
-code that only finds the URLs in a text (the console's timeline compiles it from source).
+`fees`, and `linksOf`, the links a page's text holds. The package's entry names each export; nothing else in it is
+API. `@parcha/agentrun-web/text-urls` holds the link finder alone, for code that only finds the URLs in a text (the
+console's timeline compiles it from source).
