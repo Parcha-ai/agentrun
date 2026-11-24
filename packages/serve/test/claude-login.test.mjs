@@ -645,6 +645,55 @@ test("the CLI's sign-in is refused for a login turned on over another data folde
   assert.deepEqual(started, [{ cli: pinned, dir: join(one, "claude-login") }]);
 });
 
+/** A gate a test holds a call at: `wait` resolves once `open()` is called. */
+function latch() {
+  let open;
+  const wait = new Promise((resolve) => { open = resolve; });
+  return { wait, open };
+}
+
+/** Whether `promise` settles while the event loop turns 20 times. The stand-ins below answer at once, with no I/O, so a
+ *  call nothing holds settles within the first turn, and one waiting on a held call does not settle at all. */
+async function settlesNow(promise) {
+  let settled = false;
+  promise.then(() => { settled = true; }, () => { settled = true; });
+  for (let i = 0; i < 20 && !settled; i++) await new Promise((resolve) => setImmediate(resolve));
+  return settled;
+}
+
+/** The login routes over stand-ins, for test `t`: the setting in `rows`, turned on at AgentRun's own folder; the pinned
+ *  CLI a file; each sign-in's CLI a stand-in that waits until it is stopped (`started`: the folder each one signs in at,
+ *  and whether it was stopped). `deps(over)`: the routes' deps with `over` laid on them. `stale(keeps)`: the sign-ins
+ *  still waiting at a folder other than `keeps` (undefined: every one still waiting). */
+async function loginRig(t) {
+  const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-race-"));
+  const signIns = new ClaudeSignIns();
+  t.after(async () => {
+    await signIns.close();
+    rmSync(data, { recursive: true, force: true });
+  });
+  const pinned = join(data, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const env = { HOME: data, PATH: "/usr/bin:/bin" };
+  const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor("agentrun", data)]]);
+  const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
+  const started = [];
+  const cli = {
+    claudeLoginCommand: () => "claude auth login",
+    claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+    startClaudeLogin: (_cli, login) => {
+      const one = { dir: login.dir, stopped: false };
+      started.push(one);
+      let end;
+      const ended = new Promise((resolve) => { end = resolve; });
+      return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
+    },
+  };
+  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: undefined, sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
+  const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
+  return { data, env, rows, settings, started, signIns, pinned, deps, stale };
+}
+
 // A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
 // between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
 // login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
@@ -657,56 +706,98 @@ const RACE_CHANGES = [
   ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
 ];
 for (const [change, ask, place] of RACE_CHANGES) {
-  test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 30_000 }, async (t) => {
-    const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-race-"));
-    const signIns = new ClaudeSignIns();
-    t.after(async () => {
-      await signIns.close();
-      rmSync(data, { recursive: true, force: true });
-    });
-    const pinned = join(data, "claude");
-    writeFileSync(pinned, "", { mode: 0o755 });
-    const env = { HOME: data, PATH: "/usr/bin:/bin" };
-    const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor("agentrun", data)]]);
-    const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
-    // Each sign-in's CLI is a stand-in that waits until it is stopped: the folder it signs in at, and whether it was.
-    const started = [];
-    const cli = {
-      claudeLoginCommand: () => "claude auth login",
-      claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
-      startClaudeLogin: (_cli, login) => {
-        const one = { dir: login.dir, stopped: false };
-        started.push(one);
-        let end;
-        const ended = new Promise((resolve) => { end = resolve; });
-        return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
-      },
-    };
-    const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: undefined, sameMachine: true, claude: async () => cli, changed: async () => {}, ...over });
+  test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
     // The pause point: the sign-in's first lookup of the pinned CLI, after its read of the setting and before its start.
-    let reached;
-    const inGap = new Promise((resolve) => { reached = resolve; });
-    let release;
-    const released = new Promise((resolve) => { release = resolve; });
+    const inGap = latch();
+    const gap = latch();
     let held = false;
-    const pressed = startLoginHere(deps({ pinned: async () => { if (!held) { held = true; reached(); await released; } return pinned; } }));
-    await inGap;
-    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for its turn.
-    let queued;
-    const waits = new Promise((resolve) => { queued = resolve; });
-    const watched = { view: () => signIns.view(), start: (begin) => signIns.start(begin), stop: () => signIns.stop(), close: () => signIns.close(), serial: (work) => { queued(); return signIns.serial(work); } };
-    const changing = ask(deps({ signIns: watched }));
-    const first = await Promise.race([changing.then(() => "answered inside the gap"), waits.then(() => "waited its turn")]);
-    release();
+    const pressed = startLoginHere(rig.deps({ pinned: async () => { if (!held) { held = true; inGap.open(); await gap.wait; } return rig.pinned; } }));
+    await inGap.wait;
+    // The change's own request: the same sign-ins, seen through a wrapper that says when it asks for a turn, its start
+    // and stop included, so a change that asks for one any way is let through and never waits on the held sign-in here.
+    const waits = latch();
+    const watched = { view: () => rig.signIns.view(), serial: (work) => { waits.open(); return rig.signIns.serial(work); }, start: (begin) => watched.serial((turn) => turn.start(begin)), stop: () => watched.serial((turn) => turn.stop()), close: () => rig.signIns.close() };
+    const changing = ask(rig.deps({ signIns: watched }));
+    const first = await Promise.race([changing.then(() => "answered inside the gap"), waits.wait.then(() => "waited its turn")]);
+    gap.open();
     const [, answer] = await Promise.all([pressed, changing]);
     assert.equal(answer.state, place === undefined ? "off" : "signed_out", JSON.stringify(answer));
-    assert.equal(rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
-    const keeps = place === undefined ? undefined : loginAt(place, data, env).dir;
-    const stale = started.filter((one) => !one.stopped && one.dir !== keeps);
-    assert.deepEqual(stale, [], `${change} (it ${first}): a sign-in still waits where the login no longer is`);
-    assert.ok(started.length >= 1, "the sign-in started");
+    assert.equal(rig.rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    assert.deepEqual(rig.stale(keeps), [], `${change} (it ${first}): a sign-in still waits where the login no longer is`);
+    assert.ok(rig.started.length >= 1, "the sign-in started");
   });
 }
+
+// A change first ends the sign-in that waits, then saves. A start pressed between the two must not run there: it would
+// read the setting the change is replacing and leave its CLI waiting at the old place, or for a login that is off. Here
+// the change is held between its stop and its save (its write of the setting waits on the test), a start is pressed
+// while it is held, and the change is let go. The stop and the save are one turn on the sign-ins' queue, so the start
+// waits for the save and starts on what it saved: at the new place, or refused once the login is off.
+const SAVE_GAP_WHY = "a sign-in started between the change's stop and its save still waits where the login no longer is";
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change}, with a start pressed between its stop of the waiting sign-in and its save, leaves no sign-in waiting with the setting it replaced`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
+    assert.equal((await startLoginHere(rig.deps())).sign_in?.state, "waiting", "a sign-in waits at AgentRun's own folder before the change");
+    // The pause point: the change's write of the setting, after its stop.
+    const atSave = latch();
+    const save = latch();
+    const held = (write) => async (...args) => { atSave.open(); await save.wait; return write(...args); };
+    const changing = ask(rig.deps({ settings: { ...rig.settings, put: held(rig.settings.put), remove: held(rig.settings.remove) } }));
+    await atSave.wait;
+    const pressing = startLoginHere(rig.deps());
+    const ran = await settlesNow(pressing);
+    save.open();
+    const [changed, pressed] = await Promise.allSettled([changing, pressing]);
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    const during = ran ? "the start ran while the save was held" : "the start waited for the save";
+    assert.deepEqual(rig.stale(keeps), [], `${change} (${during}): ${SAVE_GAP_WHY}`);
+    assert.equal(changed.status, "fulfilled", String(changed.reason));
+    assert.equal(rig.rows.get(CLAUDE_LOGIN_SETTING)?.place, place, "the change was saved");
+    assert.equal(rig.started[0].stopped, true, "the change ended the sign-in that waited before it");
+    if (place === undefined) {
+      assert.equal(pressed.status, "rejected", "a start pressed during a turn-off is refused once it lands");
+      assert.equal(pressed.reason.message, "Turn on Claude Code's login on this machine first.");
+    } else {
+      assert.equal(pressed.status, "fulfilled", String(pressed.reason));
+      assert.deepEqual(rig.started.filter((one) => !one.stopped).map((one) => one.dir), [keeps], "the start pressed during the change signs in where the change saved");
+    }
+  });
+}
+
+// A change's turn holds the sign-ins' queue only while it stops and saves, and hands the server the login it saved
+// (`saved`) inside it, so two changes never leave the server's copy out of order. The server's reread of the keys after
+// it (`changed`: the runs' listings, what a revision needs, the harnesses' offers) can take seconds; a sign-in pressed
+// meanwhile goes on at once, on what the change saved.
+const REREAD_WHY = "a sign-in pressed while the change reread the keys waited for that reread";
+for (const [change, ask, place] of RACE_CHANGES) {
+  test(`${change} hands the server the login it saved inside its turn and rereads the keys after it: a start pressed during the reread is not held by it`, { timeout: 10_000 }, async (t) => {
+    const rig = await loginRig(t);
+    const told = [];
+    const atReread = latch();
+    const reread = latch();
+    const changing = ask(rig.deps({ saved: (login) => void told.push(["saved", login?.dir]), changed: async () => { told.push(["changed"]); atReread.open(); await reread.wait; } }));
+    await atReread.wait;
+    const pressing = startLoginHere(rig.deps());
+    const ran = await settlesNow(pressing);
+    reread.open();
+    const [changed, pressed] = await Promise.allSettled([changing, pressing]);
+    assert.ok(ran, `${change}: ${REREAD_WHY}`);
+    assert.equal(changed.status, "fulfilled", String(changed.reason));
+    const keeps = place === undefined ? undefined : loginAt(place, rig.data, rig.env).dir;
+    assert.deepEqual(told, [["saved", keeps], ["changed"]], "the server is handed the saved login, then rereads the keys");
+    if (place === undefined) assert.equal(pressed.reason?.message, "Turn on Claude Code's login on this machine first.");
+    else assert.deepEqual(rig.started.filter((one) => !one.stopped).map((one) => one.dir), [keeps], "the start signs in where the change saved");
+  });
+}
+
+// A turn starts or ends the sign-in through its own `turn`. A start or stop of the sign-ins' own beside it would be a
+// turn of its own, so one called inside a turn would wait for that turn to end, for ever, and the server's stop (which
+// waits for the sign-ins' close) with it. The sign-ins offer none: their queue (serial), the view and the server's close.
+test("the sign-ins start and end a sign-in only in a turn on their queue: they offer no start or stop of their own, which a turn calling it would wait on for ever", () => {
+  assert.deepEqual(Object.getOwnPropertyNames(ClaudeSignIns.prototype).sort(), ["close", "constructor", "serial", "view"], "the sign-ins offer a start or stop beside a turn's, which one called inside a turn waits on for ever");
+});
 
 test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
   const fake = await fakeCli(t);

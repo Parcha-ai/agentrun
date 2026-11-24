@@ -181,6 +181,11 @@ describe("the Playground's No model bar heeds the login only for a run on the ru
     expect(page.bar()?.textContent ?? "", "the bar over a Claude Agent run in the server's default sandbox box").toContain(BAR);
   });
 
+  it("an agent on Claude Agent that names no place, with a shell tool, before the server's places are known is not known to run on the runner: the bar stays", async () => {
+    const page = await open(SIGNED_IN, CAPS, [claudeAgentWith({ tools: ["bash"] })]);
+    expect(page.bar()?.textContent ?? "", "the bar over a Claude Agent run whose place is not known yet").toContain(BAR);
+  });
+
   it("an older revision placed in a sandbox box needs a model though the current one runs on the runner: the bar comes up", async () => {
     const page = await open(SIGNED_IN, RUNNER_DEFAULT, [CLAUDE_AGENT], twoRevisions({ harness: "claude-agent", place: { mode: "runner" } }, { harness: "claude-agent", place: { mode: "sandbox", box: "docker" }, tools: ["bash"] }));
     expect(page.bar()?.textContent ?? null, "the bar over the current revision, on the runner").toBeNull();
