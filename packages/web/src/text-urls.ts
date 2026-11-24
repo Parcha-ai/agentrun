@@ -1,10 +1,5 @@
-// The one reading of an http(s) URL written in text: where it ends, what tail is not its own, where a markdown link's
-// target ends, and the links a page's text holds. A fetched page's links (page.ts, providers/) read through it, and so do
-// serve's timeline scrub (its timeline/util.ts scrubUrls) and its eval link check's cited links (link-check.ts), so a
-// link a page holds and the same link an answer cites come out in the same shape. It imports nothing: serve's console
-// compiles it from source, as `@parcha/agentrun-web/text-urls`.
-//
-// Every reading here is linear in its text: a page is hostile and up to a million characters.
+// The one reading of an http(s) URL written in text, shared by a fetched page's links and serve's timeline scrub and link
+// check. It imports nothing (the console compiles it from source), and every reading is linear in its text.
 
 /** What ends a URL written in text, for every reader: whitespace, a quote, an angle bracket, a backtick or a backslash. */
 const URL_ENDS = "\\s\"`<>\\\\";

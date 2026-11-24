@@ -1,17 +1,5 @@
-// web_fetch's core: a page read once a run, given in parts, by the providers a caller names in order (data: serve maps
-// its plane's resolution to one), with the guarded direct fetch behind them. A provider is asked only when its client is
-// given and live, and only once the public-host guard's own check passes the URL (its name resolved, every address
-// public): a private, loopback, link-local or intranet URL is never sent to a third party, and is answered with the
-// direct fetch's refusal, as it is with no provider at all. With no guard given nothing passes and nothing is fetched.
-// A page fetched directly where Parallel was given says why Parallel gave none (`parallel`): a picked provider that
-// fails is never a silent fallback. Keyless Firecrawl is a free service with the direct fetch behind it, by design, and
-// why it gave no page goes to the caller's log, never to the model.
-//
-// A page is read once a run and given in parts (page.ts): `offset` and `maxChars` name the part. The first call for a URL
-// reads the page, and the run keeps what it read by the URL asked for (Pages, the last PAGES_HELD pages), from the
-// moment the read starts: every later part of that URL, and a call made while it is read, comes from it, with no request
-// and, through Parallel, no bill. A read that fails is not kept. So a page's parts are always one read's, by one
-// provider.
+// web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
+// in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
 import { readDirect } from "./providers/direct.js";

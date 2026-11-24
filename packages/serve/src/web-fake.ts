@@ -1,16 +1,6 @@
-// A template eval's fake of the web tools for one case (template-eval.ts, `web:` in a case's case.yaml): its runs'
-// web_search and web_fetch answer from the case, never from the network, in the shapes and through the tool names the
-// model sees live. `unavailable`: every search fails as keyless search past its free limit does (web-run.ts
-// RATE_LIMITED), and every page fails as a fetch whose connection is refused does (the guarded direct fetch's own words,
-// @parcha/agentrun-web readDirect). A fixture: each search answered by the first answer whose `query` (a regular
-// expression, case-insensitive) matches the query, else its default; each page by the answer for exactly its URL, else
-// its default, read through the guarded direct fetch's own path (its URL, port and status checks, its parts). web_save's
-// files (web-save.ts) answer from the fixture's optional `save`: each file by the answer for exactly its URL, else its
-// default, else a refused connection, downloaded through web_save's own guarded path (every hop checked, the cap, the type
-// checked against the bytes); `unavailable` refuses every connection.
-//
-// Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
-// no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
+// A template eval's fake of the web tools for one case (`web:` in its case.yaml): searches, pages and web_save's files
+// answer from the fixture, in the tools' own shapes and through the guarded paths' own checks. Only the eval's own
+// in-process runner binds it (runner/beside.ts), so no other server's runs ever see a fake.
 import { GUARD, RATE_LIMITED } from "./web-run.js";
 import { clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, URL_MAX, webFetch, type WebPage } from "@parcha/agentrun-web";
 import type { Plane } from "./tool-plane.js";

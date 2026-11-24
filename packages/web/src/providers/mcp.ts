@@ -1,9 +1,5 @@
-// The MCP client the keyless web backends share (firecrawl-keyless.ts, exa-keyless.ts): one tool call is one exchange
-// over MCP's streamable HTTP transport. `initialize` (its session id, when the server names one), then
-// `notifications/initialized`, then `tools/call`, each request carrying the session id only where one came back. An
-// answer is JSON or an event stream's `data:` lines, and no more than 1 MiB of one is read, but for a call's answer given
-// its own bound: one past that bound is `over`, never parsed cut. No key and no header beyond
-// the transport's own is sent. What a refusal means (a free limit, a connection refused) is each backend's to read.
+// The MCP client the keyless backends share: one tool call is one exchange (initialize, notifications/initialized,
+// tools/call) over streamable HTTP. No key and no header beyond the transport's own is sent; an answer is read to a cap.
 import { retryAfterMs } from "../search.js";
 
 /** The MCP revision this client speaks; the server answers the one it takes. */

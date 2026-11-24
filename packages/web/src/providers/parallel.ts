@@ -1,13 +1,5 @@
-// Parallel, on the run's key: its Extract API for web_fetch (https://docs.parallel.ai/api-reference/extract-beta/extract,
-// about $0.001 a URL) and its Search API for web_search (POST https://api.parallel.ai/v1/search,
-// https://docs.parallel.ai/api-reference/search/search) in its fast mode, the one Parallel recommends for an agent's
-// tool calls (about 700 ms, $0.001 a search). One client a run (Extract): a 401 or 403 to either web tool stops both
-// for the rest of the run. No request is retried, and each stops at 60 s. Each is a paid request, sent through the
-// injected Pay (fees.ts) at Parallel's price: one the run's cap refuses answers its words (PaidRefused).
-// Parallel's extract has no offset (its full content always starts at the page's start), so it is asked once for the
-// most of a page web_fetch reads (PAGE_READ_MAX_CHARS) and one character more, so a page it cut there shows as going
-// on; the page's whole length is known only when Parallel gave less than it was asked for (a cut text can be longer, in
-// UTF-16 units, where Parallel counts code points).
+// Parallel on the run's key: Extract for web_fetch, Search for web_search. Every request is paid through the injected
+// Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";

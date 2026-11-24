@@ -1,18 +1,6 @@
-// web_search's core: the one shape every provider answers (`{provider, query, results: [{url, title, snippet,
-// published?}], text?}`, or `{error}`), its bounds, and the call that asks a run's backends in turn. The query is cut at
-// 200 characters, 1 to 25 results (10 by default), and a result's snippet (its excerpts joined, links reduced to their
-// text) is cut at 3,000 characters. An answer is held to SEARCH_MAX_CHARS, under the host's result bound: past it, its
-// least relevant results are left out, and `omitted` counts them; the model reads it followed by one line asking it to
-// cite the URLs it relies on (searchText).
-// A call asks its backends in turn (searchInTurn), each with a breaker of its own in the run (searchBreaker), which
-// reads that backend's failure. Out of quota (Parallel's 402, a model provider's 402, billing_error or
-// insufficient_quota, Firecrawl's spent daily limit or keyless use refused): that backend is not asked again in the run.
-// Rate-limited (keyless Exa's free limit, Firecrawl's, a 429, rate_limit_error, rate_limit_exceeded, too_many_requests):
-// it is not asked until the wait it named has passed (its Retry-After, in seconds or as an HTTP date, or 60 s when none
-// reaches here). A backend that fails, or that its breaker holds, passes the call to the next, so Firecrawl out of quota
-// is answered by Exa in the same call. With every backend off the call answers SEARCH_UNAVAILABLE; with each held and
-// one waiting, searchBusy for the shortest wait. A quota answer holds past any wait. The breakers are a run's (or one
-// call's: breakers), so another run starts with them closed.
+// web_search's one answer shape (Search), its bounds, and searchInTurn: a call asks its backends in order, each behind
+// a breaker of its own. A quota answer turns a backend off for the breaker's life; a rate limit holds it for the wait it
+// named (60 s when none, 15 min at most). A backend that fails or is held passes the call to the next.
 
 export const QUERY_MAX = 200;
 export const RESULTS_MAX = 25;
@@ -61,17 +49,10 @@ export function waitOf(retryAfter: string | number | undefined, nowMs: number): 
   return ms === undefined ? DEFAULT_WAIT_MS : Math.min(Math.max(ms, 0), MAX_WAIT_MS);
 }
 
-/** A run's breaker on its web_search, read at `now`. `held` is what a call answers unsent while it holds: SEARCH_UNAVAILABLE
- *  for the rest of the run once a quota answer came, or searchBusy with the seconds left of a rate limit's wait (rounded
- *  up, so at least 1); else undefined, and the call asks the provider. `read` takes a search's own answer and its limit:
- *  a quota answer turns search off for good, a rate limit holds search for its wait from now, or for the wait already
- *  open when that ends later (two calls in flight: a short wait never shrinks a long one), anything else leaves it as it
- *  is. A rate limit marked repeatIsQuota (keyless Exa's, naming no wait) after an earlier marked one whose wait has
- *  passed counts as a quota answer: off for the run, and that call answers SEARCH_UNAVAILABLE in place of its own words
- *  (Exa's "try again in a minute"). A quota answer keeps the call's own answer, which names no retry. One that comes
- *  while a wait is open (in flight with the first) only holds it, and a search that succeeds in between resets the
- *  count: once Exa's daily count is spent every keyless call is limited, so a success means it is not. A failed search
- *  that is no limit resets nothing. */
+/** A breaker on one backend, read at `now`. `held`: what a call answers unsent while it holds (SEARCH_UNAVAILABLE once
+ *  off, searchBusy for the seconds left of a wait). `read` takes a search and its limit: a quota answer turns it off; a
+ *  rate limit opens a wait, never shrinking one already open; a repeatIsQuota limit after an earlier one whose wait has
+ *  passed, with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
 export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number };
 /** `ms` of a wait as searchBusy's seconds: rounded up, at least 1. */
 const busyFor = (ms: number): Search => ({ error: searchBusy(Math.max(1, Math.ceil(ms / 1_000))) });
@@ -158,12 +139,9 @@ export const KEYLESS_SEARCH_MS = 60_000;
  *  (FIRECRAWL_MS). */
 export type SearchBounds = { searchMs?: number; firecrawlMs?: number };
 
-/** A call's search through `backends` in turn, each through its breaker (`breakerOf`, by its name) and all under one
- *  deadline, `boundMs` from the call's start or the caller's `signal`: the first that answers results is the answer,
- *  and one that fails or that its breaker holds passes the call to the next, unless the deadline is spent: no backend
- *  starts on a spent one. None left:
- *  SEARCH_UNAVAILABLE where every backend is off (a lone backend's own answer where it was asked, as its breaker reads
- *  it), else the last failure, else searchBusy for the shortest wait. `tries` collects each backend's turn (a receipt's). */
+/** A call's search through `backends` in turn, each behind its breaker, all under one deadline (`boundMs` or `signal`):
+ *  the first with results answers; none starts on a spent deadline. None left: SEARCH_UNAVAILABLE where every backend is
+ *  off (a lone backend's own answer where it was asked), else the last failure, else searchBusy for the shortest wait. */
 export async function searchInTurn(backends: readonly Backend[], breakerOf: (name: string) => Breaker, signal?: AbortSignal, boundMs: number = KEYLESS_SEARCH_MS, tries?: Try[]): Promise<Search> {
   const deadline = AbortSignal.any([AbortSignal.timeout(boundMs), ...(signal ? [signal] : [])]);
   let last: Search | undefined;

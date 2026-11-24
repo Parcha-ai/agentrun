@@ -1,19 +1,6 @@
-// web_search's keyless fallback, behind keyless Firecrawl (firecrawl-keyless.ts) or alone where it is picked: Exa's
-// public MCP endpoint (https://mcp.exa.ai/mcp, docs.exa.ai/reference/exa-mcp), which answers its `web_search_exa` tool
-// with no key at a free rate limit. One search is one MCP exchange through the shared client (mcp.ts callTool):
-// `tools/call` of web_search_exa with `{query, numResults}`, at most 8. Exa answers one text block, a result per section
-// split by `---` lines, each `Title:`, `URL:`, `Published:`, `Author:`, then `Highlights:` (or `Text:`) and its lines; a
-// `Note:` line may lead it. That text is read into the same Search every web_search answers. Past its free limit Exa
-// answers a 429 with Retry-After, or (when its search API refuses the keyless call) a 200 whose tool result is marked
-// isError and `ai.exa/rateLimited`, its text telling the user to put an API key in their MCP URL. Either is tried once
-// more, a new exchange after a jittered 1 to 3 s or the Retry-After Exa names when it is 5 s or less (past that, as with
-// its daily limit, the limit does not lift within a search, and it is not tried again); still limited, the search
-// answers RATE_LIMITED (or the caller's Words for it), in our words, never Exa's. Any other failure Exa answers is ours too, quoting only the first
-// sentence of Exa's (exaSaid). A 403 is a connection keyless use refuses (Exa takes it over IPv4, straight to the
-// endpoint), never tried again. Both say which limit they met (ExaLimited), for the caller's breaker. A search ends at
-// 60 s, its retry and wait included. No key is sent, ever. Exa is dialled over IPv4 alone (ipv4Fetch): its name looked
-// up for family 4 and the connection made to that address, so a host whose default route is IPv6 reaches it the one way
-// keyless use is taken.
+// Keyless Exa: web_search through Exa's public MCP endpoint, no key, at a free rate limit. A limited search is tried
+// once more after a short wait (a Retry-After of 5 s at most); still limited, it answers the caller's words, never Exa's.
+// Exa is dialled over IPv4 only, the one way it takes keyless use.
 import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import type { Agent } from "undici";

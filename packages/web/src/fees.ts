@@ -1,8 +1,5 @@
-// What a paid request to a provider costs here, and how the run's cap is asked: the Parallel prices and fee functions,
-// the Fee every paid request carries, and Pay, the injected hook a request is sent through. Serve passes its ledger's
-// paidRequest as Pay (the run's cap admits the request at its price before it is sent, and books it after); with none,
-// a request is sent unmetered and its fee is only recorded. A request the cap refuses is never sent: Pay throws
-// PaidRefused, whose message is the refusal.
+// Parallel's prices, the Fee a paid request carries, and Pay, the injected cap a paid request goes through. A request
+// the cap refuses is never sent: Pay throws PaidRefused, whose message is the refusal.
 
 /** The modes Parallel's Search API is priced in here; a request in any other mode (or naming none) has no price. */
 export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";

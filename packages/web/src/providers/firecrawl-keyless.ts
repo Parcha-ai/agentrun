@@ -1,22 +1,6 @@
-// Keyless Firecrawl: Firecrawl's public MCP endpoint (https://mcp.firecrawl.dev/v2/mcp, the console's preset too), which
-// answers its keyless tools with no key, under a free daily limit. The default backend of web_search (keyless Exa behind
-// it, web-search.ts) and of web_fetch (the guarded direct fetch behind it, web-fetch.ts). Each call is one MCP exchange
-// through the shared client (mcp.ts callTool), with no key, no Authorization and no header of our own:
-// `firecrawl_search` with `{query, limit}`, whose text block is JSON, `{success, data: {web: [{url, title, description,
-// position}]}}`; or `firecrawl_scrape` with `{url, formats: ["markdown"]}`, whose text block is JSON, `{markdown,
-// metadata: {title, sourceURL, statusCode, ...}}`. Those are read into the same Search every web_search answers, or the
-// same Read every web_fetch answers. web_fetch sends each URL it reads this way to Firecrawl, a third party; a URL the
-// public-host guard refuses (a private, loopback, link-local or intranet address) never goes (web-fetch.ts).
-//
-// Firecrawl refuses a keyless call it will not serve with a tool result marked isError whose payload (its
-// recoveryPayload: `{code, request_id, auth_mode: "keyless", message, signup_url?, retry_after_seconds?}`) comes as the
-// result's structuredContent or as JSON in its text: both are read, and only `code` is, never the message's words.
-// KEYLESS_QUOTA_EXHAUSTED (its daily limit), KEYLESS_ACCESS_NOT_AVAILABLE and KEYLESS_TOOL_NOT_AVAILABLE are a quota
-// answer: the run's breaker turns Firecrawl off for the rest of the run. KEYLESS_LIMIT_REACHED and an HTTP 429 are a
-// rate limit, with the wait it names (retry_after_seconds, Retry-After), which the breaker holds Firecrawl for. Firecrawl's
-// own words (a link to sign up) are never passed on: a call answers ours (a rate limit in the caller's Words, given). A call is not retried here (the backend behind
-// Firecrawl answers it in its place), and ends at FIRECRAWL_MS (30 s), inside any deadline its caller holds, so a
-// Firecrawl that hangs leaves the backend behind it the rest of a search's 60 s, or a fetch's direct read its own time.
+// Keyless Firecrawl: search and scrape through Firecrawl's public MCP endpoint, no key, under a free daily limit. A
+// refusal is read by its code alone (quota: off for the run; limit: held for its wait), never by Firecrawl's words. A
+// call is never retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
 import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP } from "../page.js";
 import { type Hit, type Limit, type Search, snippetOf, waitOf } from "../search.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";

@@ -1,10 +1,5 @@
-// A page as web_fetch answers it, and the reading every provider shares: a page is read once (a Read: its first
-// PAGE_READ_MAX_CHARS characters of text, and what is known of the rest), and its text comes in parts of that: about
-// max_chars characters from offset (a Part), counted as the answer holds them, so a part is within its bound whatever
-// the page holds (web_fetch keeps a run's reads, fetch.ts). A part that is not the whole page says so: truncated while
-// more follows, with the offset that reads on (next_offset), and the page's whole length (original_chars) where it is
-// known. Every field of a Page is held to a cap (its text, its title, its URL, its links), so one answer is too: serve's
-// host-bounds test holds it to the host's result bound.
+// A page as web_fetch answers it. A page is read once (a Read, at most PAGE_READ_MAX_CHARS characters of text) and
+// answered in parts (offset, maxChars). Every field of a Page is capped, so one answer stays under the host's bound.
 import { linksOf } from "./text-urls.js";
 
 /** On a page that was read, `chars`: the length of `text`, the part of the page's text this answer holds. `truncated`
