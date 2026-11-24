@@ -280,8 +280,11 @@ const RUN_GRAPH = {
     },
     workflow: { type: "object", description: "The revision's workflow definition." },
     graph: {
-      type: "object", required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
-      properties: { withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." } },
+      type: "object", additionalProperties: true, required: ["nodes", "edges"], description: "The DSL's workflowGraph of the definition: nodes { path, kind, label, via?, changeCheck } and edges { from, to, kind }.",
+      properties: {
+        nodes: { type: "array", items: { type: "object" } }, edges: { type: "array", items: { type: "object" } },
+        withheld: { const: true, description: "Present when the graph's words hold a saved secret split across two of them: the graph is then served with no nodes and no edges." },
+      },
     },
     nodes: {
       type: "object", description: "Each graph node's state, by its path.",

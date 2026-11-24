@@ -476,6 +476,7 @@ __all__ = [
     "GetRunGraphResponseDecisionsItem",
     "GetRunGraphResponseDecisionsItemImagesItem",
     "GetRunGraphResponseEffectsItem",
+    "GetRunGraphResponseGraph",
     "GetRunGraphResponseNodesValue",
     "GetRunGraphResponseNodesValueItemsItem",
     "GetRunGraphResponseRun",
@@ -7216,14 +7217,14 @@ class GetRunGraphResponse(TypedDict):
     read_at: str
     run: GetRunGraphResponseRun
     workflow: dict[str, Any]
-    graph: dict[str, Any]
+    graph: GetRunGraphResponseGraph
     nodes: dict[str, GetRunGraphResponseNodesValue]
     decisions: list[GetRunGraphResponseDecisionsItem]
     effects: list[GetRunGraphResponseEffectsItem]
     totals: GetRunGraphResponseTotals
 
 
-class GetRunGraphResponseRun(TypedDict):
+class _GetRunGraphResponseRunRequired(TypedDict):
     id: str
     agent: str
     revision: str
@@ -7231,6 +7232,19 @@ class GetRunGraphResponseRun(TypedDict):
     paused: bool
     startedAt: str
     endedAt: str | None
+
+
+class GetRunGraphResponseRun(_GetRunGraphResponseRunRequired, total=False):
+    withheld: Literal[True]
+
+
+class _GetRunGraphResponseGraphRequired(TypedDict):
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+
+
+class GetRunGraphResponseGraph(_GetRunGraphResponseGraphRequired, total=False):
+    withheld: Literal[True]
 
 
 class _GetRunGraphResponseNodesValueRequired(TypedDict):
