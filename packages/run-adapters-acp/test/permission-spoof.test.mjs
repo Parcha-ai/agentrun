@@ -159,6 +159,29 @@ test("on Cursor's tie, a native read titled `agentrun__write` is never announced
   assert.equal(ran, 0);
 });
 
+test("on Cursor's tie, a native read whose later update echoes the model's arguments at the top of its rawInput (providerIdentifier, toolName) is never named ours: its request titled `agentrun__write` asks the host's gate", async (t) => {
+  // Before: a later update named any call with no effects of its own whose rawInput said providerIdentifier "agentrun"
+  // and a toolName, so this read was tied and answered allow_once. A later update names only a call whose tool_call
+  // reported no input: Cursor's untitled `MCP: tool`, rawInput {}.
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const lateInput = { providerIdentifier: 'agentrun', toolName: 'write', path: 'notes.md' };
+  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: 'agentrun__write', input: { path: 'notes.md' }, lateInput }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
+  assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('write', () => ((ran += 1), 'wrote'))],
+    gate: async (call) => (asked.push(call), { deny: 'a read of its own' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_read', 'agentrun__write']], 'the host gate was asked about the read');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the read never ran');
+  assert.equal(ran, 0);
+});
+
 test("Goose's permission request carries no _meta: one for a call its tool_call announced as agentrun__write is tied only by its toolCallId, and with no tie on Goose's recipe it is never answered allow_once; the host's gate decides it", async (t) => {
   // Goose 1.59.2 puts _meta.goose.toolCall on the first tool_call alone (conversion.rs:65-91, built in
   // build_initial_tool_call); its session/request_permission's toolCall has none. The recipe's announces field names the
