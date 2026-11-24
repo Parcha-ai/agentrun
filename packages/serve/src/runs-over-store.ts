@@ -33,7 +33,7 @@ import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type HeldRefusal, type LaunchDisk, launchBody, readLaunchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
-import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
+import { keyTargetOf, type ModelKeyTarget, modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
@@ -510,8 +510,9 @@ export interface StartDeps {
 export interface StartOptions {
   readonly trigger?: RunTrigger;
   /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth and model_key, server.ts),
-   *  given the launch the start prepared, which the sealer may refuse (a model key where the run's model takes none). */
-  readonly sealed?: (runId: string, launch: RunLaunch, kind: Revision["kind"]) => Uint8Array | null;
+   *  given the launch the start prepared and where its model requests go (run-model-key.ts keyTargetOf), which the sealer
+   *  may refuse (a model key where the run's model takes none). */
+  readonly sealed?: (runId: string, launch: RunLaunch, target: ModelKeyTarget) => Uint8Array | null;
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
@@ -580,11 +581,12 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
-  keyedOrRefused(deps, launch, revision.kind, sealed);
+  const target = keyTargetOf(deps.planeEnv(), launch, revision);
+  keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
+    return await withHeldFiles(store, deps, runId, entry.agent.id, revision, launch, (launch) => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, expectedCurrent: entry.agent.currentRevision, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(firing ? { firing } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) }));
   } catch (error) {
     if (error instanceof RevisionMoved) throw new ApiError("precondition_failed", "The agent changed while this run was prepared. Start again using its current setup.");
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
@@ -599,9 +601,10 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
 
 /** A start with no launch secrets (`sealed`: a trigger's firing, a learning batch's row) whose route goes to the model
  *  gateway, on a server that holds no key for it (run-model-key.ts serverKeyMissing): 422 model_key_required, nothing
- *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. */
-function keyedOrRefused(deps: StartDeps, launch: RunLaunch, kind: Revision["kind"], sealed: StartOptions["sealed"]): void {
-  if (!sealed && serverKeyMissing(deps.planeEnv(), { kind, model: launch.model, native: Boolean(launch.native) })) throw modelKeyRequired(false);
+ *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. `target`:
+ *  the run's (run-model-key.ts keyTargetOf), a held run's whose model was refused at its create among them. */
+function keyedOrRefused(deps: StartDeps, target: ModelKeyTarget, sealed: StartOptions["sealed"]): void {
+  if (!sealed && serverKeyMissing(deps.planeEnv(), target)) throw modelKeyRequired(false);
 }
 
 /** Writes run `runId` of agent `agentId` with `write`, its files (launch.files) held for it first (StartDeps.files): a
@@ -758,7 +761,8 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision, ...(keys ? { keys } : {}) });
-  keyedOrRefused(deps, launch, (storedRevision ?? revision).kind as Revision["kind"], sealed);
+  const target = keyTargetOf(deps.planeEnv(), launch, storedRevision ?? revision);
+  keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
   try {
@@ -766,7 +770,7 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}), ...(revision.monidPin !== undefined ? { monidPin: revision.monidPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },
-      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, (storedRevision ?? revision).kind as Revision["kind"]) } : {}) },
+      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, target) } : {}) },
     }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) throw bodyConflict(external);

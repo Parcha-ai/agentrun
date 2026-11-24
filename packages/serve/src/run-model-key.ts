@@ -16,8 +16,13 @@
 // erased with that end, and revoked by its caller) or tied to no run, with no key to spend, is skipped or refused in words.
 import { ApiError, type InputIssue } from "./errors.js";
 import { handedSecretOf } from "./handed-secret.js";
-import { FAUX_ENV, GATEWAY_KEY_ENV, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
+import { PLAN_PROVIDER } from "./chatgpt-plan.js";
+import { DEFAULT_HARNESS } from "./harness.js";
+import { harnessOf } from "./harness-table.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV, hostModel, MODEL_PROVIDER, PROVIDER_KEYS } from "./model.js";
 import { gatewayBase } from "./provider.js";
+import type { RunLaunch } from "./run-launch.js";
+import { modelWire, WIRES } from "./wires.js";
 
 /** The longest model key a run takes: a header value, never a document. */
 export const MAX_MODEL_KEY_CHARS = 4096;
@@ -68,6 +73,28 @@ export const modelKeyRequired = (message: boolean): ApiError =>
 
 /** What of a run says where its model requests go: its kind and its launch's pinned model. */
 export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; readonly model?: { readonly provider: string; readonly modelId: string } | undefined; readonly native?: boolean };
+
+/** A created run's ModelKeyTarget: its revision's kind and its launch's pinned model. A held run its model kept from
+ *  running (run-launch.ts hold.refused) pins none, so it is keyed by its revision's model as named (heldKeyModel): a
+ *  gateway server with no key refuses it at its create as it refuses any run there. */
+export function keyTargetOf(env: NodeJS.ProcessEnv, launch: Pick<RunLaunch, "model" | "native" | "hold" | "harness">, revision: { readonly kind: string; readonly body: unknown }): ModelKeyTarget {
+  const named = revision.kind === "agentic" ? (revision.body as { model?: unknown } | null)?.model : undefined;
+  const model = launch.model ?? (launch.hold?.refused ? heldKeyModel(env, launch.harness ?? DEFAULT_HARNESS, typeof named === "string" ? named : undefined) : undefined);
+  return { kind: revision.kind, ...(model ? { model } : {}), native: Boolean(launch.native) };
+}
+
+/** The model a run on `harness` of `ref` (its revision's; none, the host's default for the harness) is keyed by, read
+ *  from the name alone (no model resolved, no key read): on the gateway, pi's model and a model on a wire the gateway
+ *  serves are the gateway's (model.ts chooseModel, wires.ts WIRES), a ChatGPT plan's excepted; else the provider the
+ *  name gives. None on a harness billed to its own plan, or for a name with no provider. */
+function heldKeyModel(env: NodeJS.ProcessEnv, harness: string, ref: string | undefined): ModelKeyTarget["model"] {
+  const wire = harnessOf(env, harness)?.facts?.wire;
+  if (wire && !modelWire(wire)) return undefined;
+  const named = ref ?? hostModel(env, "default", harness);
+  if (env.AGENT_MODEL_BASE_URL && !named?.startsWith(`${PLAN_PROVIDER}/`) && (!wire || WIRES[wire].gateway)) return { provider: MODEL_PROVIDER, modelId: named ?? "" };
+  const slash = named?.indexOf("/") ?? -1;
+  return named && slash > 0 ? { provider: named.slice(0, slash), modelId: named.slice(slash + 1) } : undefined;
+}
 
 /** The variables a run's model route reads its key from when that route goes to the model gateway (a workflow's model
  *  nodes, pi's and codex's models, a CLI harness on Anthropic's wire where ANTHROPIC_BASE_URL is the gateway's origin);

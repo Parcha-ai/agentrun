@@ -3923,8 +3923,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
   function startSeal(handed: Handed): StartOptions["sealed"] {
     if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined) return undefined;
-    return (runId, launch, kind) => {
-      const target = { kind, model: launch.model, native: Boolean(launch.native) };
+    return (runId, _launch, target) => {
       if (handed.model !== undefined) {
         const why = modelKeyMisfit(env, target);
         if (why) throw misfit(why);
@@ -3945,6 +3944,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  written. */
   async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+    // A held run its model kept from running takes no message (runs-over-store.ts message refuses it in its create's
+    // words): nothing to seal, and no key check answers before that refusal (its launch pins no model to check).
+    if (launch?.hold?.refused) return undefined;
     const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
     if (handed.model !== undefined) {
       const why = modelKeyMisfit(env, target);
