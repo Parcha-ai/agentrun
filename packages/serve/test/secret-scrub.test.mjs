@@ -2453,6 +2453,36 @@ test("XC: each SECRET_SHAPES kind is one rule that reads every shape of that kin
   }
 });
 
+test("XCI: pemBlocks reads a BEGIN line's end itself: a private-key span that is the whole block (redact/match.ts may read a block BEGIN to END) still cuts the same block as one that is its header alone", async () => {
+  const { lineBounds, pemBlocks } = await import("../dist/secret-rules.js");
+  const header = `-----${"BEGIN"} RSA PRIVATE KEY-----`;
+  const end = `-----${"END"} RSA PRIVATE KEY-----`;
+  const b64 = (n, seed) => R(n, seed).replace(/[^A-Za-z0-9]/g, "A");
+  const body = [b64(64, 31), b64(64, 32), b64(20, 33)];
+  const cases = [
+    // [text, the block's end as a whole-block span gives it]
+    [`k:\n${header}\n${body.join("\n")}\n${end}\ndone`, (t) => t.indexOf(end) + end.length],
+    [`k:\n${header}\n${body.join("\n")}\n\nprose after`, (t) => t.indexOf(body[2]) + body[2].length],
+    [`"k": "${header}\\n${body.join("\\n")}\\n${end}"`, (t) => t.indexOf(end) + end.length],
+    [[`     1→${header}`, `     2→${body[0]}`, `     3→${body[1]}`, `     4→${body[2]}`, `     5→${end}`].join("\n"), (t) => t.indexOf(end) + end.length],
+  ];
+  for (const [text, blockEnd] of cases) {
+    const start = text.indexOf(header);
+    const lines = lineBounds(text);
+    const byHeader = pemBlocks(text, [[start, start + header.length]], lines);
+    const byBlock = pemBlocks(text, [[start, blockEnd(text)]], lines);
+    assert.equal(byHeader.length, 1, `header span: ${text.slice(0, 60)}`);
+    assert.deepEqual(byBlock.map(({ start, end }) => [start, end]), byHeader.map(({ start, end }) => [start, end]), `whole-block span: ${text.slice(0, 60)}`);
+    for (const line of body) {
+      const at = text.indexOf(line);
+      assert.ok(byBlock[0].start <= at && at + line.length <= byBlock[0].end, `${line.slice(0, 12)} left in ${text.slice(0, 60)}`);
+    }
+  }
+  // A span whose start holds no BEGIN line this rule reads (a header past its bound) falls back to the span's end.
+  const long = `-----${"BEGIN"} ${"X".repeat(70)} PRIVATE KEY-----\n${body.join("\n")}`;
+  assert.deepEqual(pemBlocks(long, [[0, long.indexOf("\n")]], lineBounds(long)).map(({ start, end }) => [start, end]), [[0, long.length]]);
+});
+
 test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
   const pw = "Tq7Wm2Rk9Zx";
   await labelCutIn([

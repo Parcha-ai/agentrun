@@ -610,6 +610,9 @@ const slug = (name: string) => name.toLowerCase().replace(SLUG_OFF, "-").replace
 /** A PEM block's end, and the characters a block holds between its header and its end (base64, its own headers, line
  *  breaks as written or as a JSON string escapes them). */
 const PEM_END = /-----END[ A-Z0-9]{0,40}PRIVATE KEY[ A-Z0-9]{0,40}-----/g;
+/** A BEGIN line read where a private-key span starts, as SECRET_SHAPES' header (at most 64 characters each side of
+ *  "PRIVATE KEY"). pemBlocks takes a header's end from this, not from the span: a shape may span the whole block. */
+const PEM_BEGIN = /-----BEGIN[ A-Z0-9]{0,64}PRIVATE KEY[ A-Z0-9]{0,64}-----/y;
 const PEM_OFF = /[^A-Za-z0-9+/=:,. \t\r\n\\-]/g;
 const PEM_GAP = 16384;
 /** The fewest base64 characters a block's body holds to be a key (ruling V): a BEGIN line alone, or one a few
@@ -630,18 +633,22 @@ function trimmedTail(run: string): string {
   }
 }
 
-/** The private-key headers SECRET_SHAPES finds, each stretched to its block's end: the next END line, when only a block's
- *  characters stand between; else the base64 run after it. A header inside a block already cut is skipped, so a text
- *  of repeated headers is read once. */
-function pemBlocks(text: string, headers: readonly [number, number][], lines: LineBounds): Hit[] {
+/** The private-key spans SECRET_SHAPES finds, each read from its BEGIN line's end to its block's end: the next END line,
+ *  when only a block's characters stand between; else the base64 run after it. A span is its header alone or its whole
+ *  block (either shape of redact/match.ts), so the header's end is read at the span's start; with no BEGIN line there
+ *  this rule reads, the span's end stands. A header inside a block already cut is skipped, so a text of repeated
+ *  headers is read once. Exported for its test. */
+export function pemBlocks(text: string, spans: readonly (readonly [number, number])[], lines: LineBounds): Hit[] {
   const ends = [...text.matchAll(PEM_END)].map((m) => [m.index, m.index + m[0].length] as const);
   const out: Hit[] = [];
   let next = 0;
   let last = -1;
   // The first character no block holds at or after the header's end, kept while headers come before it: each found once.
   let off = -1;
-  for (const [start, headerEnd] of headers) {
+  for (const [start, spanEnd] of spans) {
     if (start < last) continue;
+    PEM_BEGIN.lastIndex = start;
+    const headerEnd = start + (PEM_BEGIN.exec(text)?.[0].length ?? spanEnd - start);
     while (next < ends.length && ends[next]![0] < headerEnd) next++;
     const end = ends[next];
     let stop: number | undefined;
@@ -2339,7 +2346,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
  *  and fails on an unbounded quantifier outside its allowlist, and fails on a module-level pattern missing here. */
 export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ESCAPE, CONTROLS, DRIVE_PATH, NOT_DIGIT, NOT_HEX, NOT_ALNUM, NOT_BASE64, PLACEHOLDER, ELLIPSIS, TYPE_WORD, GENERIC, PASCAL_TYPE, METAVAR, NAME_PARTS, LEADING_DASHES,
-  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
+  CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_SET_COMMAND, NPM_SET_AUTH, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, MYSQL_P, PASSWORD_FLAG, LOGIN_COMMAND, LOGIN_P,
   REDIS_COMMAND, REDIS_A, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_USER, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
