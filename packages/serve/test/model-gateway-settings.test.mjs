@@ -157,7 +157,7 @@ test("an address is refused by the one rule AGENT_MODEL_BASE_URL is, in its word
 
 // A run refuses more than the one address rule: Particle's API speaks Chat Completions, not a gateway's Responses
 // (provider.ts modelGatewayBase). The view's `problem`, which the console's first screen shows, is a run's refusal.
-test("the view's problem is the one a run meets: Particle's API, which the address rule takes, is refused in a run's words, set at the start or saved", { timeout: 60_000 }, async (t) => {
+test("the view's problem is the one a run meets: Particle's API, which the address rule takes, is refused in a run's words; a save refuses it too", { timeout: 60_000 }, async (t) => {
   const particle = "https://api.particle.ai/v1";
   withEnv(t, { AGENT_MODEL_BASE_URL: particle }, NAMES);
   const atStart = await serve(t, { faux: undefined });
@@ -168,12 +168,14 @@ test("the view's problem is the one a run meets: Particle's API, which the addre
   assert.deepEqual([models.source, models.ready, models.needs], ["gateway", false, "key"]);
   await atStart.stop();
 
+  // Saved from Settings, the same refusal is the save's 422 on base_url, in words for that field (not the variable's).
   withEnv(t, {}, NAMES);
   const { api } = await serve(t, { faux: undefined });
   const saved = await api("PUT", "/settings/model-gateway", { base_url: particle, models: { default: MODEL } });
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
-  assert.match(saved.body.problem ?? "", /Particle.*Chat Completions/, JSON.stringify(saved.body));
-  assert.match((await api("GET", "/settings/model-gateway")).body.problem ?? "", /Particle.*Chat Completions/);
+  assert.deepEqual([saved.status, saved.body.error?.fields?.[0]?.field], [422, "base_url"], JSON.stringify(saved.body));
+  assert.match(saved.body.error.fields[0].message, /Particle.*Chat Completions/);
+  assert.doesNotMatch(saved.body.error.fields[0].message, /AGENT_MODEL_BASE_URL/);
+  assert.equal((await api("GET", "/settings/model-gateway")).body.source, null, "nothing was saved");
 });
 
 test("the test follows no redirect: a gateway that redirects is said so, and the key never reaches the address it names", { timeout: 60_000 }, async (t) => {

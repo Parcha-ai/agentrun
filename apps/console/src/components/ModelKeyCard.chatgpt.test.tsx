@@ -1,8 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelKeyCard } from "./ModelKeyCard";
 import { NoModelBanner } from "./NoModelBanner";
@@ -10,6 +8,8 @@ import { buttonVariants } from "./ui/button";
 import { createClient } from "@/lib/client";
 import { servedKey } from "@/test/keys";
 import type { ChatGPTView, ToolKeys } from "@/lib/v2";
+// serve's model.ts as text, by this file's place (Vite's ?raw), for the one sentence the card shares with it.
+import serveModel from "../../../../packages/serve/src/model.ts?raw";
 
 // The first screen of a server with no key: "Continue with ChatGPT" first, beside "Add a key", and plainly what the plan
 // runs and what still needs a key; then what runs here, harness by harness. A server with no ChatGPT sign-in offers
@@ -63,7 +63,8 @@ async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>, gateway:
   await settle();
   const buttons = () => [...host.querySelectorAll("button")].map((b) => (b.textContent ?? "").trim());
   const click = async (label: RegExp) => { await act(async () => { [...host.querySelectorAll("button")].find((b) => label.test((b.textContent ?? "").trim()))!.click(); }); await settle(); };
-  return { host, buttons, click, calls };
+  const rerender = async (more: Partial<Parameters<typeof ModelKeyCard>[0]>) => { act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, needs: "key", ...props, ...more }))); await settle(); };
+  return { host, buttons, click, calls, rerender };
 }
 
 describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", () => {
@@ -118,6 +119,19 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     expect(card.host.textContent).not.toContain("where AgentRun starts (AGENT_MODEL_BASE_URL)");
   });
 
+  // An operator fixes a refused address where AgentRun starts and restarts it, naming no model: the page reads the
+  // capabilities again (a new `capsRead`) with the same props as before, and the card reads the gateway's view again.
+  it("reads the gateway's view again with each new read of the capabilities: a fixed address no longer shows refused", async () => {
+    const gateway: GatewayAnswer = { problem: REFUSED };
+    const card = await open({ source: "gateway", model: null, routePrefix: "agent-model", capsRead: {} }, gateway);
+    expect(card.host.textContent).toContain(REFUSED);
+    gateway.problem = null;
+    await card.rerender({ capsRead: {} });
+    expect(card.calls.filter((c) => c === "GET /v2/settings/model-gateway")).toHaveLength(2);
+    expect(card.host.textContent).not.toContain(REFUSED);
+    expect(card.host.textContent).toContain(GATEWAY_NAMES_NONE);
+  });
+
   // Until the gateway's view is read (or when the read fails), the card can't tell a refused address from no model named:
   // it says no agent runs yet and where the reason is, never one fix that may not be the one.
   it.each([["names a default", "agent-model/gpt-6-luna"], ["names no model", null]])("on a gateway server whose view can't be read (and that %s), says where the reason is, offering no fix", async (_, model) => {
@@ -130,8 +144,7 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
 
   // The card's fix for no model named is serve's own sentence (chooseModel's), so the two never drift apart.
   it("says serve's own words for a gateway that names no model", () => {
-    const serve = readFileSync(resolve(process.cwd(), "../../packages/serve/src/model.ts"), "utf8");
-    expect(serve).toContain(GATEWAY_NAMES_NONE.replace(/^N/, "n"));
+    expect(serveModel).toContain(GATEWAY_NAMES_NONE.replace(/^N/, "n"));
   });
 
   // A gateway server whose AGENT_MODEL is a plan model (chatgpt/<id>) runs an agent with no model on the plan, so signed
