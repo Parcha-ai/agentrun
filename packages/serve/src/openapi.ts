@@ -712,7 +712,7 @@ const MCP_SERVER_VIEW = {
       type: "object", additionalProperties: false, required: ["state", "checked_at"],
       properties: {
         state: { enum: ["connected", "pending", "expired", "none", "unknown"], description: "`connected`: an ACTIVE account of the server's Composio user under its auth config; `pending`: only one whose connect link is not finished; `expired`: only an expired one; `none`: no account (or only failed or inactive ones); `unknown`: Composio did not answer at the refresh." },
-        labels: { type: "array", items: { type: "string", maxLength: 120 }, maxItems: 10, description: "For `connected`: each connected account's own label, to tell which it is: its alias, else the name Composio shows for it, else the word id Composio gave it. Never its id, a token or the key." },
+        labels: { type: "array", items: { type: "string", maxLength: 120 }, maxItems: 10, description: "For `connected`: the label of each connected account Composio names as the server's user's, to tell which it is: its alias, else the name Composio shows for it, else the word id Composio gave it. Never its id, a token or the key." },
         checked_at: { type: "string", format: "date-time", description: "When a refresh read it at Composio." },
       },
       description: "A Composio server's account, as its last refresh (POST .../refresh) read it at Composio. Absent until a refresh reads it, after a save over the server as another user, toolkit or auth config, and on a server with no account of its own: a per-run one (each run names its own), one of a toolkit that needs no sign-in, or one saved before its save recorded what it stands on.",
@@ -3068,7 +3068,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/mcp-servers/composio/toolkits": {
     post: {
       operationId: "listComposioToolkits", tags: ["local"], summary: "List the toolkits Composio offers, for the console's toolkit picker; stores nothing",
-      description: COMPOSIO_NOTE + " Every page of Composio's toolkit list (at most 20 of 200), each toolkit's slug (as a save takes it: a slug a save would refuse is left out) and its name, sorted by name. 422 `input_invalid` when Composio refuses the key (field `api_key`), the key is missing, or the body has another field; 424 `upstream_failed` when Composio does not answer or fails. The owner's signed-in session alone: 403 forbidden to the API token, which never sends a key.",
+      description: COMPOSIO_NOTE + " Every page of Composio's toolkit list (at most 20 of 200), each toolkit's slug (as a save takes it: a slug a save would refuse is left out) and its name, sorted by name. 422 `input_invalid` when Composio refuses the key (field `api_key`), the key is missing, or the body has another field; 424 `upstream_failed` when Composio does not answer or fails, or the whole list takes over 30 s. The owner's signed-in session alone: 403 forbidden to the API token, which never sends a key.",
       requestBody: { required: true, content: { "application/json": { schema: closed({ api_key: COMPOSIO_KEY }) } } },
       responses: { "200": json(closed({ toolkits: { type: "array", items: closed({ slug: COMPOSIO_TOOLKIT, name: { type: "string", description: "Its name as Composio shows it (the slug when it gives none)." } }) } }), "The toolkits Composio offers."), ...errors(400, 401, 403, 409, 415, 422, 429, 500), ...MCP_FAILED },
       "x-agentrun-serve": "mcpservers/1",

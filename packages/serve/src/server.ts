@@ -1506,6 +1506,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
+  if (options.composioControl) mcpServers.composioControl = options.composioControl;
   mcpServers.standIns = options.mcpStandIns === true;
   // The saved MCP servers' metadata (their addresses and the tools they list), a snapshot the checks read in step (which
   // servers are saved, a workflow's grants, the template apply): the server is the one writer of these rows (a save,
@@ -5939,7 +5940,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
-        const refreshed = await mcpServers.refresh(id, stopping.signal, options.composioControl ?? {});
+        const refreshed = await mcpServers.refresh(id, stopping.signal);
         await refreshMcpMeta();
         return send(res, 200, refreshed);
       }
