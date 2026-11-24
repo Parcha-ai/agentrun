@@ -1,5 +1,6 @@
-// web_search asks an objective (a goal in a sentence) and a few short keyword queries; query alone is deprecated and
-// still searched, as the objective and its one query. Parallel is told the run's model as client_model, a bare id, only
+// web_search asks an objective (a goal in a sentence) and a few short keyword queries; query is deprecated: a model's
+// call must give the objective (pi checks it against the schema), and a call node's query alone is still searched, as the
+// objective and its one query. Parallel is told the run's model as client_model, a bare id, only
 // where the run names one, and no session id (no tool call carries the run's). web_fetch takes an objective, passed to
 // the run's Web. Parallel is the tests' fake (fixtures/faux-parallel-bodies.mjs, which keeps each request's body): no
 // socket leaves this machine and no real key is used.
@@ -49,13 +50,13 @@ test("web_fetch's schema takes an objective beside the url", () => {
   assert.equal(properties.objective?.type, "string", "an objective may be given");
 });
 
-test("an agent's search sends Parallel the objective and the queries; a query alone is still searched, as the objective and its one query", async () => {
+test("an agent's search sends Parallel the objective and the queries; a call node's query alone is still searched, as the objective and its one query", async () => {
   searches();
   const both = await asked(envOf(), { objective: OBJECTIVE, queries: ["widgets inc delaware", "widgets file number"], n: 3 });
   assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [[OBJECTIVE, ["widgets inc delaware", "widgets file number"]]], "the objective and the queries, each in its own field");
   assert.deepEqual([both.objective, both.queries, "query" in both], [OBJECTIVE, ["widgets inc delaware", "widgets file number"], false], "the answer carries them, and no query");
-  const alone = await asked(envOf(), { query: "widgets delaware" });
-  assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [["widgets delaware", ["widgets delaware"]]], "a query alone is the objective and the one query");
+  const alone = await TOOLS.web_search.effect({ query: "widgets delaware" }, { env: envOf(), ledger: { call: "node-0", paid: await toolLedger() } });
+  assert.deepEqual(searches().map((body) => [body.objective, body.search_queries]), [["widgets delaware", ["widgets delaware"]]], "a call node's query alone is the objective and the one query");
   assert.deepEqual([alone.objective, alone.queries], ["widgets delaware", ["widgets delaware"]], "and the answer says so");
   const node = await TOOLS.web_search.effect({ objective: OBJECTIVE, queries: ["widgets delaware"] }, { env: envOf(), ledger: { call: "node-1", paid: await toolLedger() } });
   assert.deepEqual([node.objective, node.queries], [OBJECTIVE, ["widgets delaware"]], "a call node's search takes the same shape");

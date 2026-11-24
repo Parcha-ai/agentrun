@@ -43,7 +43,7 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
 - A search asks `{ objective, queries?, n? }` (`searchArgs`): the objective says in a sentence what the search is for
   (trimmed, at most `OBJECTIVE_MAX`, 1,000 characters), the queries are up to `QUERIES_MAX` (5) short keyword searches
   (each trimmed and cut at `QUERY_MAX`, 200, blanks and repeats dropped), and with none the objective's first 200
-  characters are the one query. A string, or `{ query }` alone (deprecated), is the objective and the one query. An
+  characters are the one query. A string, or `{ query }` alone (deprecated), is the objective and the one query; a model's tool call, checked against `WEB_SEARCH_PARAMETERS`, must give the objective. An
   empty objective is `{ error: "web_search needs an objective" }`, and no provider is asked. Each provider is sent what
   it takes: Parallel the objective and the queries (`objective`, `search_queries`, mode `fast`, plus `client_model` and
   `session_id` when `client` names them); Exa, keyed and keyless, the objective as its query; Firecrawl, keyed and
