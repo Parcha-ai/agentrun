@@ -10,6 +10,8 @@
 //          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
 //          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
 //          `agentrun: <tool, its underscores as spaces>`);
+//   titleSummary: with style "goose-1.59", the summary Goose 1.59.2 writes after such a title for a call whose
+//                 arguments it summarizes (a path): `agentrun: <tool> · <titleSummary>`;
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
@@ -100,7 +102,7 @@ const pgid = (() => {
   }
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
-const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}` : `agentrun__${tool}`);
+const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
@@ -315,7 +317,8 @@ async function takeTurn(client, session, prompt, signal) {
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
-      await notify({ sessionUpdate: "tool_call", ...update });
+      // {announce: false}: a permission request for a call no tool_call announced.
+      if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);

@@ -44,10 +44,12 @@ one when the last has run out) until the password is set, the console after. It 
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
-as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
-AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` writes those variables into the
-service and restarts it (`none` alone: without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. The
+Ollama on this machine needs nothing here: the server lists its models itself. For an Ollama off its default address,
+`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than 65,536. For a local model
+behind a gateway, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare
+--env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` does the same (`none` alone:
+without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
 switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
 no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so

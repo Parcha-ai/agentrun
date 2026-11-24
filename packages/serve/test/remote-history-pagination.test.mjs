@@ -87,7 +87,7 @@ for(const runtime of ['claude-code','codex']) {
   assert.deepEqual(page.sessions,[]);assert.ok(page.skipped.some(s=>/Subagent history/.test(s.reason)));
  });
 
- test(`${runtime}: split metadata, resumed copies and the EOF filename fallback retain session identity`,async t=>{
+ test(`${runtime}: split metadata, resumed copies and the EOF filename fallback keep each session's identity`,async t=>{
   const f=await fixture(t,runtime),file=f.make(f.home,f.project,1,{prompt:'Known selected prompt.'}),before=statSync(file);
   const rows=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   if(runtime==='claude-code')delete rows[0].sessionId;
@@ -103,9 +103,13 @@ for(const runtime of ['claude-code','codex']) {
    const row=JSON.parse(line);if(runtime==='claude-code')delete row.sessionId;else if(row.type==='session_meta')delete row.payload.id;return row;
   });
   writeFileSync(fallback,noIds.map(row=>JSON.stringify(row)).join('\n')+'\n');utimesSync(fallback,fallbackStat.atime,fallbackStat.mtime);
-  const preview=await exportRemoteHistory(f.target,{...f.options,preview:true});assert.equal(preview.total,2);
+  // A Codex rollout resumed in a new file keeps its thread's id: one session. Claude Code names each session's file for
+  // its id, and a resumed session's new file restamps the records it copies with its own: the file's name is the id, so a
+  // file under another name is another session, whatever ids its records carry.
+  const ids=[sessionId(1),basename(fallback,'.jsonl'),...(runtime==='claude-code'?[basename(copy,'.jsonl')]:[])].sort();
+  const preview=await exportRemoteHistory(f.target,{...f.options,preview:true});assert.equal(preview.total,ids.length);
   const page=await exportRemoteHistory(f.target,{...f.options,inventory:preview.inventory});
-  assert.deepEqual(page.skipped,[]);assert.deepEqual(page.sessions.map(s=>s.id).sort(),[sessionId(1),basename(fallback,'.jsonl')].sort());
+  assert.deepEqual(page.skipped,[]);assert.deepEqual(page.sessions.map(s=>s.id).sort(),ids);
   assert.equal(page.sessions.find(s=>s.id===sessionId(1)).firstPrompt,'Known selected prompt.');
  });
 }

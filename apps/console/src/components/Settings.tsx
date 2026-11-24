@@ -1,8 +1,9 @@
 import { useId, type ReactNode } from "react";
 import { tabClass, tabListClass } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
-export type SettingsPage = "keys" | "harness-keys" | "tools" | "mcp" | "github" | "email" | "computers" | "workspace" | "webhook" | "slack";
-export const SETTINGS_PAGES: { id: SettingsPage; label: string }[] = [{ id: "keys", label: "API Keys" }, { id: "harness-keys", label: "Harness keys" }, { id: "tools", label: "Tools" }, { id: "mcp", label: "MCP servers" }, { id: "github", label: "GitHub" }, { id: "email", label: "Email" }, { id: "computers", label: "Computers" }, { id: "workspace", label: "Workspace" }, { id: "webhook", label: "Webhook" }, { id: "slack", label: "Slack" }];
+export type SettingsPage = "keys" | "harness-keys" | "tools" | "mcp" | "github" | "email" | "computers" | "workspace" | "webhook" | "slack" | "demo";
+export const SETTINGS_PAGES: { id: SettingsPage; label: string }[] = [{ id: "keys", label: "API Keys" }, { id: "harness-keys", label: "Harness keys" }, { id: "tools", label: "Tools" }, { id: "mcp", label: "MCP servers" }, { id: "github", label: "GitHub" }, { id: "email", label: "Email" }, { id: "computers", label: "Computers" }, { id: "workspace", label: "Workspace" }, { id: "webhook", label: "Webhook" }, { id: "slack", label: "Slack" }, { id: "demo", label: "Demo" }];
 
 /** A Settings page: what the page is (its title and its sentence) above, then its sections, one under another, each a
  *  `SettingsSection`. Anything else in the body (a notice, an error) stands above the sections, full width. */
@@ -29,15 +30,16 @@ export function SettingsSection({ title, titleId, note, aside, label, children }
   );
 }
 
-/** Settings: a tab per page this server offers (`offered`), above the page. One page alone needs no tabs. */
+/** Settings: a tab per page this server offers (`offered`), above the page. One page alone needs no tabs. The row is the
+ *  page's top bar, so it is 48px and its bottom edge meets the edge under the navigation's logo row (Shell, h-12). */
 export function Settings({ active, offered, children }: { active: SettingsPage; offered: SettingsPage[]; children: ReactNode }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {offered.length > 1 && (
-        <nav aria-label="Settings" className={tabListClass}>
+        <nav aria-label="Settings" className={cn(tabListClass, "min-h-12")}>
           {SETTINGS_PAGES.filter((p) => offered.includes(p.id)).map((p) => (
             <a key={p.id} href={`#/settings/${p.id}`} aria-current={active === p.id ? "page" : undefined}
-              className={tabClass(active === p.id)}>{p.label}</a>
+              className={cn(tabClass(active === p.id), "flex items-center py-0 max-sm:py-0")}>{p.label}</a>
           ))}
         </nav>
       )}

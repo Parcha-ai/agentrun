@@ -1,8 +1,9 @@
 // What the npx command's tests share: their temporary directories, removed once the file's tests are done; a scratch HOME
-// with nothing of this machine's address, keys or model; the CLI in a child process; and a server started as the npx
-// command starts it.
+// with nothing of this machine's address, keys or model; the CLI in a child process; a server started as the npx
+// command starts it; and an address where no server answers.
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after } from "node:test";
@@ -11,6 +12,37 @@ const BIN = new URL("../bin/agentrun.mjs", import.meta.url).pathname;
 const SERVE = new URL("../../serve/dist/cli.js", import.meta.url).pathname;
 /** What a test's CLI never takes from the environment the tests run in: an address, a key, a model or boxes. */
 const DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_CLOUD_URL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES"];
+// No test asks an Ollama this machine may run: serve's switch (ollama-provider.ts OLLAMA_OFF_ENV), read from the process's
+// own environment, which every server and command a test starts with process.env inherits.
+process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+
+/** An address where no server answers: a listener of the test's own, open until the test ends, that reads each request
+ *  and closes the connection without a response, so Node's fetch fails with the cause UND_ERR_SOCKET ("other side
+ *  closed"). It reads the request first: a connection closed before the request reaches it is reset when the request
+ *  lands, and fetch then fails ECONNRESET instead, now and then, most often under load. `connections()` counts them. A CLI
+ *  that may connect runs beside it, never in a blocking spawnSync. `{ base, connections }`, `base` ending in /v2. */
+export async function dropping(t) {
+  let connections = 0;
+  const open = new Set();
+  const server = createServer((socket) => {
+    connections += 1;
+    open.add(socket);
+    socket.on("close", () => open.delete(socket));
+    let read = "";
+    socket.on("error", () => {});
+    socket.on("data", (chunk) => {
+      read += chunk;
+      if (read.includes("\r\n\r\n")) socket.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // One still open at the end (a request never finished) would hold close: it goes.
+  t.after(() => new Promise((resolve) => {
+    for (const socket of open) socket.destroy();
+    server.close(resolve);
+  }));
+  return { base: `http://127.0.0.1:${server.address().port}/v2`, connections: () => connections };
+}
 
 /** Directories to remove at the file's end. node:test runs a test's after-hooks in the order they were added, so a
  *  removal added as a directory is made would run before the stop of a command or server started in it afterwards,

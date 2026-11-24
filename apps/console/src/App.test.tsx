@@ -25,6 +25,10 @@ describe("route", () => {
     expect(route("#/runs/r1")).toEqual({ section: "runs", run: "r1" });
     expect(route("#/runs?agent=calc")).toEqual({ section: "runs", runsOf: "calc" });
   });
+  it("opens a race by its label under Runs", () => {
+    expect(route("#/races/bench-1")).toEqual({ section: "runs", race: "bench-1" });
+    expect(route("#/races/fix%20the%20test")).toEqual({ section: "runs", race: "fix the test" });
+  });
   it("keeps the selected agent in a Playground link", () => {
     expect(route("#/playground?agent=agent%20two")).toEqual({ section: "playground", playgroundAgent: "agent two" });
     expect(route("#/playground")).toEqual({ section: "playground" });
@@ -85,6 +89,33 @@ let root: ReturnType<typeof createRoot> | undefined;
 // are unstubbed after each).
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
+
+describe("App, a race's page", () => {
+  it("reads the race's own runs alone: no runs list and no observations, which nobody sees there", async () => {
+    const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      const at = new URL(url, "http://serve.test");
+      asked.push(`${at.pathname}${at.search}`);
+      if (at.pathname === "/v2/auth/session") return json(200, { password_set: true, signed_in: true, secrets_writable: true });
+      if (at.pathname === "/v2/capabilities") return json(200, { models: { source: "providers", ready: true }, harnesses: [], features: { messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
+      if (at.pathname === "/v2/runs" || at.pathname === "/v2/agents") return json(200, { runs: [], agents: [], next_cursor: null });
+      if (at.pathname === "/v2/observations") return json(200, { sessions: [], days: 30 });
+      return json(404, { error: { code: "not_found", message: at.pathname, retryable: false } });
+    });
+    location.hash = "#/races/bench";
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const end = Date.now() + 4000;
+    while (!host.textContent?.includes("No run carries the label") && Date.now() < end) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
+    expect(host.textContent).toContain("No run carries the label");
+    const runs = asked.filter((a) => a.startsWith("/v2/runs"));
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every((a) => new URLSearchParams(a.split("?")[1] ?? "").get("label") === "race:bench"), runs.join(" ")).toBe(true);
+    expect(asked.filter((a) => a.startsWith("/v2/observations"))).toEqual([]);
+  });
+});
 
 describe("App, Mission Control when the stats can't be read", () => {
   it("shows the error, not Loading for ever", async () => {
@@ -219,7 +250,7 @@ describe("App, Settings", () => {
   it("#/settings/tools opens Tools, with a tab for each settings page, when the server offers a choice of provider", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/tools", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null]]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null], ["Demo", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
   });
@@ -243,7 +274,7 @@ describe("App, Settings", () => {
     for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
     expect(location.hash).toBe("#/settings/tools");
     expect(page.host.querySelector("h1")?.textContent).toBe("Tools");
-    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim())).toEqual(["Tools", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   // Secrets (Miguel, 11-09): an accounts-off loopback server's console session counts as the owner's, so the server says
@@ -280,26 +311,26 @@ describe("App, Settings", () => {
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     expect(page.asked).toContain("GET /v2/settings/webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has a tab for each settings page on a server with tool keys, a choice of provider and the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, webhooks: { routes: true, events: ["run.needs_input", "run.ended"], signing: "standard-webhooks/v1", at_rest: "sealed" } }, "#/settings/webhook", choiceTools);
     expect(page.host.querySelector("h1")?.textContent).toBe("Webhook");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["Tools", "#/settings/tools", null], ["MCP servers", "#/settings/mcp", null], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Webhook", "#/settings/webhook", "page"], ["Demo", "#/settings/demo", null]]);
   });
 
   it("has no Webhook tab on a server without the webhook routes", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent?.trim());
-    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace"]);
+    expect(tabs).toEqual(["API Keys", "MCP servers", "GitHub", "Email", "Computers", "Workspace", "Demo"]);
   });
 
   it("lists MCP servers in Settings on every server, its capabilities naming no MCP routes, and opens the page there", async () => {
     const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, mcp_client: { transports: ["streamable-http"], auth: ["none", "bearer"], at_rest: "sealed", harnesses: ["pi"] } }, "#/settings/mcp");
     const tabs = [...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent?.trim(), a.getAttribute("href"), a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null]]);
+    expect(tabs).toEqual([["API Keys", "#/settings/keys", null], ["MCP servers", "#/settings/mcp", "page"], ["GitHub", "#/settings/github", null], ["Email", "#/settings/email", null], ["Computers", "#/settings/computers", null], ["Workspace", "#/settings/workspace", null], ["Demo", "#/settings/demo", null]]);
     expect(page.asked).toContain("GET /v2/settings/mcp-servers");
   });
 
