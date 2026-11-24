@@ -2092,6 +2092,55 @@ test("two runners of a hosted provider given one --run, on one account: the firs
 	await nothingLeft(fake, "after both runners' ends");
 });
 
+test("two runners of a hosted provider given one --run, each with a shared computer: each makes its own, and neither finds, uses or deletes the other's", async () => {
+	const { runConformance } = await import("../dist/conformance/index.js");
+	const fake = fakeHost();
+	const providerOf = () => new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const run = "0123456789ab";
+	const up = deferred();
+	const firstEnded = deferred();
+	const results = (report) => report.results.map(({ id, status, reason }) => `${id} ${status}${reason ? `: ${reason}` : ""}`);
+	// Both runners run a case on the run's shared computer (no computer named: "shared"), whose create request each names.
+	const second = runConformance(providerOf(), {
+		image: "img",
+		run,
+		cleanupTimeoutMs: 2_000,
+		caseTimeoutMs: 10_000,
+		cases: [
+			{
+				id: "provider.outlives",
+				group: "provider",
+				level: "core",
+				needs: [],
+				run: async (t) => {
+					up.resolve(t.ref.name);
+					await firstEnded.promise;
+					t.assert(
+						fake.live().some((m) => m.labels[NAME] === t.ref.name),
+						"the second runner's shared computer is still there after the first runner's end",
+					);
+				},
+			},
+		],
+	});
+	const secondName = await up.promise;
+	let firstName;
+	const first = await runConformance(providerOf(), {
+		image: "img",
+		run,
+		cleanupTimeoutMs: 2_000,
+		caseTimeoutMs: 10_000,
+		cases: [{ id: "provider.mine", group: "provider", level: "core", needs: [], run: async (t) => (firstName = t.ref.name) }],
+	});
+	firstEnded.resolve();
+	const report = await second;
+	assert.deepEqual(results(first), ["provider.mine pass"]);
+	assert.notEqual(firstName, secondName, "each runner's shared computer is its own, not the other's found by its request");
+	assert.deepEqual(results(report), ["provider.outlives pass"]);
+	assert.deepEqual([first.cleanup.errors, report.cleanup.errors], [[], []]);
+	await nothingLeft(fake, "after both runners' ends");
+});
+
 test("a host's get that answers no machine, or throws not_found (its errorCode's or a HostError's), is a machine that is gone", async () => {
 	for (const style of ["throw", "HostError", "undefined"]) {
 		const { provider, fake } = setup({}, { starting: 2 });
