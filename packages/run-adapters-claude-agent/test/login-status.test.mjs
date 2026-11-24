@@ -450,6 +450,56 @@ test("what status checks killed mid-way left (a SIGKILL runs no finally) is swep
   assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: Date.now() + 31_000 }), [fresh]);
 });
 
+/** A status folder `name` in `dir` as a check leaves it (its account copy), with `ends` (a function of the `ends` file's
+ *  path that writes it) and its mtime set to `mtime` after both. */
+function statusFolder(dir, name, ends, mtime) {
+  const path = join(dir, name);
+  mkdirSync(join(path, 'config'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, 'config', '.claude.json'), '{}\n', { mode: 0o600 });
+  ends(join(path, 'ends'));
+  utimesSync(path, mtime, mtime);
+  return path;
+}
+
+// Every status check writes its end in its folder as it starts, so this rule, not the mtime one, is what removes nearly
+// every folder a killed server left. The sweep's margin past that end is 15 s (a check's own limit).
+test("a status folder whose check wrote its end is swept once that end is more than 15 s past, whatever its mtime: 16 s past is swept though changed just now, 14 s past stays though changed long ago, and goes 2 s later", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  const now = Date.now();
+  const at = (ms) => (file) => writeFileSync(file, String(ms), { mode: 0o600, flag: 'wx' });
+  // A fresh mtime, which the mtime rule would keep: only the end can take it.
+  const ended = statusFolder(dir, 'agentrun-claude-status-Ends16', at(now - 16_000), new Date(now));
+  // An mtime 10 minutes old, which the mtime rule would take: only the end keeps it.
+  const ending = statusFolder(dir, 'agentrun-claude-status-Ends14', at(now - 14_000), new Date(now - 10 * 60_000));
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [ended], 'the folder whose check ended 16 s ago is swept, and the one 14 s past its end is not');
+  assert.equal(existsSync(ended), false, 'the ended check\'s folder and the copy in it are gone');
+  assert.ok(existsSync(join(ending, 'config', '.claude.json')), 'the folder 14 s past its end stays, copy and all');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 2_000 }), [ending], '16 s past its end, the other is swept too');
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  const now = Date.now();
+  // An hour on: a check reading this end would keep its folder through both sweeps below.
+  const later = String(now + 60 * 60_000);
+  const target = join(dir, 'an-end');
+  writeFileSync(target, later);
+  const unreadable = [
+    ['agentrun-claude-status-Word01', (file) => writeFileSync(file, 'soon', { mode: 0o600 })],
+    ['agentrun-claude-status-Big002', (file) => writeFileSync(file, `${' '.repeat(30)}${later}`, { mode: 0o600 })],
+    ['agentrun-claude-status-Lnk003', (file) => symlinkSync(target, file)],
+    ['agentrun-claude-status-Dir004', (file) => mkdirSync(file)],
+  ];
+  // Changed 20 s ago: inside twice a check's limit (2 x 15 s) at `now`, past it 11 s later.
+  const folders = unreadable.map(([name, ends]) => statusFolder(dir, name, ends, new Date(now - 20_000))).sort();
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [], 'a folder changed 20 s ago stays whatever its end file holds');
+  for (const folder of folders) assert.ok(existsSync(folder), `${folder} stays`);
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 11_000 }), folders, 'changed 31 s before the sweep, every one is swept: none of their ends was read');
+  for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
+  assert.ok(existsSync(target), 'the file the link named is not touched');
+});
+
 /** A promise that rejects in `what`'s words after `ms`, and the clear() of its timer, so a regression fails the test at
  *  its own bound rather than hanging it. */
 function within(ms, what) {
