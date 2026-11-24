@@ -2,6 +2,7 @@
 // false, never a throw. With no guard nothing is fetched.
 import { type Guard, type GuardOptions, isRefused } from "../guard.js";
 import { clip, linksWithin, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, TITLE_CAP, textOf, type Unread, URL_MAX } from "../page.js";
+import { defineProvider, type ProviderRun } from "../provider.js";
 import { linksOf } from "../text-urls.js";
 
 /** The page at `url`, read once through `guard`'s fetch (an HTML page through its reader), or why it was not. `options`
@@ -43,3 +44,9 @@ export async function fetchPage(url: unknown, { guard, offset, maxChars, ...opti
   const read = await readDirect(url, guard, options);
   return read.ok ? partOfRead(read, { offset, maxChars }) : read;
 }
+
+/** The guarded direct fetch, web_fetch only: it ends the order, answering whatever it reads (a refusal or a failure is
+ *  its page). With no guard nothing is fetched. */
+export const direct = defineProvider({ id: "direct", label: "the guarded direct fetch", ops: ["fetch"], fetch: { ends: true } }, ({ guard }): ProviderRun => ({
+  read: (url, options) => readDirect(url, guard, options),
+}));

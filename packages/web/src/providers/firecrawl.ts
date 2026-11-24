@@ -4,6 +4,7 @@
 // for the run; a 403 refuses one request only (Firecrawl answers it for a page, as for a prompt injection it found).
 import { firecrawlFeeOf, type Pay } from "../fees.js";
 import { clip, markdownRead, type Read, TITLE_CAP } from "../page.js";
+import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { type Hit, type Searched, searchArgs, snippetOf } from "../search.js";
 import { type Check, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, matching, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
@@ -94,3 +95,17 @@ export async function firecrawlRead(url: string, client: Keyed | null, settings:
   const title = typeof meta.title === "string" ? meta.title : Array.isArray(meta.title) && typeof meta.title[0] === "string" ? meta.title[0] : "";
   return markdownRead(final, title, data.markdown, true, status);
 }
+
+/** Firecrawl on the run's key, both tools on one client, as keyed Exa is. */
+export const firecrawl = defineProvider(
+  { id: "firecrawl", label: "Firecrawl", key: { env: "FIRECRAWL_API_KEY" }, ops: ["search", "fetch"], fetch: { miss: { log: "web_fetch_provider_failed", when: "failed" } }, settings: settingsOf<FirecrawlSettings>(firecrawlSettingsProblems) },
+  ({ key, send, pay, endpoint, settings }): ProviderRun => {
+    const asked = (settings ?? {}) as FirecrawlSettings;
+    const client = key === undefined ? null : firecrawlClient(key, send ?? fetch, pay, endpoint ?? FIRECRAWL_API_URL);
+    return {
+      search: (ask, _deadline, signal) => firecrawlSearched(ask, client, asked, signal),
+      read: (url, { signal }) => firecrawlRead(url as string, client, asked, signal),
+      unready: () => (client && !client.live() ? "not tried: refused earlier in this run" : undefined),
+    };
+  },
+);

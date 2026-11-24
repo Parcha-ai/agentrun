@@ -3,7 +3,8 @@
 // plain-text answer Firecrawl gives for it (off until 00:00 UTC). Firecrawl's words are never passed on. A call is never
 // retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
 import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP } from "../page.js";
-import { type Hit, type Limit, offUntil, type Search, snippetOf, waitOf } from "../search.js";
+import { defineProvider, type ProviderRun, type Reader, readerOf } from "../provider.js";
+import { type Hit, type Limit, type Search, searchBreaker, snippetOf } from "../search.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
 export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
@@ -135,27 +136,26 @@ export async function firecrawlScrape(url: string, options: FirecrawlOptions = {
   }, options);
 }
 
-/** keyless Firecrawl's scrape for one run's web_fetch, with the run's breaker on it: `live` is false while a limit
- *  keeps it off (offUntil: a quota until the reset it names, else for the rest of the run; a wait past 15 minutes until
- *  it ends) and while a shorter rate limit's wait holds (waitOf: the wait Firecrawl named, else 60 s); `read` is one
- *  scrape, the page or, for any failure, why there is none (the caller then fetches directly). `now` is the breaker's
- *  clock (a test's). */
-export type KeylessFetch = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Read | string> };
-export function firecrawlFetch(options: Omit<FirecrawlOptions, "signal" | "now"> = {}, now: () => number = Date.now): KeylessFetch {
-  let offTill = 0;
-  let until = 0;
-  return {
-    live: () => now() >= offTill && now() >= until,
-    async read(url, signal) {
-      const read = await firecrawlScrape(url, { ...options, now, ...(signal ? { signal } : {}) });
-      if ("ok" in read) return read;
-      if (read.limit) {
-        const at = now();
-        const till = offUntil(read.limit, at);
-        if (till !== undefined) offTill = Math.max(offTill, till);
-        else until = Math.max(until, at + waitOf(read.limit.retryAfter, at));
-      }
-      return read.error;
-    },
-  };
+/** keyless Firecrawl's scrape for one run's web_fetch behind its own breaker (readerOf, on searchBreaker at `now`): held
+ *  while a limit keeps it off or a rate limit's wait holds; each read one scrape, the page or why there is none. */
+export function firecrawlFetch(options: Omit<FirecrawlOptions, "signal" | "now"> = {}, now: () => number = Date.now): Reader {
+  return readerOf({ read: (url, { signal }) => firecrawlScrape(url as string, { ...options, now, ...(signal ? { signal } : {}) }) }, searchBreaker(now));
 }
+
+/** Keyless Firecrawl: search and scrape on its public MCP endpoint (or `endpoint`). Its search ends at the call's deadline
+ *  or its own bound (`bounds.firecrawlMs`, default FIRECRAWL_MS); a fetch it gives no page is logged once the direct
+ *  fetch has answered, never the model's (it is a fallback, and its words are never passed on). */
+export const firecrawlKeyless = defineProvider(
+  { id: "firecrawl-keyless", label: "Firecrawl", ops: ["search", "fetch"], fetch: { miss: { log: "web_fetch_firecrawl_failed", when: "ends" } } },
+  ({ endpoint, send, words, now, bounds }): ProviderRun => {
+    const options: Omit<FirecrawlOptions, "signal"> = { ...(endpoint ? { endpoint } : {}), ...(send ? { send } : {}), ...(words ? { words } : {}), now };
+    return {
+      async search({ query, n }, deadline) {
+        const found = await firecrawlSearch(query, n, { ...options, signal: deadline, ...(bounds?.firecrawlMs === undefined ? {} : { timeoutMs: bounds.firecrawlMs }) });
+        // Which limit Firecrawl met is the breaker's to read, never the model's.
+        return "error" in found ? { answer: { error: found.error }, ...("limit" in found && found.limit ? { limit: found.limit } : {}) } : { answer: found };
+      },
+      read: (url, { signal }) => firecrawlScrape(url as string, { ...options, ...(signal ? { signal } : {}) }),
+    };
+  },
+);

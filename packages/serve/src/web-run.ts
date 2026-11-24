@@ -5,8 +5,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { pathToFileURL } from "node:url";
 import type { TSchema } from "typebox";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { createWeb, type FetchProvider, type Guard, MAX_CHARS_MIN, PAGE_CHARS, type SearchBounds, type SearchProvider, TEXT_CAP, type Web } from "@parcha/agentrun-web";
-import { FAUX_PARALLEL_ENV, fauxFetch, parallelKeyOf } from "./decisions.js";
+import { createWeb, type FetchProvider, type Guard, type KeyedProvider, MAX_CHARS_MIN, PAGE_CHARS, providerOf, type SearchBounds, type SearchProvider, TEXT_CAP, type Web } from "@parcha/agentrun-web";
+import { FAUX_PARALLEL_ENV, fauxFetch, handedKeyOf } from "./decisions.js";
 import { hostedSearched, type SearchModels } from "./hosted-search.js";
 import { FAUX_ENV } from "./model.js";
 import { paidRequest } from "./paid-calls.js";
@@ -55,35 +55,45 @@ export const searchingOn = new AsyncLocalStorage<SearchOn | undefined>();
 
 const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);
 
+/** What each resolution of web_search asks, in turn: keyless Firecrawl has keyless Exa behind it. */
+const SEARCH_CHAINS: Readonly<Record<string, readonly SearchProvider[]>> = { parallel: ["parallel"], native: ["native"], "firecrawl-keyless": ["firecrawl-keyless", "exa-keyless"], "exa-keyless": ["exa-keyless"] };
+/** What each resolution of web_fetch asks, in turn: the guarded direct fetch behind any provider, and alone otherwise. */
+const FETCH_CHAINS: Readonly<Record<string, readonly FetchProvider[]>> = { parallel: ["parallel", "direct"], "firecrawl-keyless": ["firecrawl-keyless", "direct"] };
+/** Under --faux, the variable naming each keyless provider's fake: one with none named is left out. */
+const FAUX_FAKES: Readonly<Partial<Record<string, string>>> = { "firecrawl-keyless": FAUX_FIRECRAWL_ENV, "exa-keyless": FAUX_EXA_ENV };
+
+/** The search order a resolution of web_search names, under no --faux; none for one that runs no search. */
+export const searchChainOf = (resolved: string | undefined): readonly SearchProvider[] => (resolved !== undefined && Object.hasOwn(SEARCH_CHAINS, resolved) ? SEARCH_CHAINS[resolved]! : []);
+
 /** The providers each web tool asks where the run's plane resolves it. Under --faux, a keyless provider the server names
  *  no fake for is left out, so a test never reaches the network. */
 export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fetch: FetchProvider[] } {
   const { web_search: search, web_fetch: fetch } = planeOf(env);
-  const faux = Boolean(env[FAUX_ENV]);
-  const firecrawl = !faux || Boolean(env[FAUX_FIRECRAWL_ENV]);
-  const exa = !faux || Boolean(env[FAUX_EXA_ENV]);
-  const searchOrder: SearchProvider[] = search === "parallel" || search === "native" ? [search] : [];
-  if (search === "firecrawl-keyless" && firecrawl) searchOrder.push("firecrawl-keyless");
-  if ((search === "firecrawl-keyless" || search === "exa-keyless") && exa) searchOrder.push("exa-keyless");
-  const fetchOrder: FetchProvider[] = fetch === "parallel" ? ["parallel", "direct"] : fetch === "firecrawl-keyless" && firecrawl ? ["firecrawl-keyless", "direct"] : ["direct"];
-  return { search: searchOrder, fetch: fetchOrder };
+  const faked = (id: string) => !env[FAUX_ENV] || FAUX_FAKES[id] === undefined || Boolean(env[FAUX_FAKES[id]!]);
+  const fetchChain = fetch !== undefined && Object.hasOwn(FETCH_CHAINS, fetch) ? FETCH_CHAINS[fetch]! : ["direct" as const];
+  return { search: searchChainOf(search).filter(faked), fetch: fetchChain.filter(faked) };
 }
 
 /** One Web for each environment a run's calls are given (main's run process hands process.env; the runner hands each
  *  claim its own), so one run's key, client, pages and breakers never serve another. */
 const webs = new WeakMap<NodeJS.ProcessEnv, Web>();
 
-/** The run's Web. Where either web tool resolves to Parallel, the key is read here, once. `bounds` applies to the Web
- *  this call makes (a test's). */
+/** The run's Web. Each keyed provider either web tool asks has its key read here, once, from the variable its registry
+ *  entry names. `bounds` applies to the Web this call makes (a test's). */
 export function webOf(env: NodeJS.ProcessEnv, bounds?: SearchBounds): Web {
   let web = webs.get(env);
   if (web) return web;
-  const plane = planeOf(env);
-  const key = plane.web_search === "parallel" || plane.web_fetch === "parallel" ? parallelKeyOf(env) : undefined;
+  const order = ordersOf(env);
+  const keys: Partial<Record<KeyedProvider, string>> = {};
+  for (const id of new Set([...order.search, ...order.fetch])) {
+    const named = providerOf(id).key?.env;
+    const key = named ? handedKeyOf(env, named) : undefined;
+    if (key !== undefined) keys[id as KeyedProvider] = key;
+  }
   const fakeFirecrawl = env[FAUX_ENV] ? env[FAUX_FIRECRAWL_ENV] : undefined;
   web = createWeb({
-    order: ordersOf(env),
-    ...(key === undefined ? {} : { keys: { parallel: key } }),
+    order,
+    ...(Object.keys(keys).length ? { keys } : {}),
     native: async (query, n, signal) => hostedSearched(query, n, planeOf(env).model, signal, await searchingOn.getStore()?.()),
     guard: GUARD,
     pay: paidRequest,

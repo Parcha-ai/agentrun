@@ -2,6 +2,7 @@
 // a breaker of its own. A quota answer turns a backend off until the reset it names, else for the breaker's life; a rate
 // limit holds it for the wait it named (60 s when none), and one naming a wait past 15 minutes turns it off for that
 // wait. A backend that fails, is held or is off passes the call to the next.
+import type { SearchProvider } from "./providers/registry.js";
 
 export const QUERY_MAX = 200;
 export const RESULTS_MAX = 25;
@@ -27,7 +28,7 @@ const MAX_WAIT_MS = 15 * 60_000;
 /** `relevance`, under the classifier's rerank+label policy only: how likely the result holds what the search asks
  *  for, 0 to 1. */
 export type Hit = { url: string; title: string; snippet: string; published?: string; relevance?: number };
-export type Search = { provider: "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "exa" | "firecrawl"; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
+export type Search = { provider: SearchProvider; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
 /** What a provider's failure said of the run's search: out of quota (until the reset `retryAfter` names, if it names
  *  one), or rate-limited, with the wait it named as it handed it back (a Retry-After header's value, delta-seconds or an
  *  HTTP date, or Exa's seconds). `repeatIsQuota`, the

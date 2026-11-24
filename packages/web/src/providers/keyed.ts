@@ -3,8 +3,7 @@
 // spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
 import { type Fee, PaidRefused, type Pay, unmetered } from "../fees.js";
-import type { Read } from "../page.js";
-import { type Limit, offUntil, waitOf } from "../search.js";
+import type { Limit } from "../search.js";
 
 /** The most bytes of one answer read: past it the answer is not read. */
 export const KEYED_MAX_BYTES = 8 * 1024 * 1024;
@@ -98,28 +97,6 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
   const json = await jsonOf(response);
   if (typeof json !== "object" || json === null || Array.isArray(json)) return { error: `${who}'s ${what} answered nothing this server reads` };
   return { json: json as Record<string, unknown> };
-}
-
-/** A keyed provider's reads for one run's web_fetch, with the run's breaker on them: `live` is false once the key was
- *  refused, while a limit keeps it off (offUntil: a quota until the reset it names, else for the rest of the run; a wait
- *  past 15 minutes until it ends) and while a shorter rate limit's wait holds (waitOf). With no client (no key) it stays
- *  live, and each read says the run holds no key, unsent. */
-export type KeyedFetch = { live(): boolean; read(url: string, signal?: AbortSignal): Promise<Read | KeyedFailed> };
-export function keyedFetch(client: Keyed | null, read: (url: string, signal?: AbortSignal) => Promise<Read | KeyedFailed>, now: () => number = Date.now): KeyedFetch {
-  let offTill = 0;
-  let until = 0;
-  return {
-    live: () => (client === null || client.live()) && now() >= offTill && now() >= until,
-    async read(url, signal) {
-      const got = await read(url, signal);
-      if ("ok" in got || !got.limit) return got;
-      const at = now();
-      const till = offUntil(got.limit, at);
-      if (till !== undefined) offTill = Math.max(offTill, till);
-      else until = Math.max(until, at + waitOf(got.limit.retryAfter, at));
-      return got;
-    },
-  };
 }
 
 /** A setting's check, and what it must be, in words. */

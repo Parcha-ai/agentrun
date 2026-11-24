@@ -1,38 +1,39 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
 import type { FoundPage } from "./decide/step.js";
+import { unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
-import { readDirect } from "./providers/direct.js";
-import type { KeylessFetch } from "./providers/firecrawl-keyless.js";
-import type { KeyedFetch } from "./providers/keyed.js";
-import type { Extract } from "./providers/parallel.js";
+import type { Reader } from "./provider.js";
+import { type FetchProvider, providerOf, SAID, type SaidProvider } from "./providers/registry.js";
+import type { Limit, Try } from "./search.js";
 
 const PORTS = new Set(["", "80", "443"]);
 
 /** How many pages a run keeps what it read of (Pages): each at most PAGE_READ_MAX_CHARS characters of text. */
 export const PAGES_HELD = 8;
 
-/** `parallel`, on a page fetched directly where Parallel was asked for one: why Parallel gave none. `via` "none": the
- *  caller's order holds no direct fetch, and no provider in it read the page. */
-export type WebPage = Page & { via: "parallel" | "firecrawl-keyless" | "exa" | "firecrawl" | "direct" | "stopped" | "none"; parallel?: string };
-/** A page web_fetch read, and how (WebPage's `via` and `parallel`). */
-export type WebRead = Read & Pick<WebPage, "via" | "parallel">;
+/** How a page came: `via`, the provider that gave it ("none": the caller's order holds no provider that ends it, and no
+ *  provider in it read the page; "stopped": the call was stopped first); under the id of each provider whose misses are
+ *  said (SaidProvider, provider.ts FetchShape) and that gave none, why. */
+export type Via = { via: FetchProvider | "stopped" | "none" } & Partial<Record<SaidProvider, string>>;
+export type WebPage = Page & Via;
+/** A page web_fetch read, and how. */
+export type WebRead = Read & Via;
 /** A page web_fetch could not read, and how it tried. */
-export type WebUnread = Unread & Pick<WebPage, "via" | "parallel">;
+export type WebUnread = Unread & Via;
 /** The pages a run reads, by the URL asked for, each from its read's start (so calls at once share it), the last used
  *  last: at most PAGES_HELD of them. */
 export type Pages = Map<string, Promise<WebRead | WebUnread>>;
-/** A fetch provider, as an order names it. */
-export type FetchProvider = "firecrawl-keyless" | "parallel" | "exa" | "firecrawl" | "direct";
-/** The keyed providers' reads (Exa's, Firecrawl's), by the name an order gives them. */
-export type KeyedReaders = Partial<Record<"exa" | "firecrawl", KeyedFetch | null>>;
-/** The order a read takes when none is given: keyless Firecrawl, then Parallel, each where its client is given, then the
+/** The readers a read asks, by provider: each held or not, each read one page (provider.ts Reader). */
+export type Readers = Partial<Record<FetchProvider, Reader>>;
+/** The order a read takes when none is given: keyless Firecrawl, then Parallel, each where its reader is given, then the
  *  guarded direct fetch. */
 export const FETCH_ORDER: readonly FetchProvider[] = ["firecrawl-keyless", "parallel", "direct"];
-/** Where a read notes what the model is not told: an event and its fields (serve writes them as a log line). A keyed
- *  provider that gave no page notes "web_fetch_provider_failed" with its `provider`, what it `said` (in our words) and
- *  the `limit` it met, as JSON, if any. */
+/** Where a read notes what the model is not told: an event and its fields (serve writes them as a log line). A provider
+ *  whose misses are logged (provider.ts FetchShape) notes its event with what it `said` (in our words, at most 300
+ *  characters) and, logged at once, its `provider` and the `limit` it met, as JSON, if any; logged once a provider that
+ *  ends the order answered, whether that one `direct`ly "read" the page or "failed". */
 export type WebLog = (event: string, fields: Record<string, string>) => void;
 
 /** Whether `url` may go to a provider: readDirect's own refusals (port, length, a user name or password) pass it, and so
@@ -44,46 +45,51 @@ async function passes(url: string, guard: Guard | undefined, options: GuardOptio
   return guard.check(url, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => true, () => false);
 }
 
-/** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound and the log. */
-type ReadWith = { parallel?: Extract | null; firecrawl?: KeylessFetch | null; keyed?: KeyedReaders; order: readonly FetchProvider[]; guard?: Guard; checkMs: number; options: GuardOptions; log?: WebLog };
+/** What one read is given: the readers, the order they are asked in, the guard, the check's bound, the log, and where its
+ *  turns go. */
+type ReadWith = { readers: Readers; order: readonly FetchProvider[]; guard?: Guard; checkMs: number; options: GuardOptions; log?: WebLog; tries: Try[] };
 
-/** The page at `url` read once, by the providers of `order` in turn: keyless Firecrawl, Parallel, keyed Exa or keyed
- *  Firecrawl where its client is given and live and the guard passes the URL within `checkMs` (default the guarded
- *  fetch's 30 s), the guarded fetch at "direct", which answers whatever it reads. A page fetched directly where `parallel` was given says why Parallel
- *  gave none (`parallel`). */
-async function readOnce(url: unknown, { parallel, firecrawl, keyed, order, guard, checkMs, options, log }: ReadWith): Promise<WebRead | WebUnread> {
-  let firecrawlSaid: string | undefined;
-  let why: string | undefined;
-  for (const provider of order) {
-    if (provider === "firecrawl-keyless") {
-      if (firecrawl?.live() && typeof url === "string" && (await passes(url, guard, options, checkMs))) {
-        const read = await firecrawl.read(url, options.signal);
-        if (typeof read !== "string") return { ...read, via: "firecrawl-keyless" };
-        firecrawlSaid = read;
-      }
-    } else if (provider === "exa" || provider === "firecrawl") {
-      const reader = keyed?.[provider];
-      if (reader?.live() && typeof url === "string" && (await passes(url, guard, options, checkMs))) {
-        const read = await reader.read(url, options.signal);
-        if ("ok" in read) return { ...read, via: provider };
-        log?.("web_fetch_provider_failed", { provider, said: read.error.slice(0, 300), ...(read.limit ? { limit: JSON.stringify(read.limit) } : {}) });
-      }
-    } else if (provider === "parallel") {
-      if (parallel && !parallel.live()) why = "not tried: refused earlier in this run";
-      else if (parallel && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
-      else if (parallel) {
-        const read = await parallel.read(url as string, options.signal);
-        if (typeof read !== "string") return { ...read, via: "parallel" };
-        why = read;
-      }
-    } else {
-      const direct = await readDirect(url, guard, options);
-      // Why Firecrawl gave no page goes to the log, never to the model (the page is the direct fetch's); never the URL.
-      if (firecrawlSaid !== undefined) log?.("web_fetch_firecrawl_failed", { said: firecrawlSaid.slice(0, 300), direct: direct.ok ? "read" : "failed" });
-      return { ...direct, via: "direct", ...(why ? { parallel: why } : {}) };
+/** The page at `url` read once, by the providers of `order` in turn, each turn recorded in `tries` as it is taken. A
+ *  provider that ends the order (the guarded direct fetch) answers whatever it reads. Any other is asked where its reader
+ *  is given and not held and the guard passes the URL within `checkMs`; a read it gives no page, or a turn it was not
+ *  asked, is said on the page or logged, as its FetchShape says. */
+async function readOnce(url: unknown, { readers, order, guard, checkMs, options, log, tries }: ReadWith): Promise<WebRead | WebUnread> {
+  const said: Partial<Record<SaidProvider, string>> = {};
+  const logged: { event: string; said: string }[] = [];
+  for (const id of order) {
+    const shape = providerOf(id).fetch;
+    const reader = readers[id];
+    if (!shape || !reader) continue;
+    if (shape.ends) {
+      const read = (await reader.read(url, options)) as Read | Unread;
+      // Why a provider ahead gave no page goes to the log, never to the model (the page is this one's); never the URL.
+      for (const miss of logged) log?.(miss.event, { said: miss.said, direct: read.ok ? "read" : "failed" });
+      tries.push({ provider: id, outcome: read.ok ? "ok" : "error", ...(read.ok ? {} : { error: read.refused ?? read.error ?? "" }) });
+      return { ...read, via: id, ...said };
     }
+    let why = reader.held();
+    if (why === undefined && !(typeof url === "string" && (await passes(url, guard, options, checkMs)))) why = "not tried: the URL did not pass the public-host guard";
+    if (why !== undefined) {
+      if (shape.miss === "said") (said[id as SaidProvider] = why), tries.push({ provider: id, outcome: "error", error: why });
+      continue;
+    }
+    const read = await reader.read(url, options);
+    if ("ok" in read && read.ok) {
+      tries.push({ provider: id, outcome: "ok" });
+      return { ...read, via: id, ...said };
+    }
+    const error = read.error ?? "";
+    const limit: Limit | undefined = "limit" in read ? read.limit : undefined;
+    if (shape.miss === "said") {
+      said[id as SaidProvider] = error;
+      tries.push({ provider: id, outcome: "error", error });
+      continue;
+    }
+    tries.push({ provider: id, outcome: "error", ...(error ? { error: error.slice(0, 300) } : {}), ...(limit ? { limit } : {}) });
+    if (shape.miss.when === "failed") log?.(shape.miss.log, { provider: id, said: error.slice(0, 300), ...(limit ? { limit: JSON.stringify(limit) } : {}) });
+    else logged.push({ event: shape.miss.log, said: error.slice(0, 300) });
   }
-  return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...(why ? { parallel: why } : {}) };
+  return { ok: false, url: typeof url === "string" ? clip(url, URL_MAX) : "", status: 0, title: "", text: "", links: [], error: "no provider in the order read the page, and it holds no direct fetch", via: "none", ...said };
 }
 
 /** The reads that have ended: only these leave `pages` past its bound (trim). */
@@ -115,21 +121,23 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
   });
 }
 
-/** What webFetch is given: the guard's resolver and fetch (a test's) and the part, the provider clients (`parallel`,
- *  `firecrawl`, the `keyed` readers) and their `order` (FETCH_ORDER by default), the run's `pages`, the `guard`, the guard check's bound
- *  (`checkMs`) and the `log`. */
-export type WebFetchOptions = GuardOptions & Part & { parallel?: Extract | null; firecrawl?: KeylessFetch | null; keyed?: KeyedReaders; pages?: Pages; order?: readonly FetchProvider[]; guard?: Guard; checkMs?: number; log?: WebLog };
+/** What webFetch is given: the guard's resolver and fetch (a test's) and the part, the `readers` and their `order`
+ *  (FETCH_ORDER by default; a provider that ends it is made here where no reader is given for it), the run's `pages`,
+ *  the `guard`, the guard check's bound (`checkMs`), the `log`, and `tries`, where a read this call starts records its
+ *  turns (a call answered from `pages` records none). */
+export type WebFetchOptions = GuardOptions & Part & { readers?: Readers; pages?: Pages; order?: readonly FetchProvider[]; guard?: Guard; checkMs?: number; log?: WebLog; tries?: Try[] };
 
 /** The page at `url` as read once a run: from `pages`, the run's, where it holds the URL (read, or being read), with no
  *  request of its own; else read once (readOnce), kept there from the read's start. A read that fails leaves `pages`, so
  *  a later call reads again. The read is the run's, not a caller's: no caller's signal reaches it (it keeps Parallel's
  *  and the fetch's own time limits), so one caller's stop never fails another's; each caller stops waiting at its own
  *  signal (untilStopped). */
-export async function webRead(url: unknown, { parallel, firecrawl, keyed, pages, order = FETCH_ORDER, guard, checkMs = TIMEOUT_MS, signal, log, ...options }: Omit<WebFetchOptions, keyof Part> = {}): Promise<WebRead | WebUnread> {
+export async function webRead(url: unknown, { readers = {}, pages, order = FETCH_ORDER, guard, checkMs = TIMEOUT_MS, signal, log, tries = [], ...options }: Omit<WebFetchOptions, keyof Part> = {}): Promise<WebRead | WebUnread> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
   if (!reading) {
-    const started = readOnce(url, { parallel, firecrawl, keyed, order, guard, checkMs, options, log });
+    const ending = order.filter((id) => !readers[id] && providerOf(id).fetch?.ends).map((id) => [id, endingReader(id, guard)] as const);
+    const started = readOnce(url, { readers: { ...readers, ...Object.fromEntries(ending) }, order, guard, checkMs, options, log, tries });
     if (pages && named !== undefined) {
       // Ahead of any caller's await, so no call sees a failed read kept.
       const drop = () => void (pages.get(named) === started && pages.delete(named));
@@ -146,11 +154,19 @@ export async function webRead(url: unknown, { parallel, firecrawl, keyed, pages,
   return untilStopped(url, reading, signal);
 }
 
-/** The part `part` names of a page read once (webRead), as a WebPage; a read that failed as it is. */
+/** A provider that ends the order, made for one read through `guard`: never held. */
+function endingReader(id: FetchProvider, guard: Guard | undefined): Reader {
+  const run = providerOf(id).make({ ...(guard ? { guard } : {}), pay: unmetered, now: Date.now });
+  return { held: () => undefined, read: (url, options) => run.read!(url, options) };
+}
+
+/** The part `part` names of a page read once (webRead), as a WebPage, how it came after it; a read that failed as it is. */
 export function webPart(read: WebRead | WebUnread, part: Part = {}): WebPage {
   if (!read.ok) return read;
-  const { via, parallel: why, ...page } = read;
-  return { ...partOfRead(page, part), via, ...(why ? { parallel: why } : {}) };
+  const { via, ...page } = read;
+  const said: Partial<Record<SaidProvider, string>> = {};
+  for (const id of SAID) if (page[id] !== undefined) (said[id] = page[id]), delete page[id];
+  return { ...partOfRead(page, part), via, ...said };
 }
 
 /** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: webPart of webRead. */
@@ -177,11 +193,14 @@ function partLine(page: Page, name: string): string | undefined {
   return `Characters ${start}-${end} of ${page.original_chars}: the end of the page.`;
 }
 
-/** A page as the tool `name` answers the model: its JSON, then a line saying why Parallel gave none where it was picked,
+/** A page as the tool `name` answers the model: its JSON, then a line for each picked provider that gave none saying why,
  *  and one saying where this part is in the page when it is not all of it. */
 export function webFetchText(page: WebPage | Page | FoundPage, name: string = "web_fetch"): string {
   const lines = [JSON.stringify(page)];
-  if ("parallel" in page && page.parallel) lines.push(`Parallel was picked for web_fetch and gave no page (${page.parallel}); this one was fetched directly.`);
+  for (const id of SAID) {
+    const why = (page as Partial<Record<SaidProvider, unknown>>)[id];
+    if (typeof why === "string" && why) lines.push(`${providerOf(id).label} was picked for web_fetch and gave no page (${why}); this one was fetched directly.`);
+  }
   const where = "found" in page ? undefined : partLine(page, name);
   if (where) lines.push(where);
   return lines.join("\n");

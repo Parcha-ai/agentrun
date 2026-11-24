@@ -3,6 +3,7 @@
 import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
+import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { linksOf } from "../text-urls.js";
 import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from "./keyed.js";
 
@@ -143,3 +144,27 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
     return answer({ error: (error as Error)?.name === "TimeoutError" ? "Parallel's search did not answer within 60 s" : `Parallel's search failed: ${(error as Error)?.message ?? String(error)}` });
   }
 }
+
+/** web_fetch's reads through `client` (null: the run holds no key): a failure in Parallel's words as ours, and why a
+ *  read is not asked now (no key, or the key refused earlier in the run). */
+export function parallelReads(client: Extract | null): Required<Pick<ProviderRun, "read" | "unready">> {
+  return {
+    async read(url, { signal }) {
+      if (!client) return { error: "not tried: this run holds no Parallel key" };
+      const read = await client.read(url as string, signal);
+      return typeof read === "string" ? { error: read } : read;
+    },
+    unready: () => (!client ? "not tried: this run holds no Parallel key" : client.live() ? undefined : "not tried: refused earlier in this run"),
+  };
+}
+
+/** Parallel on the run's key, both tools on one client (a key refused by either is refused by both). Its search keeps
+ *  the caller's signal and its own bound; a fetch it gives no page is said on the page. */
+export const parallel = defineProvider(
+  { id: "parallel", label: "Parallel", key: { env: "PARALLEL_API_KEY" }, ops: ["search", "fetch"], fetch: { miss: "said" }, settings: settingsOf<ParallelSettings>(parallelSettingsProblems) },
+  ({ key, send, pay, settings }): ProviderRun => {
+    const asked = (settings ?? {}) as ParallelSettings;
+    const client = key === undefined ? null : parallelExtract(key, send ?? fetch, pay, asked);
+    return { search: (ask, _deadline, signal) => parallelSearched(ask, client, signal, asked), ...parallelReads(client) };
+  },
+);

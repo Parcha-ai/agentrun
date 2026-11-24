@@ -5,6 +5,7 @@ import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import type { Agent } from "undici";
 import { clip, TITLE_CAP } from "../page.js";
+import { defineProvider, type ProviderRun } from "../provider.js";
 import { type Hit, type Limit, type Search, snippetOf } from "../search.js";
 import { type Called, callTool, RATE_LIMITED, sleep, textBlocks, type Words } from "./mcp.js";
 
@@ -111,3 +112,14 @@ export function exaLimitOf(found: ExaLimited): Limit | undefined {
   if (found.limit !== "rate_limited") return undefined;
   return found.retryAfterS === undefined ? { kind: "rate", repeatIsQuota: true } : { kind: "rate", retryAfter: found.retryAfterS };
 }
+
+/** Keyless Exa, web_search only: ended by the call's deadline; its free limit is the breaker's (exaLimitOf), its words
+ *  the model's alone. */
+export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", ops: ["search"] }, ({ send, words }): ProviderRun => ({
+  async search({ query, n }, deadline) {
+    const found = await exaSearch(query, n, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
+    if (!("limit" in found)) return { answer: found };
+    const limit = exaLimitOf(found);
+    return { answer: { error: found.error }, ...(limit ? { limit } : {}) };
+  },
+}));
