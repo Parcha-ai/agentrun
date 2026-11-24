@@ -1,7 +1,7 @@
 // The trigger engine's one retry policy, over the store (untangle 8): a due firing keeps its next try in the store, so a
-// restart drives it at that time and not before; every failed try counts toward auto-pause, a thrown error included; a
-// message to a working run waits for the run's turn end with no try counted, never a 5 s poll; and the firings are
-// the store's rows, per trigger.
+// restart drives it at that time and not before; every failed firing counts toward auto-pause once, however many tries it
+// took, a thrown error included; a message to a working run waits for the run's turn end with no try counted, never a 5 s
+// poll; and the firings are the store's rows, per trigger.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "../dist/errors.js";
@@ -81,7 +81,7 @@ test("a firing a full server refused keeps its next try in the store: after a re
   assert.equal(calls.start.length, 2);
 });
 
-test("every failed try counts toward auto-pause, a thrown error included: five in a row turn the trigger off", async (t) => {
+test("every failed firing counts toward auto-pause, a thrown error included: five in a row turn the trigger off", async (t) => {
   const { store, open, calls } = await engineOn(t, { start: () => Promise.reject(new Error("a programming error")) });
   const { engine } = open();
   await engine.start();
@@ -96,13 +96,13 @@ test("every failed try counts toward auto-pause, a thrown error included: five i
   assert.equal(calls.told.length, 5, "each failure's trigger.failed queued");
 });
 
-test("a retryable failure counts toward the streak too, and past the backoff table the firing fails", async (t) => {
+test("a retryable failure is a failed try, no failure in the streak until its firing fails: past the backoff table the firing fails, one failure however many tries it took", async (t) => {
   const { store, open, calls } = await engineOn(t, { start: () => Promise.reject(unavailable()) });
   const { engine, clock } = open();
   await engine.start();
   const trigger = await engine.create(runNow());
   await engine.fire(trigger.id, "idem-1");
-  assert.equal((await store.triggers.get(trigger.id)).failuresInARow, 1, "a retry is a failed try");
+  assert.equal((await store.triggers.get(trigger.id)).failuresInARow, 0, "a try is no failure while its firing has tries left");
   for (const wait of [5_000, 15_000, 60_000, 300_000]) {
     const [due] = await store.triggers.firings(trigger.id);
     if (due.status !== "due") break;
@@ -113,7 +113,9 @@ test("a retryable failure counts toward the streak too, and past the backoff tab
   const [last] = await store.triggers.firings(trigger.id);
   assert.equal(last.status, "failed", "past the backoff table it fails");
   assert.equal(last.error.code, "unavailable");
-  assert.ok(calls.start.length >= 4);
+  assert.equal(calls.start.length, 5, "its five tries");
+  const after = await store.triggers.get(trigger.id);
+  assert.deepEqual([after.failuresInARow, after.enabled, last.paused], [1, true, false], "its five tries are one failure: the trigger stays on");
 });
 
 test("past max_active_runs a firing waits, with no try counted; it starts once a run of its trigger ends, read from the store", async (t) => {
@@ -155,7 +157,7 @@ test("waiting firings, one per trigger, are read with one store query a tick, ne
         if (typeof value !== "function") return value;
         return (...args) => {
           if (key === "waiting") reads.waiting += 1;
-          if (key === "firing" || key === "activeRuns") reads.perFiring += 1;
+          if (key === "firing" || key === "activeKeys") reads.perFiring += 1;
           return value.apply(target, args);
         };
       },

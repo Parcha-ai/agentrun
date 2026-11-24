@@ -12,8 +12,10 @@ import type { SecretMeta } from "@/lib/v2";
  *  said Optional, its absence no warning; left out, a secret is needed. `stateSaid`: the page already shows Set or
  *  Missing beside it (the Keys page's chip on a key of one field), so the row's own word is for a screen reader only.
  *  `actionsInline`: Paste, Replace and Remove follow the key's words instead of standing at the row's far end, where a
- *  row inside a card with other content (Computers' provider rows) leaves them far from the key they act on. */
-export function SecretRow({ field: f, label, writable, required = true, stateSaid = false, actionsInline = false, now = Date.now, note, onPaste, onRemove }: {
+ *  row inside a card with other content (Computers' provider rows) leaves them far from the key they act on. `stored`: a
+ *  value is saved for it whether or not it opens (a harness key sealed for a changed recipe or another seal key), so
+ *  Remove is offered on a Missing one too; left out, Remove follows Set. */
+export function SecretRow({ field: f, label, writable, required = true, stateSaid = false, actionsInline = false, now = Date.now, note, stored = f.set, onPaste, onRemove }: {
   field: SecretMeta;
   /** What the page calls it where its name ends in no field ("Bearer token", "Signing secret"): secretLabel. */
   label?: string;
@@ -23,6 +25,7 @@ export function SecretRow({ field: f, label, writable, required = true, stateSai
   actionsInline?: boolean;
   now?: () => number;
   note?: string;
+  stored?: boolean;
   onPaste?: () => void;
   onRemove?: () => void;
 }) {
@@ -38,7 +41,7 @@ export function SecretRow({ field: f, label, writable, required = true, stateSai
       {acts && (
         <span className={cn("flex gap-2 font-sans", !actionsInline && "ml-auto")}>
           {onPaste && <Button type="button" size="sm" variant={f.set ? "outline" : "primary"} onClick={onPaste}>{f.set ? "Replace" : "Paste"}</Button>}
-          {onRemove && f.set && <Button type="button" size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
+          {onRemove && stored && <Button type="button" size="sm" variant="destructive" onClick={onRemove}>Remove</Button>}
         </span>
       )}
     </li>

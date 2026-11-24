@@ -28,7 +28,7 @@ export const DEFINITION_FIELDS = ["id", "version", "name", "description", "instr
 /** What an agentic definition may ask the server to check out in each run's folder before its first turn
  *  (runner/pr-checkout.ts): `pull_request`, the pull request the run's GitHub event names, at its head, read-only, in
  *  `repo/`; `none` clears it on an edit. */
-export const CHECKOUTS = ["pull_request", "none"] as const;
+export const CHECKOUTS = ["pull_request", "repository", "none"] as const;
 /** The most bytes an agent's output_schema takes, as JSON. */
 export const MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 /** The most bytes an agent's input_schema takes, as JSON. */
@@ -114,7 +114,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
       if (wrong) out.push(issue(`${at}.learning`, "wrong_type", wrong));
     }
   }
-  // An agentic revision's structured answer: the JSON Schema its final answer's last fenced json block meets, read into a
+  // An agentic revision's structured answer: the JSON Schema its final answer's json block (jsonBlockOf) meets, read into a
   // completed run's result.output (answer-json.ts structuredAnswer). A workflow's output is its workflow's own.
   if (d.output_schema !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.output_schema`, "not_allowed", "A workflow revision keeps no output_schema: its run's output is its workflow's.", `Remove ${at}.output_schema.`));
@@ -155,7 +155,7 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
   // The server's checkout before each run's first turn: kept by an edit that leaves it out, cleared by `none`.
   if (d.checkout !== undefined) {
     if (d.workflow !== undefined) out.push(issue(`${at}.checkout`, "not_allowed", "A workflow revision keeps no checkout: only an agentic run starts in a checkout.", `Remove ${at}.checkout.`));
-    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; none clears it`));
+    else if (!(CHECKOUTS as readonly unknown[]).includes(d.checkout)) out.push(issue(`${at}.checkout`, "not_an_option", `${at}.checkout is one of ${CHECKOUTS.join(", ")}: pull_request checks out the pull request the run's GitHub event names, at its head, in repo/ before the first turn; repository checks out the head of the default branch of the repository the run names (https://github.com/<owner>/<repo> in its first message, or its start's repo); none clears it`));
   }
   return out;
 }

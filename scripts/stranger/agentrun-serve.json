@@ -4,6 +4,8 @@
     "dsl",
     "jev",
     "pi-browser",
+    "import",
+    "web",
     "decisions",
     "run-adapters",
     "run-adapters-claude-agent",
@@ -16,6 +18,8 @@
     "@parcha/agentrun-dsl",
     "@parcha/agentrun-jev",
     "@parcha/pi-browser",
+    "@parcha/agentrun-import",
+    "@parcha/agentrun-web",
     "@parcha/agentrun-decisions",
     "@parcha/agentrun-kernel",
     "@parcha/agentrun-harness-claude",
@@ -43,7 +47,7 @@
   ],
   "expect": {
     "exitCode": 0,
-    "pattern": "^ok: pi runs; claude-agent and codex install on first use; the console is served$"
+    "pattern": "^ok: pi needs only a model key; claude-agent and codex install on first use; the console is served$"
   },
   "timeoutMs": 300000
 }

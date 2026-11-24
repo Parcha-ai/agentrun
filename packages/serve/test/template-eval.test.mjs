@@ -3,7 +3,6 @@
 // case per behaviour, its agent and its grader played by fixtures/faux-template-eval.mjs: no key, no network. Every
 // shipped package's cases are read and their fakes served here too, so a broken case fails CI, never the paid run.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -14,6 +13,7 @@ import { CaseError, callsOf, evalTemplate, exitCodeOf, fakeAnswer, gradeDetermin
 import { lastJsonBlock, structuredAnswer } from "../dist/answer-json.js";
 import { MAX_EVAL_FILE_BYTES, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, PackageError, readPackage, readPackages, TEMPLATES_DIR } from "../dist/templates.js";
 import { scratch, serve, withEnv } from "./support.mjs";
+import { ran, started, within } from "./fixtures/started.mjs";
 import { calls as fauxMonidCalls, KEY as FAUX_MONID_KEY } from "./fixtures/faux-monid.mjs";
 
 const FIXTURES = new URL("./fixtures/templates-eval/", import.meta.url).pathname;
@@ -47,7 +47,7 @@ const graderOf = (run, file) => run.graders.find((g) => g.grader === file);
 
 test("every shipped package's cases load, and each case's fake MCP servers serve their fixtures", { timeout: 120_000 }, async () => {
   const packages = readPackages(TEMPLATES_DIR);
-  assert.deepEqual(packages.map((p) => p.name), ["code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
+  assert.deepEqual(packages.map((p) => p.name), ["agent-scout", "code-review", "inbound-lead", "kyb", "market-monitor", "release-notes"]);
   for (const p of packages) {
     const { cases } = readCases(join(TEMPLATES_DIR, p.name));
     assert.deepEqual(cases.map((c) => c.name), p.evals, `${p.name}: every case reads`);
@@ -138,7 +138,9 @@ test("a case whose answer meets a grader of every type passes, each llm grader a
   assert.match(targeted, /<target field="summary" untrusted>\nSUMMARY-MARKER all fine\n<\/target>/);
   for (const input of [plain, targeted]) {
     assert.doesNotMatch(input, /BAD-MARKER|summary-marker"|answer\.schema\.json|passes a grader of every type/);
-    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success: Successfully wrote to notes\/out\.md\n/);
+    // The file the run wrote, whole ahead of its calls, and the call that wrote it pointing there.
+    assert.match(input, /<files untrusted>\n[^]*<file path="notes\/out\.md" bytes="17">\nthe team's notes\n\n<\/file>\n[^]*<\/files>\n\n<tool-calls untrusted>\n/);
+    assert.match(input, /<tool-calls untrusted>\n1\. write \{"path":"notes\/out\.md","content":"the team's notes\\n"\} -> success \[the file notes\/out\.md is in <files>, whole unless marked cut\]: Successfully wrote to notes\/out\.md\n/);
   }
   assert.ok(!plain.includes("SUMMARY-MARKER\".") && !targeted.includes("GOOD-MARKER\"."), "one rubric each");
 });
@@ -377,7 +379,7 @@ async function webPackage(t, name, web, calls, files = {}) {
 const resultOf = (call) => JSON.parse(call.result.split("\n")[0]);
 
 test("a web: unavailable case's run gets the real failed-search words on every web_search, a failed page on every web_fetch, and never the network", { timeout: 300_000 }, async (t) => {
-  const { RATE_LIMITED } = await import("../dist/exa-keyless.js");
+  const { RATE_LIMITED } = await import("../dist/web-run.js");
   const dir = await webPackage(t, "search-failed", "unavailable", [["web_search", { query: "industrial robotics deals this week" }], ["web_search", { query: "robotics funding" }], ["web_fetch", { url: "https://deals.example.test/week" }]]);
   const report = await evalTemplate({ dir, cases: ["search-failed"], serve: { faux: FAUX } });
   const [run] = report.cases[0].runs;
@@ -412,7 +414,7 @@ test("a web: fixture answers a matching query and a fetched URL from the case, a
   assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
   const [robot, outage, weather] = run.calls.filter((call) => call.tool === "web_search").map(resultOf);
   assert.deepEqual({ ...robot, provider: undefined }, { provider: undefined, query: "Robot funding rounds", results: [hit] });
-  assert.ok(["native", "exa-keyless", "parallel"].includes(robot.provider), robot.provider);
+  assert.ok(["native", "firecrawl-keyless", "parallel"].includes(robot.provider), robot.provider);
   assert.deepEqual(outage, { error: "Parallel's search answered 503" });
   assert.deepEqual({ ...weather, provider: undefined }, { provider: undefined, query: "weather in Lisbon", results: [] });
   const [page, gone, elsewhere] = run.calls.filter((call) => call.tool === "web_fetch").map(resultOf);
@@ -577,6 +579,126 @@ test("readCases refuses a now that is not a date and time with its offset, and a
   await assert.rejects(evalTemplate({ dir, cases: ["clock"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/clock: now sets its runs' clock on the eval's own server alone: run it without --server"));
 });
 
+/** A copy of the fixture package with a case `resume`: a run that resumes on keys an earlier one made. Its case.yaml
+ *  seeds `files` (YAML text, absent for none) and its fake CRM answers get_contact only for keys of the stem
+ *  k7m2p9qa, by $pattern; its agent asks for a fresh stem's key, then the seeded stem's, then reads the seeded file. */
+async function resumePackage(t, files = '  media/run-keys.json: "{\\"stem\\": \\"k7m2p9qa\\"}\\n"\n') {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = join(dir, "evals", "resume");
+  mkdirSync(join(at, "graders"), { recursive: true });
+  mkdirSync(join(at, "fixtures"), { recursive: true });
+  writeFileSync(join(at, "case.yaml"), `parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\ngrants:\n  - mcp:crm/get_contact\n${files === undefined ? "" : `files:\n${files}`}`);
+  const text = (text) => ({ content: [{ type: "text", text }] });
+  writeFileSync(join(at, "fixtures", "crm.json"), JSON.stringify({ server: "crm", description: "Keys of the stem k7m2p9qa.", tools: {
+    get_contact: { description: "Read a contact by key.", input: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+      answers: [{ when: { id: { $pattern: "ns-k7m2p9qa-[a-z-]+" } }, result: text("resumed k7m2p9qa") }], default: { ...text("no such key"), isError: true } },
+    update_contact: { description: "Set a contact's fields.", input: { type: "object" }, answers: [], default: { ...text("no such contact"), isError: true } },
+  } }));
+  writeFileSync(join(at, "prompt.md"), `---\ndescription: A resumed run reads its stem from the seeded keys file, and the fake answers that stem's keys alone.\n---\nCall mcp__crm__get_contact with {"id": "ns-zz9yx8wv-voice-cold-open"}\nCall mcp__crm__get_contact with {"id": "ns-k7m2p9qa-voice-cold-open"}\nCall read with {"path": "media/run-keys.json"}\nAnswer:\nKeys: {{last-result}}\n\n\`\`\`json\n{"verdict": "good", "score": 50, "summary": "resume"}\n\`\`\`\n`);
+  writeFileSync(join(at, "graders", "keys.md"), `---\ntype: regex\npattern: 'Keys:[\\s\\S]*"stem": "k7m2p9qa"'\n---\n`);
+  writeFileSync(join(at, "graders", "seeded.md"), "---\ntype: file_exists\npath: media/run-keys.json\n---\n");
+  return dir;
+}
+
+test("a case's files are in its run's work folder before its first turn: the run reads them, and its files list them", { timeout: 300_000 }, async (t) => {
+  const report = await evalTemplate({ dir: await resumePackage(t), cases: ["resume"], serve: { faux: FAUX } });
+  const [run] = report.cases[0].runs;
+  assert.equal(run.status, "completed", JSON.stringify(run, null, 1));
+  assert.equal(report.cases[0].pass, true, JSON.stringify(run.graders));
+  assert.match(run.calls.find((call) => call.tool === "read").result, /"stem": "k7m2p9qa"/, "the run read the seeded file");
+  assert.match(graderOf(run, "seeded.md").reason, /^the run's work folder holds media\/run-keys\.json$/);
+  // The fake answers the seeded stem's key by its $pattern, and a fresh stem's gets its default.
+  const asked = run.calls.filter((call) => call.tool === "mcp:crm/get_contact");
+  assert.equal(asked.length, 2, JSON.stringify(run.calls));
+  assert.match(asked[0].result, /no such key/);
+  assert.match(asked[1].result, /resumed k7m2p9qa/);
+});
+
+test("readCases checks a case's files: each a relative path in the work folder, outside inputs/, to its text; and only the eval's own server seeds them", async (t) => {
+  const dir = await resumePackage(t);
+  assert.deepEqual(readCases(dir, ["resume"]).cases[0].files, { "media/run-keys.json": '{"stem": "k7m2p9qa"}\n' });
+  const problems = (files) => {
+    writeFileSync(join(dir, "evals", "resume", "case.yaml"), `parameters:\n  team: blue\nmcp:\n  crm: fixtures/crm.json\nfiles: ${files}\n`);
+    try {
+      readCases(dir, ["resume"]);
+    } catch (thrown) {
+      if (thrown instanceof CaseError) return thrown.problems;
+      throw thrown;
+    }
+    return [];
+  };
+  const unseeded = "is not a path in the run's work folder (relative, with no empty, . or .. segment)";
+  for (const path of ["/etc/keys.json", "media/../../keys.json", "..", "./keys.json", "media//keys.json", "media/", "media\\keys.json"]) {
+    assert.deepEqual(problems(JSON.stringify({ [path]: "x" })), [`evals/resume/case.yaml: files: ${JSON.stringify(path)} ${unseeded}`], path);
+  }
+  assert.deepEqual(problems('{"": "x"}'), [`evals/resume/case.yaml: files: "" ${unseeded}`]);
+  assert.deepEqual(problems('{"inputs/message.md": "x"}'), ["evals/resume/case.yaml: files: \"inputs/message.md\" is under inputs/, where the server puts the run's uploads and its message"]);
+  assert.deepEqual(problems('{"a.json": 5, "b.json": {"stem": "x"}}'), ["evals/resume/case.yaml: files: \"a.json\" is the file's text, a string", "evals/resume/case.yaml: files: \"b.json\" is the file's text, a string"]);
+  assert.deepEqual(problems("[media/run-keys.json]"), ["evals/resume/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with"]);
+  // A path that names an object's own property is a file like any other: none is lost to the object it is kept in.
+  assert.deepEqual(problems('{"__proto__": "p", "constructor": "c", "a/__proto__": "q"}'), []);
+  const named = readCases(dir, ["resume"]).cases[0].files;
+  assert.deepEqual(Object.keys(named).sort(), ["__proto__", "a/__proto__", "constructor"]);
+  assert.deepEqual([named.__proto__, named.constructor, named["a/__proto__"]], ["p", "c", "q"]);
+  assert.equal(Object.getPrototypeOf(named), Object.prototype);
+  // The eval's own runner writes them at the claim: a named server's runs would start without them.
+  assert.equal(problems('{"media/run-keys.json": "{}"}').length, 0);
+  await assert.rejects(evalTemplate({ dir, cases: ["resume"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (thrown) => thrown instanceof CaseError && thrown.problems.includes("evals/resume: files seeds its runs' work folders on the eval's own server alone: run it without --server"));
+});
+
+test("a fake's when matches a string argument whole by {$pattern}; any other value, a string or an object, still by equality", () => {
+  const text = (text) => ({ content: [{ type: "text", text }] });
+  const fixture = { server: "studio", description: "", tools: {
+    submit: { description: "", input: { type: "object" }, answers: [
+      { when: { submission_key: { $pattern: "ns-[a-z0-9]{8}-voice-cold-open" }, kind: "voice" }, result: text("cold open") },
+      { when: [{ submission_key: { $pattern: "ns-a|ns-b" } }, { ref: { $pattern: "r-\\d+" } }], result: text("either") },
+      { when: { submission_key: "exact" }, result: text("exact") },
+      { when: { submission_key: { pattern: "x" } }, result: text("an object, equal") },
+    ], default: { ...text("none"), isError: true } },
+  } };
+  const said = (args) => fakeAnswer(fixture, "submit", args).content[0].text;
+  assert.equal(said({ submission_key: "ns-k7m2p9qa-voice-cold-open", kind: "voice", more: 1 }), "cold open", "the whole string matches, every other listed argument equal");
+  assert.equal(said({ submission_key: "ns-k7m2p9qa-voice-cold-open", kind: "music" }), "none", "a pattern does not excuse another argument");
+  for (const key of ["ns-k7m2p9qa-voice-cold-open-2", "x-ns-k7m2p9qa-voice-cold-open", "ns-k7m2p9q-voice-cold-open", "ns-K7M2P9QA-voice-cold-open"]) assert.equal(said({ submission_key: key, kind: "voice" }), "none", `${key}: only the whole string matches`);
+  // An alternation is anchored as a whole: ns-a|ns-b takes ns-a and ns-b alone, never a string that starts with ns-a.
+  assert.equal(said({ submission_key: "ns-b" }), "either");
+  assert.equal(said({ submission_key: "ns-a-later" }), "none");
+  assert.equal(said({ ref: "r-12" }), "either", "a when list's entry by pattern");
+  for (const ref of [12, ["r-12"], { r: "r-12" }, null]) assert.equal(said({ ref }), "none", `${JSON.stringify(ref)}: a pattern matches a string alone`);
+  assert.equal(said({ kind: "voice" }), "none", "an argument the call lacks matches no pattern");
+  assert.equal(said({ submission_key: "exact" }), "exact");
+  assert.equal(said({ submission_key: "exactly" }), "none", "a plain string is equality, never a pattern");
+  assert.equal(said({ submission_key: { pattern: "x" } }), "an object, equal");
+});
+
+test("readCases refuses a $pattern that is no string, does not compile, or shares its object with another key, naming the tool and the answer", async (t) => {
+  const dir = join(await scratch(t), "evalpkg");
+  cpSync(PKG, dir, { recursive: true });
+  const at = "evals/mcp-match/fixtures/crm.json";
+  const result = { content: [{ type: "text", text: "x" }] };
+  writeFileSync(join(dir, at), JSON.stringify({ server: "crm", description: "x", tools: {
+    get_contact: { description: "x", input: { type: "object" }, answers: [
+      { when: { id: { $pattern: "(unclosed" } }, result },
+      { when: [{ id: "7" }, { id: { $pattern: 7 } }], result },
+      { when: { id: { $pattern: "ns-[a-z0-9]{8}" } }, result },
+    ] },
+    update_contact: { description: "x", input: { type: "object" }, answers: [{ when: { id: { $pattern: "7", flags: "i" } }, result }] },
+  } }));
+  const error = (() => {
+    try {
+      readCases(dir, ["mcp-match"]);
+    } catch (thrown) {
+      return thrown;
+    }
+  })();
+  assert.ok(error instanceof CaseError, String(error));
+  assert.equal(error.problems.length, 3, error.problems.join("\n"));
+  assert.match(error.problems[0], /^evals\/mcp-match\/fixtures\/crm\.json: tools\.get_contact\.answers\[0\]\.when\.id: its \$pattern does not compile: Invalid regular expression/);
+  assert.equal(error.problems[1], "evals/mcp-match/fixtures/crm.json: tools.get_contact.answers[1].when[1].id: $pattern is a regular expression's source, a string");
+  assert.equal(error.problems[2], "evals/mcp-match/fixtures/crm.json: tools.update_contact.answers[0].when.id: a {\"$pattern\": ...} value holds no other key, and this one holds flags");
+});
+
 test("a correction seeded through the learning API reaches the run", { timeout: 600_000 }, async () => {
   const one = await caseOf("learned");
   assert.equal(one.pass, true, JSON.stringify(one, null, 1));
@@ -684,10 +806,11 @@ test("a stopped eval cancels the run in progress and cleans up what it made, as 
 });
 
 /** A proxy on port 0 to the server at `baseUrl` (ending /v2) that answers 500 to each request `refuses(req)` says so,
- *  and passes the rest on. Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
+ *  and passes the rest on, each answer as `edit(req, body)` makes it when given one (the body a Buffer, or a promise of
+ *  one: one that never settles is a server that stalls). Its /v2 address. A pass-on that fails (the server closed first: its hook was added before
  *  this proxy's, so it runs first at the test's end) is answered 502, never left as an unhandled rejection that fails
  *  the test after its assertions passed. */
-async function refusing(t, baseUrl, refuses) {
+async function refusing(t, baseUrl, refuses, edit = (_req, body) => body) {
   const proxy = createServer(async (req, res) => {
     if (refuses(req)) return void res.writeHead(500, { "content-type": "application/json" }).end('{"error":{"code":"internal","message":"refused by the test proxy"}}');
     try {
@@ -696,7 +819,7 @@ async function refusing(t, baseUrl, refuses) {
       const body = Buffer.concat(chunks);
       const answer = await fetch(`${baseUrl.replace(/\/v2$/, "")}${req.url}`, { method: req.method, headers: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name !== "host" && name !== "content-length")), ...(body.length ? { body } : {}) });
       const passed = Buffer.from(await answer.arrayBuffer());
-      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(passed);
+      res.writeHead(answer.status, { "content-type": answer.headers.get("content-type") ?? "application/json" }).end(await edit(req, passed));
     } catch (error) {
       if (res.headersSent) return void res.destroy();
       res.writeHead(502, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "bad_gateway", message: `the test proxy's pass-on failed: ${error.message}` } }));
@@ -750,10 +873,77 @@ test("a run no runner takes fails by name once it has stayed queued past its bou
   const [one] = report.cases[0].runs;
   assert.ok(one, JSON.stringify(report.cases[0]));
   assert.deepEqual([one.status, one.pass], ["timed_out", false]);
-  assert.match(one.error, /^the run stayed queued for 3 s: no runner took it \(state \w+\), and it was cancelled$/);
+  assert.match(one.error, /^the run stayed queued for 3 s with no runner holding it, and it was cancelled$/);
   // The eval asked to cancel it and cleaned up what it made (the agent archived); no runner ever claimed the run.
   const left = (await api("GET", `/runs/${one.run_id}`)).body;
   assert.equal(left.claim, null, "never claimed");
+});
+
+test("a run a runner holds is waited for while its view still reads queued (its first rows not shown): the queued bound is for a run no runner holds", { timeout: 180_000 }, async (t) => {
+  // The held case's run is claimed and holds in its turn until it is cancelled (the file its faux writes there says so).
+  // Until then the proxy holds each of the eval's timeline pages back, so the queued bound is never asked before a runner
+  // holds the run, however long the claim takes; from then on it serves each page as a held run's view reads before its
+  // first rows show: queued. The eval is stopped once it reads the page after a run read that found the run held: it
+  // went on waiting, never cancelling the run as queued, with no wait on any bound of its own.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const stop = new AbortController();
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  let heldRead = false;
+  const arrived = (req) => {
+    if (heldRead && timeline(req)) stop.abort();
+    return false;
+  };
+  const queued = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url)) {
+      if (JSON.parse(String(body)).claim) heldRead = true;
+      return body;
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    return page.final ? body : Buffer.from(JSON.stringify({ ...page, status: "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, queued);
+  const stopped = evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, signal: stop.signal });
+  // A wait that gave up on the run as queued ends the eval with a report, never this stop.
+  await assert.rejects(stopped, { name: "AbortError" });
+  assert.ok(existsSync(holding), "the run reached its turn: a runner held it");
+  assert.ok(heldRead, "a run read found the run held while its view read queued");
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
+});
+
+test("a claim read that stalls doesn't hold the run's deadline: the read is given up on at the deadline, never its own longer bound, and the run cancelled then", { timeout: 120_000 }, async (t) => {
+  // No runner: the run stays queued. Until the eval cancels it, the proxy never answers the run read the queued bound
+  // asks, as a server that took the request and stalled would.
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES, runner: false });
+  let stalledAt, cancelAt;
+  // The cancel's arrival, timed as it comes in.
+  const arrived = (req) => {
+    if (req.method === "POST" && /\/runs\/[^/]+\/cancel$/.test(req.url)) cancelAt ??= Date.now();
+    return false;
+  };
+  const stalled = (req, body) => {
+    if (req.method !== "GET" || !/^\/v2\/runs\/[^/?]+$/.test(req.url) || cancelAt !== undefined) return body;
+    stalledAt ??= Date.now();
+    return new Promise(() => {});
+  };
+  const report = await evalTemplate({ dir: PKG, cases: ["learned"], server: { baseUrl: await refusing(t, baseUrl, arrived, stalled), token }, queueTimeoutMs: 1_000, runTimeoutMs: 8_000 });
+  // The deadline is 8 s after the run started. The read stalls before it, at the first queued page past the 1 s bound (a
+  // timeline page waits at most 5 s), so the cancel comes at most 7 s after the stall began: at the deadline, never at
+  // the read's own 10 s bound (CLAIM_READ_TIMEOUT_MS), which ends past it.
+  assert.ok(stalledAt !== undefined && cancelAt !== undefined, "a run read stalled, and the run was cancelled");
+  assert.ok(cancelAt - stalledAt < 9_000, `the cancel came ${cancelAt - stalledAt} ms after the stalled read began`);
+  const [one] = report.cases[0].runs;
+  assert.ok(one, JSON.stringify(report.cases[0]));
+  assert.deepEqual([one.status, one.pass], ["timed_out", false]);
+  assert.match(one.error, /^the run took longer than 8 s \(state \w+ when the wait gave up\) and was cancelled$/);
+  assert.equal((await api("GET", `/runs/${one.run_id}`)).body.status, "cancelled", "the run the eval started is cancelled");
 });
 
 test("a listing of the server's templates that fails once fails that case alone: the next case asks again", { timeout: 300_000 }, async (t) => {
@@ -851,6 +1041,25 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.equal(fakeAnswer(fixture, "nope", {}).isError, true);
 });
 
+test("an answer that is one JSON object and nothing else is its json block: for the output, a target and a grader's verdict", () => {
+  const schema = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } };
+  assert.deepEqual(structuredAnswer('{"verdict": "good"}', schema), { value: { verdict: "good" } });
+  assert.deepEqual(structuredAnswer('\n  {"verdict": "good"}\n', schema), { value: { verdict: "good" } }, "trimmed");
+  // Not one JSON object alone: prose around it, an array, two objects, or no JSON. Each is still no block.
+  for (const answer of ['Here it is: {"verdict": "good"}', '[{"verdict": "good"}]', '{"verdict": "good"}\n{"verdict": "bad"}', "good"]) {
+    assert.deepEqual(structuredAnswer(answer, schema), { why: "the answer has no fenced json block" }, answer);
+  }
+  // A fenced block is read as before, and an answer with one is never read whole.
+  assert.deepEqual(structuredAnswer('Done.\n```json\n{"verdict": "fenced"}\n```', schema), { value: { verdict: "fenced" } });
+  const record = (answer) => ({ answer, calls: [], mcpCalls: [], files: [] });
+  const regex = { file: "r.md", type: "regex", pattern: "^## Upgrading", flags: "m", expect: "match", target: "draft.text" };
+  assert.equal(gradeDeterministic(regex, record('{"draft": {"text": "x\\n## Upgrading\\n"}}'), []).pass, true, "a target in a bare object");
+  assert.match(gradeDeterministic(regex, record('So {"draft": {"text": "## Upgrading"}}'), []).reason, /has no fenced json block/);
+  // A grader's verdict as one object whose reason holds braces: read whole, as the run's answer is.
+  assert.deepEqual(verdictOf('{"pass": false, "reason": "the {date} field is empty"}'), { pass: false, reason: "the {date} field is empty" });
+  assert.equal(verdictOf('{"pass": "no", "reason": "a {b}"}'), undefined, "an object that is no verdict");
+});
+
 test("the output check agrees with ajv on the shipped packages' output schemas", () => {
   const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   for (const p of readPackages(TEMPLATES_DIR)) {
@@ -895,14 +1104,12 @@ test("code-review's cases hold the answer's head_sha to the head the prompt name
 
 test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fails, 2 when nothing ran; the report as JSON", { timeout: 300_000 }, async (t) => {
   const dir = await scratch(t);
-  const run = (args) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI, "eval-template", ...args], { stdio: ["ignore", "pipe", "pipe"], env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" } });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (chunk) => (out += chunk));
-    child.stderr.on("data", (chunk) => (err += chunk));
-    child.on("close", (code) => resolve({ code, out, err }));
-  });
+  // Each command in a process group of its own, its wait bounded (fixtures/started.mjs).
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "AGENTRUN_API_KEY" && name !== "AGENTRUN_TOKEN")), AGENTRUN_BOXES: "none" };
+  const run = async (args) => {
+    const { status, out, err } = await ran(t, CLI, ["eval-template", ...args], env, 120_000);
+    return { code: status, out, err };
+  };
   const passed = await run([PKG, "--case", "learned", "--faux", FAUX, "--report", join(dir, "pass.json")]);
   assert.equal(passed.code, 0, passed.err);
   assert.match(passed.out, /^# Evals: evalpkg 0\.1\.0\n\n1 of 1 case passed\./);
@@ -923,17 +1130,13 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   // A Ctrl-C while the held run is in its turn (the file its faux writes says so) cancels it, cleans up and exits 130
   // with no report.
   const holding = join(dir, "holding");
-  const held = spawn(process.execPath, [CLI, "eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding } });
-  let heldErr = "";
-  held.stderr.on("data", (chunk) => (heldErr += chunk));
-  held.stdout.resume();
-  const closed = new Promise((resolve) => held.on("close", resolve));
-  await untilFile(holding, closed);
-  assert.ok(existsSync(holding), `the held run reached its turn: ${heldErr}`);
+  const { child: held, seen, closed } = started(t, CLI, ["eval-template", PKG, "--case", "held", "--faux", FAUX, "--report", join(dir, "stopped.json")], { ...process.env, AGENTRUN_BOXES: "none", AGENTRUN_TEST_EVAL_HOLD: holding });
+  await within(untilFile(holding, closed), 120_000, "the held run reaching its turn", seen);
+  assert.ok(existsSync(holding), `the held run reached its turn: ${seen.err}`);
   held.kill("SIGINT");
-  const code = await closed;
-  assert.equal(code, 130, heldErr);
-  assert.match(heldErr, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
+  const code = await within(closed, 60_000, "eval-template after its SIGINT", seen);
+  assert.equal(code, 130, seen.err);
+  assert.match(seen.err, /stopping: cancelling the run in progress[\s\S]*stopped; no report\./);
   assert.throws(() => readFileSync(join(dir, "stopped.json")), { code: "ENOENT" });
 
   // A report path that exists and can't be written: refused before anything runs.
@@ -941,7 +1144,7 @@ test("agentrun-serve eval-template: exit 0 when every case passes, 1 when one fa
   writeFileSync(readOnly, "{}");
   chmodSync(readOnly, 0o444);
   for (const [args, said] of [
-    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case/],
+    [[PKG, "--case", "nope", "--faux", FAUX], /evals\/nope: no such case \(the package's are all-fail, all-pass, asks, flaky, held, learned, mcp-filed, mcp-match, mcp-mismatch\)/],
     [[PKG, "--runs", "0"], /--runs takes a whole number/],
     [[PKG, "--server", "https://agentrun.invalid", "--faux", FAUX], /--faux is the model of the server it starts itself/],
     [[PKG, "--server", "https://agentrun.invalid"], /--server needs that server's token in AGENTRUN_API_KEY/],

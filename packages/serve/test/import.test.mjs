@@ -14,7 +14,7 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
 import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
-import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
+import { ACTIVE_GAP_MS, readSession } from "@parcha/agentrun-import";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
@@ -1812,6 +1812,33 @@ test("a response a resumed session's file copies counts once across the import, 
   assert.deepEqual(laterKinds, ["pi.user", "pi.assistant"], "no copied prompt or result in its transcript");
   assert.equal((await rowsOf(store)).find((run) => run.importedFrom.session === sessionId(98)), undefined, "a file of copies alone is no run");
   assert.ok(report.skipped.some((s) => s.why === "holds only records of sessions imported already"));
+});
+
+test("a store imported before requests were keyed by message and request id (a bare message id) still holds them: a later file that copies its requests under new uuids counts none of them again", async (t) => {
+  const root = await scratch(t);
+  const home = join(root, "home");
+  const project = join(home, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  // No requestId in the fixture's records: the store holds each answer's bare message id, as an earlier import kept it.
+  const original = claudeSession(home, project, 102);
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const opts = { home, env: ENV, temp: join(root, "tmp") };
+  await runImport(store, await planImport(opts, store), opts);
+  // The same requests again, as a file today writes them: a request id beside each message id, and new record uuids.
+  const records = readFileSync(original, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+  writeSession(
+    join(dirname(original), `${sessionId(103)}.jsonl`),
+    records.map((r) => ({ ...r, ...(r.sessionId ? { sessionId: sessionId(103) } : {}), ...(r.uuid ? { uuid: `again-${r.uuid}` } : {}), ...(r.type === "assistant" ? { requestId: `req_${r.message.id}` } : {}) })),
+  );
+  await runImport(store, await planImport({ ...opts, all: true }, store), { ...opts, all: true });
+  const runs = await rowsOf(store);
+  const first = await storedMetrics(store, runs.find((run) => run.importedFrom.session === sessionId(102)).id);
+  assert.equal(first.requests, 2);
+  // Its prompts are records of their own (new uuids); its requests are the stored run's, counted there alone.
+  const again = await storedMetrics(store, runs.find((run) => run.importedFrom.session === sessionId(103)).id);
+  assert.deepEqual([again.requests, again.input, again.output], [0, 0, 0], "no request counted twice");
 });
 
 test("a session's subagents are no runs of their own: their requests, tokens and tool calls are the session's, its model and transcript its own", async (t) => {

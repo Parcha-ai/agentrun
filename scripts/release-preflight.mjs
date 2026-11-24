@@ -14,17 +14,17 @@ import { isMain } from './is-main.mjs';
 
 const exec = promisify(execFile);
 // The packages a release may publish, by directory, in publication order: dependencies first (dsl, then jev, which uses it), the
-// packages after them that depend on none of them (pi-browser; the computer protocol, computer, and the TypeScript client, client, depend on no package at all), serve (@parcha/agentrun-serve), which uses the packages before it,
+// packages after them that depend on none of them (pi-browser; import, the session readers behind serve's import; web, serve's web_search and web_fetch machinery; the computer protocol, computer, and the TypeScript client, client, depend on no package at all), serve (@parcha/agentrun-serve), which uses the packages before it,
 // and agentrun (`npx @parcha/agentrun`, on its own version line), which depends on serve at its exact version, last. This list is the gate for a new package: a workspace package that is not private and not
 // named here fails the preflight, so a package is never published (or half-released, on a missing trusted publisher) by accident.
-export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', 'pi-browser': '@parcha/pi-browser', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', eve: '@parcha/agentrun-eve', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', 'run-adapters-acp': '@parcha/agentrun-harness-acp', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
+export const releasePackageNames = { dsl: '@parcha/agentrun-dsl', jev: '@parcha/agentrun-jev', 'pi-browser': '@parcha/pi-browser', import: '@parcha/agentrun-import', web: '@parcha/agentrun-web', decisions: '@parcha/agentrun-decisions', computer: '@parcha/agentrun-computer', client: '@parcha/agentrun-client', eve: '@parcha/agentrun-eve', 'run-adapters': '@parcha/agentrun-kernel', 'run-adapters-claude-agent': '@parcha/agentrun-harness-claude', 'run-adapters-codex': '@parcha/agentrun-harness-codex', 'run-adapters-acp': '@parcha/agentrun-harness-acp', serve: '@parcha/agentrun-serve', agentrun: '@parcha/agentrun' };
 export const listedPackages = Object.keys(releasePackageNames);
 // The packages on a version line of their own (changes.mjs says why), checked and named at their manifest's version.
 export { ownVersionPackages };
 const releaseVersion = (directory, manifest, workspaceVersion) => (ownVersionPackages.includes(directory) ? manifest.version : workspaceVersion);
 // The clean consumer's runtime smoke in verify-packages, one key per installed package it runs: verify-packages asserts its
 // smoke against this set and the preflight requires a receipt that says exactly it, so the two cannot disagree.
-export const runtimeSmokeChecks = { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, eve: true, network: 'prohibited' };
+export const runtimeSmokeChecks = { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, import: true, web: true, client: true, eve: true, network: 'prohibited' };
 // A package whose own manifest says "private": true is held: it is built, tested, typechecked, verified and checked to be at the workspace
 // version like every package, and it is never published. Lifting a hold removes that one flag; the publish set below follows it.
 const here = dirname(fileURLToPath(import.meta.url));
@@ -84,6 +84,39 @@ export function checkReleaseDispatch(tag, commit, environment) {
 }
 async function command(file, args, cwd) {
   return (await exec(file, args, { cwd, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
+}
+
+/** `npm view <name> version` on the registry the release publishes to: what npm prints, or execFile's rejection (npm's exit
+ *  status in `code`, its output in `stderr`). */
+export const npmView = name => command('npm', ['view', name, 'version', '--registry=https://registry.npmjs.org/'], tmpdir());
+
+/** npm's answer that a package is not in the registry at all (E404), as opposed to one it could not give. */
+const notOnNpm = error => /\bE404\b|\b404 Not Found\b/.test(`${error?.stderr ?? ''}\n${error?.stdout ?? ''}`);
+const listed = names => (names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`);
+
+/** The gate for a package's first release: every package of the publish set exists on npm already, as a trusted publisher
+ *  can only be set up on a package that exists (docs/releasing.md, "Prepare publication"). A release that reached a missing
+ *  one would stop there, its earlier layers published. Fails closed: an npm failure that is not a 404 (network, auth) is
+ *  never taken for published. `view` is npmView, or a test's. */
+export async function checkPublished(names, view = npmView) {
+  const missing = [];
+  const failed = [];
+  for (const name of names) {
+    try {
+      await view(name);
+    } catch (error) {
+      if (notOnNpm(error)) missing.push(name);
+      else failed.push({ name, error });
+    }
+  }
+  const problems = [];
+  if (failed.length) {
+    const why = failed.map(({ name, error }) => `${name}: ${String(error?.stderr || error?.message || error).trim().split('\n')[0]}`).join('; ');
+    problems.push(`npm could not say whether ${listed(failed.map(({ name }) => name))} ${failed.length === 1 ? 'is' : 'are'} published (${why}); the release stops rather than take ${failed.length === 1 ? 'it' : 'them'} for published.`);
+  }
+  if (missing.length === 1) problems.push(`${missing[0]} is not on npm yet. Bootstrap it before releasing: publish a first version by hand and set up its trusted publisher (docs/releasing.md).`);
+  else if (missing.length) problems.push(`${listed(missing)} are not on npm yet. Bootstrap them before releasing: publish a first version of each by hand and set up its trusted publisher (docs/releasing.md).`);
+  if (problems.length) throw new Error(problems.join('\n'));
 }
 
 export function checkManifest(manifest, directory, version, license, workspaceVersion = version) {
@@ -158,7 +191,8 @@ export async function checkReleaseTree(root, tag, version) {
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 
-export async function releasePreflight(root, tag, { checkGit = true } = {}) {
+/** `npmView` asks npm whether a package exists (default: the registry's own answer; a test hands in its own). */
+export async function releasePreflight(root, tag, { checkGit = true, npmView: view = npmView } = {}) {
   const workspace = await json(join(root, 'package.json'));
   assert.match(workspace.version, /^\d+\.\d+\.\d+-beta\.\d+$/, 'Only an explicit beta version can be released');
   assert.equal(tag, `v${workspace.version}`, 'Tag must match the exact workspace version');
@@ -202,6 +236,9 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
     const log = await readFile(join(root, 'packages', directory, 'CHANGELOG.md'), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; });
     if (log !== null) assert.ok(!unreleasedSection(log).split('\n').slice(1).some(line => line.trim()), `${releasePackageNames[directory]}'s CHANGELOG.md still has entries under Unreleased; run node scripts/changes.mjs --fold`);
   }
+  // Every package this release publishes is on npm already, before an archive is checked: a first publication and its
+  // trusted publisher are set up by hand, and a release that reached a package without them would stop halfway through.
+  await checkPublished(releaseHere.map(directory => releasePackageNames[directory]), view);
   // A held package is bumped with the workspace like the rest and skipped only at publication.
   for (const directory of heldHere) {
     const held = await json(join(root, 'packages', directory, 'package.json'));

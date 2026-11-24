@@ -6,6 +6,7 @@ import { SETTINGS_PAGES } from "./Settings";
 import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { githubReturnOf } from "@/lib/github";
+import { keepReturn } from "@/lib/suggestions";
 
 // Settings → GitHub over /v2/integrations/github: one GitHub App per server. Not connected (200 {connected: false}: a
 // 404 would be a page error in a real browser), Connect starts it
@@ -86,6 +87,27 @@ describe("Settings → GitHub", () => {
     expect(fields[0].value).toBe(JSON.stringify(MANIFEST));
     expect(submits).toBe(1);
     expect(p.button(/Opening GitHub/)?.disabled).toBe(true);
+  });
+
+  it("ticking pull requests for suggested agents asks GitHub for Contents write; left off, it asks for nothing more", async () => {
+    const { v2, calls } = server({ connection: null });
+    const p = await page(v2);
+    const box = p.host.querySelector("input[type=checkbox]") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    act(() => { box.click(); });
+    await p.click(/^Connect GitHub$/);
+    expect(calls.find((c) => c.method === "POST")?.body).toEqual({ contents: "write" });
+  });
+
+  it("connected from Suggested agents, the way back goes on there once; an error stays here", async () => {
+    keepReturn("#/suggestions");
+    const { v2 } = server({ connection: CONNECTED });
+    await page(v2, "github=error&reason=state_invalid");
+    expect(location.hash).not.toBe("#/suggestions");
+    act(() => root?.unmount()); root = undefined;
+    await page(v2, "github=connected");
+    expect(location.hash).toBe("#/suggestions");
+    location.hash = "";
   });
 
   it("an organization typed in goes with the start", async () => {

@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { FRAME } from "./fixtures/faux-browser.mjs";
 import { connect } from "./fixtures/ws-client.mjs";
-import { builtConsole, call, cookieOf, follow, runDir as runFolder, scratch, serve, withEnv } from "./support.mjs";
+import { builtConsole, call, cookieAt, cookieOf, follow, runDir as runFolder, scratch, serve, withEnv } from "./support.mjs";
 
 const { readLiveViewers } = await import("../dist/browser-live.js");
 
@@ -306,7 +306,7 @@ test("the viewer's WebSocket gets the Host check every route gets (host-check.ts
   const w = await watched(t, { allowHosts: ["agents.internal"] });
   const { handed } = w;
   const wsPath = `/v2/runs/${w.runId}/computer/live/v/${handed.id}/ws`;
-  const at = (name) => ({ origin: `http://${name}`, headers: { host: name } });
+  const at = (name) => ({ origin: `http://${name}`, cookie: cookieAt(w.cookie, name), headers: { host: name } });
   // A rebinding page: its Origin is its own name, which this server's Origin check would take; its Host is what gives it away.
   assert.equal((await liveWs(w, wsPath, at(`rebound.example:${w.server.port}`))).status, 403, "a rebound name");
   assert.equal((await liveWs(w, "/v2/runs/whatever", at(`rebound.example:${w.server.port}`))).status, 403, "refused before anything else about it");
@@ -321,7 +321,7 @@ test("the viewer's WebSocket gets the Host check every route gets (host-check.ts
   }
 });
 
-test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not", { timeout: 120_000 }, async (t) => {
+test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owner's WebSocket from the server's public address is taken; another origin still is not; a proxy that names the upgrade's scheme wss keeps the owner's https session", { timeout: 120_000 }, async (t) => {
   const w = await watched(t, { publicUrl: "https://agent.example.com" });
   const { handed } = w;
   const wsPath = `/v2/runs/${w.runId}/computer/live/v/${handed.id}/ws`;
@@ -331,6 +331,23 @@ test("behind a TLS proxy that rewrites Host or drops X-Forwarded-Proto, the owne
   owned.ws.sendJson({ type: "hello", token: handed.token });
   assert.equal(JSON.parse((await owned.ws.next(5_000)).data).type, "ready");
   owned.ws.destroy();
+  // One viewer at a time: the next waits for this one's socket to close.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  // A proxy that keeps the browser's Host and says the scheme: https on a request, wss on a WebSocket upgrade (Traefik).
+  // The owner signed in over https holds the __Host- cookie, which the upgrade must be read under too.
+  const proxied = { host: "agent.example.com", origin: "https://agent.example.com" };
+  const signedIn = await call(w.server.port, { method: "POST", path: "/v2/auth/sign-in", headers: { ...json, ...proxied, "x-forwarded-proto": "https" }, body: { password: PASSWORD } });
+  assert.equal(signedIn.status, 200, signedIn.text);
+  const session = cookieOf(signedIn);
+  assert.match(session, /^__Host-agentrun-session=/, "over https, the __Host- cookie");
+  const upgrade = { origin: proxied.origin, headers: { host: proxied.host, "x-forwarded-proto": "wss" } };
+  assert.equal((await liveWs(w, wsPath, { ...upgrade, cookie: null })).status, 401, "wss with no session");
+  const overWss = await liveWs(w, wsPath, { ...upgrade, cookie: session });
+  assert.equal(overWss.status, 101, "wss with the owner's https session");
+  overWss.ws.sendJson({ type: "hello", token: handed.token });
+  assert.equal(JSON.parse((await overWss.ws.next(5_000)).data).type, "ready");
+  overWss.ws.destroy();
 });
 
 /** A viewer open through the proxy with the owner's cookie `cookie`: its first frame read, so bytes flow both ways. */

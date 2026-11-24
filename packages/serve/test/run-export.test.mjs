@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { EXPORT_CAPS, ExportFailed, exportBundle, restoreIdsOf, SHARE_FORMAT, SHARE_RUN_FIELDS } from "../dist/run-export.js";
 import { ApiError } from "../dist/errors.js";
-import { scrub } from "../dist/secret-cut.js";
+import { SCRUB_RULES, scrub } from "../dist/secret-cut.js";
 import { stable } from "../dist/validate.js";
 
 const GOLDEN = fileURLToPath(new URL("./fixtures/run-export/golden.json", import.meta.url));
@@ -141,7 +141,11 @@ test("every planted kind is cut with the right kind and restorability, and each 
     assert.equal(cut.restorable, ["label", "personal", "jev"].includes(cut.kind), `${cut.rule}'s restorability is its kind's`);
     const text = valueAt(doc, cut.at);
     assert.equal(typeof text, "string", `${cut.at} points at a string`);
-    assert.match(text.slice(cut.start, cut.end), /^\[redacted:[a-z0-9-]+( \d+ lines)?\]$/, `${cut.at} ${cut.start}-${cut.end} spans the cut's marker`);
+    // The span holds what the cut wrote: its rule's replacement when the rule has one (a home's user: `<user>`), else
+    // the `[redacted:<rule>]` marker.
+    const replacement = SCRUB_RULES.find((rule) => rule.id === cut.rule)?.replacement;
+    if (replacement !== undefined) assert.equal(text.slice(cut.start, cut.end), replacement, `${cut.at} ${cut.start}-${cut.end} spans ${cut.rule}'s replacement`);
+    else assert.match(text.slice(cut.start, cut.end), /^\[redacted:[a-z0-9-]+( \d+ lines)?\]$/, `${cut.at} ${cut.start}-${cut.end} spans the cut's marker`);
   }
   assert.equal(new Set(doc.cuts.map((cut) => cut.id)).size, doc.cuts.length, "ids are unique");
   // The id is derived from where the cut is, never from its value: two runs that differ only in their secrets' values

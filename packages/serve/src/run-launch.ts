@@ -10,6 +10,7 @@ import { nativeOf } from "./native/binding.js";
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
+import type { InputIssue } from "./errors.js";
 import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -93,9 +94,15 @@ export interface RunLaunch {
    *  claim, revoke and reclaim of the run, after a restart too, acts on that one disk. */
   readonly archilDisk?: LaunchDisk;
   /** A run started with `hold: true` (computer-held.ts): its computer waits for its owner's start, and stays the owner's
-   *  after the agent's end until released, each wait for at most `minutes` with no call. */
-  readonly hold?: { readonly minutes: number };
+   *  after the agent's end until released, each wait for at most `minutes` with no call. `refused`: its model kept it from
+   *  running when it was created (a key, the harness, a price), which a held run's create does not refuse: its computer is
+   *  the owner's to call, and its agent never starts, every start and message refused in these words. */
+  readonly hold?: { readonly minutes: number; readonly refused?: HeldRefusal };
 }
+
+/** A held run's model refusal, as its create would have answered it (409 agent_not_runnable): its message, its fields and
+ *  its details, kept in its launch for its start to answer the same. */
+export type HeldRefusal = { readonly message: string; readonly fields: readonly InputIssue[]; readonly details: Record<string, unknown> };
 
 /** Immutable placement identity for a project copied before admission. */
 export interface SourceProjectLaunch {
@@ -210,7 +217,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
     ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
-    ...(launch.hold ? { hold: { minutes: launch.hold.minutes } } : {}),
+    ...(launch.hold ? { hold: { minutes: launch.hold.minutes, ...(launch.hold.refused ? { refused: launch.hold.refused } : {}) } } : {}),
   };
 }
 
@@ -236,6 +243,12 @@ export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
   return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
+/** Whether a person started the run: no trigger fired it (a schedule's, a webhook's, a trigger's turn into a run), and it
+ *  is no learned workflow's audit shadow (runner/audit.ts) or replay (runner/promotion.ts), which the server starts
+ *  itself. Only such a run goes on its owner's own sign-in (runner/harness-loops.ts, cli-run-spec.ts). */
+export const personStarted = (launch: Pick<RunLaunch, "trigger" | "audit" | "replay">): boolean =>
+  launch.trigger === undefined && launch.audit === undefined && launch.replay === undefined;
+
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */
 export function readLaunchBody(stored: unknown): RunLaunch | undefined {
@@ -249,6 +262,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
+  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -277,8 +291,14 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) && typeof stored.hold.minutes === "number" ? { hold: { minutes: stored.hold.minutes } } : {}),
+    ...(isObject(stored.hold) && typeof stored.hold.minutes === "number" ? { hold: { minutes: stored.hold.minutes, ...(refused ? { refused } : {}) } } : {}),
   };
+}
+
+/** A held run's model refusal as its launch keeps it, else undefined. */
+function readRefusal(value: unknown): HeldRefusal | undefined {
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return undefined;
+  return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 
 /** The run's learning start (its seed sha, its # Learned section and its learned workflows), read from one place by learning's

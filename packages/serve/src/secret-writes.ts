@@ -90,8 +90,8 @@ export type SecretPredicate = (body: unknown) => boolean;
 /** What a request is besides its body, for a predicate that must read what is stored: the route's path parameters (in
  *  the order its pattern names them) and the server's one store. `seen`: what the predicate read to let the request
  *  through, which the dispatch hands its operation, so a write allowed against one stored state is refused when that
- *  state changed before the write lands. */
-export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; seen?: unknown };
+ *  state changed before the write lands. `apiOnly`: the server is API-only (api-only.ts), with no owner to write one. */
+export type SecretRequest = { readonly params: readonly string[]; readonly store: unknown; readonly apiOnly?: boolean; seen?: unknown };
 /** Whether a request writes a secret by what it would do to what is stored (drop or replace a sealed credential), read
  *  from the store: beside the body's predicate, in the same one check. */
 export type StoredSecretPredicate = (body: unknown, request: SecretRequest) => Promise<boolean>;
@@ -222,9 +222,10 @@ export const unguardedOperations = (doc: Json): string[] =>
 //
 // Shown once. A value the server mints for a person to copy is shown ONCE, as a field of its own named `<kind>_secret`
 // beside `secret: SecretMeta`, and only in the owner session's minting answer (the create, a rotate, the first save):
-// so far `signing_secret` alone (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
-// webhook's, its first PUT /settings/webhook). A token caller's create answer says `secret_set: true` beside secret.set,
-// and no value. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
+// so far `signing_secret` (a webhook trigger's, POST /triggers and POST /triggers/{id}/secret; the outbound
+// webhook's, its first PUT /settings/webhook) and an API key's, named `api_key` for what an app calls it (POST
+// /settings/api-keys, api-keys.ts). A token caller's create answer says `secret_set: true` beside secret.set,
+// and no value; a token never reaches an API key's create at all. MCP mints nothing a person copies: a `client_secret` in any answer is a leak. The planted-secret harness
 // (test/fixtures/planted-secrets.mjs) allows a value only in an answer its plant declares as minting (`mints`), to the
 // owner's session, and flags it anywhere else: any GET, a token caller's answer, a later answer, the journal, the
 // store's rows, the log, an export.
@@ -257,7 +258,7 @@ export const SECRET_META_SCHEMA = {
   required: ["name", "set", "source", "changed_at"],
   description: "What a secret's view says of it: its name, whether it is set, where it came from, and when it last changed. Never a value, a prefix, a length or a hash.",
   properties: {
-    name: { type: "string", pattern: "^[a-z][a-z0-9-]*(:[^:]+)+$", description: "The secret's name, \"<plane>:<id>\": a lowercase plane and the id as the plane keys it, joined with \":\": tool:<KEY_NAME>, model:<KEY_NAME>, mcp:<server> (several of one server: mcp:<server>:<field>), computer:<provider>:<KEY>, workspace:archil, trigger:<id>, webhook:outbound, github:app, source:<adapter>:<field>. An object holding one secret carries it as `secret`, one holding several as `secrets`." },
+    name: { type: "string", pattern: "^[a-z][a-z0-9-]*(:[^:]+)+$", description: "The secret's name, \"<plane>:<id>\": a lowercase plane and the id as the plane keys it, joined with \":\": tool:<KEY_NAME>, model:<KEY_NAME>, mcp:<server> (several of one server: mcp:<server>:<field>), computer:<provider>:<KEY>, harness:<harness>:<KEY>, workspace:archil, trigger:<id>, webhook:outbound, github:app, source:<adapter>:<field>. An object holding one secret carries it as `secret`, one holding several as `secrets`." },
     set: { type: "boolean", description: "Whether a value is set." },
     source: { enum: ["env", "console", "sign-in", null], description: "Where it came from: env, the environment the server starts with (which always wins, by the same name, and greys the console's field); console, pasted in the console by the owner's session; sign-in, obtained by an OAuth sign-in or Connect. null when not set." },
     changed_at: { type: ["string", "null"], format: "date-time", description: "When the credential itself last changed (pasted, signed in, rotated); null when not set or not known." },

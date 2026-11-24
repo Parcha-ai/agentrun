@@ -129,7 +129,7 @@ a small link in a row gets there with padding the layout does not see (`-my-1 py
   action uses the same radius on its single outer edge; its main action and chooser stay square inside that edge.
   Its tinted main action and chooser share the foreground, hover, open and focus treatment across the whole group,
   with no internal divider. Compact row actions keep the neutral secondary treatment.
-- The integrated build composer uses `!rounded-composer` (`--radius-composer: 1rem`). Keep this softer shape scoped
+- The integrated build composer uses `!rounded-composer` (`--radius-composer: 0.875rem`, 14px). Keep this softer shape scoped
   to the build composer.
 - `shadow-float` goes under a menu, a picker's list, a tip, a toast and a dialog. Nothing in the page's flow has a
   shadow.
@@ -257,6 +257,9 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
     settings on the right. Every box on every Settings page starts at one edge and has one width. One that is a
     table (Tools) is full width.
   - A reading column (a run's report and timeline) is centred, at most `max-w-4xl`.
+  - A run's Screen tab is the reading column's width while its screen is alone. With the run's steps beside the screen
+    (from `xl`) it is at most `max-w-7xl`: wider by about the list, so the screen keeps the size it had alone and
+    grows no further.
   - A line of prose is at most `max-w-prose`. Never write a width as a number (`max-w-[1100px]`).
 - A page works at 390px wide with no sideways scroll. A wide table scrolls inside its own panel, and so does a row
   of tabs (`tabListClass`).
