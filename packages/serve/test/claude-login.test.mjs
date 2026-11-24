@@ -1458,6 +1458,15 @@ test("a note whose file can't be put in place leaves nothing beside it", async (
   assert.deepEqual(readdirSync(dir), [name], "a note whose rename failed left the file it wrote aside");
 });
 
+test("an answer is this machine's: once the data folder's machine id is another (the file made again), an answer noted under the old id stands for no run, though its file is still there", async (t) => {
+  const login = await ownLogin();
+  const { data, file } = await noted(t, login);
+  await loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data });
+  writeFileSync(join(data, "machine-id"), `${"ab".repeat(16)}\n`, { mode: 0o600 });
+  assert.ok(existsSync(file), "the answer noted under the old id is still there");
+  await assert.rejects(loginBeforeRun(login, "claude", statusOf(timedOut(), timedOut()).status, { data }), unknownByTimeout, "an answer noted under the machine's old id stood after the id changed");
+});
+
 test("only a check that gave no answer is asked again or goes on by an earlier signed-in answer: a CLI that is not there, or any other failure, refuses the run at once with LOGIN_UNKNOWN in its own words", async () => {
   const login = await ownLogin();
   const time = clock(1_000_000);
