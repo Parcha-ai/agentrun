@@ -51,7 +51,8 @@ export const KEEP_WORDS = `${KEEP_MS / 60_000} minutes`;
  *  ended at a refusal of the cap's (paused there), or its learned workflow's call's approval. */
 export type ParkCause = "approval" | "answer" | "cap" | "refusal" | "workflow";
 
-/** The live view's end at a park: why it parked, and the time its computer is kept until (ms). */
+/** The live view's end at a park: why it parked, and the time its computer is kept until (ms), on the parking process's
+ *  own clock (the viewer counts down from it there), not the row's store-clock `until`. */
 export type ParkedEnd = { readonly parked: ParkCause; readonly until: number };
 
 /** What the person is waited for, by the park's cause. */
@@ -83,7 +84,10 @@ export const KEPT_PREFIX = KEPT_ROWS;
 export const keptKeyOf = (runId: string): string => `${KEPT_PREFIX}${runId}`;
 
 /** A computer kept at a park: its provider (by id), its kind, its ref, the claim epoch its labels carry (a later claim
- *  reads its mount back under that epoch), and the time it is kept until (ms). `ending`: its delete has begun and may
+ *  reads its mount back under that epoch), and the time it is kept until (ms). `until` is on the store's clock (the
+ *  deadlines': the database's on Postgres, Store.sealedKeys.clock), stamped from it at the park, and every reader judges
+ *  it on that clock: the claim rule's pin (in SQL), a claim's take-back, the janitor's pass and the run's computer view.
+ *  The parking runner's own timer counts KEEP_MS from the stamp on its own clock. `ending`: its delete has begun and may
  *  not have finished; `ended`: it is gone. Either way no claim takes it. */
 export type Kept = {
   readonly provider: string;
@@ -247,6 +251,7 @@ export type KeptSweep = { readonly ended: readonly string[]; readonly failed: re
 export async function sweepKept(deps: {
   readonly settings: KeptSettings;
   readonly runs: Pick<Store["runs"], "get">;
+  /** Now on the store's clock, the one each row's `until` is stamped on (Kept.until). */
   readonly now: number;
   readonly providerOf: (id: string) => Promise<ComputerProvider | undefined>;
   readonly deleteMs?: number;

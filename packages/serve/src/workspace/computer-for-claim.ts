@@ -889,6 +889,9 @@ export async function computerForClaim(
   /** The kind of the computer this claim made the run fresh (ClaimComputer.made). */
   let ownKind: MadeKind | undefined;
   const now = deps.now ?? Date.now;
+  /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
+   *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
+  const storeClock = (): Promise<number> => store.sealedKeys.clock();
   /** Each computer this claim makes through its provider, from its create to its proven delete. */
   const written = intervalWrites(store, deps.log, now);
   /** Its time on the run's ledger (compute-cost.ts), while this claim holds it; none with no ledger here. */
@@ -1050,8 +1053,9 @@ export async function computerForClaim(
         if (there) await restoreKept(settings, launch.runId, record).catch(() => false);
       };
       try {
-        // Its time over, or its end took it first (ending or ended): a new one, said so.
-        if (record.ending || record.ended || now() >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
+        // Its time over (on the store's clock, which stamped it), or its end took it first (ending or ended): a new one,
+        // said so.
+        if (record.ending || record.ended || (await storeClock()) >= record.until || !(took = await takeKept(settings, launch.runId, record))) {
           lapsed = true;
           return undefined;
         }
@@ -1295,32 +1299,42 @@ export async function computerForClaim(
         return false;
       }
       let row: Kept;
+      /** This process's clock when the keep's end was stamped: its own timer and its live view count from it. */
+      let stamped: number;
       try {
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
+        // The keep's end on the store's clock, the one the claim rule's pin, every claim's take-back and every janitor
+        // judge it by: a runner whose clock is off from the store's never moves it.
+        const at = await storeClock();
+        stamped = now();
+        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: at + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}), ...(keeps.pinned && launch.holder ? { runner: launch.holder.runner, incarnation: launch.holder.incarnation } : {}) });
       } catch {
-        // No row, nothing to find it by: it goes as at the run's end.
+        // No clock read or no row, nothing to find it by: it goes as at the run's end.
         await release();
         return false;
       }
+      /** The keep's end on this process's clock: KEEP_MS from the stamp. */
+      const localUntil = stamped + KEEP_MS;
       await writes.kept(keeps.entry, ref.id);
       // The live view ends (its frames and any take-over), saying what the run waits for and until when the computer is
       // kept, never that it ended; the hold with it; the machine and its mount stay.
       released = (async () => {
         // The recording pauses: the claim that resumes the run goes on in a new file.
         await Promise.all(recordings.map((one) => one.stop("parked")));
-        await Promise.resolve(view?.close({ parked: cause, until: row.until })).catch(() => undefined);
+        // The viewer counts down on this process's clock, so it is told the end on it.
+        await Promise.resolve(view?.close({ parked: cause, until: localUntil })).catch(() => undefined);
         endHold();
         await keeps.computer.close();
       })();
       await released;
-      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
+      // Its end at its time, by this process (KEEP_MS after the stamp, counted on its own clock, so the store's clock
+      // being off from it changes nothing); the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
       // deletes it, a synced folder with no read-back.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
           if (await deleteKept(keeps.provider, ref)) await writes.ended(keeps.entry, ref.id);
           await revoke().catch(() => undefined);
         }).catch(() => undefined);
-      }, Math.max(0, row.until - now()));
+      }, Math.max(0, localUntil - now()));
       timer.unref?.();
       return true;
     },

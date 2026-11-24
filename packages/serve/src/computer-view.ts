@@ -31,7 +31,7 @@ export type ComputerAnswer =
 /** Why a parked run's kept computer of `kind` is not kept any more, from its keep's row (computer-kept.ts): its time
  *  passed or its end began, in the timeout's words, at that time; nothing while it is kept, with no row, or with one of
  *  another kind (a sandbox's: it has no screen). Only for a run still parked: a resumed run's row, taken or left ended,
- *  says nothing. */
+ *  says nothing. `now` is on the store's clock, the one the row's `until` was stamped on. */
 export function lapsedOf(kind: ComputerKind, kept: Kept | undefined, now: number): { at: string; why: string } | undefined {
   if (!kept || kept.kind !== kind) return undefined;
   if (kept.ended || kept.ending || now >= kept.until) return { at: new Date(kept.until).toISOString(), why: lapsedWords(kind) };

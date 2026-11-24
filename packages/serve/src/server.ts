@@ -5294,7 +5294,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
-          lapsed: async (kind) => (parked ? lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), Date.now()) : undefined),
+          // The keep's `until` is on the store's clock (computer-kept.ts Kept.until), so its lapse is judged on it; a
+          // clock or a row that can't be read says nothing.
+          lapsed: async (kind) => {
+            if (!parked) return undefined;
+            const at = await store.sealedKeys.clock().catch(() => undefined);
+            return at === undefined ? undefined : lapsedOf(kind, await readKept(store.settings, run.id).catch(() => undefined), at);
+          },
           hold: () => hold,
           // A going run's browser let go while it waited for its person: the Screen tab says so, with when. One settings
           // row (browser-wait-ended.ts), never the run's journal: this is read on every Screen poll.

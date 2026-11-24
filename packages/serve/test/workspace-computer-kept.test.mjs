@@ -49,8 +49,9 @@ function memorySettings() {
   };
 }
 
-/** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
-function memoryStore() {
+/** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store), and its
+ *  clock (`now`), the one a kept row's `until` is stamped and judged on. */
+function memoryStore(now = Date.now) {
   const keys = new Map();
   const runs = new Map([["run-1", { id: "run-1", state: "parked", epoch: 0, runner: null }]]);
   return {
@@ -66,7 +67,7 @@ function memoryStore() {
     },
     agents: { revision: async () => undefined },
     settings: memorySettings(),
-    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })), clock: async () => now() },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
     computerIntervals: memoryIntervals(),
   };
@@ -132,11 +133,12 @@ const T0 = 1_800_000_000_000;
 /** One server: its store, a vendor's account, a clock, and its claims of run-1 (each a claim at `epoch`). */
 async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS, machine, keys = { E2B_API_KEY: "fake-test-key" }, workspace } = {}) {
   const root = scratch();
-  const store = memoryStore();
+  // One clock for the store and the claims: a kept row's `until` is stamped and judged on the store's.
+  const clock = { now: T0 };
+  const store = memoryStore(() => clock.now);
   const sealKey = randomBytes(32);
   for (const [name, value] of Object.entries(keys)) await putSealedKey(store, sealKey, name, value);
   const account = vendor(root, groups, machine);
-  const clock = { now: T0 };
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
   const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
@@ -152,7 +154,7 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
   const pass = async ({ self, runners } = {}) => {
     const logged = [];
-    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, computerIntervals: store.computerIntervals, ...(runners ? { runners } : {}) };
+    const swept = { runs: store.runs, computerLedger: store.computerLedger, settings: store.settings, computerIntervals: store.computerIntervals, sealedKeys: store.sealedKeys, ...(runners ? { runners } : {}) };
     const running = startJanitor({ store: swept, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, log: (line) => void logged.push(line), everyMs: 600_000, now: () => clock.now, ...(self ? { self } : {}) });
     try {
       await running.first;

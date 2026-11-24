@@ -83,7 +83,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
   const keys = new Map();
   const store = {
     agents: { revision: async () => undefined },
-    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [] },
+    sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [], clock: async () => Date.now() },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
     computerIntervals: memoryIntervals(),
     settings: memorySettings(),
