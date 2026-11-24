@@ -73,6 +73,12 @@ test("an operator inside quotes, a substitution, arithmetic or a parameter ends 
     ['x $"a;b" y', ["x", '$"a;b"', "y"], ["lit", "dq", "lit"], []],
     // A nested substitution is read whole; only the outermost body is listed.
     ['x "$(a "$(b;c)" d)" y', ["x", '"$(a "$(b;c)" d)"', "y"], ["lit", "dq", "lit"], ['a "$(b;c)" d']],
+    // A substitution inside `${…}`, `$"…"` or a quote inside either is listed too: its command is read.
+    ["x ${a:-$(b;c)} y", ["x", "${a:-$(b;c)}", "y"], ["lit", "brace", "lit"], ["b;c"]],
+    ['x $"a $(b;c)" y', ["x", '$"a $(b;c)"', "y"], ["lit", "dq", "lit"], ["b;c"]],
+    ['x "${a:-$(b)}" y', ["x", '"${a:-$(b)}"', "y"], ["lit", "dq", "lit"], ["b"]],
+    ['x ${a:-"$(b)"} y', ["x", '${a:-"$(b)"}', "y"], ["lit", "brace", "lit"], ["b"]],
+    ["x ${a:-\x60b\x60} y", ["x", "${a:-\x60b\x60}", "y"], ["lit", "brace", "lit"], ["b"]],
     ["x pre$(a)post y", ["x", "pre$(a)post", "y"], ["lit", "lit+sub+lit", "lit"], ["a"]],
   ];
   for (const [text, want, wantKinds, wantSubs] of rows) {
@@ -86,6 +92,25 @@ test("an operator inside quotes, a substitution, arithmetic or a parameter ends 
   assert.deepEqual(word.parts[0].inner.map((part) => part.kind), ["brace", "var", "tick", "sub"]);
   assert.equal(wordText(text, word), "a ${b} $c `d` $(e)");
   assert.equal(wordFrom(text, word, 2).kind, "brace");
+});
+
+test("a redirection's target and a descriptor written against one are no arguments; a substitution in a target is still listed", async () => {
+  const { argWords } = await import("../dist/shell-lex.js");
+  assert.equal(typeof argWords, "function", "shell-lex.js exports argWords");
+  for (const [text, want, wantSubs] of [
+    ["redis-cli >-a report.txt ping", ["redis-cli", "report.txt", "ping"], []],
+    ["redis-cli -a pw >out.txt ping", ["redis-cli", "-a", "pw", "ping"], []],
+    ["redis-cli -h db 2>/dev/null -a pw", ["redis-cli", "-h", "db", "-a", "pw"], []],
+    ["redis-cli >log 2>&1 -a pw", ["redis-cli", "-a", "pw"], []],
+    ["cmd &>all <in.txt <<<word x", ["cmd", "x"], []],
+    ["cmd >&2 a 2<&- b", ["cmd", "a", "b"], []],
+    ["cmd 2 > x y", ["cmd", "2", "y"], []],
+    ['cmd >"$(a; b)" c', ["cmd", "c"], ["a; b"]],
+  ]) {
+    const lexed = read(text);
+    assert.deepEqual(argWords(text, lexed.tokens).map((word) => wordText(text, word)), want, text);
+    assert.deepEqual(subs(text, lexed), wantSubs, text);
+  }
 });
 
 test("a construct that does not close on its line or before the limit is a character, and reading goes on", () => {
@@ -225,9 +250,8 @@ test("reading is linear by count: 1 MB of nested, unclosed and repeated construc
     assert.ok(perChar <= 8, `${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
   }
   // A command named inside the quotes of an unclosed construct searches the openers that construct's read took as
-  // quoted text, once each (they are not its misses): a constant more. Measured at most 11.60 at 64 KB and 10.88 at 1 MB;
-  // each unit reads the same per character from 64 KB to 2 MB, and that flatness is what makes it linear. The shape was
-  // over 8 before that search: `curl $(x|'curl ${a:-$(a; ` read 8.35 a character at a1ee7779a1.
+  // quoted text, once each (they are not its misses): a constant more. Each unit reads the same per character from
+  // 64 KB to 2 MB, and that flatness is what makes it linear.
   for (const unit of ["curl $(x|'curl ''$(a ", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)' ", "curl $(x|'curl ${a:-$(a ", "curl $(x|'curl ${a:-$(a; ", `curl "$(x|'curl "$(a; `]) {
     const perChar = readsPerChar(unit.repeat(Math.ceil(1_000_000 / unit.length)), String.raw`\b(?:curl|redis-cli|mysql|login)\b`, 12);
     assert.ok(perChar <= 12, `${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
