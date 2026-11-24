@@ -112,7 +112,7 @@ import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
-import { readLaunchBody } from "./run-launch.js";
+import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
@@ -211,6 +211,7 @@ import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
 import { applyImported, deleteTemplate, dropRemovedUploads, importTemplate, loadImported, type TemplateImportDeps, UPLOAD_PREFIX } from "./template-import.js";
+import { hereOf, Marketplace, marketplaceUrlOf } from "./marketplace.js";
 import { templateInstallLink, templateLink, templatesLink } from "./console-links.js";
 import { GITHUB_HOSTS, IMPORT_LIMITS } from "./template-source.js";
 import { checkDefinitionBody, DEFAULT_INPUT_SCHEMA, type DefinitionBody, definitionBodyIssues, EXTERNAL_NAME, ID, IDEMPOTENCY_TTL_S, inputIssues, inputSchemaOf, isObject, type Json, stable, unknownFields } from "./validate.js";
@@ -532,6 +533,9 @@ export type ServeOptions = {
   /** A test's seam: the GitHub a template import reads, its API's origin and the one host it may be sent to, in place of
    *  GitHub's own (template-source.ts GITHUB_HOSTS). */
   templateImportApi?: string;
+  /** A test's seam: the marketplace whose list GET /marketplace/templates answers, its address, or null for none, in
+   *  place of AGENTRUN_MARKETPLACE's (marketplace.ts marketplaceUrlOf). */
+  marketplace?: string | null;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
   /** The bound on one webhook try, whole milliseconds under the 60 s claim it holds its message by (default 15 s:
@@ -857,6 +861,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/marketplace\/templates$/, name: "listMarketplaceTemplates" },
   { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
@@ -1390,6 +1395,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The packages served: the bundled ones, read and checked before the start, and those imported here, which the store
   // keeps and are checked again as they load (template-import.ts). One that no longer checks is left out, said in the log.
   const registry = new TemplateRegistry(templates);
+  // The marketplace's list (marketplace.ts), read when the console or a caller asks for it, never at the start.
+  const marketplace = new Marketplace(options.marketplace !== undefined ? options.marketplace : marketplaceUrlOf(process.env, Boolean(options.faux)));
   await loadImported({ registry, store }, (id, why) => log?.(logLine("template_import_skipped", { template: id, why })));
   stopObservationRetention = await maintainObservations(new Observations(store), {
     onError: () => { process.stderr.write("agentrun-serve: observation retention failed; retrying on the next sweep\n"); },
@@ -3168,8 +3175,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
    *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice).
-   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [] }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[] } = {}): Promise<void> {
+   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. `held`: the
+   *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
+   *  returned for its launch, its start to answer it (computer-held.ts). */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -3240,7 +3249,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { fields, details: { unbound, missing, ...named } });
+    if (revision.kind === "agentic") {
+      const details = { unbound, missing, ...named };
+      // A held run kept from running by its model alone opens (runnable.ts Blocker.model: a CLI harness that lacks only a
+      // model key here among them): its computer is its owner's to call, and these words are its start's refusal
+      // (computer-held.ts). Any other blocker refuses it here, as any run.
+      if (held && blockers.every((b) => b.model)) return { message, fields, details };
+      throw new ApiError("agent_not_runnable", message, { fields, details });
+    }
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));
@@ -3986,8 +4002,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
   function startSeal(handed: Handed): StartOptions["sealed"] {
     if (handed.mcp === undefined && handed.model === undefined && handed.keys === undefined) return undefined;
-    return (runId, launch, kind) => {
-      const target = { kind, model: launch.model, native: Boolean(launch.native) };
+    return (runId, _launch, target) => {
       if (handed.model !== undefined) {
         const why = modelKeyMisfit(env, target);
         if (why) throw misfit(why);
@@ -4008,6 +4023,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  written. */
   async function messageSeal(run: { id: string; kind: string }, handed: Handed): Promise<LaunchSealed | undefined> {
     const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+    // A held run its model kept from running takes no message (runs-over-store.ts message refuses it in its create's
+    // words): nothing to seal, and no key check answers before that refusal (its launch pins no model to check).
+    if (launch?.hold?.refused) return undefined;
     const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
     if (handed.model !== undefined) {
       const why = modelKeyMisfit(env, target);
@@ -6239,6 +6257,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const listed = registry.list();
         const pickView = await computerHere(listed);
         return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+      }
+      case "listMarketplaceTemplates": {
+        // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
+        const read = await marketplace.list();
+        const here = registry.list();
+        return send(res, 200, { ...read, templates: read.templates.map((entry) => { const id = hereOf(entry, here); return id ? { ...entry, here: id } : entry; }) });
       }
       case "importTemplate": {
         // Read from GitHub, or uploaded whole ({files}), and checked; a dry run answers it (200), else it is stored and

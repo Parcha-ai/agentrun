@@ -13,8 +13,8 @@ const KEY = ["not-a-secret", "x-0123456789abcdef"].join("-");
 /** The most characters the shape scanners may visit per character of a text (redact-contract.test.mjs's adversarial
  *  bound): a scanner that read a run again from each repeat in it passes the run once per repeat. */
 const SCANNED_MAX = 128;
-/** An answer redacted with one held value, and the characters the shape scanners visited (redact/match.ts `scanned`) per
- *  character of it. Counted, not timed, so a loaded machine can't fail it. */
+/** An answer redacted with one held value, and the characters its redaction visited (redact/match.ts `scanned`, every
+ *  stage) per character of it. Counted, not timed, so a loaded machine can't fail it. */
 const counted = (text) => {
   scanned.chars = 0;
   const out = redactedAnswer(text, [KEY]);
@@ -139,8 +139,8 @@ test("two whsec_ secrets back to back are both redacted whole: the first's run t
 });
 
 // Each shape's adversarial input (its prefix repeated with no terminator, its prefix then its body's class with none) is
-// counted in redact-contract.test.mjs, "adversarial texts: the characters the shape scanners visit are at most a fixed
-// multiple of the text's length", through redactSecrets and redactLearned alike.
+// counted in redact-contract.test.mjs: "adversarial texts: the characters the shape scanners visit…" (at most 128 per
+// character, no held value) and "…the whole pipeline visits…" (at most its WORK, one held value).
 
 test("a JWT is still found wherever it starts, glued to a word's characters too, and a private key's header with any key type", () => {
   const jwt = ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"].join(".");
