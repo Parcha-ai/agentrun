@@ -141,7 +141,8 @@ export interface ClaudeAgentAdapterOptions {
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
+   *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
   /** For tests: the clock a user turn's day is read from (harness.ts dateLine). Default the system's. */
   now?: () => Date;

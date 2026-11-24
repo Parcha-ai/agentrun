@@ -12,12 +12,13 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ApiError } from "../errors.js";
-import type { RunnerRow, Runners } from "../store/store.js";
+import { RUNNER_STALE_MS, type RunnerRow, type Runners } from "../store/store.js";
 
 /** How often a runner says again that it is there. */
 export const PRESENCE_RENEW_MS = 10_000;
-/** How old a runner's word can be and still count: three renewals missed. */
-export const PRESENCE_STALE_MS = 3 * PRESENCE_RENEW_MS;
+/** How old a runner's word can be and still count: three renewals missed. The store's (RUNNER_STALE_MS), which its claim
+ *  rule reads for a kept computer's pin. */
+export const PRESENCE_STALE_MS = RUNNER_STALE_MS;
 
 /** A runner's row that says where its relay answers. */
 export type RelayRow = RunnerRow & { readonly host: string; readonly port: number };

@@ -15,7 +15,9 @@ export const CREDENTIAL_PATTERNS = [
   ["API key (sk-)", /\bsk-(?:proj-|svcacct-|admin-|ant-(?:api|admin)\d{2}-)?[A-Za-z0-9_-]{20,}/],
   ["Slack token", /\bxox[abeoprs]-[A-Za-z0-9-]{20,}/],
   ["AWS access key", /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
-  ["signed token (JWT)", /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{16,}/],
+  // From the first "eyJ" of its run of a part's characters: a token glued to a word ("id_eyJ...") is found, and a run
+  // of "eyJ" with no dot is tried once.
+  ["signed token (JWT)", /eyJ(?<!eyJ[A-Za-z0-9_-]*?eyJ)[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{16,}/],
   ["URL with a password", /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>/:@]+:[^\s"'`<>/@]+@/i],
 ];
 

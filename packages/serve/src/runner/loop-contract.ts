@@ -167,6 +167,10 @@ export interface LoopDeps {
    *  end goes through it, so no secret the runner holds is stored, its values cut the run's live view (live-ticker.ts),
    *  and a claim carries the run's own tool keys into it (claim-secrets.ts). */
   redact: HeldRedact;
+  /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
+   *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
+   *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */
+  incarnation?: string;
 }
 
 /** A run's held state: what pi shows before it stores it. The live view (live/stream.ts) streams it beside the stored

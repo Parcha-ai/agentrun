@@ -40,6 +40,7 @@ import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
+import connectAgentTabs from "./connect-agent-tabs.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import playgroundPaneLines from "./playground-pane-lines.mjs";
 import learningBill from "./learning-bill.mjs";
@@ -83,6 +84,7 @@ export const flows = [
   triggerRowLabel,
   computerStep,
   agentCardFooter,
+  connectAgentTabs,
   costPerRun,
   learningBill,
   workflowReplay,
