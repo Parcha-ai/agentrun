@@ -3733,7 +3733,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as." },
+    composio_user_id: { type: "string", pattern: COMPOSIO_USER_ID.source, description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as. From the API token, so is a user the owner connects here, any preset server the owner saved (not per-run) calling as it: 422 not_allowed at this field, read at each request, nothing written. The owner's session binds any user." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
@@ -3748,7 +3748,7 @@ const MCP_RUN_AUTH: Json = {
   propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
   // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
   // the run's own, handed by whoever may start it, and kept only for that run.
-  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent.",
+  description: "What each MCP server this run calls takes from the run, by server name: a per_run server's headers, `{\"<server>\": {\"headers\": {...}}}`, or the Composio account a per-run Composio server's calls run as, `{\"<server>\": {\"composio_user_id\": \"...\", \"connected_account_id\": \"ca_...\"}}` (the account optional). For this run alone, from whoever starts it: the server keeps it sealed for the run's life and redacts its values from what the run shows; a per-run Composio server's row never names a user or an account. A server of either kind that this run hands nothing calls its tools refused, nothing sent. The API token never binds a per-run Composio server to a Composio user the owner connects here (the user a preset server the owner saved calls as, or `agentrun`): 422 not_allowed at `mcp_auth.<server>.composio_user_id`, nothing written. Each binding is sealed with who handed it (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner connected since, or one sealed before that mark, has its calls refused unsent until `mcp_auth` is handed again on a message or a new run starts.",
   "x-agentrun-serve": "mcpperrun/1",
 };
 

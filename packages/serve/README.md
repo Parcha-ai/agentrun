@@ -2401,8 +2401,26 @@ other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run ser
 runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host owns which user each run
-binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
-refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
+binds: it binds each run to its own person and never takes the ids from that person. The API token never binds a run to
+a Composio user the owner connects here: the user any preset server the owner saved calls as (not one the token saved,
+and not a per-run one), and `agentrun`. On a start, an inline start, a launch hook's firing start and a message, the
+token's binding of one is `422 input_invalid` at `mcp_auth.<server>.composio_user_id` (`not_allowed`), and nothing is
+written: no run, no new binding, and a firing stays as it was. The owner's users are read at each request, so one the
+owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
+(the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
+has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
+again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
+server there is no owner, so only `agentrun` is refused.
+
+What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
+name a user the owner connected directly at Composio (the dashboard, or another client of the same Composio project),
+outside this install, which no record here names. Save a per-run server only on an install whose token callers own
+that Composio project's users.
+
+Upgrading: a run sealed before the mark, in flight across the upgrade, whose binding names a user the owner connects
+here has its calls of that server answered, unsent, in the same words at its next claim, since nothing says the owner
+handed it: a message that hands `mcp_auth` again (the owner's session, for the owner's user) marks it, or start a new
+run.
 
 What can go wrong, told apart:
 

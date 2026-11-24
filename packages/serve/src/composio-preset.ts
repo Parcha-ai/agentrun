@@ -38,7 +38,10 @@ export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@:-]{1,128}$/;
 export const COMPOSIO_USER_ID_WORDS = "letters, digits and . _ @ : - (1 to 128)";
 const USER_ID = COMPOSIO_USER_ID;
 /** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
- *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
+ *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}).
+ *  The server lends its Composio key to each run's binding, so the API token never binds a user the owner connects here
+ *  (composio-owners.ts): refused at the request (422) and, for a binding sealed before the owner connected it, at the
+ *  claim. A user the owner connected directly at Composio, which no record here names, is not refused. */
 export const COMPOSIO_PER_RUN = "per_run";
 /** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. At least
  *  8 characters in all, so the run's redactors (which hold a value of 8 or more) hold every one. */
