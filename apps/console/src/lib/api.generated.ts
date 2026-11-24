@@ -4690,7 +4690,7 @@ export interface operations {
         ready: boolean;
         reenter: {
           name: string;
-          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+          why: "recipe_changed" | "not_bound" | "seal_key_changed" | "file_unreadable";
         }[];
       }[];
     };

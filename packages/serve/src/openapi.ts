@@ -621,7 +621,7 @@ const HARNESS_KEYS_VIEW = closed({
       ready: { type: "boolean", description: "Whether every one of `keys` is saved for this recipe file: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
       reenter: {
         type: "array",
-        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
+        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), not_bound (bound to no recipe file: saved before keys were bound, 0.1.0-beta.55 or earlier, or its binding write was cut off), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
         items: closed({ name: { type: "string" }, why: { enum: [...HARNESS_KEY_REENTER] } }),
       },
     }),
