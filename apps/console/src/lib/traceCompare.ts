@@ -3,7 +3,7 @@
 // figure is one the tab itself shows of that run (lib/trace); a figure a run's trace does not carry stays unknown (null),
 // never 0, and no difference is said of it. Nor of a figure that is not exact: a sum over the part of a run its trace
 // holds, or a ceiling.
-import { runEnded } from "./format";
+import { runEnded, soFar } from "./format";
 import { byModel, byTool, cacheShare, duration, inputTokens, percent, spanMs, traceTotals, usd } from "./trace";
 import type { Run, RunTrace } from "./v2";
 
@@ -40,8 +40,9 @@ export const partial = (side: Pick<Side, "trace">) => side.trace.dropped > 0;
 
 /** One run's value of a figure: the number (null where its trace or its record carries none), its words, and whether it
  *  is exact. Not exact: a sum over a part of the run ("at least", a trace cut at its first spans, tokens where some
- *  requests reported none, or a time where a span's length is not kept), a share of such a part ("partial"), or a ceiling ("at most", a cost that counts a cut
- *  request at what was held for it). A difference is said only of two exact values. */
+ *  requests reported none, a time where a span's length is not kept, or a cost where a charge has no price), a share
+ *  of such a part ("partial"), or a ceiling ("at most", a cost that counts a cut request at what was held for it). A
+ *  difference is said only of two exact values. */
 export type Cell = { value: number | null; words: string; exact: boolean };
 /** One figure across the runs: its name, each run's cell, and how a difference of it is said. */
 export type FigureRow = { label: string; cells: Cell[]; say: (n: number) => string; share?: true };
@@ -81,9 +82,13 @@ export function compareFigures(sides: readonly Side[]): FigureRow[] {
       const part = partial(side) || totals[i]!.untold > 0;
       return { value, words: value === null ? "–" : `${percent(value)}${part ? ", partial" : ""}`, exact: value !== null && !part };
     }), percent, true),
-    // The run's own cost, not the trace's: whole whatever the trace holds, and a ceiling where the run's is.
+    // The run's own cost, not the trace's: whole whatever the trace holds, and a ceiling where the run's is. Where the
+    // server gives no whole cost for a charge with no price, what is priced is said as at least that: the figure the
+    // run's own tab says as its cost so far (lib/format soFar).
     row("Cost", sides.map((side): Cell => {
       const cost = side.run.cost;
+      const known = soFar(cost);
+      if (known) return { value: known.so_far_usd, words: `at least ${usd(known.so_far_usd)}`, exact: false };
       const value = typeof cost?.usd === "number" ? cost.usd : null;
       return { value, words: value === null ? "–" : `${cost?.upper_bound ? "at most " : ""}${usd(value)}`, exact: value !== null && cost?.upper_bound !== true };
     }), usd),

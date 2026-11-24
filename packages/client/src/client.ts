@@ -11,9 +11,10 @@ import { scrubberOf, secretsOf } from "./scrub.js";
 import type { Operation, RequestOptions } from "./types.js";
 
 export interface ClientOptions {
-  /** The server's API, ending /v2 (default: AGENTRUN_BASE_URL): http or https, with no query, fragment, user or password. */
+  /** The server's address (default: AGENTRUN_BASE_URL), with /v2 added when its path holds no v2 segment, as the CLI takes
+   *  it: http or https, with no query, fragment, user or password. */
   baseUrl?: string;
-  /** The API key (default: AGENTRUN_API_KEY). */
+  /** The API key (default: AGENTRUN_API_KEY, else AGENTRUN_TOKEN for a server on this machine). */
   apiKey?: string;
   /** How long one try of a request may take, in milliseconds (default 60000). */
   timeoutMs?: number;
@@ -51,15 +52,24 @@ const retryAfterOf = (response: Response): number => {
 
 const env = (name: string): string | undefined => (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[name];
 
-/** A base URL as the client takes it; `where` names it in the refusal. The URL itself is never echoed: it may hold a password. */
+/** A base URL as the client takes it; `where` names it in the refusal. The URL itself is never echoed: it may hold a password.
+ *  As the CLI takes one: the trailing slashes cut, and /v2 added when the path holds no v2 segment, so
+ *  `https://host/prefix` is `https://host/prefix/v2` and `https://host/v2/` is `https://host/v2`. */
 function baseOf(given: string | undefined, where: string): string {
-  if (given === undefined || given === "") throw new AgentRunUsage("No server: pass baseUrl, or set AGENTRUN_BASE_URL, to the API's base (ending /v2).");
+  if (given === undefined || given === "") throw new AgentRunUsage("No server: pass baseUrl, or set AGENTRUN_BASE_URL, to the server's address (/v2 is added when its path holds none).");
   const url = URL.canParse(given) ? new URL(given) : undefined;
   if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw new AgentRunUsage(`${where} must be an http or https URL with no query, fragment, user or password: the API's base, ending /v2.`);
+    throw new AgentRunUsage(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, with or without /v2.`);
   }
-  return given.replace(/\/+$/, "");
+  const base = given.replace(/\/+$/, "");
+  return new URL(base).pathname.split("/").includes("v2") ? base : `${base}/v2`;
 }
+
+/** The hosts AgentRun's CLI takes as this machine (packages/agentrun/lib/device.mjs LOOPBACK, which this package cannot
+ *  import; python/agentrun/_client.py holds the same three). AGENTRUN_TOKEN, the name a local server gives its token, goes
+ *  to no other host; a remote server takes AGENTRUN_API_KEY. */
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]); // key-gate: loopback-rule the hosts AGENTRUN_TOKEN may go to
+const loopback = (base: string) => LOOPBACK.has(new URL(base).hostname);
 
 const positive = (value: number | undefined, name: string, whole = false) => {
   if (value !== undefined && (!Number.isFinite(value) || value < (whole ? 0 : 1) || (whole && !Number.isInteger(value)))) throw new AgentRunUsage(`${name} must be ${whole ? "a whole number, 0 or more" : "a number of milliseconds, 1 or more"}.`);
@@ -91,8 +101,15 @@ export class AgentRun {
 
   constructor(options: ClientOptions = {}) {
     this.baseUrl = baseOf(options.baseUrl ?? env("AGENTRUN_BASE_URL"), options.baseUrl !== undefined ? "baseUrl" : "AGENTRUN_BASE_URL");
-    const key = options.apiKey ?? env("AGENTRUN_API_KEY");
-    if (!key) throw new AgentRunAuthError("no_token", "No API key: pass apiKey, or set AGENTRUN_API_KEY.");
+    // AGENTRUN_TOKEN, the name the server and its setup page give the token, stands in when AGENTRUN_API_KEY is not set,
+    // for a server on this machine alone: a local server's token is never sent to a remote address.
+    const token = loopback(this.baseUrl) ? env("AGENTRUN_TOKEN") : undefined;
+    const key = options.apiKey ?? (env("AGENTRUN_API_KEY") || token);
+    if (!key) {
+      throw new AgentRunAuthError("no_token", !loopback(this.baseUrl) && env("AGENTRUN_TOKEN")
+        ? `No API key for ${new URL(this.baseUrl).origin}: AGENTRUN_TOKEN goes only to a server on this machine; pass apiKey, or set AGENTRUN_API_KEY.`
+        : "No API key: pass apiKey, or set AGENTRUN_API_KEY (or AGENTRUN_TOKEN for a server on this machine).");
+    }
     // Refused before it is sent: fetch would quote a bad header value in its error.
     if (BAD_HEADER.test(key) || /\s/.test(key)) throw new AgentRunAuthError("bad_header", "The API key is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1).");
     this.#apiKey = key;

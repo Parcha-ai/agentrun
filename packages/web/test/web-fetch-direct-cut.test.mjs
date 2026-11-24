@@ -4,8 +4,9 @@
 // that more parts follow. The model reads the cut in words too: the line after the JSON of the part no part follows.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { READ_MAX_CHARS } from "@parcha/pi-browser";
-import { webFetch, webFetchText } from "../dist/web-fetch.js";
+import { PUBLIC_MAX_BYTES, READ_MAX_CHARS } from "@parcha/pi-browser";
+import { HTML_READ_CHARS, PAGE_MAX_BYTES, webFetchText } from "../dist/index.js";
+import { webFetch } from "./support.mjs";
 
 const URL_ = "http://public.example/big";
 /** The line after a part's JSON, as the model reads it after the page. */
@@ -69,4 +70,9 @@ test("a cut page read in parts from the run's pages: fetched once, every part gi
   assert.ok(parts.length > 3, `${parts.length} parts`);
   assert.equal(fetched, 1, "one fetch for every part");
   assert.equal(where(parts.at(-1)), CUT, "the last part, from memory: the model is told the page was cut");
+});
+
+test("web's bounds are pi-browser's, which serve injects: HTML_READ_CHARS is readPage's cut (READ_MAX_CHARS) and PAGE_MAX_BYTES publicFetch's byte cap (PUBLIC_MAX_BYTES)", () => {
+  assert.equal(HTML_READ_CHARS, READ_MAX_CHARS);
+  assert.equal(PAGE_MAX_BYTES, PUBLIC_MAX_BYTES);
 });

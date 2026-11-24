@@ -242,6 +242,8 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const ended = listed.filter((run) => FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && !isShadowRun(run.id)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   const rows: Omit<CostRun, "took_over">[] = [];
   let unknownPath = 0;
+  // The hand-backs a restart cut (metrics.workflow_cut: pathMetrics), counted apart from the workflow's own (costSummary).
+  const cut = new Set<string>();
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
   for (const run of ended) {
@@ -253,12 +255,13 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
       unknownPath += 1;
       continue;
     }
+    if (placed.path === "handed_back" && (run.metrics as { workflow_cut?: unknown } | null | undefined)?.workflow_cut === true) cut.add(run.id);
     rows.push(await costRunOf(records, run, JOB_PATHS.includes(placed.path) ? (jobs += 1) : null, placed));
   }
   // Where each revision took over, over every run before the limit cuts the read (the first is the summary's takeover).
   const runs = tookOverOf(rows);
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
-  // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
+  // the runs the run's launch reads (pastRunsOverStore) at the all-in it reads (moneyAllInOf): a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
   const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
   const promotions = await promotionsOf(store.learning, agentId);
@@ -268,7 +271,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // not be the first promotion), and each revision's compile and check over the served runs that carry it: runs on no
   // named disk alone, as a run on one learns nothing and serves nothing (learn/learning-of.ts).
   const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === null), await resetLedgerOf(store.settings, agentId));
-  const summary = costSummary(runs, replay);
+  const summary = costSummary(runs, replay, cut);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
   // feed lands here, never nowhere: unknown while any run's figures are.
@@ -515,8 +518,9 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number | n
  *  and the cost page: of its newest PAST_RUNS runs on no named disk (learn/learning-of.ts: one on a named disk learns
  *  nothing), each that ended (ended, stopped or failed) since its learning's reset (learn/compile.ts sinceReset: a
  *  workflow before it is not the one it learned after, whatever its name), is neither imported nor archived nor a
- *  workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id (the cost
- *  page's series), read again for no run; `records`, where any other's rows are read (the store's by default). */
+ *  workflow revision's run, with its all-in cost as the money rule reads it (moneyAllInOf). `known`: all-in costs already
+ *  read (allInOf), by run id (the cost page's series), read again for no served run; `records`, where any other's rows
+ *  are read (the store's by default). */
 export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
@@ -542,9 +546,18 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   // A few reads a run, a batch at a time: a launch reads up to PAST_RUNS of them.
   const past: PastRun[] = [];
   for (let at = 0; at < kept.length; at += 16) {
-    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: known?.has(run.id) ? known.get(run.id)! : (await allInOf(paged, run)).total_usd })))));
+    past.push(...(await Promise.all(kept.slice(at, at + 16).map(async (run) => ({ metrics: run.metrics, startedAt: run.startedAt, allInUsd: await moneyAllInOf(paged, run, known) })))));
   }
   return past;
+}
+
+/** A run's all-in as the money rule reads it (runner/workflow-first.ts PastRun): a run a learned workflow served
+ *  (SERVED_PATHS) at its all-in (allInOf, or `known`'s); any other as the run view reads it (runAllInOverStore's
+ *  allInV2Of), its compile turns its revision's, never the agent's by-hand cost, and no revision's share (only a served
+ *  run carries one). Its recurring learning (a follow-up's rounds, its audit shadow) stays on it. */
+async function moneyAllInOf(records: RunRecords, run: RunRecord, known?: ReadonlyMap<string, number | null>): Promise<number | null> {
+  if (SERVED_PATHS.includes(metricOf(run).path as RunPath)) return known?.has(run.id) ? known.get(run.id)! : (await allInOf(records, run)).total_usd;
+  return allInV2Of({ run_id: run.id, ...(await allInOf(records, run)) }, await compilesOf(records, run.id), new Map());
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
@@ -559,8 +572,9 @@ export const costStopOverStore = async (store: Store, agentId: string) => costSt
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow its job called last. Any other run's path is `agent`. Both
- *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number }> {
+ *  read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's round never moves the path. `cut` on a
+ *  hand-back a restart cut (servedOf: the workflow's call ended `interrupted`), never one the workflow made itself. */
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const served = servedOf(entries);
   if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
@@ -574,7 +588,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
     const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
-    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}) };
+    return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
   // Only a name the launch offered: a call's raw `name` (a failed call's included) is the model's text, never shown.

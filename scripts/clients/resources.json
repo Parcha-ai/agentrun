@@ -132,6 +132,7 @@
     "getMcpPrivateHosts": ["mcp-servers", "private-hosts"],
     "getToolSettings": ["tool-settings", "get"],
     "putToolSettings": ["tool-settings", "save"],
+    "listApiKeys": ["api-keys", "list"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
     "rotateWebhookSecret": ["webhook", "rotate-secret"],

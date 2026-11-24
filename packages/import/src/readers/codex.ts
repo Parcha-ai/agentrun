@@ -1,5 +1,6 @@
 // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl. A subagent's thread names its parent in its session_meta.
 import { basename, join } from "node:path";
+import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries, rememberUser } from "../reader.js";
 import { argsOf, effortOf, isObject, str, textOf } from "../text.js";
@@ -17,6 +18,10 @@ type Own = {
   held: { index: number; turn: Turn }[];
   open?: Answer;
   unpaid?: Answer;
+  /** A totals read's open and unpaid requests instead, by their index in its counts, and the open one's call ids. */
+  openAt?: number;
+  unpaidAt?: number;
+  openCalls?: string[];
   records: boolean;
   responses: Set<string>;
   total?: string;
@@ -65,7 +70,7 @@ function codexFailed(output: unknown): boolean | undefined {
 }
 
 function record(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
-  const { session, names, turns, own: codex } = state;
+  const { session, names, turns, own: codex, counts } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
   // compaction's, one whose output is no item read here) is a turn of its own.
@@ -82,6 +87,21 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (tokens) turn.usage = tokens;
     if (response) turn.key = response;
     codex.open = codex.unpaid = undefined;
+  };
+  // A totals read's: the same, each request its model, usage and time alone.
+  const answerAt = (): number => addRequest(counts!, session.model, undefined, at);
+  const requestAt = (): number => {
+    if (codex.openAt === undefined) {
+      codex.openAt = codex.unpaidAt = answerAt();
+      codex.openCalls = [];
+    }
+    return codex.openAt;
+  };
+  const answeredAt = (usage: unknown) => {
+    const tokens = normalizeUsage("openai", usage);
+    const index = codex.unpaidAt ?? answerAt();
+    if (tokens) setUsage(counts!, index, tokens);
+    codex.openAt = codex.unpaidAt = undefined;
   };
   if (value.type === "session_meta") {
     if (str(payload.id)) session.id = payload.id as string;
@@ -100,6 +120,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     state.effort = effortOf(payload.effort);
     // A new turn: a request left open (aborted) has no usage to come.
     codex.open = codex.unpaid = undefined;
+    codex.openAt = codex.unpaidAt = undefined;
     return;
   }
   // Each request's usage: a token_usage_record per response where the rollout has them (they also count requests no
@@ -110,7 +131,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     const id = str(payload.response_id);
     if (id && codex.responses.has(id)) return;
     if (id) codex.responses.add(id);
-    return answered(payload.usage, id);
+    return counts ? answeredAt(payload.usage) : answered(payload.usage, id);
   }
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
@@ -122,8 +143,11 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       const total = isObject(info.total_token_usage) ? JSON.stringify(info.total_token_usage) : undefined;
       if (total !== undefined && total === codex.total) return;
       codex.total = total;
-      answered(info.last_token_usage);
+      if (counts) answeredAt(info.last_token_usage);
+      else answered(info.last_token_usage);
     } else if (payload.type === "item_completed" && isObject(payload.item) && str(payload.item.id)) {
+      // Whether a call failed is its result's turn's: none is kept without turns.
+      if (!keep) return;
       // An item's id is its call's in some Codex versions: its status then says whether the call failed.
       const { id, status, exit_code: code } = payload.item;
       const failed = status === "failed" || (typeof code === "number" && code !== 0) ? true : status === "completed" ? false : undefined;
@@ -142,16 +166,21 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
-    if (text) {
+    if (text && counts) requestAt();
+    else if (text) {
       const turn = request();
       if (keep) turn.text = [turn.text, text].filter(Boolean).join("\n");
     }
+  } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type) && counts) {
+    requestAt();
+    if (payload.type === "function_call" || payload.type === "custom_tool_call") codex.openCalls!.push(String(payload.call_id ?? payload.id ?? ""));
   } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type)) {
     const turn = request();
     if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return;
     const id = String(payload.call_id ?? payload.id ?? "");
     const name = String(payload.name ?? "");
-    names.set(id, name);
+    // A tool's name is for its result's turn: none is kept without turns.
+    if (keep) names.set(id, name);
     turn.calls.push({
       type: "toolCall",
       id,
@@ -160,10 +189,13 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
     });
   } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
     const id = String(payload.call_id ?? "");
-    const output = isObject(payload.output) && "content" in payload.output ? payload.output.content : payload.output;
-    const stated = codexFailed(payload.output);
     // The model saw a result: what it writes next is another request.
     if (codex.open?.calls.some((call) => call.id === id)) codex.open = undefined;
+    if (codex.openAt !== undefined && codex.openCalls!.includes(id)) codex.openAt = undefined;
+    // A result is a turn alone (no count): none is kept without turns.
+    if (!keep) return;
+    const output = isObject(payload.output) && "content" in payload.output ? payload.output.content : payload.output;
+    const stated = codexFailed(payload.output);
     const turn = {
       role: "toolResult" as const,
       callId: id,
@@ -196,6 +228,7 @@ const spec: LineSource<"codex", Own> = {
   },
   start: () => ({ events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() }),
   record,
+  totals: true,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
   finish(out, turns, { state: { own }, keep }) {
