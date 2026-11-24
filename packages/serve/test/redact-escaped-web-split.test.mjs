@@ -70,6 +70,33 @@ test("a held value split across two strings of a web call's JSON withholds the c
   assert.equal(webWithin(webShownOf("web_search", split, (part) => part, (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
 });
 
+// The base's web check read a web call's strings decoded and joined through every view the whole text has: "+" as a
+// space among them (form encoding), and JSON's escaped quote as a quote. The join of the strings keeps both readings, so
+// a "+" at the end of one string's half, or a held value's own quote, still reads the value whole across two strings.
+test("a held value split across two strings of a web call's JSON, a \"+\" after its head, withholds the call's result, its preview and the stored answer", async () => {
+  const split = search(`see ${HEAD}+`, `${REST} more`);
+  assert.equal(resultTextOf(split, [KEY], "web_search"), "[redacted]");
+  assert.equal(resultRowOf(split, [KEY], "web_search", false).tool_result_preview, "[redacted]");
+  const context = { callId: "c1", signal: new AbortController().signal };
+  const tool = { name: "web_search", description: "", inputSchema: {}, replay: "safe", call: async () => ({ text: split }) };
+  assert.equal((await answersCut(tool, secretRedactor([KEY])).call({}, context)).text, "[redacted]");
+  // Control: a "+" between two strings with no held value split there is served.
+  assert.deepEqual(JSON.parse(resultTextOf(search("see a+", "b more"), [KEY], "web_search")).results[0].title, "see a+");
+});
+
+test("a held value with a quote of its own, split across two strings of a web call's JSON, withholds the call's result and the stored answer; whole in one string, it is cut in place", async () => {
+  const QUOTED = `${HEAD}"${REST}`;
+  const split = search(`see ${HEAD}"${REST.slice(0, 8)}`, `${REST.slice(8)} more`);
+  assert.equal(resultTextOf(split, [QUOTED], "web_search"), "[redacted]");
+  assert.equal(resultRowOf(split, [QUOTED], "web_search", false).tool_result_preview, "[redacted]");
+  const context = { callId: "c1", signal: new AbortController().signal };
+  const tool = { name: "web_search", description: "", inputSchema: {}, replay: "safe", call: async () => ({ text: split }) };
+  assert.equal((await answersCut(tool, secretRedactor([QUOTED])).call({}, context)).text, "[redacted]");
+  // Control: whole in one string, cut in place, the JSON still parsing.
+  const whole = resultTextOf(search(`see ${QUOTED}`, "more"), [QUOTED], "web_search");
+  assert.deepEqual(JSON.parse(whole).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: "more" });
+});
+
 test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
   // The matcher decodes each escape, so the value reads whole across escaped whitespace: the read past the stop counts
   // an escape as the character it decodes to, so padding of them up to a piece never hides the rest.

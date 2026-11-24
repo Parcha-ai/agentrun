@@ -45,6 +45,28 @@ test("a held value split across two strings of a non-web tool's JSON result: no 
   assert.deepEqual(shows(promptOf(rows)), []);
 });
 
+test("a held value split across two strings of a non-web tool's JSON result, a \"+\" after its head or a quote of its own in it, is withheld: no row shows a half", () => {
+  const QUOTED = `${HEAD}"${REST}`;
+  const read = (secrets, text) =>
+    timelineOf([user("Run it."), assistant([call("c1", "read", { path: "notes.json" })]), result("c1", "read", text)], {
+      redact: (part) => redacted(part, secrets),
+      holds: (whole) => withheldWhole(whole, secrets),
+      calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, secrets, CALL_RESULT_CHARS, scrubUrls) },
+    });
+  const cases = [
+    [SECRETS, JSON.stringify({ items: [{ title: `see ${HEAD}+`, snippet: `${REST} more` }] })],
+    [[QUOTED], JSON.stringify({ items: [{ title: `see ${HEAD}"${REST.slice(0, 8)}`, snippet: `${REST.slice(8)} more` }] })],
+  ];
+  for (const [secrets, text] of cases) {
+    const rows = read(secrets, text);
+    assert.deepEqual(shows(JSON.stringify(rows)), [], text);
+    assert.equal(rowOf(rows, "tool_result").tool_result_text, "[redacted]", text);
+  }
+  // Control: the quoted value whole in one string is cut in place.
+  const whole = rowOf(read([QUOTED], JSON.stringify({ items: [{ title: `see ${QUOTED}`, snippet: "more" }] })), "tool_result").tool_result_text;
+  assert.deepEqual(JSON.parse(whole), { items: [{ title: "see [redacted]", snippet: "more" }] });
+});
+
 test("web_fetch's refused answer (no text, so read as any tool's): a held value split across its url and its reason is withheld", () => {
   const text = JSON.stringify({ ok: false, url: `https://h.example/${HEAD}`, refused: `${REST} is not allowed` });
   const rows = rowsOf("web_fetch", { url: "https://h.example/" }, text);
