@@ -59,7 +59,7 @@ describe("SharePage: the export, and a restore as an export again", () => {
     expect(asked.at(-1)).toEqual(["c_74b434b337661b96"]);
     expect(asked).toHaveLength(4);
     const command = host.querySelector("footer code")?.textContent;
-    expect(command).toBe("agentrun share run_golden --restore c_74b434b337661b96 --expect sha-of-c_74b434b337661b96");
+    expect(command).toBe("agentrun share run_golden --to https://agentrun.ai --restore c_74b434b337661b96 --expect sha-of-c_74b434b337661b96");
     expect(host.querySelector<HTMLElement>('[data-cut="c_74b434b337661b96"] [role="switch"]')?.getAttribute("aria-checked")).toBe("true");
   });
 

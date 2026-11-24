@@ -53,11 +53,15 @@ export const KINDS: readonly { kind: CutKind; name: string; about: string }[] = 
   { kind: "dump", name: "Dumps", about: LOCKED_WHY.dump! },
 ];
 
-/** The command that publishes this exact bundle: the restores it holds, and its sha256, which the CLI checks against a
- *  fresh export before it sends anything. */
+/** The share host a publish goes to: agentrun.ai, whose /r/ is the share host (a self-hosted one takes its own address
+ *  in --to). */
+export const SHARE_HOST = "https://agentrun.ai";
+
+/** The command that publishes this exact bundle to the share host: the restores it holds, and its sha256, which the CLI
+ *  checks against a fresh export before it sends anything. */
 export function publishCommand(runId: string, bundle: Pick<ShareBundle, "restored" | "sha256">): string {
   const restore = bundle.restored.map((r) => r.id);
-  return ["agentrun share", runId, ...(restore.length ? ["--restore", restore.join(",")] : []), "--expect", bundle.sha256].join(" ");
+  return ["agentrun share", runId, "--to", SHARE_HOST, ...(restore.length ? ["--restore", restore.join(",")] : []), "--expect", bundle.sha256].join(" ");
 }
 
 const unescape = (token: string) => token.replace(/~1/g, "/").replace(/~0/g, "~");
