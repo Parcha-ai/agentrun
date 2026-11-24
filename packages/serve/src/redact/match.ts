@@ -795,15 +795,17 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[],
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
   ...(join ? { join } : {}),
 });
-/** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space; JSON's escapes decoded twice; and, for a text with a quote in it, its JSON strings joined (joinView), JSON's
- *  escapes decoded. Each is lowered for hexes and flattened for folded identifiers in holds. */
+/** The views of a text read for each held value, in order: squeezed; decoded, its percent-encoded bytes and JSON's
+ *  escapes (twice) each where it stands, so a value split by an encoded space of one and an escaped one of the other, or
+ *  written half in each, reads whole; the same with "+" as a space; and, for a text with a quote in it, its JSON
+ *  strings joined (joinView), decoded the same. The decoders stack in one pass: each reads at its own trigger
+ *  character, so a view costs one read of the text whatever it decodes. Each is lowered for hexes and flattened for
+ *  folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
-  viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
-  viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
-  viewSpec((text) => /\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [JSON_ESCAPE]),
-  viewSpec((text) => text.includes('"'), [JSON_ESCAPE], true),
+  viewSpec((text) => /%[0-9a-fA-F]{2}|\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])/.test(text), [PERCENT, JSON_ESCAPE]),
+  viewSpec((text) => text.includes("+"), [PERCENT, PLUS, JSON_ESCAPE]),
+  viewSpec((text) => text.includes('"'), [PERCENT, JSON_ESCAPE], true),
 ];
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
