@@ -101,11 +101,11 @@ function signedIn(dir, base, token) {
 }
 
 /** A command's JSON answer, or a failure that says what it printed instead. */
-function answerOf(run, what) {
+function answerOf(result, what) {
   try {
-    return run.json();
+    return result.json();
   } catch {
-    return assert.fail(`${what} exited ${run.code} and printed no JSON:\n${run.out}\n${run.err}`);
+    return assert.fail(`${what} exited ${result.code} and printed no JSON:\n${result.out}\n${result.err}`);
   }
 }
 

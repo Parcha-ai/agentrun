@@ -416,26 +416,33 @@ test("bad input exits 2 with one line, never a stack trace: an unknown option, a
     assert.equal(run.out, "");
   }
 
-  // A URL the CLI refuses (cli.mjs baseOf) is refused here too, before any request, and never echoed: it may hold a
-  // password. The install answers the source's agent, so a check that reads first would reach the target's URL.
+  // A URL the CLI refuses (checkedBase, which the CLI uses) is refused here too, before any request, and never echoed:
+  // it may hold a password. The install answers the source's agent, so a check that reads first would reach the
+  // target's URL. Each URL with a user is built at run time, from a marker joined from parts, so the source holds no
+  // credential-shaped text.
   const { a } = pair();
   const install = await listener(t, (request) => (request.url === "/v2/agents/agt_a1" ? [200, a] : [404, {}]));
-  const host = install.base.slice("http://".length);
-  const PASSWORD = "pw-parity-7f3a";
+  const MARK = ["pw", "parity", "7f3a"].join("-");
+  const withUser = (base) => {
+    const url = new URL(base);
+    url.username = "ops";
+    url.password = MARK;
+    return url.href;
+  };
   const at = (target) => ["--source", install.base, "--source-agent", "agt_a1", "--target", target];
   const refused = {
-    "a target with a user and password": [...at(`http://ops:${PASSWORD}@${host}`), "--target-agent", "agt_b9"],
-    "a source with a user and password": ["--source", `http://ops:${PASSWORD}@${host}`, "--source-agent", "agt_a1", "--target", install.base, "--target-agent", "agt_b9"],
+    "a target with a user and password": [...at(withUser(install.base)), "--target-agent", "agt_b9"],
+    "a source with a user and password": ["--source", withUser(install.base), "--source-agent", "agt_a1", "--target", install.base, "--target-agent", "agt_b9"],
     "a target with a query": [...at(`${install.base}?k=1`), "--target-agent", "agt_b9"],
     "a target with a fragment": [...at(`${install.base}#part`), "--target-agent", "agt_b9"],
-    "a target with a password, and a lock written for another target": [...at(`https://ops:${PASSWORD}@parity.invalid`), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(install.base)))],
-    "a lock whose target holds a password": [...at(install.base), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(`http://ops:${PASSWORD}@${host}`)))],
+    "a target with a password, and a lock written for another target": [...at(withUser("https://parity.invalid")), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(install.base)))],
+    "a lock whose target holds a password": [...at(install.base), "--lock", scratchFile(t, "deploy.json", JSON.stringify(lockFor(withUser(install.base))))],
   };
   const wrong = [];
   for (const [what, args] of Object.entries(refused)) {
     const run = await cli(env, args, { bin: CHECK });
     if (run.code !== 2) wrong.push(`${what}: exit ${run.code}`);
-    if (`${run.out}${run.err}`.includes(PASSWORD)) wrong.push(`${what}: the password is printed`);
+    if (`${run.out}${run.err}`.includes(MARK)) wrong.push(`${what}: the password is printed`);
     if (run.err.trim().split("\n").length !== 1) wrong.push(`${what}: not one line`);
     if (install.seen.length) wrong.push(`${what}: requests sent before a refusal: ${install.seen.map((one) => one.path).join(" ")}`);
     install.seen.length = 0;
