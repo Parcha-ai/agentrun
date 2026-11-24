@@ -569,10 +569,10 @@ test("per-run process (run-child-host), a host with a model key and a saved gate
   assert.deepEqual(held.filter((name) => MODEL_KEY_NAMES.includes(name)), [], "and no model key of the host's: its model runs nowhere");
 });
 
-/** The words the runner refuses a held run's process's ask for model spend in (run-child-host.ts heldFor). */
+/** The words the runner refuses a held run's process's ask for a learning step in (run-child-host.ts heldFor). */
 const HELD_SPEND_WORDS = /a held run its model kept from running asks its runner for no model spend/;
 
-test("per-run process (run-child-host heldFor): the runner answers a held run its model kept from running no saved model key, no tier's key, no keyless check and no learning step, whatever its process asks; the same run not held, granted subagent, is answered the host's model key", async (t) => {
+test("per-run process (run-child-host heldFor): the runner answers a held run its model kept from running no saved model key, no tier's key, keyless with no key read, and no learning step, whatever its process asks; the same run not held, granted subagent, is answered the host's model key", async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-seam-"));
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => {
@@ -587,7 +587,7 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   const held = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL } });
   assert.deepEqual(await held.savedModelKeys(), {}, "a held run its model kept from running is answered no saved model key, though its process asks: its model runs nowhere");
   assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "nor a tier's key");
-  await assert.rejects(held.serverKeyless(), HELD_SPEND_WORDS, "nor whether the server holds a gateway key: it weighs no model spend");
+  assert.equal(await held.serverKeyless(), true, "its keyless check answers that no key of the server's pays for its spend, with no saved key read (this host has no gateway, so a read would answer false)");
   await assert.rejects(held.learnedFirst({ laid: false }), HELD_SPEND_WORDS, "nor a learning step: it settles no audit and starts no replay run");
 });
 
