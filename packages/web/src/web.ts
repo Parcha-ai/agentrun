@@ -1,10 +1,10 @@
 // One run's web search and fetch (createWeb). The providers asked are data (WebConfig.order); everything from outside
 // comes in through the config. Every answer comes with a Receipt, which is never put in front of the model.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, webFetchText, withoutCredentials } from "./fetch.js";
+import { type WebLog, type FetchProvider, type Pages, type WebPage, webFetch, webFetchText } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
+import { clip, type Page, type Part, partProblem, URL_MAX, withoutCredentials } from "./page.js";
 import { exaLimitOf, exaSearch } from "./providers/exa-keyless.js";
 import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Words } from "./providers/mcp.js";

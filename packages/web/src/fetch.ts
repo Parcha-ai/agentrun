@@ -1,7 +1,7 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
 import type { Guard, GuardOptions } from "./guard.js";
-import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutUserinfo } from "./page.js";
+import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX, withoutCredentials, withoutUserinfo } from "./page.js";
 import { readDirect } from "./providers/direct.js";
 import type { KeylessFetch } from "./providers/firecrawl-keyless.js";
 import type { Extract } from "./providers/parallel.js";
@@ -45,18 +45,6 @@ async function passes(url: unknown, guard: Guard | undefined, options: GuardOpti
   if (!guard) return { why: "no public-host guard was given" };
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
   return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => ({ href: target.href }), () => ({ why: "the URL did not pass the public-host guard" }));
-}
-
-/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
- *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
- *  followed a redirect names the URL it ended at, which may hold them. */
-export function withoutCredentials(url: string): string {
-  const parsed = URL.parse(url);
-  if (!parsed) return withoutUserinfo(url);
-  if (!parsed.username && !parsed.password) return url;
-  parsed.username = "";
-  parsed.password = "";
-  return clip(parsed.href, URL_MAX);
 }
 
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound, the log,

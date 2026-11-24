@@ -1,7 +1,7 @@
 // Parallel on the run's key: Extract for web_fetch, Search for web_search. Every request is paid through the injected
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
-import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutUserinfo } from "../page.js";
+import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutCredentials, withoutUserinfo } from "../page.js";
 import { type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, snippetOf } from "../search.js";
 import { linksOf } from "../text-urls.js";
 
@@ -54,7 +54,7 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
         const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
         if (!row) return errors?.length ? "listed the URL in errors" : "answered no content";
         const text = row.full_content as string;
-        return { ok: true, url: clip(row.url as string, URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length < asked), ...linksWithin(linksOf(text)) };
+        return { ok: true, url: clip(withoutCredentials(row.url as string), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(text, text.length < asked), ...linksWithin(linksOf(text)) };
       } catch (error) {
         if (error instanceof PaidRefused) return error.message;
         const name = (error as Error)?.name;

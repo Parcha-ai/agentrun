@@ -42,6 +42,18 @@ export const clip = (text: string, max: number) => (text.length > max ? `${text.
  *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
  *  does: a password may hold an "@" left unencoded. */
 export const withoutUserinfo = (text: string) => text.replace(/\/\/[^\s/?#]*@/g, "//");
+/** `url`, a page's, with no user name or password: cleared as a URL where it parses (a URL drops a tab or a newline in
+ *  them and encodes a space, where withoutUserinfo, reading free text, stops), else withoutUserinfo's. A provider that
+ *  followed a redirect names the URL it ended at, which may hold them. Run it before a url is cut: a cut can end inside
+ *  them, leaving a url that does not parse and no "@" for withoutUserinfo to find. */
+export function withoutCredentials(url: string): string {
+  const parsed = URL.parse(url);
+  if (!parsed) return withoutUserinfo(url);
+  if (!parsed.username && !parsed.password) return url;
+  parsed.username = "";
+  parsed.password = "";
+  return clip(parsed.href, URL_MAX);
+}
 
 /** Which part of a page's text an answer holds: from `offset` (0 by default), about `maxChars` characters (PAGE_CHARS by
  *  default, at most TEXT_CAP). */
@@ -148,4 +160,4 @@ export function partOfRead({ text, beyond, length, links, links_omitted, html_ch
 /** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape, keyless Exa's fetch), as a
  *  Read: its url, title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it
  *  holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(url, URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
