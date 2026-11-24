@@ -2568,8 +2568,9 @@ test("XCVI: commands are read by one shell lexer (shell-lex.ts; GRE-4791): an op
   // A line break still ends a command.
   await kept("redis-cli -h db\n-a Copper9lumen9");
   // A command's name ends at a blank, as before the lexer: `curl-user:label` is one word, not curl and `-user:label`.
-  // And a substitution that closed inside one left open is still a substitution to the next curl that reaches it.
-  for (const text of ["auth-header:label curl-user:label home-path:personal", '  "curl-user": "label",', '{ id: "curl-user", text: "curl https://x.io" }', "curl -s $(cat f; curl -s x $(date -u +%H:%MZ)"]) {
+  // And a substitution that closed inside one left open, or that the open one read inside its quotes (a curl named in
+  // them), is still a substitution to the next curl that reaches it.
+  for (const text of ["auth-header:label curl-user:label home-path:personal", '  "curl-user": "label",', '{ id: "curl-user", text: "curl https://x.io" }', "curl -s $(cat f; curl -s x $(date -u +%H:%MZ)", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)'"]) {
     for (const wrap of FOUR_WRAPS) await kept(wrap(text));
   }
 });

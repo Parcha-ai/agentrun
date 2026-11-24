@@ -118,11 +118,14 @@ test("a construct that does not close on its line or before the limit is a chara
   assert.equal(sub.tokens[1].parts[0].kind, "sub");
 });
 
-test("a construct that closed inside an unclosed one of its kind is read again later, never failed from that one's span", () => {
+test("an opener the unclosed one around it did not fail (it closed there, or sat in its quotes) is read again later", () => {
   for (const [text, inner, kind] of [
     ["x $(a $(b) c", "$(b)", "sub"],
     ['x "a $(echo "b") c', '"b"', "dq"],
     ["x ${a:-${b} c", "${b}", "brace"],
+    // Read from inside the quotes (a command named there), the quoted text holds an opener the first read never saw.
+    ["x $(a 'b $(c) d'", "$(c)", "sub"],
+    ["x ${a:-'${b}' c", "${b}", "brace"],
   ]) {
     const misses = new Map();
     lex(text, 0, text.length, never, misses);
@@ -182,7 +185,7 @@ function readsPerChar(text, name, bound, max = 4096, ends = curlEnds) {
   return lexCount.read / text.length;
 }
 
-test("reading is linear by count: 1 MB of nested, unclosed and repeated constructs reads each character at most 8 times", () => {
+test("reading is linear by count: 1 MB of nested, unclosed and repeated constructs reads each character at most 8 times, 10 when named inside quotes", () => {
   const units = [
     // XCV's and XCII's adversarial commands.
     'curl -H "$(curl $(curl $(date)))" -u a:b ',
@@ -220,6 +223,13 @@ test("reading is linear by count: 1 MB of nested, unclosed and repeated construc
     const text = unit.repeat(Math.ceil(1_000_000 / unit.length));
     const perChar = readsPerChar(text, String.raw`\b(?:curl|redis-cli|mysql|login)\b`, 8);
     assert.ok(perChar <= 8, `${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
+  }
+  // A command named inside the quotes of an unclosed construct searches the openers that construct's read took as
+  // quoted text, once each (they are not its misses): a constant more, 9.02 at most, flat from 64 KB to 1 MB. The shape
+  // was over 8 before that search: `curl $(x|'curl ${a:-$(a; ` read 8.35 a character at a1ee7779a1.
+  for (const unit of ["curl $(x|'curl ''$(a ", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)' ", "curl $(x|'curl ${a:-$(a ", "curl $(x|'curl ${a:-$(a; ", `curl "$(x|'curl "$(a; `]) {
+    const perChar = readsPerChar(unit.repeat(Math.ceil(1_000_000 / unit.length)), String.raw`\b(?:curl|redis-cli|mysql|login)\b`, 10);
+    assert.ok(perChar <= 10, `${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
   }
   // A group that fails inside a group fails the groups around it at once (groupFail), instead of each reading on again.
   for (const unit of ["curl $( $( ", "curl <(", "curl $( -u a:b ", "curl >( $("]) {
