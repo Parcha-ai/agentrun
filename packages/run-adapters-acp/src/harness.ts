@@ -352,8 +352,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   };
 
   /** The gate's call for a permission request of the agent's own tool: the same when the agent asks and when a resume
-   *  asks about it again (settlePermissions), so both reach the one approval. */
-  const permissionGateCall = (callId: string, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input } });
+   *  asks about it again (settlePermissions), so both reach the one approval. Under its journal id (`callId`); its args
+   *  carry the toolCallId the agent first asked under, so a host (harness-check) ties the question to the request. */
+  const permissionGateCall = (callId: string, toolCallId: string | undefined, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input, ...(toolCallId ? { toolCallId } : {}) } });
 
   /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
    *  agent started without session/load can ask for the same call) and what the person said. */
@@ -388,7 +389,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     for (const request of waiting) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
-      const refused = await askGate(gate, permissionGateCall(request.callId, kind, title, request.input ?? null), ctx.signal);
+      const refused = await askGate(gate, permissionGateCall(request.callId, request.toolCallId, kind, title, request.input ?? null), ctx.signal);
       const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
       journal.append(PERMISSION_STREAM, answer);
       await journal.flush();
@@ -474,11 +475,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     }
     let refused: { deny: string } | undefined;
     if (options.gate) {
-      // The gate gets the request under its journal id, not the agent's toolCallId: said with both, so a host
-      // (harness-check) ties the gate's question to the request the agent made.
-      log("acp: the agent's permission request goes to the gate", { toolCallId: call.toolCallId, callId });
+      // The toolCallId the request was first asked under, as the journal has it: the same question a resume asks.
+      const askedAs = records.find((r) => r.type === "asked")?.toolCallId ?? call.toolCallId;
       try {
-        refused = await askGate(options.gate, permissionGateCall(callId, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
+        refused = await askGate(options.gate, permissionGateCall(callId, askedAs, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {
         // Parked, and the session let go (or the turn was cancelled): nothing is answered, nothing recorded.
         return cancelled;
