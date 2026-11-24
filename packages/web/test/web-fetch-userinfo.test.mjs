@@ -18,6 +18,9 @@ const credentialed = (path = "") => {
   url.password = "not-a-secret";
   return url.href;
 };
+/** credentialed(path) with an "@" left unencoded in its password ("not@a-secret"): made from the text, as a URL would
+ *  encode it ("%40"). */
+const unencoded = (path = "") => credentialed(path).replace("not-a-secret", "not@a-secret");
 /** Words quoting credentialed() after `pad` characters. */
 const quoting = (pad) => `${"x".repeat(pad)}${credentialed()}`;
 /** `words` cut at `cut` keeps the user name and loses the "@" after the password. */
@@ -27,8 +30,9 @@ const straddles = (words, cut) => {
 };
 /** A send failing with `words`, as a transport's error would. */
 const failing = (words) => async () => { throw new TypeError(words); };
-/** The names in `where` (a name for each value) whose value holds any part of the user name or the password. */
-const leaking = (where) => Object.entries(where).filter(([, what]) => /web-user|not-a-secr/.test(typeof what === "string" ? what : JSON.stringify(what))).map(([at]) => at);
+/** The names in `where` (a name for each value) whose value holds any part of the user name or the password ("a-secret":
+ *  what follows an unencoded "@" in it). */
+const leaking = (where) => Object.entries(where).filter(([, what]) => /web-user|not-a-secr|a-secret/.test(typeof what === "string" ? what : JSON.stringify(what))).map(([at]) => at);
 const turns = (tries) => tries.map((one) => [one.provider, one.outcome]);
 
 /** web_fetch of PUBLIC with `given` (a client, the order): the page, the receipt's turns and the log. */
@@ -140,4 +144,20 @@ test("Parallel turned off while the guard checks the URL is not asked: the page 
   assert.deepEqual(asked, [], "Parallel was not asked");
   assert.deepEqual([page.via, page.parallel], ["direct", "not tried: refused earlier in this run"], "the page says why");
   assert.deepEqual(turns(tries), [["parallel", "error"], ["direct", "ok"]], "the turns");
+});
+
+// A password may hold an "@" its URL left unencoded. Each client scrubs its own error once, and a page url that does not
+// parse as a URL (port 99999) is scrubbed as text: either scrub must read on to the last "@" before the host.
+test("a URL whose password holds an unencoded at sign: Firecrawl's scrape and Parallel's extract quote none of it in an error, and a page url that does not parse names it without them", async () => {
+  const said = {};
+  said.firecrawlScrape = await firecrawlScrape(PUBLIC, { send: failing(unencoded()) });
+  said.parallelExtract = await parallelExtract("not-a-secret", failing(unencoded())).read(PUBLIC);
+  const landed = unencoded("landed").replace("public.example/", "public.example:99999/");
+  assert.equal(URL.canParse(landed), false, "the page url does not parse");
+  const extract = async () => new Response(JSON.stringify({ results: [{ url: landed, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const read = await fetched({ parallel: parallelExtract("not-a-secret", extract), order: ["parallel", "direct"] });
+  assert.deepEqual([read.page.ok, read.page.via], [true, "parallel"], "Parallel read the page");
+  const leaks = [...leaking(said), ...leaking(places("parallel", read))];
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual([said.firecrawlScrape.error, said.parallelExtract, read.page.url], ["Firecrawl's fetch failed: http://public.example/", "failed: http://public.example/", "http://public.example:99999/landed"], "each names the URL without them");
 });
