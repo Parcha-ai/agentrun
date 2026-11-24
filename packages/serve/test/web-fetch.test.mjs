@@ -144,6 +144,26 @@ test("web_fetch takes its provider from the run's plane: none or kernel is the d
   assert.deepEqual(net.dialled, [], "nothing fetched");
 });
 
+// The URL asked is the model's own, and may hold a user name and password: a page that answers it names it without
+// them, where web_fetch does not run here and where a template eval's web fake refuses the part a call asks for alike.
+test("the URL asked, holding a user name and password: the page web_fetch gives where it does not run here, and the web fake's page for a part the call may not ask for, name it without them", async () => {
+  const asked = new URL(PUBLIC);
+  asked.username = "web-user";
+  asked.password = "not-a-secret";
+  const { fakeFetch } = await import("../dist/web-fake.js");
+  const fixture = { search: { answers: [], default: { results: [] } }, fetch: { answers: [], default: { error: "fetch failed" } } };
+  const net = network();
+  const pages = {
+    "does not run here": await fetchFor({ AGENTRUN_SERVE_TOOL_PLANE: JSON.stringify({ web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY" }) }, asked.href, net),
+    "web fake, part refused": await fakeFetch(fixture, asked.href, { maxChars: 1 }),
+  };
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok]), [["does not run here", false], ["web fake, part refused", false]], "no page was read");
+  const leaks = Object.entries(pages).flatMap(([row, page]) => Object.entries({ [`${row}: the page`]: JSON.stringify(page), [`${row}: the text the model reads`]: web.webFetchText(page) }).filter(([, what]) => /web-user|not-a-secr/.test(what)).map(([at]) => at));
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), Object.keys(pages).map((row) => [row, PUBLIC]), "the url of each page, without them");
+  assert.deepEqual(net.dialled, [], "nothing fetched");
+});
+
 /** Call `call`'s ledger on the run's one ledger `paid` (capped, so a hold is held at its price), and what it booked
  *  there: [kind, call, the held or charged USD]. */
 function recording(paid, call) {

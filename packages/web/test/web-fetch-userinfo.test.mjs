@@ -158,9 +158,9 @@ test("Parallel turned off while the guard checks the URL is not asked: the page 
   assert.deepEqual(turns(tries), [["parallel", "error"], ["direct", "ok"]], "the turns");
 });
 
-// A password may hold an "@" its URL left unencoded. Each client scrubs its own error once, and a page url that does not
-// parse as a URL (port 99999) is scrubbed as text: either scrub must read on to the last "@" before the host.
-test("a URL whose password holds an unencoded at sign: Firecrawl's scrape and Parallel's extract quote none of it in an error, and a page url that does not parse names it without them", async () => {
+// A password may hold an "@" its URL left unencoded. Each client scrubs its own error once, as text: the scrub must read
+// on to the last "@" before the host. A page url that does not parse as a URL (port 99999) is no url to name.
+test("a URL whose password holds an unencoded at sign: Firecrawl's scrape and Parallel's extract quote none of it in an error, and a page whose url does not parse names no url at all", async () => {
   const said = {};
   said.firecrawlScrape = await firecrawlScrape(PUBLIC, { send: failing(unencoded()) });
   said.parallelExtract = await parallelExtract("not-a-secret", failing(unencoded())).read(PUBLIC);
@@ -171,7 +171,31 @@ test("a URL whose password holds an unencoded at sign: Firecrawl's scrape and Pa
   assert.deepEqual([read.page.ok, read.page.via], [true, "parallel"], "Parallel read the page");
   const leaks = [...leaking(said), ...leaking(places("parallel", read))];
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
-  assert.deepEqual([said.firecrawlScrape.error, said.parallelExtract, read.page.url], ["Firecrawl's fetch failed: http://public.example/", "failed: http://public.example/", "http://public.example:99999/landed"], "each names the URL without them");
+  assert.deepEqual([said.firecrawlScrape.error, said.parallelExtract, read.page.url], ["Firecrawl's fetch failed: http://public.example/", "failed: http://public.example/", ""], "each error names the URL without them, and the page whose url does not parse names none");
+});
+
+// A space in a password stops a scrub of text short of the "@", and a url holding one does not parse: a provider's page
+// url that does not parse is no url to name. Firecrawl's client names the URL it was sent in place of one.
+test("a provider's page url holding a user name and password behind a space, that does not parse: the page web_fetch returns names none of it", async (t) => {
+  const landed = credentialed("landed").replace("not-a-secret", "not a-secret").replace("public.example/", "public.example:99999/");
+  assert.equal(URL.canParse(landed), false, "the page url does not parse");
+  const scraped = { markdown: "# Landed\n\nRead after a redirect.", metadata: { title: "Landed", url: landed, sourceURL: landed, statusCode: 200 } };
+  const fc = await firecrawlServer(t, (name) => (name === "firecrawl_scrape" ? { content: [{ type: "text", text: JSON.stringify(scraped) }] } : answers(name)));
+  const extract = async () => new Response(JSON.stringify({ results: [{ url: landed, title: "Landed", full_content: "Read after a redirect." }] }), { status: 200, headers: { "content-type": "application/json" } });
+  const rows = [
+    ["firecrawl-keyless", { firecrawl: firecrawlFetch({ endpoint: fc.url }) }, PUBLIC],
+    ["parallel", { parallel: parallelExtract("not-a-secret", extract) }, ""],
+  ];
+  const urls = [];
+  const leaks = [];
+  for (const [provider, client] of rows) {
+    const read = await fetched({ ...client, order: [provider, "direct"] });
+    assert.deepEqual([read.page.ok, read.page.via], [true, provider], `${provider}: the provider read the page`);
+    urls.push([provider, read.page.url]);
+    leaks.push(...leaking(places(provider, read)));
+  }
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(urls, rows.map(([provider, , url]) => [provider, url]), "Firecrawl names the URL it was sent, Parallel no url");
 });
 
 // The URL a call asks for is the model's own. While it holds a user name or password it is never fetched or sent (the
