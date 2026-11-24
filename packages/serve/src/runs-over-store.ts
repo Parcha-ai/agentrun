@@ -581,7 +581,7 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
   if ((entry.revision?.body as {cli_learning?:unknown})?.cli_learning) throw new ApiError("agent_not_runnable", "Start the next prompt in your existing CLI session. AgentRun records its learning; it does not launch this connection.");
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}), ...(keys ? { keys } : {}) });
-  const target = keyTargetOf(deps.planeEnv(), launch, revision);
+  const target = keyTargetOf(launch, revision);
   keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   try {
@@ -602,7 +602,7 @@ export async function startRun(store: Store, deps: StartDeps, entry: AgentEntry,
 /** A start with no launch secrets (`sealed`: a trigger's firing, a learning batch's row) whose route goes to the model
  *  gateway, on a server that holds no key for it (run-model-key.ts serverKeyMissing): 422 model_key_required, nothing
  *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. `target`:
- *  the run's (run-model-key.ts keyTargetOf), a held run's whose model was refused at its create among them. */
+ *  the run's (run-model-key.ts keyTargetOf). */
 function keyedOrRefused(deps: StartDeps, target: ModelKeyTarget, sealed: StartOptions["sealed"]): void {
   if (!sealed && serverKeyMissing(deps.planeEnv(), target)) throw modelKeyRequired(false);
 }
@@ -761,7 +761,7 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision, ...(keys ? { keys } : {}) });
-  const target = keyTargetOf(deps.planeEnv(), launch, storedRevision ?? revision);
+  const target = keyTargetOf(launch, storedRevision ?? revision);
   keyedOrRefused(deps, target, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
