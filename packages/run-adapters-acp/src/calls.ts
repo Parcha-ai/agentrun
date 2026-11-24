@@ -104,11 +104,16 @@ const hasEffects = (kind: unknown): boolean => typeof kind === "string" && NATIV
 
 /** The agent's tool_call `update`, kept for the MCP call it may be: a call whose kind has effects of its own never is
  *  (a shell named as our tool never takes an MCP call's id); one the recipe's field names as another tool is the agent's
- *  own; one it names as ours is kept as that tool; one it names nothing for is matched by its arguments alone. */
+ *  own; one it names as ours is kept as that tool; one it names nothing for is matched by its arguments alone, except
+ *  one with no arguments on a recipe whose field names calls, which waits for the update that names it. */
 export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): void {
   if (hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (tool === null) return;
+  // Named by nothing and reporting no arguments, on a recipe that declares the field (Cursor's untitled `MCP: tool`,
+  // rawInput {}, before its late update names it): {} would tie it to any call with no arguments, of any tool, so it
+  // waits to be named (nameCall). On a recipe without the field nothing names it later: it is matched by {} at once.
+  if (tool === undefined && announces && isPlain(update.rawInput) && Object.keys(update.rawInput).length === 0) return;
   calls.add(update.toolCallId, tool, tool === undefined ? update.rawInput : announcedArgs(update, announces));
 }
 
@@ -135,16 +140,14 @@ export class CallIds {
   private readonly keyOf = new Map<string, string>();
 
   /** The agent announced call `id` with `input` (undefined: it reported none), its recipe's field naming `tool` of
-   *  ours, or none (undefined). One with no tool is matched by its input alone, an object with a field at least; one
-   *  with no input by its tool alone; one with neither is never matched. A tool named for an id already announced
-   *  without one (a call the agent named in a later update) keys it again. */
+   *  ours, or none (undefined). One with no tool is matched by its input alone, an object ({} included: announceCall
+   *  holds one back where a later update will name the call); one with no input by its tool alone; one with neither is
+   *  never matched. A tool named for an id already announced without one (a call the agent named in a later update)
+   *  keys it again. */
   add(id: string, tool: string | undefined, input: unknown): void {
     if (this.used.has(id)) return;
     const reported = input !== undefined && input !== null;
     if (tool === undefined && !isPlain(input)) return;
-    // Named by nothing and reporting no arguments (Cursor's untitled `MCP: tool`, rawInput {}, before its late update
-    // names it): {} would tie it to any call with no arguments, of any tool, so it waits to be named.
-    if (tool === undefined && Object.keys(input as Record<string, unknown>).length === 0) return;
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
     // An announced call with input is matched only by that input (and its tool, where the field named one), so it never
     // takes an MCP call with other arguments that is waiting for its own announcement.
