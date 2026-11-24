@@ -13,7 +13,7 @@
 //       promotes it;
 //   (d) the revision's check holds it too: stopped, and no run after compiles anything;
 //   (e) the definition's numbers stand in for the defaults: at agree_min 0.9, 4 of 5 is held (the default 0.8 passes it);
-//   (f) on graded inputs, the grade's expected answer is the known answer, not the agent's;
+//   (f) on graded inputs, the grade's expected answer is the known answer of each key it holds, not the agent's;
 //   and a check's promotion never queues a rival, never refits on its served runs' grades, never replays again.
 // The agent's earlier runs are real runs of the store (its list, launches and journals), on a pi run of the faux gateway.
 import assert from "node:assert/strict";
@@ -296,8 +296,10 @@ test("(f) graded inputs: the check judges the answer against each grade's expect
   assert.equal(second.metrics?.path, "workflow", JSON.stringify(second.metrics));
   const decided = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed], ["promote", 5, 5], decided.reason);
-  const { answer } = decided.check.fields;
-  assert.deepEqual([answer.known, answer.by], ["grade", { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } }], "right on all 5 against the grades, where the agent was right on none");
+  assert.deepEqual(Object.fromEntries(Object.entries(decided.check.fields).map(([name, one]) => [name, one.by])), {
+    answer: { agent: { n: 5, workflow_right: 5, agent_right: 5, pass: true } },
+    "answer.answer": { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
+  }, "right on all 5 against the grades, where the agent was right on none; the rest of the answer the agent's");
 });
 
 test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is held (the default 0.8 would pass it)", { timeout: 180_000 }, async (t) => {
@@ -327,7 +329,8 @@ test("(f) graded inputs: a draft that says neither the expected 41 nor the agent
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
   const held = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.decided === "hold" && one.check?.n);
   assert.ok(held, "the check held it");
-  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
+  assert.deepEqual(held.check.fields["answer.answer"].by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
+  assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer.answer", known: "grade", value: "41" }]), "each disagreement carries the known answer it missed");
 });
 
 const twice = (fixed) => (text) => (text.includes("exactly") && fixed ? { answer: 42, sure: true } : /Question [13]\b/.test(text) ? { answer: 41, sure: true } : /Question 2\b/.test(text) ? { answer: 42, sure: false } : { answer: 42, sure: true });

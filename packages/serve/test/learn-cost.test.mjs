@@ -135,6 +135,7 @@ test("the serving promotion's check: the champion of the workflow the newest ser
   const runs = series([["agent", 0.9], ["workflow", 0.1], ["handed_back", 0.5]]);
   assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(38, 33) })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 100, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 });
   assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: check(20, 12) })], runs), { n: 40, workflow_pct: 60, agent_pct: 100, cleared: false, agreed: 12, alone: 20, agree_min: 0.8 }, "cleared only when its agreement reaches agree_min");
+  assert.deepEqual(servingReplayOf([rec("d1", "promote", { check: { ...check(38, 33), agent_agreed: 30 } })], runs), { n: 40, workflow_pct: 86.8, agent_pct: 78.9, cleared: true, agreed: 33, alone: 38, agree_min: 0.8 }, "the agent's share right on every field at once, on the same inputs and known answers (30 of 38): a record before it was counted said 100");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(0, 0, 0) })], runs), null, "promoted on a dry run: no inputs checked");
   assert.equal(servingReplayOf([rec("d1", "promote")], runs), null, "no check kept");
   assert.equal(servingReplayOf([rec("d1", "promote", { check: check(38, 33) }), rec("d1", "hold", { check: check(10, 2) })], runs), null, "held: nothing serves");

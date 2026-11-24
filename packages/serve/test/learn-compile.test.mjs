@@ -244,6 +244,26 @@ test("held by its check: the revise ask says the check's numbers and offers no '
   assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
+// A miss against a grade or a label: the revise ask shows the known answer the draft missed and where it came from, as
+// data, and asks for the known answer there (never the agent's, which the grade corrected).
+test("held by its check on a known answer: each disagreement shows the known answer it missed and its source, and the ask is for the known answer", () => {
+  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer.answer"], expected: [{ field: "answer.answer", known: "grade", value: "41" }] };
+  const field = (name, n, right, known, pass) => ({ n, workflow_right: right, agent_right: 0, known, pass, reason: `${name}: ${right} of ${n}`, by: { [known]: { n, workflow_right: right, agent_right: 0, pass } } });
+  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1"], disagreements: [one], fields: { answer: field("answer", 5, 5, "agent", true), "answer.answer": field("answer.answer", 5, 0, "grade", false) } };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /Input 1: Question 1\nYour answer: \{"answer":42\}\nThe draft's answer: \{"answer":7\}\nThe fields it had wrong: answer\.answer\nThe known answer of answer\.answer \(from a grade\): 41/);
+  assert.match(prompt, /says the known answer/);
+  assert.doesNotMatch(prompt, /answers these inputs alone and says what you said/);
+});
+
+// The joint floor with one field: inputs with no known answer are not right on it, so a field that passes alone can
+// still fall short together; the hold names that, never nothing.
+test("held on the joint floor with one field that passes: the revise ask says right on every field at once and that it fell short there", () => {
+  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16, pass: true } } } } };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /field by field: answer: 13 of 16; right on every field at once: 13 of 20 \(65\.0%, at least 80\.0% needed\)\. It fell short on its fields together\./);
+});
+
 // Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and
 // that there are no disagreements to show, and never that nothing compiles again: such a hold spends no recompile and
 // revises at a first compile's cadence; two failed revise drafts stop it.

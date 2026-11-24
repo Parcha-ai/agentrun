@@ -103,10 +103,10 @@ test("corrections: every input graded with the agent wrong; a workflow that answ
   assert.deepEqual([right.verdict, counts(right).answer], ["serve", ["grade", 5, 5, 0, true]]);
 });
 
-test("a grade with no expected answer: correct makes the agent's answer known right; incorrect makes repeating it wrong, and any other answer unknown", () => {
+test("a grade with no expected answer: graded right, the agent's answer is known as any agent answer is (agree_min, no stricter); graded wrong, repeating it is wrong, and any other answer is unjudged", () => {
   const confirmed = (right) => check(ids(5).map((id, i) => answered(id, { x: { workflow: i < right ? "a" : "b", agent: "a", agent_correct: true } })), BAR);
-  assert.deepEqual(counts(confirmed(5)).x, ["grade", 5, 5, 5, true], "right on all 5 of the agent's graded-right answers");
-  assert.deepEqual(counts(confirmed(4)).x, ["grade", 5, 4, 5, false], "4 of 5: more than 2 points under the agent's 5 of 5");
+  assert.deepEqual(counts(confirmed(5)).x, ["agent", 5, 5, 0, true]);
+  assert.deepEqual(counts(confirmed(4)).x, ["agent", 5, 4, 0, true], "4 of 5 is agree_min, as with no grade: a thumbs-up never makes the bar 100%");
   const refuted = check([
     answered("in-0", { x: { workflow: "a", agent: "a", agent_correct: false } }),
     answered("in-1", { x: { workflow: "b", agent: "a", agent_correct: false } }),
@@ -116,8 +116,36 @@ test("a grade with no expected answer: correct makes the agent's answer known ri
     grade: { n: 1, workflow_right: 0, agent_right: 0, pass: false },
     agent: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
   }, "in-0 repeats an answer graded wrong; in-1 differs from it, which no known answer judges");
+  assert.equal(refuted.fields.x.unjudged, 1, "in-1 is counted as unjudged");
   assert.deepEqual(refuted.misses, [{ field: "x", input_id: "in-0", workflow: "a", expected: undefined, known: "grade" }]);
-  assert.equal(refuted.verdict, "hold");
+  assert.deepEqual([refuted.verdict, refuted.joint.agreed], ["hold", 1], "only in-2 is right on every field");
+});
+
+test("unjudged inputs are never right: 19 answers graded wrong with no correction, where the draft says anything else, and 1 ungraded input it matches, hold on the joint floor and on the field's judged count", () => {
+  const rows = [
+    ...ids(19).map((id) => answered(id, { answer: { workflow: "", agent: "the agent's answer", agent_correct: false } })),
+    answered("in-19", { answer: { workflow: "same", agent: "same" } }),
+  ];
+  const verdict = check(rows, BAR);
+  assert.equal(verdict.verdict, "hold");
+  assert.deepEqual(verdict.joint, { agreed: 1, alone: 20, pass: false }, "an unjudged input is not right on every field");
+  assert.deepEqual([verdict.fields.answer.n, verdict.fields.answer.unjudged, verdict.fields.answer.pass], [1, 19, false], "judged on 1 of the 20 inputs it answered: under alone_min");
+  assert.deepEqual(verdict.failing, ["answer"]);
+  assert.match(verdict.fields.answer.reason, /^answer: 1 of 1 said what the agent said \(100\.0%, the bar 80\.0%\); judged on 1 of 20 \(5\.0%, the bar 70\.0%\): 19 had no known answer \(graded wrong, none given, and the workflow said another\)$/);
+  assert.deepEqual(tallyOf(rows).fields.answer, { agent: { n: 1, workflow_right: 1, agent_right: 1 }, unjudged: 19 }, "the tally keeps the unjudged count, so a check collected over time adds to it");
+  const few = check([
+    ...ids(2).map((id) => answered(id, { answer: { workflow: "", agent: "the agent's answer", agent_correct: false } })),
+    ...ids(18, 2).map((id) => answered(id, { answer: { workflow: "same", agent: "same" } })),
+  ], BAR);
+  assert.deepEqual([few.verdict, few.joint, few.fields.answer.pass], ["serve", { agreed: 18, alone: 20, pass: true }, true], "2 unjudged of 20: judged on 18, right on 18 of 20 at once");
+});
+
+test("the agent right on every field at once (agent_agreed), counted on the same inputs and known answers as agreed", () => {
+  assert.deepEqual([check(twoFields(3), BAR).tally.agent_agreed, check(twoFields(3), BAR).tally.agreed], [20, 16], "known only from the agent: the agent is right on all");
+  const graded = (workflowRight, agentRight) => ids(10).map((id, i) => answered(id, { x: { workflow: i < workflowRight ? "yes" : "no", agent: i < agentRight ? "yes" : "no", grade: "yes" }, y: { workflow: 1, agent: 1 } }));
+  assert.deepEqual([check(graded(9, 6), BAR).tally.agreed, check(graded(9, 6), BAR).tally.agent_agreed], [9, 6]);
+  const refuted = check([answered("in-0", { x: { workflow: "b", agent: "a", agent_correct: false } }), answered("in-1", { x: { workflow: "a", agent: "a", agent_correct: false } }), answered("in-2", { x: { workflow: "c", agent: "c" } })], BAR);
+  assert.equal(refuted.tally.agent_agreed, 1, "an answer graded wrong is the agent's miss, judged or not");
 });
 
 test("a label beats a grade, which beats the agent's answer", () => {
@@ -204,7 +232,7 @@ test("alone: not enough inputs answered alone holds though every field passes; s
 test("a check that collects its inputs over time adds the next rows to what it counted before; misses are the new rows'", () => {
   const rows = ids(10).map((id, i) => answered(id, { x: { workflow: i < 9 ? "a" : "b", agent: "a" } }));
   const before = tallyOf(rows.slice(0, 6));
-  assert.deepEqual(before, { n: 6, alone: 6, agreed: 6, fields: { x: { agent: { n: 6, workflow_right: 6, agent_right: 6 } } } });
+  assert.deepEqual(before, { n: 6, alone: 6, agreed: 6, agent_agreed: 6, fields: { x: { agent: { n: 6, workflow_right: 6, agent_right: 6 } } } });
   const split = check(rows.slice(6), BAR, before);
   const whole = check(rows, BAR);
   assert.deepEqual(split.tally, whole.tally);

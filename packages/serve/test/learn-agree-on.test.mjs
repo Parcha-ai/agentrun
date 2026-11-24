@@ -6,12 +6,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
 
-const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
-const { answersPair, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
+const { decideCheck, NEVER_WORD_FOR_WORD, replayView } = await import("../dist/runner/promotion.js");
+const { answersPair, forgetRunCopies, promotionsOf, recordPromotion, sameAnswer } = await import("../dist/learn/promote.js");
 const { learningSettingIssue, learningSettingOf, loopOf } = await import("../dist/learning-setting.js");
 const { secretsShown } = await import("../dist/learning.js");
+const { learningSettingForBody } = await import("../dist/store/agent-body.js");
+const { openapiDocument } = await import("../dist/openapi.js");
+const doc = openapiDocument(() => undefined);
 
 /** The agent's answer as a real model writes it: prose, then one fenced json block. */
 const agentSays = (fields) => `Example Cinema (example.com) sells film tickets and concessions.\n\n\`\`\`json\n${JSON.stringify(fields, null, 2)}\n\`\`\``;
@@ -42,7 +46,7 @@ async function decide(bar, read) {
   const logs = [];
   const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => secretsShown([]) };
   const decided = await decideCheck(deps, "classify", "d1", { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, ...bar }, read, () => true, {});
-  return { record: decided.record, stored: (await promotionsOf(settings, "a")).at(-1), logs };
+  return { record: decided.record, stored: (await promotionsOf(settings, "a")).at(-1), logs, settings };
 }
 
 test("check on live-shaped answers: same mcc and riskTier, other rationale, evidence and confidence: agreed on agree_on, promoted; on the whole answer, held", async () => {
@@ -68,24 +72,86 @@ test("a connected agent's turns counted before per-field tallies existed: each f
   assert.deepEqual([answer.n, answer.workflow_right, held.stored.check.alone, held.stored.check.agreed], [20, 11, 20, 11]);
 });
 
-test("graded inputs on the whole answer: judged against each grade's expected answer, the fast model's verdict on the pair still kept", async () => {
+test("graded inputs on the whole answer: each key of a grade's expected answer is a field judged against it, and the whole answer still says what the agent said (outside a corrected key, equal there; else the fast model's verdict)", async () => {
   const agent = JSON.stringify({ answer: 42, note: "six sevens" });
-  const draft = JSON.stringify({ answer: 41, note: "a guess" });
-  const rows = Array.from({ length: 5 }, (_, i) => ({ of: `r-${i}`, input: `Question ${i}`, agent, outcome: "answered", answer: draft, expected: { answer: 41 }, compared: { same: false, grader: "fast-model", differs_on: "the number", pair: answersPair(draft, agent) } }));
-  const decided = await decide({}, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 });
+  const graded = (draft, compared) => Array.from({ length: 5 }, (_, i) => ({ of: `r-${i}`, input: `Question ${i}`, agent, outcome: "answered", answer: draft, expected: { answer: 41 }, compared: { grader: "fast-model", pair: answersPair(draft, agent), ...compared } }));
+  const read = (rows) => ({ rows, cost: 0, outcomes: { answered: rows.length, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 });
+  const right = JSON.stringify({ answer: 41, note: "six sevens" });
+  const decided = await decide({}, read(graded(right, { same: false, differs_on: "the number" })));
   assert.equal(decided.record.decided, "promote", decided.record.reason);
-  assert.deepEqual(decided.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } });
+  assert.deepEqual(Object.fromEntries(Object.entries(decided.stored.check.fields).map(([name, one]) => [name, one.by])), {
+    answer: { agent: { n: 5, workflow_right: 5, agent_right: 5, pass: true } },
+    "answer.answer": { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
+  }, "the corrected key against the grade; the rest of the answer the agent's, equal outside it");
   assert.equal(decided.stored.check.grader, "fast-model", "the grader's verdict is read on graded inputs too");
+  const elsewhere = JSON.stringify({ answer: 41, note: "a guess" });
+  const held = await decide({}, read(graded(elsewhere, { same: false, differs_on: "the number and the note" })));
+  assert.equal(held.record.decided, "hold", "right on the corrected key, another note: the rest is not the agent's");
+  assert.deepEqual([held.stored.check.fields.answer.workflow_right, held.stored.check.fields["answer.answer"].workflow_right], [0, 5]);
+  const wrong = JSON.stringify({ answer: 7, note: "six sevens" });
+  const missed = await decide({}, read(graded(wrong, { same: false, differs_on: "the number" })));
+  assert.equal(missed.record.decided, "hold");
+  assert.deepEqual(missed.stored.check.disagreements[0].fields, ["answer.answer"]);
+  assert.deepEqual(missed.stored.check.disagreements[0].expected, [{ field: "answer.answer", known: "grade", value: "41" }], "the known answer the draft missed, and where it came from, for the recompile");
+  await forgetRunCopies(missed.settings, "a", "r-0");
+  assert.deepEqual((await promotionsOf(missed.settings, "a")).at(-1).check.disagreements[0], { run: "r-0", input: "", agent: null, draft: "", fields: ["answer.answer"], expected: [{ field: "answer.answer", known: "grade", value: "" }] }, "a purge blanks the known answer's value, keeping its field and source");
 });
 
-test("a grade with no expected answer: graded wrong, a draft that repeats the agent's answer is wrong on it", async () => {
+test("a partial grade on the whole answer: a draft right on the graded key and wrong on every other decision is held; the fast model's verdict decides the rest", async () => {
+  const graded = (said, compared) => {
+    const read = readOf(() => draftSays(said));
+    return { ...read, rows: read.rows.map((row) => ({ ...row, expected: { mcc: "7832" }, compared: { grader: "fast-model", pair: answersPair(row.answer, row.agent), ...compared } })) };
+  };
+  const held = await decide({}, graded({ ...DRAFT, riskTier: "high" }, { same: false, differs_on: "riskTier" }));
+  assert.equal(held.record.decided, "hold", held.record.reason);
+  assert.equal(held.stored.check.agreed, 0);
+  assert.deepEqual(Object.entries(held.stored.check.fields).map(([name, one]) => [name, one.known, one.workflow_right, one.n, one.pass]), [["answer", "agent", 0, 5, false], ["answer.mcc", "grade", 5, 5, true]]);
+  const promoted = await decide({}, graded(DRAFT, { same: true }));
+  assert.equal(promoted.record.decided, "promote", `the same decisions by the fast model's verdict: ${promoted.record.reason}`);
+});
+
+test("a grade with no expected answer: graded wrong, a draft that repeats the agent's answer is wrong on it; graded right, the agent's answer is known as with no grade", async () => {
   const read = readOf(() => agentSays(AGENT));
   const rows = read.rows.map((row) => ({ ...row, correct: false }));
   const held = await decide({}, { ...read, rows });
   assert.equal(held.record.decided, "hold", held.record.reason);
   assert.deepEqual(held.stored.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } });
   const confirmed = await decide({}, { ...read, rows: read.rows.map((row) => ({ ...row, correct: true })) });
-  assert.deepEqual([confirmed.record.decided, confirmed.stored.check.fields.answer.by], ["promote", { grade: { n: 5, workflow_right: 5, agent_right: 5, pass: true } }], "graded right: the agent's answer is a known one");
+  assert.deepEqual([confirmed.record.decided, confirmed.stored.check.fields.answer.by], ["promote", { agent: { n: 5, workflow_right: 5, agent_right: 5, pass: true } }]);
+});
+
+test("19 inputs graded wrong with no correction, where the draft answers anything else, and 1 it matches: held (main held it at 1 of 20)", async () => {
+  const read = readOf((i) => (i < 19 ? "" : agentSays(AGENT)), 20);
+  const rows = read.rows.map((row, i) => (i < 19 ? { ...row, correct: false } : row));
+  const held = await decide({ compile_after: 20 }, { ...read, rows });
+  assert.equal(held.record.decided, "hold", held.record.reason);
+  const { answer } = held.stored.check.fields;
+  assert.deepEqual([held.stored.check.agreed, held.stored.check.alone, answer.n, answer.unjudged, answer.pass], [1, 20, 1, 19, false]);
+  assert.match(held.record.reason, /judged on 1 of 20 \(5\.0%, the bar 70\.0%\)/);
+});
+
+test("a decided check's record (its fields, its disagreements' fields and known answers) and a connected agent's turns meet the promotions read's schema", async () => {
+  const agent = JSON.stringify({ answer: 42, note: "six sevens" });
+  const draft = JSON.stringify({ answer: 7, note: "six sevens" });
+  const rows = Array.from({ length: 5 }, (_, i) => ({ of: `r-${i}`, input: `Question ${i}`, agent, outcome: "answered", answer: draft, expected: { answer: 41 } }));
+  const { stored } = await decide({}, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 });
+  const schema = doc.paths["/agents/{agent_id}/learning/promotions"].get.responses["200"].content["application/json"].schema.properties.promotions.items;
+  assert.ok(stored.check.fields && stored.check.disagreements[0].expected, JSON.stringify(stored.check));
+  assert.deepEqual(schemaProblems(doc, schema, stored), []);
+  const turns = { n: 5, agreed: 0, alone: 5, agent_agreed: 0, fields: { answer: { agent: { n: 4, workflow_right: 4, agent_right: 4 }, unjudged: 1 }, "answer.answer": { grade: { n: 5, workflow_right: 0, agent_right: 0 } } }, of: ["r-0"], outcomes: { answered: 5, handed_back: 0, skipped_write: 0, failed: 0 }, disagreements: stored.check.disagreements };
+  assert.deepEqual(schemaProblems(doc, schema, { ...stored, decided: "replaying", check: { ...stored.check, turns } }), []);
+  assert.equal(stored.check.agent_agreed, 0, "the agent right on every field at once: on none (the grade corrected it everywhere)");
+});
+
+test("a decided replay's score: the agent's accuracy on the same inputs and known answers as the workflow's (agent_agreed), 1 on a record kept before it was counted", async () => {
+  const settings = settingsOf();
+  const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 4, alone: 4, agent_agreed: 2, of: [], outcomes: { answered: 4, handed_back: 1, failed: 0, skipped_write: 0 } };
+  await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p1", check }, () => true);
+  const view = await replayView({ store: { settings }, agentId: "a" }, "classify", "d1", "p1");
+  assert.deepEqual(view.score, { n: 5, agree: 4, agent_acc: 0.6, wf_acc: 1, delta: 0.4, handed_back: 1 }, "the agent wrong on 2 of the 4 it answered alone: 3 of 5");
+  const { agent_agreed: _, ...before } = check;
+  await recordPromotion(settings, "a", { workflow: "classify", digest: "d2", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p2", check: before }, () => true);
+  assert.equal((await replayView({ store: { settings }, agentId: "a" }, "classify", "d2", "p2")).score.agent_acc, 1);
 });
 
 test("check on dotted paths: verdict.decision agrees though the rationale differs; a draft that differs on it disagrees, counted per input", async () => {
@@ -147,13 +213,16 @@ test("agree_on's shape: 1 to 16 distinct dotted paths, each up to 128 characters
     ["verdict.", "an empty segment"],
     ["a.b.c.d.e.f.g.h.i", "more than 8 segments"],
     ["x".repeat(129), "over 128 characters"],
-    ["__proto__", "a reserved segment (__proto__, constructor or prototype)"],
-    ["verdict.constructor", "a reserved segment (__proto__, constructor or prototype)"],
-    ["prototype.decision", "a reserved segment (__proto__, constructor or prototype)"],
+    ["__proto__", "a reserved segment (__proto__)"],
+    ["verdict.__proto__", "a reserved segment (__proto__)"],
   ]) {
     assert.equal(learningSettingIssue({ agree_on: ["mcc", path] }), `learning.agree_on[1] is not a dotted path into the answer's JSON object (e.g. verdict.decision): ${why}`, JSON.stringify(path));
   }
   assert.equal(learningSettingIssue({ agree_on: ["riskTier", "mcc"] }), undefined);
+  assert.equal(learningSettingIssue({ agree_on: ["verdict.constructor", "prototype.decision"] }), undefined, "an answer's own keys named constructor or prototype are fields like any other");
+  for (const agree_on of [["prototype.decision"], ["__proto__.decision"]]) {
+    assert.deepEqual(learningSettingForBody({ learning: { agree_on } }), { agree_on }, `a saved definition keeps its setting on read: ${agree_on}`);
+  }
   assert.equal(learningSettingIssue({ agree_on: ["verdict.decision", "a.b.c.d.e.f.g.h"] }), undefined, "8 segments");
   assert.equal(learningSettingIssue({ agree_on: Array.from({ length: 16 }, (_, i) => `k${i}`.padEnd(128, "x")) }), undefined, "16 paths of 128 characters");
   assert.deepEqual(Object.entries(learningSettingOf({ agree_on: ["verdict.decision", "mcc"], audit_every: 5, compile_after: 4 })), [["compile_after", 4], ["agree_on", ["verdict.decision", "mcc"]], ["audit_every", 5]]);
