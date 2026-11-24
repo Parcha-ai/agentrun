@@ -5631,7 +5631,7 @@ class RunPlace2(TypedDict):
 class _RunComputerRequired(TypedDict):
     kind: Literal["sandbox", "desktop", "phone", "browser"]
     provider: str
-    state: Literal["starting", "ready", "taken_over", "ended", "failed"]
+    state: Literal["starting", "ready", "taken_over", "released", "ended", "failed"]
 
 
 class RunComputer(_RunComputerRequired, total=False):
