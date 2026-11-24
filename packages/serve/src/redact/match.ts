@@ -516,6 +516,17 @@ const PERCENT: Decoder = {
 };
 /** "+" as a space, as a form's encoding writes one. */
 const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (unit(" ", at, at + 1), at + 1) };
+/** One JSON \uXXXX escape, decoded to its UTF-16 unit: a held value a JSON writer wrote that way, every character or
+ *  some. A surrogate pair is two escapes, two units, NFKC'd together as any non-ASCII stretch is. */
+const UNICODE: Decoder = {
+  trigger: "\\",
+  decode(text, at, unit) {
+    if (text[at + 1] !== "u") return -1;
+    for (let i = at + 2; i < at + 6; i++) if (!HEX(text.charCodeAt(i))) return -1;
+    unit(String.fromCharCode(Number.parseInt(text.slice(at + 2, at + 6), 16)), at, at + 6);
+    return at + 6;
+  },
+};
 
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */
@@ -526,11 +537,12 @@ const viewSpec = (when: (text: string) => boolean, decoders: readonly Decoder[])
   special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
 });
 /** The views of a text read for each held value, in order: squeezed; percent-decoded; percent-decoded with "+" as a
- *  space. Each is lowered for hexes and flattened for folded identifiers in holds. */
+ *  space; JSON's \uXXXX escapes decoded. Each is lowered for hexes and flattened for folded identifiers in holds. */
 const VIEWS: readonly ViewSpec[] = [
   viewSpec(() => true, []),
   viewSpec((text) => /%[0-9a-fA-F]{2}/.test(text), [PERCENT]),
   viewSpec((text) => text.includes("+"), [PERCENT, PLUS]),
+  viewSpec((text) => /\\u[0-9a-fA-F]{4}/.test(text), [UNICODE]),
 ];
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, NFKC, and its whitespace gone, as
