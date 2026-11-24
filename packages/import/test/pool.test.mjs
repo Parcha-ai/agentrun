@@ -6,7 +6,7 @@ import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { relative } from "node:path";
 import { parseHome, READERS } from "../dist/index.js";
-import { memoryLimit, ReadPool, readAheadBytes } from "../dist/pool.js";
+import { memoryLimit, ReadPool, readAheadBytes, stringBytes } from "../dist/pool.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const THREADS = [2, 3, 4];
@@ -145,6 +145,14 @@ test("a container's memory limit below the machine's sets the default read-ahead
   assert.equal(readAheadBytes(memoryLimit(512 * 2 ** 30, 2 * 2 ** 30)), 128 * 2 ** 20);
   assert.equal(memoryLimit(8 * 2 ** 30, 0), 8 * 2 ** 30, "no limit");
   assert.equal(memoryLimit(8 * 2 ** 30, 2 ** 62), 8 * 2 ** 30, "a limit above the machine's");
+});
+
+test("a read's strings are charged as V8 holds them: one byte a character up to U+00FF, two past it", () => {
+  assert.equal(stringBytes({ firstPrompt: "a".repeat(1000) }), 1000, "ASCII");
+  assert.equal(stringBytes({ firstPrompt: "é".repeat(1000) }), 1000, "Latin-1 is still one byte a character");
+  assert.equal(stringBytes({ firstPrompt: "日本".repeat(500) }), 2000, "CJK takes two bytes a character");
+  assert.equal(stringBytes({ firstPrompt: "a".repeat(999) + "日" }), 2000, "one character past U+00FF makes the whole string two bytes");
+  assert.equal(stringBytes({ firstPrompt: "日", titleText: "ab", turns: 3 }), 4, "each string on its own; numbers count nothing");
 });
 
 test("the default read-ahead is 1 GiB, or a sixteenth of the machine's memory when that is less", () => {

@@ -51,8 +51,12 @@ const LOSSES_PER_THREAD = 2;
 /** A session's objects beyond its typed arrays and its strings, as the budget counts them. */
 const SESSION_BYTES = 1024;
 
-/** A session's strings (its first prompt and title can run to megabytes), a byte a character as V8 holds ASCII. */
-const stringBytes = (session: object): number => Object.values(session).reduce((sum: number, value) => sum + (typeof value === "string" ? value.length : 0), 0);
+/** A string past U+00FF: V8 holds it at two bytes a UTF-16 code unit, any other at one. */
+const WIDE = /[^\u0000-\u00ff]/;
+
+/** A session's strings (its first prompt and title can run to megabytes) as V8 holds them. */
+export const stringBytes = (session: object): number =>
+  Object.values(session).reduce((sum: number, value) => sum + (typeof value === "string" ? (WIDE.test(value) ? 2 : 1) * value.length : 0), 0);
 
 type Job = { id: number; source: string; locator: Locator; size: number; state: "queued" | "running" | "waiting" | "taken"; read?: PoolRead; bytes: number };
 
