@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
 import { test } from "node:test";
@@ -26,6 +26,7 @@ const host = await import("../dist/runner/run-child-host.js");
 const live = await import("../dist/live-reach.js");
 const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
+const { settingFor } = await import("../dist/claude-login.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -238,7 +239,7 @@ function staysDeps(data, kind, login) {
     store: {
       runs: { get: async (id) => ({ id, agentId: "agent-own", revisionId: "rev-own" }), launch: async (id) => ({ sealed: id === "run-keyed" ? modelKeyed : null }) },
       agents: { revision: async () => ({ id: "rev-own", kind, body: {} }) },
-      settings: { get: async (key) => (key === "claude_login" && login ? { v: 1, place: "agentrun", host: hostname(), only_me: true } : null) },
+      settings: { get: async (key) => (key === "claude_login" && login ? settingFor("agentrun", data) : null) },
     },
   };
 }

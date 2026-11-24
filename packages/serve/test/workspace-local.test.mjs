@@ -3,7 +3,7 @@
 // pipes, a missing root, and durability on return, shown with the fsync-snapshot shim.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -225,6 +225,15 @@ function buildShim(dir) {
   return undefined;
 }
 
+/** Each of `paths` (files and folders) flushed to disk: the files this test set up, and the folders naming them, before a
+ *  writer runs. Never a box-wide `sync`, which waits on every dirty page of every disk. */
+function fsyncEach(paths) {
+  for (const path of paths) {
+    const fd = openSync(path, "r");
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  }
+}
+
 /** The durable writer run as `how` on folder `root`, under the shim, to its "returned" and its SIGKILL. */
 function runWriterUnderShim(lib, how, root) {
   const child = spawnSync(process.execPath, [WRITER, how, root], { encoding: "utf8", env: { ...process.env, LD_PRELOAD: lib, FSYNC_SNAPSHOT_DIR: root }, timeout: 30_000 });
@@ -242,11 +251,12 @@ test("local: every remove is durable on return (a crash after it does not bring 
   const cameBack = (root) => removed.filter((entry) => !existsSync(`${dirname(join(root, entry))}.synced`));
   for (const how of ["plain", "port", "attached"]) {
     const root = join(dir, how);
-    for (const file of ["gone.txt", "keep.txt", "sub/gone.txt", "sub/keep.txt", "tree/x/y.txt", "tree/z.txt"]) {
+    const files = ["gone.txt", "keep.txt", "sub/gone.txt", "sub/keep.txt", "tree/x/y.txt", "tree/z.txt"];
+    for (const file of files) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       writeFileSync(join(root, file), "durable before the test\n");
     }
-    spawnSync("sync");
+    fsyncEach([...files.map((file) => join(root, file)), ...["sub", "tree/x", "tree", "."].map((folder) => join(root, folder)), dir]);
     runWriterUnderShim(lib, `${how}-remove`, root);
     for (const entry of removed) assert.equal(existsSync(join(root, entry)), false, `the ${how} writer removed ${entry}`);
     if (how === "plain") assert.deepEqual(cameBack(root), removed, "red: a plain unlink or rm that returned comes back after a crash");

@@ -19,7 +19,8 @@ import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { encode, OTEL_PAIR, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { otelSettings } from "../otel/tracer.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
@@ -62,7 +63,7 @@ import { compareEndOfRun } from "./compare-end.js";
 import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
-import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
+import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { graderModelOf, learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
@@ -729,7 +730,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(run.agentId)?.web, slots: deps.saveSlots } });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, run.agentId, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -1061,6 +1062,13 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   return out;
 }
 
+/** The pair a run's process is handed this runner's OpenTelemetry settings in (secrets.ts OTEL_PAIR): none when it has
+ *  none. */
+export const otelPair = (env: NodeJS.ProcessEnv = process.env): (readonly [string, string])[] => {
+  const settings = otelSettings(env);
+  return Object.keys(settings).length ? [[OTEL_PAIR, JSON.stringify(settings)] as const] : [];
+};
+
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
 function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -1172,10 +1180,15 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // held run its model kept from running, which routes no model.
         const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
-        const keys = encode(SECRET_NAMES.flatMap((name) => {
-          const value = handed(name);
-          return value === undefined ? [] : [[name, value] as const];
-        }));
+        const keys = encode([
+          ...SECRET_NAMES.flatMap((name) => {
+            const value = handed(name);
+            return value === undefined ? [] : [[name, value] as const];
+          }),
+          // The runner's OpenTelemetry settings, so the run's process exports its trace as this one would: on the pipe,
+          // since no run's environment has them (runEnv), never in the process's environment.
+          ...otelPair(),
+        ]);
         const slot = await slots?.take();
         if (slots && slot === undefined) {
           // Every free slot of this runner is held by another runner on the data directory (ranges that overlap): the run

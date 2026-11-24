@@ -342,12 +342,18 @@ export async function packageSkillCheck(load: () => Promise<unknown>): Promise<S
   return typeof pkg?.skillProblems === "function" ? (pkg.skillProblems as SkillCheck) : undefined;
 }
 
+/** Whether a run's web_search is its harness's own search: the run's plane resolves it native and the harness has a search
+ *  of its own (its facts' webSearch: claude-agent's, codex's). Its adapter then searches (nativeOptions), and the run is
+ *  not also handed the host's web_search (cli-run-spec.ts), which would sit beside it. */
+export const ownSearchRuns = (facts: Pick<AdapterFacts, "webSearch"> | undefined, plane: { readonly web_search?: unknown } | undefined): boolean =>
+  plane?.web_search === "native" && Boolean(facts?.webSearch);
+
 /** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native, by its own search
  *  (its facts' webSearch): `native`, the provider's search through its proxy, with the input a search request may read in
  *  beyond its body (cap.ts), which its proxy adds to that request's bound; `live`, its own live search (its adapter books
  *  each search); nothing for a harness with none. */
 export function nativeOptions(facts: AdapterFacts, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
-  if (planeOf(env).web_search !== "native" || !facts.webSearch) return {};
+  if (!ownSearchRuns(facts, planeOf(env))) return {};
   return facts.webSearch === "native" ? { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS } : { webSearch: "live" };
 }
 
