@@ -385,6 +385,35 @@ test('two status checks at once (two tabs) each get a folder of their own, and b
   for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
 });
 
+test("what status checks killed mid-way left (a SIGKILL runs no finally) is swept: only this user's agentrun-claude-status-* folders last changed more than twice a check's limit ago; a fresh one, which another server's live check may hold, another user's, a file and a longer name stay", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  assert.equal(typeof claude.sweepClaudeStatusFolders, 'function', 'the harness exports sweepClaudeStatusFolders');
+  const dir = scratch();
+  const past = new Date(Date.now() - 10 * 60_000);
+  const folder = (name, old) => {
+    const path = join(dir, name);
+    mkdirSync(join(path, 'config'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, 'config', '.claude.json'), '{}\n', { mode: 0o600 });
+    if (old) utimesSync(path, past, past);
+    return path;
+  };
+  const stale = folder('agentrun-claude-status-Ab12Cd', true);
+  const fresh = folder('agentrun-claude-status-Ef34Gh', false);
+  // A test's own root starts so too (this file's): only mkdtemp's six characters after the prefix are a check's.
+  const longer = folder('agentrun-claude-status-test-Ij56Kl', true);
+  const file = join(dir, 'agentrun-claude-status-Mn78Op');
+  writeFileSync(file, '');
+  utimesSync(file, past, past);
+  // Swept as another user (a uid the folders are not owned by): none is theirs.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, uid: process.getuid() + 1 }), [], "another user's sweep takes nothing of this user's");
+  assert.ok(existsSync(stale), "this user's stale folder stays under another user's sweep");
+  // Swept as this user: the stale folder alone.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir }), [stale]);
+  assert.equal(existsSync(stale), false, 'the stale folder and the copy in it are gone');
+  for (const kept of [fresh, longer, file]) assert.ok(existsSync(kept), `${kept} stays`);
+  // Twice the check's limit (2 x 15 s) on, the fresh one is stale too.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: Date.now() + 31_000 }), [fresh]);
+});
+
 /** A stand-in CLI that rewrites the account file in its config dir as it starts, as the pinned CLI does when the file's
  *  migration number is not its own, then answers signed out. */
 function rewritingCli() {

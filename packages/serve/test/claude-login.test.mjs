@@ -6,7 +6,7 @@
 // AGENTRUN_CLAUDE_CODE_LOGIN=off, where claude-agent runs on the model keys as it does without it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { hostname, tmpdir } from "node:os";
@@ -613,4 +613,24 @@ test("the machine's id is a file of the owner's alone (0600) in the data folder,
   assert.equal((await second.api("GET", "/settings/claude-login")).body.state, "other_machine");
   assert.equal((await second.api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_out", "turned on again, it is this machine's");
   assert.equal(readFileSync(file, "utf8"), id);
+});
+
+// A status check copies the account file into a folder of its own in the temporary folder and removes it when it ends;
+// a server killed outright (SIGKILL) mid-check runs no `finally`, and leaves the folder with the copy in it.
+test("a status check's folder that a killed server left in the temporary folder is removed when a server starts, once older than twice a check's limit; a fresh one, which another server's live check may hold, stays", { skip: process.platform === "win32" ? "no uid" : false, timeout: 120_000 }, async (t) => {
+  const tmp = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-status-sweep-"));
+  const folder = (name) => {
+    const path = join(tmp, name);
+    mkdirSync(join(path, "config"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, "config", ".claude.json"), "{}\n", { mode: 0o600 });
+    return path;
+  };
+  const stale = folder("agentrun-claude-status-Ab12Cd");
+  const fresh = folder("agentrun-claude-status-Ef34Gh");
+  const past = new Date(Date.now() - 10 * 60_000);
+  utimesSync(stale, past, past);
+  withEnv(t, { TMPDIR: tmp }, MODEL_VARS);
+  await serve(t, { faux: undefined, harnesses: false, runner: false });
+  assert.equal(existsSync(stale), false, "the stale folder, with the copy in it, is gone once the server has started");
+  assert.ok(existsSync(join(fresh, "config", ".claude.json")), "the fresh folder stays");
 });
