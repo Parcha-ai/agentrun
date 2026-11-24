@@ -13,7 +13,7 @@ const UNAVAILABLE = "search is unavailable for the rest of this run; answer from
 /** What a call answers while a rate limit's wait holds, `n` seconds of it left. */
 const BUSY = /^search is busy; try again in (\d+) s, or answer from what you have$/;
 
-test("the breaker read against a fake clock: a rate limit's wait passes at its end, a quota answer holds past any wait, and a silly Retry-After is cut to 15 minutes", () => {
+test("the breaker read against a fake clock: a rate limit's wait passes at its end, and a quota answer naming no reset holds past any wait", () => {
   assert.equal(typeof webSearch.searchBreaker, "function", "the run's breaker, made with a clock");
   let now = Date.parse("2026-11-15T12:00:00Z");
   const fail = { error: "the provider's search failed" };
@@ -38,7 +38,7 @@ test("the breaker read against a fake clock: a rate limit's wait passes at its e
   now += 3_600_000;
   assert.equal(words(breaker.held()), UNAVAILABLE, "an hour on, still off");
   // Retry-After as the provider hands it back: seconds, an HTTP date, a number of seconds (Exa's), or words that read as none.
-  for (const [retryAfter, n] of [["2", 2], [new Date(now + 90_000).toUTCString(), 90], [7, 7], ["86400", 900], ["soon", 60], [new Date(now + 3 * 86_400_000).toUTCString(), 900]]) {
+  for (const [retryAfter, n] of [["2", 2], [new Date(now + 90_000).toUTCString(), 90], [7, 7], ["900", 900], ["soon", 60]]) {
     const one = webSearch.searchBreaker(() => now);
     one.read({ answer: fail, limit: { kind: "rate", retryAfter } });
     assert.equal(words(one.held()), `search is busy; try again in ${n} s, or answer from what you have`, String(retryAfter));
@@ -47,6 +47,38 @@ test("the breaker read against a fake clock: a rate limit's wait passes at its e
   const passed = webSearch.searchBreaker(() => now);
   passed.read({ answer: fail, limit: { kind: "rate", retryAfter: new Date(now - 10_000).toUTCString() } });
   assert.equal(passed.held(), undefined);
+});
+
+test("a wait past 15 minutes is a spent count with its reset (keyless Exa's 429 naming 65,796 s): off and unasked until the wait ends, then asked again; the call says unavailable, never to try again", () => {
+  let now = Date.parse("2026-11-24T05:43:24Z");
+  const limited = { error: RATE_LIMITED };
+  const daily = webSearch.exaLimitOf({ error: RATE_LIMITED, limit: "rate_limited", retryAfterS: 65_796 });
+  const breaker = webSearch.searchBreaker(() => now);
+  assert.deepEqual(breaker.read({ answer: limited, limit: daily }), { error: UNAVAILABLE });
+  assert.deepEqual([breaker.off(), breaker.held()?.error], [true, UNAVAILABLE]);
+  now += 65_795_999;
+  assert.deepEqual([breaker.off(), breaker.held()?.error], [true, UNAVAILABLE], "a millisecond before its end");
+  now += 1;
+  assert.deepEqual([breaker.off(), breaker.held()], [false, undefined], "at its end the next call asks");
+  // Past 15 minutes by a second, or an HTTP date days off: off for that long. 15 minutes itself is still a wait.
+  for (const [retryAfter, ms] of [[901, 901_000], [new Date(now + 3 * 86_400_000).toUTCString(), 3 * 86_400_000]]) {
+    const one = webSearch.searchBreaker(() => now);
+    assert.deepEqual(one.read({ answer: limited, limit: { kind: "rate", retryAfter } }), { error: UNAVAILABLE }, String(retryAfter));
+    const start = now;
+    now = start + ms - 1;
+    assert.equal(one.held()?.error, UNAVAILABLE, String(retryAfter));
+    now = start + ms;
+    assert.equal(one.held(), undefined, String(retryAfter));
+    now = start;
+  }
+  // A quota that names its reset keeps the call's own answer, and is off until the reset.
+  const quota = webSearch.searchBreaker(() => now);
+  const refused = { error: "the provider's free daily limit is spent" };
+  assert.deepEqual(quota.read({ answer: refused, limit: { kind: "quota", retryAfter: 3_600 } }), refused);
+  now += 3_599_999;
+  assert.equal(quota.held()?.error, UNAVAILABLE);
+  now += 1;
+  assert.equal(quota.held(), undefined);
 });
 
 test("two calls in flight rate-limited at nearly the same time: a shorter wait never shrinks a longer one, so a call between their ends is still held, unsent", () => {

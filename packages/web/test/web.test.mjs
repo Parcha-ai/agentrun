@@ -112,6 +112,19 @@ test("keyless Exa alone: its free limit answers the caller's words and holds it 
   ], "exa-keyless");
 });
 
+test("keyless Exa past its daily count, a 429 naming a wait of 65,796 s (Exa's answer on 2026-11-24): off and unasked for that whole wait, the call saying search is unavailable, never to try again; past the wait Exa is asked again", async (t) => {
+  const f = await fakes(t);
+  process.env.AGENTRUN_TEST_FAUX_EXA = "429:65796,ok";
+  const w = web.createWeb({ ...f.config, order: { search: ["exa-keyless"], fetch: [] } });
+  const unavailable = (answer) => assert.deepEqual(answer, { error: web.SEARCH_UNAVAILABLE });
+  await run(f, w, [
+    { query: "widgets", at: 0, asks: ["exa-keyless"], tries: [["exa-keyless", "error"]], by: null, check: unavailable },
+    { query: "gadgets", at: 16 * 60_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },
+    { query: "sprockets", at: 65_795_000, asks: [], tries: [["exa-keyless", "held"]], by: null, check: unavailable },
+    { query: "widgets", at: 65_796_000, asks: ["exa-keyless"], tries: [["exa-keyless", "ok"]], by: "exa-keyless" },
+  ], "exa-keyless daily");
+});
+
 test("Parallel on the run's key, each search sent through the cap at its price: a 429 holds it for its Retry-After, a 402 turns it off", async (t) => {
   const f = await fakes(t);
   process.env.AGENTRUN_TEST_FAUX_PARALLEL_SEARCH = "ok;429@20;402";
