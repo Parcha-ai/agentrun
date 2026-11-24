@@ -964,7 +964,19 @@ test("XI: a key's run is cut whole to its end at any length: redact/match.ts rea
   const ghp = `ghp_${R(36, 5)}_${R(20, 6)}`;
   assert.equal((await gone(`t ${ghp} u`, [ghp.slice(-20)])).text, "t [redacted:github-token] u");
   const huge = `sk-${R(70_000, 4)}`;
-  assert.equal((await gone(`k ${huge} end`, [huge.slice(3, 40), huge.slice(-40)])).text, "k [redacted:sk-key] end");
+  const cut = await gone(`k ${huge} end`, [huge.slice(3, 40), huge.slice(-40)]);
+  assert.equal(cut.text, "k [redacted:sk-key] end");
+  // No byte of the key is left: not one 8-character window of its run stands in the output.
+  for (let at = 3; at + 8 <= huge.length; at += 997) assert.ok(!cut.text.includes(huge.slice(at, at + 8)), `window at ${at}`);
+  // 2 MB of one key's run is cut whole, read once: CPU time, the scanner is linear.
+  const run = `sk-${"Tq7Wm2Rk9Zx".repeat(Math.ceil(2_000_000 / 11))}`;
+  const before = process.cpuUsage();
+  const big = await scrub(`k ${run} end`, { mode: "cut" });
+  const used = process.cpuUsage(before);
+  const ms = (used.user + used.system) / 1000;
+  assert.equal(big.ok, true);
+  assert.equal(big.text, "k [redacted:sk-key] end");
+  assert.ok(ms < 2_000, `2 MB sk- run: ${Math.round(ms)} ms CPU`);
 });
 
 test("XII (N2): code shapes are no value in code alone; after UPPER_NAME=, a YAML key at a line's start or a flag, a real-shaped password is cut", async () => {
