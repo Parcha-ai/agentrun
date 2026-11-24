@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude
+kind: fix
+---
+A run's trace no longer costs or carries what it should not. Under `agentrun-serve runner`, where each run is a process of its own, a run's end waited up to 3 s on the collector, since that process flushed its own spans before it exited: now it sends its trace to its runner, which exports it in the background, and a run's process never holds an `OTEL_*` setting at all. A name the model wrote no longer reaches a span as written: a call the harness refused (a tool the session does not have; the kernel's `tool_start` event says `refused: true`, which claude-agent now sets) is `execute_tool` with `error.type=tool_refused` and no tool name, a model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds and at 64 characters. Each value of `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TRACES_HEADERS` is now a secret the runner holds, so its logs (the tracer's `[otel]` lines among them) and what a run writes are cut of it.

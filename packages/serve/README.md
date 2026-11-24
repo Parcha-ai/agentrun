@@ -250,7 +250,10 @@ exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the off
 `invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
 `server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
 and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
-own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+own) and an `execute_tool {tool}` span per tool call. A name the model wrote is never sent as written: a call the
+harness refused (a tool the session does not have) is `execute_tool` with `error.type=tool_refused` and no tool name, a
+model the run does not know is named by its route's model, and any other name is cut of every secret the runner holds
+and at 64 characters. A run is one trace, sampled whole or not at
 all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
 has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
 result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
@@ -258,10 +261,12 @@ not on chat spans yet: the usage a run's requests are booked with does not count
 `gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
 `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
 `OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
-receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
-handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
-a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
-and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run in a process of its
+own (under `agentrun-serve runner`) sends its trace to its runner, which exports it. Each OTLP header value is a secret
+the runner holds, cut from its logs and from what a run writes. Spans are sent in the background, so a run's end never waits on
+the collector; a server or runner that stops waits at most 3 s to send what is left, and a collector that is down
+costs one log line and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and
+nothing is sent.
 
 ## Anonymous usage counts
 

@@ -4,50 +4,29 @@
 // type's), no exporter starts and nothing leaves the machine. On, the exporter is given its endpoint, headers and
 // timeout from the OTEL_EXPORTER_OTLP_* variables, and the resource OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
 // (deployment.environment.name among them) over our service.name=agentrun and service.version. Those variables are the
-// runner's own: no run's environment has them (runner/main.ts runEnv), and a run's own process reads them from its pipe
-// (secrets.ts handedOtel), so its harness, tools and computer never see an OTLP header.
+// runner's own: no run's environment has them (runner/main.ts runEnv), and no run's process is handed them. A run in its
+// own process (run-child.ts) traces over its channel (postedTracing): its runner makes its spans and exports them
+// (tracePosts), so its harness, tools and computer never see an OTLP header, and it loads no exporter.
 //
 // What a span says is genai.ts's. Here: the spans' lifecycle, and the rules that keep a trace from costing a run
 //  - one trace per run: its id is the run id's hash, so every claim of a run (a resume, a takeover) is in one trace, and
 //    the sampler (always parent-based, its root's ratio from OTEL_TRACES_SAMPLER/_ARG) decides once per run, never
 //    splitting a run's spans;
-//  - an export that fails or throws is one log line, and its spans are dropped: never the run's failure. A claim's end
-//    never waits on an export: the batch processor sends in the background, and the process flushes once as it closes
-//    (flushTraces: the runner's close, a run's process before it exits), for at most FLUSH_MS.
+//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds every OTLP header value),
+//    and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
+//    in the background, a run's process never flushes, and only the runner's close flushes once (flushTraces), for at
+//    most FLUSH_MS.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Context, Span } from "@opentelemetry/api";
 import type { SpanExporter, TracerProvider } from "@opentelemetry/sdk-trace";
-import type { AdapterEvent, Ended, ModelUsage } from "@parcha/agentrun-kernel";
-import { handedOtel } from "../secrets.js";
-import { agentAttributes, chatAttributes, spanName, toolAttributes, type TracedRun } from "./genai.js";
+import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
+import { runnerSecrets, secretRedactor } from "../runner/redact.js";
+import { keyValues } from "../secrets.js";
+import { agentAttributes, chatAttributes, spanName, toolAttributes, written, type RouteTrace, type TraceEvent, type TracedRun } from "./genai.js";
 
-/** The most a process's closing flush waits for its spans' export. */
+/** The most the runner's closing flush waits for its spans' export. */
 export const FLUSH_MS = 3_000;
-
-/** `env`'s OpenTelemetry settings: its OTEL_* variables. */
-export const otelSettings = (env: NodeJS.ProcessEnv): Record<string, string> =>
-  Object.fromEntries(Object.entries(env).filter((pair): pair is [string, string] => pair[0].startsWith("OTEL_") && typeof pair[1] === "string"));
-
-/** This process's OpenTelemetry settings: what its pipe handed it (a run's process: its runner's), under its own. */
-export const otelEnv = (env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({ ...handedOtel(), ...otelSettings(env) });
-
-/** A `key=value,key=value` list (OTEL_EXPORTER_OTLP_HEADERS, OTEL_RESOURCE_ATTRIBUTES), each part percent-decoded; a
- *  part that is not one is skipped. */
-function listOf(text: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const part of (text ?? "").split(",")) {
-    const at = part.indexOf("=");
-    if (at <= 0) continue;
-    try {
-      const key = decodeURIComponent(part.slice(0, at).trim());
-      if (key) out[key] = decodeURIComponent(part.slice(at + 1).trim());
-    } catch {
-      continue;
-    }
-  }
-  return out;
-}
 
 /** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint as given, else the endpoint's
  *  /v1/traces; the headers (the traces' over the general ones); the timeout. */
@@ -55,7 +34,7 @@ export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: 
   const traces = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
   const url = traces || `${(env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim().replace(/\/+$/, "")}/v1/traces`;
   const timeout = Number(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT);
-  return { url, headers: { ...listOf(env.OTEL_EXPORTER_OTLP_HEADERS), ...listOf(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
+  return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
 }
 
 const TRUE = new Set(["1", "true", "yes", "on"]);
@@ -74,8 +53,8 @@ export interface RunTrace {
   /** A model request admitted (`route`: the session's route it came by, where it names one): its chat span starts now,
    *  and the function it returns ends it with how it ended. One the claim's end finds still open ends interrupted. */
   request(model: string | undefined, route?: string): (usage: ModelUsage, ended?: Ended) => void;
-  /** An event of the session: a tool call's start and end; on a plan-billed harness, its turns. */
-  event(event: AdapterEvent): void;
+  /** An event of the session (genai.ts tracedEvent): a tool call's start and end; on a plan-billed harness, its turns. */
+  event(event: TraceEvent): void;
   /** The claim ended (`failed`: why, when it failed): every span still open ends, and is handed to the exporter, which
    *  sends it in the background; this never waits on an export. Never throws. */
   end(failed?: string): Promise<void>;
@@ -83,9 +62,84 @@ export interface RunTrace {
 
 /** The tracing of one process: each claim of a run opens its trace. */
 export interface GenAiTracing {
-  open(options?: { readonly startedAt?: number; readonly mcp?: (tool: string) => boolean }): RunTrace;
-  /** Every ended span sent, waited for at most FLUSH_MS: once, as the process closes. Never throws. */
+  open(options?: { readonly startedAt?: number }): RunTrace;
+  /** Every ended span sent, waited for at most FLUSH_MS: once, as the runner closes. Never throws. */
   flush(): Promise<void>;
+}
+
+/** A run's own process's tracing (run-child.ts): each call of its claim's trace posted to its runner (`post`, in order
+ *  with the rest of its channel), whose tracing makes the spans and exports them (tracePosts). The process loads no
+ *  OpenTelemetry module, holds no OTLP setting and never flushes: its end waits on no collector. */
+export function postedTracing(post: (method: string, args: unknown[]) => void): GenAiTracing {
+  return {
+    flush: async () => {},
+    open: ({ startedAt = Date.now() } = {}) => {
+      post("open", [startedAt]);
+      let requests = 0;
+      // An event that is no tool's or turn's end is read only as the first of its turn (a plan turn's start): one post.
+      let heard = false;
+      return {
+        known: (run) => post("known", [run]),
+        request: (model, route) => {
+          const id = requests++;
+          post("request", [id, model, route]);
+          return (usage, ended) => post("ended", [id, usage, ended]);
+        },
+        event: (event) => {
+          if (event.type === "other" && heard) return;
+          heard = event.type !== "turn_end";
+          post("event", [event]);
+        },
+        end: async (failed) => post("end", [failed]),
+      };
+    },
+  };
+}
+
+const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+/** A route's names (RouteTrace) as data: each a string, or left out. */
+const viaOf = (value: unknown): RouteTrace => {
+  const given = (value ?? {}) as Record<string, unknown>;
+  return { ...(text(given.provider) ? { provider: text(given.provider) } : {}), ...(text(given.serverAddress) ? { serverAddress: text(given.serverAddress) } : {}), ...(text(given.model) ? { model: text(given.model) } : {}) };
+};
+
+/** The runner's side of a run's process's trace (postedTracing): the claim's one trace, opened from `tracing` for run
+ *  `runId` whatever the process names, and each post read as data alone (the process runs the agent's code): every name
+ *  it gives cut by the runner's redactor (`redact`) and at WRITTEN_MAX, as the process's own were. `end`: the claim's
+ *  end, for a process that is gone without ending its trace (after its own end, nothing is left to end). */
+export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text: string) => string): { post(method: string, args: readonly unknown[]): void; end(failed: string): Promise<void> } {
+  let trace: RunTrace | undefined;
+  const requests = new Map<number, (usage: ModelUsage, ended?: Ended) => void>();
+  const name = (value: unknown): string | undefined => (typeof value === "string" ? written(value, redact) : undefined);
+  const via = (value: unknown): RouteTrace => {
+    const given = viaOf(value);
+    return { ...given, ...(given.model ? { model: name(given.model) } : {}) };
+  };
+  return {
+    post(method, args) {
+      if (method === "open") trace ??= tracing.open(typeof args[0] === "number" ? { startedAt: args[0] } : {});
+      if (!trace) return;
+      if (method === "known") {
+        const run = (args[0] ?? {}) as Record<string, unknown>;
+        const routes = run.routes instanceof Map ? new Map([...run.routes].flatMap(([key, route]) => (typeof key === "string" ? [[key, via(route)] as const] : []))) : undefined;
+        trace.known({ runId, harness: name(run.harness) ?? "unknown", ...(run.plan === true ? { plan: true } : {}), ...via(run), ...(routes ? { routes } : {}) });
+      } else if (method === "request" && typeof args[0] === "number") requests.set(args[0], trace.request(name(args[1]), text(args[2])));
+      else if (method === "ended" && typeof args[0] === "number") {
+        requests.get(args[0])?.(args[1] as ModelUsage, args[2] as Ended | undefined);
+        requests.delete(args[0]);
+      } else if (method === "event") {
+        const event = (args[0] ?? {}) as Record<string, unknown>;
+        const callId = text(event.callId) ?? "";
+        const parent = text(event.parent) ? { parent: text(event.parent) } : {};
+        if (event.type === "tool_start" && event.refused === true) trace.event({ type: "tool_start", callId, refused: true, ...parent });
+        else if (event.type === "tool_start") trace.event({ type: "tool_start", callId, ...(name(event.name) ? { name: name(event.name) } : {}), ...(event.mcp === true ? { mcp: true } : {}), ...parent });
+        else if (event.type === "tool_end") trace.event({ type: "tool_end", callId, isError: event.isError === true });
+        else if (event.type === "turn_end") trace.event({ type: "turn_end", status: name(event.status) ?? "failed" });
+        else trace.event({ type: "other" });
+      } else if (method === "end") void trace.end(name(args[0]));
+    },
+    end: async (failed) => trace?.end(failed),
+  };
 }
 
 /** For tests: the exporter in place of OTLP's (the SDK's InMemorySpanExporter), spans exported as each ends, and the
@@ -99,11 +153,11 @@ let shared: Promise<GenAiTracing | undefined> | undefined;
 
 /** This process's tracing, or undefined while `env` leaves it off: then no @opentelemetry module is ever loaded. Made
  *  once per process; a test's (`test`) is its own. */
-export function genAiTracing(env: NodeJS.ProcessEnv = otelEnv(), test?: TracingTest): Promise<GenAiTracing | undefined> {
+export function genAiTracing(env: NodeJS.ProcessEnv = process.env, test?: TracingTest): Promise<GenAiTracing | undefined> {
   if (!otelOn(env)) return Promise.resolve(undefined);
   if (test) return made(env, test);
   shared ??= made(env).catch((error: unknown) => {
-    console.warn(`[otel] tracing is off: the OpenTelemetry SDK did not start: ${(error as Error)?.message ?? error}`);
+    saidOf(env)(`[otel] tracing is off: the OpenTelemetry SDK did not start: ${(error as Error)?.message ?? error}`);
     return undefined;
   });
   return shared;
@@ -121,9 +175,18 @@ export const traceIdOf = (runId: string): string => createHash("sha256").update(
 
 const serveVersion = (): string => (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
+/** The tracing's log (`given`, else the runner's console): each `[otel]` line cut first by the runner's redactor over
+ *  `env` (runner/redact.ts runnerSecrets: its OTLP header values among them), since an exporter's error may quote a
+ *  header it sent. */
+function saidOf(env: NodeJS.ProcessEnv, given?: (line: string) => void): (line: string) => void {
+  const cut = secretRedactor(runnerSecrets(env));
+  const log = given ?? ((line: string) => console.warn(line));
+  return (line) => log(cut(line));
+}
+
 async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing> {
   const [api, sdk, resources, semconv] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources"), import("@opentelemetry/semantic-conventions")]);
-  const log = test?.log ?? ((line: string) => console.warn(line));
+  const log = saidOf(env, test?.log);
   const exporter = safeExporter(test?.exporter ?? new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter(exporterConfig(env)), log);
   // The next root span's trace id (the run's), taken by the one startSpan that asks for it: startSpan is synchronous.
   const ids = { next: undefined as string | undefined };
@@ -135,12 +198,11 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
     },
     generateSpanId: () => randomBytes(8).toString("hex"),
   };
-  // The operator's resource attributes over ours, read from `env` (a run's process has them from its pipe, never from
-  // its environment, so the SDK's own env detector would not see them).
+  // The operator's resource attributes over ours, read from `env` (a test's, or the runner's).
   const named = env.OTEL_SERVICE_NAME?.trim();
   const resource = resources.defaultResource()
     .merge(resources.resourceFromAttributes({ [semconv.ATTR_SERVICE_NAME]: "agentrun", [semconv.ATTR_SERVICE_VERSION]: serveVersion() }))
-    .merge(resources.resourceFromAttributes({ ...listOf(env.OTEL_RESOURCE_ATTRIBUTES), ...(named ? { [semconv.ATTR_SERVICE_NAME]: named } : {}) }));
+    .merge(resources.resourceFromAttributes({ ...keyValues(env.OTEL_RESOURCE_ATTRIBUTES), ...(named ? { [semconv.ATTR_SERVICE_NAME]: named } : {}) }));
   const provider: TracerProvider = new sdk.TracerProvider({
     resource,
     idGenerator,
@@ -161,13 +223,13 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
   if (!test) process.once("beforeExit", () => void flush());
   return {
     flush,
-    open: ({ startedAt = Date.now(), mcp = () => false } = {}) => {
+    open: ({ startedAt = Date.now() } = {}) => {
       let run: TracedRun | undefined;
       let root: Span | undefined;
       let rootContext: Context | undefined;
       // Each open tool call's span, and the turn it started in (`turns`, the turns ended so far): a turn that did not
       // complete cuts its own calls, never one an earlier turn left going.
-      const tools = new Map<string, { readonly span: Span; readonly turn: number }>();
+      const tools = new Map<string, { readonly span: Span; readonly turn: number; readonly refused: boolean }>();
       let turns = 0;
       // The chat spans of requests still waiting for their end (RunTrace.request).
       const chats = new Set<Span>();
@@ -227,12 +289,16 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
           if (event.type === "tool_start") {
             if (tools.has(event.callId)) return;
             const parent = event.parent ? tools.get(event.parent)?.span : undefined;
-            tools.set(event.callId, { span: child(spanName.tool(event.name), api.SpanKind.INTERNAL, toolAttributes(on, { name: event.name, callId: event.callId, mcp: mcp(event.name) }), parent ? api.trace.setSpan(api.ROOT_CONTEXT, parent) : undefined), turn: turns });
+            // A call its harness refused (a tool the session does not have) is never named: the name is the model's words.
+            const name = event.refused ? undefined : event.name;
+            const span = child(spanName.tool(name), api.SpanKind.INTERNAL, toolAttributes(on, { ...(name ? { name } : {}), callId: event.callId, ...(event.mcp ? { mcp: true } : {}) }), parent ? api.trace.setSpan(api.ROOT_CONTEXT, parent) : undefined);
+            if (event.refused) failed(span, "tool_refused");
+            tools.set(event.callId, { span, turn: turns, refused: event.refused === true });
           } else if (event.type === "tool_end") {
             const call = tools.get(event.callId);
             if (!call) return;
             tools.delete(event.callId);
-            if (event.isError) failed(call.span, "tool_error");
+            if (event.isError && !call.refused) failed(call.span, "tool_error");
             call.span.end();
           } else if (event.type === "turn_end") {
             // A call its own turn ended with no end of its own was cut with the turn. One an earlier turn left going (a

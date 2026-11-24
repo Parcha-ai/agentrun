@@ -8,9 +8,10 @@
 //   └─ execute_tool {tool.name}  INTERNAL  one per tool call (a nested call under the call that made it)
 // A plan-billed harness (its wire `plan`: its requests never reach the host) has a chat span per turn, with no usage
 // attributes at all and agentrun.billing=plan, never zeros; so does a request a plan billed (ModelUsage.billing).
-// Content (messages, prompts, tool arguments and results) is never on a span here: no attribute below carries any.
+// Content (messages, prompts, tool arguments and results) is never on a span here: no attribute below carries any. Nor
+// is a name the model wrote, as written: a refused call is unnamed, and any other name is cut (tracedEvent, tracedModel).
 import { normalizeUsage, otelUsage, type OtelUsage } from "@parcha/agentrun-import";
-import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, Ended, ModelUsage } from "@parcha/agentrun-kernel";
 
 /** The GenAI semantic conventions this mapping follows, stamped on every span until the spec has a schema URL. */
 export const SEMCONV_VERSION = "genai-0.1.0";
@@ -67,11 +68,59 @@ export function routeTrace(route: { readonly named?: string; readonly origin?: s
   return { ...(slash > 0 ? { provider: route.named!.slice(0, slash) } : {}), ...(host ? { serverAddress: host } : {}), ...(route.model ? { model: route.model } : {}) };
 }
 
+/** What a run's trace hears of its session's events: a tool call's start, by the name its span carries (none: unnamed),
+ *  whether it is an MCP server's, and whether its harness refused it (a tool the session does not have: never named); a
+ *  call's end; a turn's end; any other event, only as the fact that one came. No content: no text, no argument, no
+ *  result, and no name the model wrote that the session does not have. */
+export type TraceEvent =
+  | { readonly type: "tool_start"; readonly callId: string; readonly name?: string; readonly mcp?: boolean; readonly refused?: boolean; readonly parent?: string }
+  | { readonly type: "tool_end"; readonly callId: string; readonly isError: boolean }
+  | { readonly type: "turn_end"; readonly status: string }
+  | { readonly type: "other" };
+
+/** The longest name the model wrote that a span carries (a tool's, a model's): cut past it. */
+export const WRITTEN_MAX = 64;
+
+/** A name the model wrote, as a span may carry it: through the runner's redactor (every secret it holds cut), then cut at
+ *  WRITTEN_MAX. */
+export function written(name: string, redact?: (text: string) => string): string {
+  const cut = redact ? redact(name) : name;
+  return cut.length > WRITTEN_MAX ? cut.slice(0, WRITTEN_MAX) : cut;
+}
+
+/** How a trace names what its session's events name: `mcp`, whether a tool of that name is an MCP server's; `redact`, the
+ *  runner's redactor. */
+export interface EventNaming {
+  readonly mcp: (name: string) => boolean;
+  readonly redact?: (text: string) => string;
+}
+
+/** A session's event as its trace hears it (TraceEvent). A call its harness refused (a tool the session does not have)
+ *  is never named: the name is the model's own words. Any other is named through the runner's redactor (written). */
+export function tracedEvent(event: AdapterEvent, naming: EventNaming): TraceEvent {
+  if (event.type === "tool_start") {
+    const parent = event.parent === undefined ? {} : { parent: event.parent };
+    if (event.refused) return { type: "tool_start", callId: event.callId, refused: true, ...parent };
+    return { type: "tool_start", callId: event.callId, name: written(event.name, naming.redact), ...(naming.mcp(event.name) ? { mcp: true } : {}), ...parent };
+  }
+  if (event.type === "tool_end") return { type: "tool_end", callId: event.callId, isError: event.isError };
+  if (event.type === "turn_end") return { type: "turn_end", status: event.status };
+  return { type: "other" };
+}
+
+/** The model a request's span names: the one asked when the run knows it (`known`: its price table has it); else the
+ *  model of the route it came by (`routed`); failing that, the asked name through the runner's redactor (written). A
+ *  model a request body names is the client's (the model's) words. */
+export function tracedModel(asked: string | undefined, rule: { readonly known: (model: string) => boolean; readonly routed?: string; readonly redact?: (text: string) => string }): string | undefined {
+  if (asked === undefined || rule.known(asked)) return asked;
+  return rule.routed ?? written(asked, rule.redact);
+}
+
 /** Span names: low-cardinality, never an id, a command or an argument. */
 export const spanName = {
   agent: (run: TracedRun) => `invoke_agent ${run.harness}`,
   chat: (model: string | undefined) => (model ? `chat ${model}` : "chat"),
-  tool: (name: string) => `execute_tool ${name}`,
+  tool: (name: string | undefined) => (name ? `execute_tool ${name}` : "execute_tool"),
 };
 
 /** What every span of the run carries. */
@@ -132,11 +181,12 @@ export function chatAttributes(run: TracedRun, request: { readonly model?: strin
   };
 }
 
-/** A tool call's span: its name, its id, and whether it is an MCP server's (an extension, called with tools/call). */
-export function toolAttributes(run: TracedRun, call: { readonly name: string; readonly callId: string; readonly mcp?: boolean }): Attributes {
+/** A tool call's span: its name (where it has one), its id, and whether it is an MCP server's (an extension, called with
+ *  tools/call). */
+export function toolAttributes(run: TracedRun, call: { readonly name?: string; readonly callId: string; readonly mcp?: boolean }): Attributes {
   return {
     ...common(run, "execute_tool"),
-    "gen_ai.tool.name": call.name,
+    ...(call.name ? { "gen_ai.tool.name": call.name } : {}),
     "gen_ai.tool.call.id": call.callId,
     "gen_ai.tool.type": call.mcp ? "extension" : "function",
     ...(call.mcp ? { "mcp.method.name": "tools/call" } : {}),

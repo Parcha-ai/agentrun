@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { after, test } from "node:test";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { InMemorySpanExporter } from "@opentelemetry/sdk-trace";
@@ -13,17 +14,17 @@ import { normalizeUsage } from "@parcha/agentrun-import";
 import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { queue, stores, until } from "./runner-support.mjs";
+import { agent, follow, serve, whenFree, withEnv } from "./support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { genAiTracing, otelOn, traceIdOf } = await import("../dist/otel/tracer.js");
-const { chatAttributes, routeTrace, toolAttributes, USAGE_ATTRIBUTES } = await import("../dist/otel/genai.js");
+const { genAiTracing, otelOn, traceIdOf, tracePosts } = await import("../dist/otel/tracer.js");
+const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTES, WRITTEN_MAX } = await import("../dist/otel/genai.js");
+const { runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
-const { exporterConfig, FLUSH_MS } = await import("../dist/otel/tracer.js");
+const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
-const { otelPair } = await import("../dist/runner/run-child-host.js");
-const { encode } = await import("../dist/secrets.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { traceOfRoute } = await import("../dist/runner/adapter-run-spec.js");
 after(closeOpenSessions);
@@ -39,10 +40,10 @@ const ANTHROPIC = normalizeUsage("anthropic", { input_tokens: 100, output_tokens
 const OPENAI = normalizeUsage("openai", { input_tokens: 1500, cached_input_tokens: 1200, output_tokens: 400, reasoning_output_tokens: 250 });
 const portUsage = ({ input, output, cacheRead, cacheWrite }, usd, extra = {}) => ({ input, output, cacheRead, cacheWrite, usd, ...extra });
 
-/** A CLI stand-in whose one turn: asks the model (`requests[0]`), calls `write`, asks again (`requests[1]`), ends. Each
- *  request is `{ model, usage, ended }`, through the session's model port as its proxy would; `turnEvents`: a plan
- *  harness's turn, whose requests never reach the host. */
-function standIn(requests) {
+/** A CLI stand-in whose one turn: asks the model (`requests[0]`), calls `write`, asks again (`requests[1]`), says
+ *  `extra` (more events of the turn), ends. Each request is `{ model, usage, ended }`, through the session's model port
+ *  as its proxy would. */
+function standIn(requests, extra = []) {
   return {
     id: "stand-in-cli",
     check: () => [],
@@ -68,6 +69,7 @@ function standIn(requests) {
             const result = await host.call(call.args, { callId: call.callId, signal: io.signal });
             io.onEvent({ type: "tool_end", callId: call.callId, name: "write", isError: Boolean(result.isError), result: result.text });
             if (requests[1]) await ask(requests[1]);
+            for (const event of extra) io.onEvent(event);
             io.onEvent({ type: "turn_end", status: "completed" });
             return { status: "completed" };
           })();
@@ -87,15 +89,19 @@ const TWO_REQUESTS = [
   { model: "openai/gpt-5", usage: portUsage(OPENAI, 0.02), ended: { end: "answered", usd: 0.02 } },
 ];
 
-/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. */
-async function tracedRun(t, { requests = TWO_REQUESTS, facts, exporter = new InMemorySpanExporter(), env = ON, trace = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5" } } = {}) {
+/** The run's route as its spec's trace names it: its own model, and the route the second request's model is its own on. */
+const TRACE = { provider: "openrouter", serverAddress: "openrouter.ai", model: "anthropic/claude-sonnet-4.5", routes: new Map([["second", { model: "openai/gpt-5" }]]) };
+
+/** One run of the stand-in, traced into memory: its spans, the run's row, and the trace's log lines. `redact`: the
+ *  runner's redactor; `extra`: more events of its turn (standIn). */
+async function tracedRun(t, { requests = TWO_REQUESTS, extra, redact, facts, exporter = new InMemorySpanExporter(), env = ON, trace = TRACE } = {}) {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const lines = [];
   const write = { name: "write", description: "Write a line.", inputSchema: { type: "object" }, replay: "never", call: async (args) => ({ text: `wrote ${args.line}` }) };
   const createLoop = createAdapterLoop(
     () => ({
-      adapter: standIn(requests),
+      adapter: standIn(requests, extra),
       facts,
       session: { key: "root", label: "root", system: [], tools: [write], context: "fresh" },
       input: SECRET_WORDS,
@@ -107,7 +113,7 @@ async function tracedRun(t, { requests = TWO_REQUESTS, facts, exporter = new InM
     }),
     { tracing: genAiTracing(env, { exporter, log: (line) => lines.push(line) }) },
   );
-  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING, ...(redact ? { redact } : {}) });
   t.after(() => runner.close());
   const row = await until(async () => {
     const now = await opened.server.runs.get("run-1");
@@ -191,6 +197,79 @@ test("an exporter that throws never fails the run: it ends ok, and the failure i
   assert.equal(row.state, "ended", `the run ended ok: ${JSON.stringify(row)}`);
   assert.equal(lines.length, 1, `one line for every span it dropped: ${JSON.stringify(lines)}`);
   assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: collector down$/);
+});
+
+test("a name the model wrote reaches no span uncut: a refused tool is execute_tool with error.type=tool_refused, a body's unknown model is the route's, and a held value is on no span", async (t) => {
+  const held = `held-${"secret"}-value-0451`;
+  const asked = [{ ...TWO_REQUESTS[0], model: `${held}-model` }, TWO_REQUESTS[1]];
+  const extra = [
+    // A tool the session does not have, which the harness refused itself (claude-agent's tool_refused), by the model's name.
+    { type: "tool_start", callId: "refused-1", name: `${held}_tool`, args: {}, refused: true },
+    { type: "tool_end", callId: "refused-1", name: `${held}_tool`, isError: true },
+    // A tool the harness ran under a name the model wrote (a native tool's): through the runner's redactor, and capped.
+    { type: "tool_start", callId: "named-1", name: `run_${held}_${"x".repeat(100)}`, args: {} },
+    { type: "tool_end", callId: "named-1", name: "run", isError: false },
+  ];
+  const { spans, row } = await tracedRun(t, { requests: asked, extra, redact: secretRedactor([held]) });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const holding = spans.filter((span) => [span.name, ...Object.values(span.attributes)].some((value) => String(value).includes(held)));
+  assert.deepEqual(holding.map((span) => span.name), [], "no span holds the held value");
+  const refused = spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "refused-1");
+  assert.equal(refused.name, "execute_tool", "a refused call is never named");
+  assert.equal(refused.attributes["gen_ai.tool.name"], undefined);
+  assert.equal(refused.attributes["error.type"], "tool_refused", "its end keeps why it failed");
+  assert.equal(refused.status.code, 2);
+  const named = spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "named-1");
+  assert.ok(named.attributes["gen_ai.tool.name"].length <= WRITTEN_MAX, `capped: ${named.attributes["gen_ai.tool.name"]}`);
+  const [first] = chatSpans(spans);
+  assert.equal(first.name, "chat anthropic/claude-sonnet-4.5", "the model the run does not know is named by its route's");
+  assert.equal(first.attributes["gen_ai.request.model"], "anthropic/claude-sonnet-4.5");
+});
+
+test("a run's process's posts are data to its runner: a refused call is unnamed, every name it gives is cut and capped, and its run id is the runner's", async () => {
+  const held = `held-${"secret"}-value-0451`;
+  const exporter = new InMemorySpanExporter();
+  const posts = tracePosts(await genAiTracing(ON, { exporter }), "run-own", secretRedactor([held]));
+  posts.post("open", [Date.now()]);
+  posts.post("known", [{ runId: "run-other", harness: "pi", model: `${held}-m` }]);
+  posts.post("request", [0, `${held}-asked`, undefined]);
+  posts.post("ended", [0, { input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 }]);
+  posts.post("event", [{ type: "tool_start", callId: "r1", name: `${held}_tool`, refused: true }]);
+  posts.post("event", [{ type: "tool_end", callId: "r1", isError: true }]);
+  posts.post("event", [{ type: "tool_start", callId: "n1", name: `${held}_${"z".repeat(100)}` }]);
+  posts.post("event", [{ type: "tool_end", callId: "n1", isError: false }]);
+  posts.post("end", [undefined]);
+  const spans = exporter.getFinishedSpans();
+  assert.equal(spans.length, 4, spans.map((span) => span.name).join());
+  assert.ok(spans.every((span) => [span.name, ...Object.values(span.attributes)].every((value) => !String(value).includes(held))), "no span holds the held value");
+  assert.ok(spans.every((span) => span.attributes["agentrun.run.id"] === "run-own"));
+  assert.equal(spans.find((span) => span.attributes["gen_ai.tool.call.id"] === "r1").attributes["error.type"], "tool_refused");
+  assert.ok(spans.every((span) => span.name.length <= "execute_tool ".length + WRITTEN_MAX), "every name capped");
+});
+
+test("the model rule: a known model as asked; an unknown one by its route's model; with none, through the redactor and capped", () => {
+  const known = (model) => model === "claude-sonnet-4.5";
+  assert.equal(tracedModel("claude-sonnet-4.5", { known, routed: "other" }), "claude-sonnet-4.5");
+  assert.equal(tracedModel("made-up", { known, routed: "claude-sonnet-4.5" }), "claude-sonnet-4.5");
+  assert.equal(tracedModel(undefined, { known }), undefined);
+  const cut = tracedModel(`a-held-value-xyz-${"y".repeat(100)}`, { known, redact: secretRedactor(["a-held-value-xyz"]) });
+  assert.ok(!cut.includes("a-held-value-xyz") && cut.length <= WRITTEN_MAX, cut);
+});
+
+test("a runner error line holds no OTLP header value: each one is a held secret, and the tracer's [otel] lines are cut", async (t) => {
+  const key = `otlp-${"dummy"}-header-key-7781`;
+  const team = `team-${"dummy"}-header-9925`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_HEADERS: `Authorization=Bearer%20${key}`, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `x-team=${team}` };
+  const values = runnerSecrets(env);
+  for (const value of [key, team]) assert.ok(values.includes(value), `${value} is held`);
+  assert.equal(secretRedactor(values)(`POST failed: 401 for Bearer ${key} (${team})`).includes(key), false, "a runner line cut of it");
+  // The tracer's own line, from an exporter whose error quotes the header it sent.
+  const quoting = { export: () => { throw new Error(`401: Authorization: Bearer ${key}`); }, shutdown: async () => {}, forceFlush: async () => {} };
+  const { row, lines } = await tracedRun(t, { exporter: quoting, env });
+  assert.equal(row.state, "ended");
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].includes(key), false, `the tracer's line holds no header value: ${lines[0]}`);
+  assert.match(lines[0], /^\[otel\] a trace export failed; its spans were dropped: 401: Authorization: (Bearer )?\[redacted\]$/);
 });
 
 test("no span carries content, even with OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT=true: no message, prompt, argument or result", async (t) => {
@@ -303,22 +382,51 @@ test("a plan harness's turn whose only event is its turn_end (no text, no tool) 
   assert.equal(chats[0].status.code, 0, "it ended as its turn did, not interrupted");
 });
 
-test("a claim's end never waits on the collector: with an exporter that never answers, it ends at once; the closing flush is bounded", async (t) => {
-  const hanging = { export: () => {}, shutdown: async () => {}, forceFlush: () => new Promise(() => {}) };
+/** An exporter that never answers: each span it was handed (the export's answer never given), and each flush asked of
+ *  it (never resolved). */
+function hangingExporter() {
+  const exporter = { exported: [], flushes: 0, export: (spans) => void exporter.exported.push(...spans), shutdown: async () => {}, forceFlush: () => ((exporter.flushes += 1), new Promise(() => {})) };
+  return exporter;
+}
+
+test("a claim's end never waits on the collector: with an exporter that never answers, it has ended by the next turn of the event loop, and asked no flush", async () => {
+  const hanging = hangingExporter();
   const tracing = await genAiTracing(ON, { exporter: hanging });
   const trace = tracing.open({ startedAt: Date.now() });
   trace.known({ runId: "run-1", harness: "pi", provider: "anthropic" });
   trace.request("claude-sonnet-4.5")({ input: 1, output: 1, usd: 0 }, { end: "answered", usd: 0 });
   trace.event({ type: "tool_start", callId: "c1", name: "bash", args: {} });
   trace.event({ type: "tool_end", callId: "c1", name: "bash", isError: false });
-  let timer;
-  t.after(() => clearTimeout(timer));
-  const bound = new Promise((resolve) => (timer = setTimeout(() => resolve("waited"), 250)));
-  assert.equal(await Promise.race([trace.end().then(() => "ended"), bound]), "ended", "the claim's end did not wait for the export");
-  clearTimeout(timer);
-  // The process's closing flush waits for it, but never past FLUSH_MS.
-  const flushBound = new Promise((resolve) => (timer = setTimeout(() => resolve("hung"), FLUSH_MS + 1_000)));
-  assert.equal(await Promise.race([tracing.flush().then(() => "flushed"), flushBound]), "flushed");
+  let ended = false;
+  void trace.end().then(() => (ended = true));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ended, true, "the claim's end did not wait for the export");
+  assert.ok(hanging.exported.some((span) => span.name === "invoke_agent pi"), "its spans were handed to the exporter, unanswered");
+  assert.equal(hanging.flushes, 0, "no flush was asked");
+});
+
+test("under the runner subcommand (each run a process of its own), a run's release waits on no collector: its process sends nothing, its runner's exporter takes its spans, and no flush comes before the release", { timeout: 120_000 }, async (t) => {
+  // A collector that takes a request and never answers: what a run's process would wait on if it sent its own spans.
+  const posts = [];
+  const collector = createServer((req) => void posts.push(req.url));
+  await new Promise((resolve) => collector.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    collector.closeAllConnections();
+    collector.close();
+  });
+  withEnv(t, { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.address().port}` });
+  const hanging = hangingExporter();
+  const server = await serve(t, { childRuns: { tracing: genAiTracing(ON, { exporter: hanging, log: () => {} }) } });
+  const made = await whenFree(() => server.api("POST", "/agents", agent("traced")));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const run = await whenFree(() => server.api("POST", "/agents/traced/runs", { input: { content: "Hello." } }));
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { last } = await follow(server.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  assert.equal(last.status, "completed");
+  await until(async () => (await server.store.runs.get(run.body.run_id)).runner === null, "the run's claim was released", 20_000);
+  assert.deepEqual(posts, [], "the run's process sent no span to the collector itself");
+  assert.ok(hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), `the runner's exporter took the run's spans: ${hanging.exported.map((span) => span.name)}`);
+  assert.equal(hanging.flushes, 0, "no flush before the run's release");
 });
 
 test("a run whose root span failed to start leaves its trace id to no later span", async () => {
@@ -355,25 +463,14 @@ test("a turn that did not complete cuts its own calls, never one an earlier turn
   assert.equal(byCall.outlived.attributes["error.type"], undefined);
 });
 
-test("no OTEL_* setting reaches a run: the run environment and a CLI's have none, and a run's process gets them on its pipe alone", () => {
+test("no OTEL_* setting reaches a run: the run environment and a CLI's have none, and the runner's exporter is configured from its own", () => {
   const server = { PATH: "/usr/bin:/bin", OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.invalid:4318/", OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer%20dummy-otlp-key,x-team=jobs", OTEL_SERVICE_NAME: "agentrun-prod" };
   const runs = runEnv(server);
   assert.deepEqual(Object.getOwnPropertyNames(runs).filter((name) => name.startsWith("OTEL_")), [], "the run environment has no OTEL_* at all");
   assert.equal(runs.OTEL_EXPORTER_OTLP_HEADERS, undefined, "not even by name");
   const cli = cliRunEnv(runs, "/data");
   assert.deepEqual(Object.getOwnPropertyNames(cli).filter((name) => name.startsWith("OTEL_")), [], "a CLI harness's environment has none");
-  // A run's own process: on its pipe, read back as that process reads it, and the exporter configured from it.
-  const pipe = encode(otelPair(server));
-  const tracerUrl = JSON.stringify(new URL("../dist/otel/tracer.js", import.meta.url).href);
-  const read = `const { otelEnv, exporterConfig } = await import(${tracerUrl}); process.stdout.write(JSON.stringify({ env: Object.keys(process.env).filter((n) => n.startsWith('OTEL_')), config: exporterConfig(otelEnv()) }));`;
-  const child = spawnSync(process.execPath, ["--import", new URL("../dist/secrets.js", import.meta.url).pathname, "--input-type=module", "-e", read], {
-    input: pipe, encoding: "utf8", timeout: 30_000,
-    env: { PATH: process.env.PATH, AGENTRUN_SECRETS_FD: "0", AGENTRUN_SECRETS_LEN: String(pipe.length), AGENTRUN_TELEMETRY: "0" },
-  });
-  assert.equal(child.status, 0, child.stderr);
-  const said = JSON.parse(child.stdout);
-  assert.deepEqual(said.env, [], "the run's process has no OTEL_* in its environment");
-  assert.deepEqual(said.config, { url: "http://collector.invalid:4318/v1/traces", headers: { Authorization: "Bearer dummy-otlp-key", "x-team": "jobs" } });
+  assert.deepEqual(exporterConfig(server), { url: "http://collector.invalid:4318/v1/traces", headers: { Authorization: "Bearer dummy-otlp-key", "x-team": "jobs" } });
   assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 

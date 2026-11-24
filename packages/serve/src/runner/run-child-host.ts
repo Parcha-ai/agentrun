@@ -19,8 +19,8 @@ import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { encode, OTEL_PAIR, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
-import { otelSettings } from "../otel/tracer.js";
+import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
+import { genAiTracing, type GenAiTracing, tracePosts } from "../otel/tracer.js";
 import { putLiveViewer, dropLiveViewer } from "../browser-live.js";
 import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
@@ -1046,6 +1046,9 @@ export interface ChildLoopsOptions {
   readonly log: (line: string) => void;
   /** The program a run's process starts with (default this Node and dist/runner/run-child.js under dist/secrets.js). */
   readonly argv?: readonly string[];
+  /** The runs' GenAI tracing: this runner's (otel/tracer.ts), from its OTEL_* env, by default. A run's process posts its
+   *  trace's calls here (tracePosts) and exports nothing itself. A test gives its own, over an in-memory exporter. */
+  readonly tracing?: Promise<GenAiTracing | undefined>;
 }
 
 /** The node and module a run's process starts with. */
@@ -1116,13 +1119,6 @@ function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.Process
   Object.defineProperty(out, GATEWAY_KEY_ENV, { value: key, enumerable: false, writable: false, configurable: false });
   return out;
 }
-
-/** The pair a run's process is handed this runner's OpenTelemetry settings in (secrets.ts OTEL_PAIR): none when it has
- *  none. */
-export const otelPair = (env: NodeJS.ProcessEnv = process.env): (readonly [string, string])[] => {
-  const settings = otelSettings(env);
-  return Object.keys(settings).length ? [[OTEL_PAIR, JSON.stringify(settings)] as const] : [];
-};
 
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
@@ -1235,15 +1231,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // held run its model kept from running, which routes no model.
         const gatewayKey = savedGateway && !launch.hold?.refused ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
-        const keys = encode([
-          ...SECRET_NAMES.flatMap((name) => {
-            const value = handed(name);
-            return value === undefined ? [] : [[name, value] as const];
-          }),
-          // The runner's OpenTelemetry settings, so the run's process exports its trace as this one would: on the pipe,
-          // since no run's environment has them (runEnv), never in the process's environment.
-          ...otelPair(),
-        ]);
+        const keys = encode(SECRET_NAMES.flatMap((name) => {
+          const value = handed(name);
+          return value === undefined ? [] : [[name, value] as const];
+        }));
         const slot = await slots?.take();
         if (slots && slot === undefined) {
           // Every free slot of this runner is held by another runner on the data directory (ranges that overlap): the run
@@ -1265,6 +1256,11 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
         const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
+        // The run's trace: its process posts each call of it (tracer.ts postedTracing), and this runner's tracing makes the
+        // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
+        // its exit nor this claim's release waits on a collector.
+        const tracing = await (options.tracing ?? genAiTracing()).catch(() => undefined);
+        const traced = tracing ? tracePosts(tracing, claim.runId, cut) : undefined;
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
@@ -1303,6 +1299,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
+          if (traced) channel.expose("trace", (method, args) => traced.post(method, args));
           channel.expose("held", (method, args) => {
             // Its own members alone: a name of Object's prototype (constructor, toString) is no call of Held.
             const fn = Object.hasOwn(heldSide.held, method) ? (heldSide.held as unknown as Record<string, (...a: unknown[]) => unknown>)[method] : undefined;
@@ -1330,7 +1327,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           loopDeps.live?.(() => latest);
           const reach = await mcpReachOf(deps);
           const init = {
-            claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where,
+            claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
@@ -1354,6 +1351,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           }
         } finally {
           ready();
+          // A process gone before it ended its trace: its spans end with the claim (after its own end, a no-op).
+          await traced?.end("run-error");
           await heldSide.projectEnd?.();
           const reaped = await end(slot, tops).catch((error: unknown) => {
             log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`);

@@ -153,8 +153,9 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
  *  tokens (the token and the token list) and API key, the seal key (the runner holds it as its sealKey), the store's connection (its URL holds a
  *  database password), the launch hook's signing secret (the server's alone), and the Composio account key, which the
  *  runner's claim alone reads (composio-made.ts composioEnvKey) and sends only as a granted Composio server's MCP header.
- *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is handed
- *  them on its pipe (secrets.ts OTEL_PAIR), never in an environment, so no harness, tool or computer of a run has them. */
+ *  And every OpenTelemetry setting (OTEL_*: OTEL_EXPORTER_OTLP_HEADERS holds a backend's key): a run's process is never
+ *  handed them, in an environment or on its pipe. It posts its trace over its channel and the runner exports it
+ *  (otel/tracer.ts postedTracing, tracePosts), so no harness, tool or computer of a run has them. */
 const RUNNER_ONLY = (name: string): boolean => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_TOKENS" || name === "AGENTRUN_API_KEY" || name === SEAL_KEY_ENV || name === LAUNCH_HOOK_SECRET_ENV || name === COMPOSIO_KEY_ENV || name.startsWith("AGENTRUN_STORE_") || name.startsWith("OTEL_");
 
 /** A run's environment as the runner hands its loops (AdapterSpecDeps.env): this process's, less the runner's own
