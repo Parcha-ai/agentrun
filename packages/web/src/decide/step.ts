@@ -6,7 +6,15 @@ import type { Cost, DecisionPay, Temperature, Tokens, Trimmed, Verdicts, WebDeci
 import { codeOf, costOf, unbilled } from "./failure.js";
 import { passagesOf } from "./passages.js";
 
-/** What one call's classifier step did. `ran` false: the items passed unsifted, and `error` or `skipped` says why. */
+/** How sure a decider must be that an item is not needed before drop leaves it out: when 1 - p(needed) >= it. */
+export const THRESHOLD = 0.8;
+
+/** One item's score as the decider gave it (null: refused): a result by its URL, a passage by its id and its place in
+ *  the page. */
+export type Scored = { id: string; score: number | null; at?: [number, number] };
+
+/** What one call's classifier step did. `ran` false: the items passed unsifted, and `error` or `skipped` says why.
+ *  `scored`: every item asked about, in order, kept or not; none when the step did not run. */
 export type DecisionRecord = {
   provider: string;
   op: "search" | "fetch";
@@ -28,6 +36,7 @@ export type DecisionRecord = {
   trimmed?: Trimmed;
   error?: { code: string; message: string };
   skipped?: "no results" | "no page" | "no task";
+  scored: Scored[];
 };
 
 export const DECIDE_MS = 30_000;
@@ -85,22 +94,28 @@ async function bounded(ask: (ctx: { signal: AbortSignal; deadlineMs: number; pay
 }
 
 const skipped = (decider: WebDecider, op: DecisionRecord["op"], why: NonNullable<DecisionRecord["skipped"]>, n = 0): DecisionRecord => ({
-  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: false, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, requests: 0, questions_sha256: [], skipped: why,
+  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: false, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, requests: 0, questions_sha256: [], skipped: why, scored: [],
 });
 
 function failed(decider: WebDecider, op: DecisionRecord["op"], n: number, ms: number, requests: number, failure: Failure): DecisionRecord {
   const { code, message, cost } = failure;
-  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: "unknown", tokens: null, latency_ms: ms, cost, requests, questions_sha256: [], error: { code, message } };
+  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: "unknown", tokens: null, latency_ms: ms, cost, requests, questions_sha256: [], error: { code, message }, scored: [] };
 }
 
-function ran(decider: WebDecider, op: DecisionRecord["op"], got: Verdicts, ms: number, requests: number, dropped: DecisionRecord["dropped"]): DecisionRecord {
+function ran(decider: WebDecider, op: DecisionRecord["op"], got: Verdicts, ms: number, requests: number, scored: Scored[], dropped: DecisionRecord["dropped"]): DecisionRecord {
   const n = got.verdicts.length;
-  const record: DecisionRecord = { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, temperature_sent: got.temperature_sent, temperature_applied: got.temperature_applied, tokens: got.tokens, latency_ms: ms, cost: got.cost, requests, questions_sha256: got.questions_sha256 };
+  const record: Omit<DecisionRecord, "scored"> = { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, temperature_sent: got.temperature_sent, temperature_applied: got.temperature_applied, tokens: got.tokens, latency_ms: ms, cost: got.cost, requests, questions_sha256: got.questions_sha256 };
   if (got.trimmed) record.trimmed = got.trimmed;
-  return record;
+  return { ...record, scored };
 }
 
 const since = (start: number) => Math.round(performance.now() - start);
+const shown = (p: number) => String(Math.round(p * 1000) / 1000);
+/** Whether drop leaves out an item scored `score`: never a refused one. */
+const drops = (score: number | null) => score !== null && 1 - score >= THRESHOLD;
+/** The scored items drop leaves out, as the record names them. */
+const droppedOf = (scored: Scored[]): DecisionRecord["dropped"] =>
+  scored.flatMap((item) => (drops(item.score) ? [{ id: item.id, score: item.score, reason: `needed p=${shown(item.score!)} <= ${shown(1 - THRESHOLD)}`, ...(item.at ? { at: item.at } : {}) }] : []));
 
 /** A search's results sifted by `decider`: the kept ones in order, and `sift` telling the model what was done. */
 export async function siftSearch(decider: WebDecider, answer: Search, options: StepOptions): Promise<Sifted<Search & { sift?: string }>> {
@@ -109,9 +124,9 @@ export async function siftSearch(decider: WebDecider, answer: Search, options: S
   const { got, requests } = await bounded((ctx) => decider.sift(answer.query, answer.results, options.task, ctx), options);
   const n = answer.results.length;
   if ("code" in got) return { answer: { ...answer, sift: `not run (${got.code}); these results are unsifted` }, classifier: failed(decider, "search", n, since(start), requests, got) };
-  const dropped = answer.results.flatMap((hit, i) => (got.verdicts[i]!.keep ? [] : [{ id: hit.url, score: got.verdicts[i]!.score, reason: got.verdicts[i]!.reason }]));
-  const results = answer.results.filter((_, i) => got.verdicts[i]!.keep);
-  return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, dropped) };
+  const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i]!.score }));
+  const results = answer.results.filter((_, i) => !drops(scored[i]!.score));
+  return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, scored, droppedOf(scored)) };
 }
 
 /** A fetched part judged by `decider` in passages: the kept ones in order, LEFT_OUT for each run left out, the part's
@@ -126,10 +141,11 @@ export async function judgePart(decider: WebDecider, url: string, page: WebPage 
   const { got, requests } = await bounded((ctx) => decider.judge(url, task, passages, ctx), options);
   if ("code" in got) return { answer: { ...page, sift: `not run (${got.code}); this part is whole` }, classifier: failed(decider, "fetch", spans.length, since(start), requests, got) };
   const base = page.offset ?? 0;
-  const dropped = spans.flatMap(([s, e], i) => (got.verdicts[i]!.keep ? [] : [{ id: `p${i + 1}`, score: got.verdicts[i]!.score, reason: got.verdicts[i]!.reason, at: [base + s, base + e] as [number, number] }]));
+  const scored: Scored[] = spans.map(([s, e], i) => ({ id: `p${i + 1}`, score: got.verdicts[i]!.score, at: [base + s, base + e] }));
+  const dropped = droppedOf(scored);
   const kept = spans.length - dropped.length;
   let text = "";
-  if (kept) passages.forEach((passage, i) => (text += got.verdicts[i]!.keep ? passage : got.verdicts[i - 1]?.keep === false ? "" : LEFT_OUT));
+  if (kept) passages.forEach((passage, i) => (text += !drops(scored[i]!.score) ? passage : i > 0 && drops(scored[i - 1]!.score) ? "" : LEFT_OUT));
   const sift = `${decider.id} kept ${kept} of ${spans.length} passages of this part; … marks a passage left out`;
-  return { answer: { ...page, text, sift }, classifier: ran(decider, "fetch", got, since(start), requests, dropped) };
+  return { answer: { ...page, text, sift }, classifier: ran(decider, "fetch", got, since(start), requests, scored, dropped) };
 }

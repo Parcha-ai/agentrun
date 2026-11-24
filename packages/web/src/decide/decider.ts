@@ -4,7 +4,9 @@ import type { Fee } from "../fees.js";
 import type { Hit } from "../search.js";
 import { codeOf, costOf, costTogether } from "./failure.js";
 
-export type Verdict = { keep: boolean; score: number | null; reason: string };
+/** What a provider said of one item: p(needed), or null where it refused the question. What is done with it is the
+ *  step's (step.ts), never the decider's. */
+export type Verdict = { score: number | null };
 /** "counted": the provider reported none, and the request's text was counted by the host's counter. */
 export type Tokens = { in: number; out: number | null; basis: "reported" | "counted" };
 /** "none": nothing was billed (the request was never sent, or refused unanswered). usd is null only when unknown. */
@@ -124,9 +126,6 @@ function tokensTogether(a: Tokens | null, b: Tokens | null): Tokens | null {
   return { in: a.in + b.in, out: a.out === null || b.out === null ? null : a.out + b.out, basis: a.basis === "reported" && b.basis === "reported" ? "reported" : "counted" };
 }
 
-/** How sure a decider must be that an item is not needed before it is dropped: dropped when 1 - p(needed) >= it. */
-export const THRESHOLD = 0.8;
-
 /** A provider's published price, as a request is held to it before it is sent: a fee per request, and per million
  *  tokens in and out (the long rates past `longPromptTokens` input tokens). The input is bounded by the request's
  *  UTF-8 bytes, times `inputTokensPerByte` (1: a token is at least a byte), plus `extraInputTokens` the provider adds
@@ -154,18 +153,15 @@ export function holdOf(price: DecisionPrice, bytes: number): number {
 }
 
 /** `price` is required: a request the run's cap cannot price would be a paid step it cannot see. */
-export type DeciderOptions = { price: DecisionPrice; threshold?: number; model?: string; count?: (text: string) => number };
+export type DeciderOptions = { price: DecisionPrice; model?: string; count?: (text: string) => number };
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isUnit = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
-const shown = (p: number) => String(Math.round(p * 1000) / 1000);
 
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
   if (options?.price === null || typeof options?.price !== "object") throw new TypeError(`deciderFrom needs ${provider.id}'s price, so the run's cap can hold each request`);
   const { price } = options;
-  const threshold = options.threshold ?? THRESHOLD;
-  if (!(threshold > 0.5 && threshold <= 1)) throw new RangeError(`threshold must be above 0.5 and at most 1 (it was ${threshold})`);
   const ask = async (asked: DecisionAsk, ctx: DecideContext): Promise<Verdicts> => {
     const request = options.model ? { ...asked, model: options.model } : asked;
     const text = JSON.stringify({ state: request.state, questions: request.questions });
@@ -178,10 +174,9 @@ export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): W
     let refused = 0;
     const verdicts = ids.map((id): Verdict => {
       const answer = isRecord(outcome.answers) ? outcome.answers[id] : undefined;
-      if (isRecord(answer) && answer.type === "refusal") return (refused++, { keep: true, score: null, reason: "refused: kept unjudged" });
+      if (isRecord(answer) && answer.type === "refusal") return (refused++, { score: null });
       if (!isRecord(answer) || answer.type !== "noul" || !isUnit(answer.noul)) throw new DecideError("invalid_response", `${provider.id} gave no noul answer for ${id}`, cost.usd, cost.basis);
-      const p = answer.noul;
-      return 1 - p >= threshold ? { keep: false, score: p, reason: `needed p=${shown(p)} <= ${shown(1 - threshold)}` } : { keep: true, score: p, reason: `needed p=${shown(p)}` };
+      return { score: answer.noul };
     });
     if (ids.length && refused === ids.length) throw new DecideError("refused", `${provider.id} refused every question`, cost.usd, cost.basis);
     const tokens: Tokens | null = outcome.usage

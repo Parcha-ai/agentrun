@@ -55,7 +55,7 @@ const web = createWeb({ order, guard, pay, decider, bounds: { decideMs: 30_000 }
 const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "Where is Widgets, Inc. registered?" });
 ```
 
-- `deciderFrom(provider, { price, threshold?, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
+- `deciderFrom(provider, { price, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
   `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
   calls (`DecisionAsker`), so it depends on no provider. Each call asks noul questions, one per result or passage, in
   fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
@@ -63,8 +63,9 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   96,000) and asks at most `QUESTIONS_PER_REQUEST` (100). A search over the budget has every snippet cut to the longest
   length that fits (`trimmed: { snippets, to_chars }`; the model still reads them whole). Passages over it are asked
   in several requests, one after another, ids counted across the part, and the verdicts merged in order.
-- An item is dropped when `1 - p(needed) >= threshold` (`THRESHOLD`, 0.8 by default; a threshold is above 0.5 and at
-  most 1). A refused question keeps its item.
+- The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
+  step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
+  keeps its item.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
   The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
   `next_offset` are unchanged. A fetch with no `task` is not judged.
@@ -73,7 +74,9 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   (`DECIDE_MS`, 30 s) never drops anything silently: the items pass unsifted and the record says why.
 - `receipt.classifier` is the decision's record: `{ provider, op, ran, items: { in, kept }, dropped: [{ id, score,
   reason, at? }], model, temperature_sent, temperature_applied, tokens: { in, out, basis }, latency_ms, cost: { usd,
-  basis }, requests, questions_sha256: [one per request], trimmed?, error?, skipped? }`. `tokens` are the provider's
+  basis }, requests, questions_sha256: [one per request], trimmed?, error?, skipped?, scored: [{ id, score, at? }] }`.
+  `scored` holds every item asked about, in order, kept or dropped: a result by its URL, a passage by its id and its
+  place in the page. It is empty when the step did not run. `tokens` are the provider's
   when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
