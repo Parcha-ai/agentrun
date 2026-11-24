@@ -1,5 +1,5 @@
 {
-  "about": "The fields an external client reads of an agent's learning through the v2 API, by route, and the learning settings it sends on a launch. A field here is one a client depends on: removing or renaming it breaks that client, so test/learn-reads-contract.test.mjs fails. Fields added beside these pass. Types: number, string, boolean, list (a list read whole); a type ending in |null takes null. {\"object\": {...}} lists an object's fields, {\"list\": spec} a list's items, and \"nullable\": true lets either be null. source_revision is the client's revision this list was taken from.",
+  "about": "The fields an external client reads of an agent's learning through the v2 API, by route, the fixed values it switches on, the HTTP statuses it expects, and the learning settings it sends on a launch. A field here is one a client depends on: removing or renaming it breaks that client, so test/learn-reads-contract.test.mjs fails. Fields added beside these pass. Types: number, string, boolean, list (a list read whole); a type ending in |null takes null. {\"object\": {...}} lists an object's fields, {\"list\": spec} a list's items, and \"nullable\": true lets either be null; a list of strings must be seen non-empty once; a field name ending in ? may be absent (a check still at work has no counts yet), but must be seen present once. Each value in `values` must appear in some answer, and no other value may appear where the client reads it. `statuses` are by case. source_revision is the client's revision this list was taken from.",
   "source_revision": "ff058f7b42704fa04a0e791e62aaed4a48d703d7",
   "reads": {
     "GET /agents/{id}/learning/cost": {
@@ -49,7 +49,7 @@
           "at": "string",
           "decided": "string",
           "reason": "string",
-          "check": { "nullable": true, "object": { "n": "number", "agreed": "number", "alone": "number" } }
+          "check": { "nullable": true, "object": { "n?": "number", "agreed?": "number", "alone?": "number" } }
         } } }
       }
     },
@@ -94,7 +94,17 @@
     "promotion decisions": ["promote", "hold", "replaying"],
     "serving states": ["serving", "checking", "held", "stopped"],
     "learned workflow row": { "kind": "tool_result", "tool_name": "learned_workflow" },
-    "reset busy code": "learning_busy"
+    "reset busy code": "learning_busy",
+    "grade audit source": "grade"
+  },
+  "statuses": {
+    "GET /agents/{id}/learning/{cost,promotions,audits,loop} unknown agent": 404,
+    "GET /agents/{id} unknown agent": 404,
+    "DELETE /agents/{id}/learning reset": 204,
+    "DELETE /agents/{id}/learning while a run of the agent is going": 409,
+    "DELETE /agents/{id}/learning unknown agent": 404,
+    "POST /runs inline launch": 202,
+    "PUT /runs/{id}/grade": 200
   },
   "launch": {
     "learning": { "compile_after": 5, "agree_min": 0.8, "alone_min": 0.7, "agree_on": ["answer"], "audit_every": 10, "audit_every_later": 20, "audit_later_after": 50, "hold_window": 10, "hold_disagree": 3, "stop_window": 100 }
