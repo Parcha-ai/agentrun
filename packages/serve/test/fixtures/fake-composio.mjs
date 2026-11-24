@@ -6,7 +6,8 @@
 // lists besides them (the real one's base version leaves out tools added since; linear 21 of 48 live 11-18). `toolsPage`
 // pages the tool list at most that many a page, by `cursor` and `next_cursor`. As the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
-// it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
+// it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit
+// (`anyCase`: that read finds one by its id in any letter case, answering the id as it keeps it). `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
 // config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
@@ -92,7 +93,7 @@ const mcpGate = (mcpAccounts, toolkits) => (url, message) => {
   return undefined;
 };
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, anyCase = false, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -173,7 +174,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     // One auth config, as the real one answers it: its toolkit, whether Composio manages it, and its status.
     if (req.method === "GET" && config) {
       for (const [kit, list] of [...Object.entries(madeConfigs), ...Object.entries(authConfigs)]) {
-        const found = list.find((c) => c.id === config[1]);
+        const found = list.find((c) => c.id === config[1] || (anyCase && c.id.toLowerCase() === config[1].toLowerCase()));
         if (found) return reply(200, { id: found.id, is_composio_managed: found.is_composio_managed === true, status: found.status ?? "ENABLED", toolkit: { slug: found.toolkit?.slug ?? kit } });
       }
       return reply(404, { error: { message: `Auth config ${config[1]} not found` } });

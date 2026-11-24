@@ -351,6 +351,19 @@ test("over a server the token saved, its address as reads show it (path hidden) 
   assert.equal(started.status, 200, started.text);
 });
 
+test("over a server the token saved, the token's own preview sending back its address as reads show it lists the saved one's tools (200): the token chose that address", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  t.after(() => plain.close());
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = `${new URL(plain.url).origin}/…`;
+  const sent = plain.log.length;
+  const previewed = await token("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "none" } });
+  assert.equal(previewed.status, 200, previewed.text);
+  assert.ok(plain.log.length > sent, "the preview reached the saved address");
+});
+
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
   const { fake, token } = await withSavedServer(t);
   const started = await token("POST", "/settings/mcp-servers/fake/oauth/start", { url: fake.url });
