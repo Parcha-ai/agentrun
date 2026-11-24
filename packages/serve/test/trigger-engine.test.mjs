@@ -817,7 +817,7 @@ test("a host start of a sent firing holds the room until its run is written, how
 
 test("a host start at a sent firing's start_by pushes it out and holds the room until its run is written, however long that takes: with max_active_runs 1 and the run still being written an hour past the pushed start_by, another firing's host start is refused", (t) => slowStart(t, true));
 
-test("a firing whose run started while its hook is still open counts once: with max_active_runs 2 and that run the one in progress, another firing's host start is taken", async (t) => {
+test("the room count takes a firing both mid-hand and in the store's runs in progress once: with max_active_runs 2, a firing whose run started while its hook is still open fills one place, and another firing's host start is taken", async (t) => {
   const host = await heldHost(t);
   const { clock, store, triggers } = await engine(t, { launchHook: host.launchHook });
   const made = await triggers.create({ ...hookBody, max_active_runs: 2 });
