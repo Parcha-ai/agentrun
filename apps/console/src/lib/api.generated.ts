@@ -2563,6 +2563,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   fireTrigger: {
@@ -2772,6 +2773,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   getClaudeLogin: {
