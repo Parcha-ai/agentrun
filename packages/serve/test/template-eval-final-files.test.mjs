@@ -51,7 +51,9 @@ test("a run whose final file is past what its write call shows still grades PASS
   const calls = input.slice(input.indexOf("<tool-calls untrusted>"));
   assert.doesNotMatch(calls, /END-OF-VOICEOVER/);
   assert.match(calls, /\.\.\.".*\[the file media\/voiceover-timestamps\.json is in <files>, whole unless marked cut\]/);
-  assert.equal(input.split("END-OF-VOICEOVER").length - 1, 1, "the file's bytes are in the grader's input once");
+  // From the file's block on (the files, then the calls), its bytes are there once; the rubric and the task ahead of it
+  // name the word too.
+  assert.equal(input.slice(input.indexOf("<file path=\"media/voiceover-timestamps.json\"")).split("END-OF-VOICEOVER").length - 1, 1, "the file's bytes are in the files and calls once");
   assert.ok(input.indexOf("<files untrusted>") < input.indexOf("<tool-calls untrusted>"));
   assert.ok(input.includes(`<file path="media/voiceover-timestamps.json" bytes="${Buffer.byteLength(TIMESTAMPS) + 1}">\n${TIMESTAMPS}\n\n</file>`), input);
   // A held value the run wrote to a file never reaches a grader: cut from the file as from the call.
