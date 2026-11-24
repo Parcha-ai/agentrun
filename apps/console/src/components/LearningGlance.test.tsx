@@ -24,20 +24,37 @@ const draw = (node: React.ReactElement) => {
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 const REVISIONS = revisionsOf(COST, PROMOTIONS.promotions, PROMOTIONS.serving, AUDITS);
 const cell = (host: HTMLElement, id: string) => host.querySelector(`[data-testid="${id}"]`)?.textContent ?? "";
+// A figure's one visible line, and its whole basis: the cell's hover text, and in the cell for a screen reader.
+const short = (host: HTMLElement, id: string) => host.querySelector(`[data-testid="${id}"] [data-basis="short"]`)?.textContent ?? null;
+const whole = (host: HTMLElement, id: string) => host.querySelector(`[data-testid="${id}"]`)?.getAttribute("title") ?? null;
 
 describe("LearningGlance", () => {
-  it("says the headline and each figure with the count it stands on and a share's 95% interval", () => {
+  it("says the headline and each figure with one short line of the count it stands on, the whole basis on hover and to a screen reader", () => {
     const host = draw(createElement(LearningGlance, { cost: COST, revisions: REVISIONS }));
     expect(cell(host, "glance-headline")).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 checked answers.");
-    expect(cell(host, "glance-cost")).toBe("Cheaper a run7.7x$0.116 all-in over 59 served runs, $0.890 by the agent before");
-    expect(cell(host, "glance-agreement")).toBe("Agrees with the agent95%80% needed to serve21 of 22 checked answers · 95% interval 78% to 99% · 80% needed to serve · audits since: 7 of 7 agreed, 1 your grade");
-    expect(cell(host, "glance-alone")).toBe("Finished alone95%56 of 59 runs it ran first, 3 handed back to the agent · 95% interval 86% to 98%");
-    expect(cell(host, "glance-even")).toMatch(/^Break-evenRun 24\$[\d.]+ booked over 80 runs, \$[\d.]+ had the agent done all of it$/);
+    expect(cell(host, "glance-cost")).toMatch(/^Cheaper a run7\.7x/);
+    expect(short(host, "glance-cost")).toBe("$0.116 a run, was $0.890");
+    expect(whole(host, "glance-cost")).toBe("$0.116 all-in over 59 served runs, $0.890 by the agent before");
+    expect(cell(host, "glance-agreement")).toMatch(/^Agrees with the agent95%/);
+    expect(short(host, "glance-agreement")).toBe("21 of 22 checked answers");
+    expect(whole(host, "glance-agreement")).toBe("21 of 22 checked answers · 95% interval 78% to 99% · 80% needed to serve · audits since: 7 of 7 agreed, 1 your grade");
+    expect(cell(host, "glance-alone")).toMatch(/^Finished alone95%/);
+    expect(short(host, "glance-alone")).toBe("56 of 59 runs it ran first");
+    expect(whole(host, "glance-alone")).toBe("56 of 59 runs it ran first, 3 handed back to the agent · 95% interval 86% to 98%");
+    expect(cell(host, "glance-even")).toMatch(/^Break-evenRun 24/);
+    expect(short(host, "glance-even")).toMatch(/^\$[\d.]+ booked over 80 runs$/);
+    expect(whole(host, "glance-even")).toMatch(/^\$[\d.]+ booked over 80 runs, \$[\d.]+ had the agent done all of it$/);
+    for (const id of ["glance-cost", "glance-agreement", "glance-alone", "glance-even"]) {
+      expect(cell(host, id), id).toContain(whole(host, id)!);
+      expect(host.querySelector(`[data-testid="${id}"] [data-basis="short"]`)!.getAttribute("aria-hidden"), id).toBe("true");
+    }
   });
   it("a run a restart cut mid-call never finished alone: it counts with the hand-backs, out of the share", () => {
     const cut: LearningCost = { ...COST, summary: { ...COST.summary, hand_backs: { ran: 59, back: 3, cut: 2 } } };
     const host = draw(createElement(LearningGlance, { cost: cut, revisions: REVISIONS }));
-    expect(cell(host, "glance-alone")).toMatch(/^Finished alone92%54 of 59 runs it ran first, 5 handed back to the agent · 95% interval /);
+    expect(cell(host, "glance-alone")).toMatch(/^Finished alone92%/);
+    expect(short(host, "glance-alone")).toBe("54 of 59 runs it ran first");
+    expect(whole(host, "glance-alone")).toMatch(/^54 of 59 runs it ran first, 5 handed back to the agent · 95% interval /);
   });
   it("shows nothing before a learned workflow has taken a run over", () => {
     const before: LearningCost = { ...COST, summary: { ...COST.summary, takeover: null } };
@@ -56,7 +73,9 @@ describe("LearningGlance", () => {
     const host = draw(createElement(LearningGlance, { cost: free, revisions: REVISIONS }));
     const bars = [...host.querySelectorAll('[data-testid="glance-levels"] rect')].map((r) => r.getAttribute("width"));
     expect(bars).toEqual(["1.00%", "1.00%"]);
-    expect(cell(host, "glance-cost")).toBe("Cost a run$0$0 all-in over 59 served runs, $0 by the agent before");
+    expect(cell(host, "glance-cost")).toMatch(/^Cost a run\$0/);
+    expect(short(host, "glance-cost")).toBe("$0 a run, was $0");
+    expect(whole(host, "glance-cost")).toBe("$0 all-in over 59 served runs, $0 by the agent before");
   });
   it("says a figure is not there yet in words, never a 0% or a $0", () => {
     const bare: LearningCost = { ...COST, summary: { ...COST.summary, before: null, after: null, after_state: "cost_unknown", times_cheaper: null, hand_backs: null }, bill: { ...COST.bill, break_even: null, gap_usd: 2.5 } };
@@ -184,19 +203,32 @@ describe("the Learning tab", () => {
     expect(cell(host, "glance-headline")).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 checked answers.");
     const order = [...host.querySelectorAll("[data-testid]")].map((el) => el.getAttribute("data-testid"));
     expect(order.indexOf("learning-glance")).toBeLessThan(order.indexOf("loop-story"));
+    // Under the figures, each stage is its value alone: its detail, which the figures say, is its hover text and a screen reader's.
+    for (const stage of host.querySelectorAll<HTMLElement>('[data-testid="loop-story"] li')) {
+      const detail = stage.querySelector("p:last-child")!;
+      expect(detail.className, stage.dataset.testid).toBe("sr-only");
+      expect(stage.title, stage.dataset.testid).toBe(detail.textContent);
+      // Its state is its icon on the line of its title; the state's word is the icon's hover text and a screen reader's.
+      const state = stage.querySelector<HTMLElement>("p:first-child [title]")!;
+      expect(state.querySelector("svg"), stage.dataset.testid).not.toBeNull();
+      expect(state.querySelector(".sr-only")!.textContent, stage.dataset.testid).toBe(state.title);
+    }
     expect(order.indexOf("cost-per-run")).toBeLessThan(order.indexOf("cost-agreement"));
     expect(host.querySelector('[data-testid="cost-agreement"]')).not.toBeNull();
     expect(cell(host, "learning-audits")).toContain("All time: 12 of 15 agreed");
     expect(reads).toBe(1);
   });
-  it("stands the learned workflow in one row with the cost of a run, after it and before the bill, drawn at its newest revision", async () => {
+  it("stands the learned workflow on a row of its own, after the cost of a run and before the bill, drawn at its newest revision", async () => {
     const host = draw(createElement(LearningTab, { agent: AGENT, v2: fixtureClient() as unknown as Client, server: "on" }));
     await settle();
-    const row = host.querySelector('[data-testid="cost-and-workflow"] > div')!;
     const workflow = host.querySelector('section[aria-label="Learned workflow"]')!;
-    expect([...row.children]).toEqual([host.querySelector('[data-testid="cost-per-run"]'), workflow]);
+    const cost = host.querySelector('[data-testid="cost-per-run"]')!;
+    // A row of the tab's own column, as the figures at the top are: never a column beside the cost of a run.
+    expect(workflow.parentElement).toBe(host.querySelector('[data-testid="learning-glance"]')!.parentElement);
+    expect(host.querySelector('[data-testid="cost-and-workflow"]')).toBeNull();
+    expect(cost.compareDocumentPosition(workflow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(host.querySelectorAll('section[aria-label="Learned workflow"]').length).toBe(1);
-    expect(row.compareDocumentPosition(host.querySelector('[data-testid="learning-bill"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workflow.compareDocumentPosition(host.querySelector('[data-testid="learning-bill"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(workflow.textContent).toContain("Revision 2 of 2");
     const graph = workflow.querySelector('svg[role="img"]')!;
     expect(graph.getAttribute("aria-label")).toBe("The workflow at revision 2 of 2, as a graph");
