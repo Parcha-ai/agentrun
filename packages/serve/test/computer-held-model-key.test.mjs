@@ -170,8 +170,8 @@ const loadedSdk = async (version) => ({ sdk: { query() {} }, sdkVersion: version
  *  runner place). `hold`: the launch's; `extra`: more of its launch (a replay's); `host`: more of the runner's environment,
  *  and the runner's model route (`routeOf`, which a CLI run's own model never takes); `host.body`, more of the revision's
  *  body (its grants), `host.mcpPin`, the pin its save made, `host.before`, called with the server's store before the run
- *  is made (a test saves an MCP server there), and `host.redact`, the runner's one redactor as the loop hands it. Resolves
- *  to the spec; rejects as the claim fails. */
+ *  is made (a test saves an MCP server there), and `host.runnerStore`, called with the runner's store before the claim
+ *  (a test watches its reads there). Resolves to the spec; rejects as the claim fails. */
 async function cliClaim(t, hold, extra = {}, host = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-cli-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -196,7 +196,8 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { ...host.env, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [] }), PATH: process.env.PATH };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given), ...(host.redact ? { redact: host.redact } : {}) }, deps, claim);
+  host.runnerStore?.(store);
+  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
 
@@ -648,10 +649,14 @@ const FAL_GRANT = "mcp:fal/run_model";
 const FAL_TOOL = { name: "run_model", description: "Run a fal model.", inputSchema: { type: "object", properties: { endpoint_id: { type: "string" } } } };
 const FAL_PIN = { fal: { url: FAL_URL, meter: "fal", tools: [FAL_TOOL] } };
 const saveFal = (server) => server.mcp.put({ name: "fal", url: FAL_URL, auth: "headers", tools: [{ name: FAL_TOOL.name, description: FAL_TOOL.description, input_schema: FAL_TOOL.inputSchema }], sealed: sealMcpCredential(SEAL_KEY, "fal", { type: "headers", headers: { authorization: `Key ${FAL_KEY}` } }, FAL_URL) });
-/** The runner's one redactor as the loop hands it, keeping each value a claim hands it (hold): every credential the claim
- *  opened, as it opened it. */
-const keeping = (kept) => Object.assign((text) => text, { hold: (values) => void kept.push(...values) });
-const falOpened = (kept) => kept.some((value) => value.includes(FAL_KEY));
+/** `store`'s reads of a saved MCP server (store.mcp.server, mcp-store.ts getMcpServer), by name, into `read`: a claim's MCP
+ *  step reads each pinned server's row and opens its credential from it. The run's redactor is no witness here: every
+ *  claim, held or not, holds each secret the store keeps (store-secrets.ts holdStored) to cut it from what the run
+ *  writes, and sends none of them. */
+function readingMcp(store, read) {
+  const server = store.mcp.server.bind(store.mcp);
+  store.mcp.server = async (name) => (read.push(name), server(name));
+}
 
 test("pi (adapter-run-spec), MCP: a held run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
   withEnv(t, {}, KEYLESS);
@@ -662,16 +667,18 @@ test("pi (adapter-run-spec), MCP: a held run its model kept from running, grante
     await saveFal(server);
     await server.agents.pinOnce("rev-1", FAL_PIN);
   };
-  const unheldKept = [];
-  const { spec: unheld } = await specFor(t, { body, launch: { model: undefined }, before, redact: keeping(unheldKept), computer: phoneOn(root) });
+  // The claim-time computer is composed with the runner's store, before the claim: where its reads are watched.
+  const watched = (read) => (composed) => (readingMcp(composed.store, read), phoneOn(root)());
+  const unheldRead = [];
+  const { spec: unheld } = await specFor(t, { body, launch: { model: undefined }, before, computer: watched(unheldRead) });
   t.after(() => unheld.release?.());
-  assert.ok(falOpened(unheldKept), "the run not held opens fal's key at its claim, as before: it joins the run's redactor");
+  assert.ok(unheldRead.includes("fal"), "the run not held opens fal's key at its claim, as before, from fal's saved row");
   assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
-  const heldKept = [];
-  const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, before, redact: keeping(heldKept), computer: phoneOn(root) })
+  const heldRead = [];
+  const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL } }, before, computer: watched(heldRead) })
     .catch((error) => assert.fail(`a held run its model kept from running opens its claim: ${error.message}`));
   t.after(() => spec.release?.());
-  assert.deepEqual(heldKept, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim holds none");
+  assert.deepEqual(heldRead, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim reads no saved server");
   assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
   assert.deepEqual(spec.held, { minutes: 5 }, "its claim still holds the computer for its owner");
 });
@@ -679,14 +686,14 @@ test("pi (adapter-run-spec), MCP: a held run its model kept from running, grante
 test("CLI (cli-run-spec), MCP: a held opencode run its model kept from running, granted a fal tool, opens no MCP credential at its claim and carries no MCP; the same run not held opens fal's key and carries its tool", async (t) => {
   withEnv(t, {}, KEYLESS);
   const host = { body: { tools: ["read", FAL_GRANT] }, mcpPin: FAL_PIN, before: saveFal };
-  const unheldKept = [];
+  const unheldRead = [];
   // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
-  const unheld = await cliClaim(t, undefined, {}, { ...host, env: { OPENAI_API_KEY: HOST_MODEL_KEY }, redact: keeping(unheldKept) });
-  assert.ok(falOpened(unheldKept), "the run not held opens fal's key at its claim, as before: it joins the run's redactor");
+  const unheld = await cliClaim(t, undefined, {}, { ...host, env: { OPENAI_API_KEY: HOST_MODEL_KEY }, runnerStore: (store) => readingMcp(store, unheldRead) });
+  assert.ok(unheldRead.includes("fal"), "the run not held opens fal's key at its claim, as before, from fal's saved row");
   assert.deepEqual(unheld.mcp?.tools.map((tool) => tool.name), ["mcp__fal__run_model"], "and carries fal's tool");
-  const heldKept = [];
-  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { ...host, redact: keeping(heldKept) }).catch((error) => assert.fail(`a held opencode run its model kept from running opens its claim: ${error.message}`));
-  assert.deepEqual(heldKept, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim holds none");
+  const heldRead = [];
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { ...host, runnerStore: (store) => readingMcp(store, heldRead) }).catch((error) => assert.fail(`a held opencode run its model kept from running opens its claim: ${error.message}`));
+  assert.deepEqual(heldRead, [], "a held run its model kept from running opens no MCP credential, fal's included: nothing can call one (its start is refused, its provider refuses every request), so its claim reads no saved server");
   assert.equal(spec.mcp, undefined, "and its spec carries no MCP");
 });
 
@@ -702,10 +709,8 @@ test("per-run process (run-child-host heldFor), MCP: the runner opens no MCP cre
   await saveFal(store);
   const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: [FAL_GRANT] } };
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", ...revision, mcpPin: FAL_PIN });
-  // The saved servers the runner reads to open a credential (getMcpServer), by name.
   const read = [];
-  const server = store.mcp.server.bind(store.mcp);
-  store.mcp.server = async (name) => (read.push(name), server(name));
+  readingMcp(store, read);
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
   const seam = async (runId, hold) => {
     await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...hold } });
