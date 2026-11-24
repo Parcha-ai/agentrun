@@ -1576,6 +1576,62 @@ test("a renewal whose save fails to read the login's file (an I/O error, not the
   assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
 });
 
+test("an ask that reads the old pair while the renewal that rotated its refresh token is saving the new pair joins that renewal and is handed the new token, never refused for the refresh token that renewal spent; once saved, an ask that read the old pair is sent back to the file, and a spent refresh token is still never posted again", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const file = join(login.dir, ".credentials.json");
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // Anthropic has answered the post of the old refresh token with a new one (the old one is spent): the renewal's next
+  // read of the file, its save's, waits until the test lets it go, the file still holding the old pair.
+  let holdNext = false;
+  let saving = false;
+  let letGo;
+  const held = new Promise((resolve) => (letGo = resolve));
+  let reads = 0;
+  const fetch = async (url, init) => {
+    const answer = await endpoint.fetch(url, init);
+    if (JSON.parse(init.body).refresh_token === old.refresh) holdNext = true;
+    return answer;
+  };
+  const readFile = async (path) => {
+    if (holdNext) {
+      holdNext = false;
+      saving = true;
+      await held;
+    } else reads++;
+    return fsp.readFile(path, "utf8");
+  };
+  const renew = tokens.renewLogin({ fetch, now: () => now, readFile });
+  const first = new tokens.LoginTokens({ login, now: () => now, renew });
+  const other = new tokens.LoginTokens({ login, now: () => now, renew });
+  const renewing = first.token();
+  renewing.catch(() => undefined);
+  await until(() => saving, "the save's read of the file, after the post");
+  const readsBefore = reads;
+  const asked = other.token().catch((error) => error.message);
+  await until(() => reads > readsBefore, "the other ask's read of the file");
+  await sleep(100);
+  letGo();
+  assert.equal(await asked, next.access, "an ask that read the old pair while the renewal that spent its refresh token was saving the new pair joins that renewal and is handed the new token, never refused in LOGIN_RUNNING_OUT's words");
+  assert.equal(await renewing, next.access, "the renewal's own ask is handed the new token");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).claudeAiOauth.refreshToken, next.refresh, "the new pair saved");
+  // An ask that read the old pair before the save landed and renews only after it: nothing is posted, and it is sent
+  // back to the file (undefined), which holds the new pair.
+  assert.equal(await renew(login, old.access, undefined), undefined, "a renewal asked for the old pair once the new one is saved sends the ask back to the file");
+  assert.equal(await other.token(), next.access, "the file hands the new token");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh], "one post for both asks");
+  // A copy of the old pair put back in the file (restored from a backup, say): its refresh token is spent, and a new
+  // request with it is refused before its post.
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  await assert.rejects(other.token(), { message: tokens.LOGIN_RUNNING_OUT }, "an ask on the spent refresh token is refused in LOGIN_RUNNING_OUT's words");
+  assert.deepEqual(endpoint.posts.map((post) => post.body.refresh_token), [old.refresh], "a spent refresh token is never posted again: a new request with it is refused before its post");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+});
+
 /** The refresh locks' file operations for `login`, its older lock beside the folder never made (the CLI goes on without
  *  it), each read of its lock in the folder counted (`reads.n`) and failed (EIO) while `fails(n)` holds. */
 function lockReads(login, fails) {
