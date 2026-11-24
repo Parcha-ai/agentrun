@@ -57,6 +57,32 @@ test("a held value whole in one argument is cut in place: tool_input keeps the c
   assert.deepEqual(use.tool_input, { command: "echo [redacted]", note: "x" });
 });
 
+// The prompt builder itself (template-eval.ts graderInput): a run whose calls split a held value across two arguments,
+// across a property name and its value, and across two strings of a result, and hold it whole in one argument. The
+// calls come from the rows of a calls read (callsOf), as an eval reads them; the prompt holds neither half nor the value.
+test("graderInput: the prompt built from a run whose calls split a held value holds neither half nor the whole value", () => {
+  const rows = timelineOf(
+    [
+      user("Run it."),
+      assistant([call("c1", "bash", { command: `echo ${HEAD}`, note: REST }), call("c2", "bash", { command: "ls", [HEAD]: REST }), call("c3", "read", { path: "notes.json" }), call("c4", "bash", { command: `echo ${KEY}` })]),
+      result("c1", "bash", "ok"),
+      result("c2", "bash", "ok"),
+      result("c3", "read", JSON.stringify({ items: [{ title: `see ${HEAD}`, snippet: `${REST} more` }] })),
+      result("c4", "bash", "done"),
+    ],
+    {
+      redact: (part) => redacted(part, SECRETS),
+      calls: { result: CALL_RESULT_CHARS, redact: (part) => redactedCall(part, SECRETS, CALL_RESULT_CHARS, scrubUrls), holds: (whole) => withheldWhole(whole, SECRETS) },
+    },
+  );
+  const prompt = graderInput(grader, "task", { answer: "done", calls: callsOf(rows, "pi"), mcpCalls: [], files: [] });
+  assert.equal(prompt.includes(KEY), false);
+  assert.deepEqual(shows(prompt), []);
+  // Each split call is listed by its preview, "[redacted]"; the whole value in one argument is cut in place.
+  assert.equal(prompt.match(/\(\[redacted\]\)/g)?.length, 2);
+  assert.match(prompt, /"command":"echo \[redacted\]"/);
+});
+
 test("a held value split across a web call's property name and its value withholds the call's result", () => {
   const text = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title: "t", [HEAD]: `${REST} more` }] });
   assert.equal(rowOf(rowsOf("web_search", { query: "q" }, text), "tool_result").tool_result_text, "[redacted]");
