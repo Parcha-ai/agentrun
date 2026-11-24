@@ -9,6 +9,11 @@
 //     `item_reference`, a file or an image by URL is refused with a 400 naming it, never dropped in silence. So is a
 //     `tool_choice` that forces a call ("required", or one naming a function): Ollama cannot be made to call a tool, and
 //     a forced call run as "auto" would be a promise the route breaks. "auto" is taken, and "none" sends no tool.
+//     `text.format` json_schema is Ollama's `format` (the answer held to the schema), json_object an object schema;
+//     beside tools sent it is refused, since the model could call none. temperature and top_p reach Ollama's options;
+//     `reasoning.effort` is a thinking model's level (Ollama's think), and "none" asks it not to think. An effort or a
+//     format this route does not know is refused. parallel_tool_calls false keeps an answer's first call alone, since
+//     Ollama's chat has no switch for one call per answer.
 //   Answer: the Messages stream becomes a Responses stream: response.created, an output item for each block (message,
 //     reasoning, function_call) with its deltas and its done events, then response.completed, or response.incomplete
 //     with `incomplete_details.reason: "max_output_tokens"` where the model stopped at its output limit, both carrying
@@ -18,7 +23,8 @@
 // State: none is kept. A request is its whole conversation: one that asks `store: true` or names `previous_response_id`
 // is refused, since nothing is stored here to continue from. `include` is read for nothing: this writes no encrypted
 // reasoning, and a replayed reasoning item (OpenAI's encrypted one included) is dropped, never refused.
-// A request with `stream: false` gets the final response as one JSON body.
+// A request streams only with `stream: true`, as OpenAI's API does; one with `stream: false` or none gets the final
+// response as one JSON body.
 // The answer runs through messagesFetch whole (a Responses body made a Messages one, its Messages stream made a Responses
 // one), so the Messages translation stays as it is. Split into a parser per wire, one driver and an encoder per wire if a
 // third wire arrives.
@@ -137,21 +143,54 @@ export function messagesOfResponses(body: Json, reasons: boolean): Json {
     if (!isPlain(tool) || tool.type !== "function") throw new ResponsesRefusal(`a ${isPlain(tool) ? String(tool.type) : "malformed"} tool is not taken on this model's route: function tools only${isPlain(tool) && tool.type === "custom" ? " (a custom, freeform tool has no function schema to give the model)" : ""}`);
     return { name: String(tool.name ?? ""), description: typeof tool.description === "string" ? tool.description : "", input_schema: isPlain(tool.parameters) ? tool.parameters : { type: "object", properties: {} } };
   });
-  // A structured output (`text.format`) is asked in words: the local model has no constrained decoding on this route.
-  const format = isPlain(body.text) && isPlain(body.text.format) ? body.text.format : undefined;
-  if (format?.type === "json_schema") system.push(`Answer with one JSON value only, no other text, matching this JSON schema:\n${JSON.stringify(format.schema ?? {})}`);
-  else if (format?.type === "json_object") system.push("Answer with one JSON object only, no other text.");
+  const sendsTools = functions.length > 0 && body.tool_choice !== "none";
+  const schema = schemaOf(body.text, sendsTools);
+  // Ollama holds the answer to the schema (its `format`); the schema is in the prompt too, as Ollama advises, so the
+  // model writes what the schema means and not only its shape.
+  if (schema) system.push(`Answer with one JSON value only, no other text, matching this JSON schema:\n${JSON.stringify(schema)}`);
   const effort = isPlain(body.reasoning) ? body.reasoning.effort : undefined;
+  if (effort !== undefined && effort !== null && !(typeof effort === "string" && (EFFORTS.has(effort) || effort === "none"))) throw new ResponsesRefusal(`reasoning.effort ${JSON.stringify(effort)} is not taken on this model's route: "none", ${[...EFFORTS].map((each) => `"${each}"`).join(", ")} only`);
   const level = reasons && typeof effort === "string" && EFFORTS.has(effort) ? effort : undefined;
+  // "none" on a model that reasons: Ollama is asked not to think (think: false), where its own default would have the
+  // model think. It travels as output_config.effort "none", which the route reads on an Ollama model alone (model-route.ts
+  // ollamaAsks), so pi's own thinking off (thinking disabled, no effort) stays as it was.
+  const off = reasons && effort === "none";
+  const config = { ...(level ? { effort: level } : off ? { effort: "none" } : {}), ...(schema ? { format: { type: "json_schema", schema } } : {}) };
   return {
     model: typeof body.model === "string" ? body.model : "route",
     stream: true,
     ...(typeof body.max_output_tokens === "number" ? { max_tokens: body.max_output_tokens } : {}),
+    ...numberOf(body, "temperature"),
+    ...numberOf(body, "top_p"),
     ...(system.length ? { system: system.join("\n\n") } : {}),
     messages,
-    ...(functions.length && body.tool_choice !== "none" ? { tools: functions } : {}),
-    ...(level ? { thinking: { type: "adaptive" }, output_config: { effort: level } } : {}),
+    ...(sendsTools ? { tools: functions } : {}),
+    ...(level ? { thinking: { type: "adaptive" } } : off ? { thinking: { type: "disabled" } } : {}),
+    ...(Object.keys(config).length ? { output_config: config } : {}),
   };
+}
+
+/** `field` of `body` (temperature, top_p) as the Messages body carries it: a number as it is, null or absent as none (the
+ *  model's own default). Anything else is refused, never dropped. */
+function numberOf(body: Json, field: "temperature" | "top_p"): Json {
+  const value = body[field];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ResponsesRefusal(`${field} ${JSON.stringify(value)} is not taken on this model's route: a number, or null for the model's default`);
+  return { [field]: value };
+}
+
+/** The JSON schema `text.format` holds the answer to: json_schema's own, json_object's any object; none for a text format
+ *  or none. Ollama holds the whole answer to it (constrained decoding), which leaves the model no way to call a tool, so a
+ *  format beside tools sent is refused, as is one of another type: never asked in words alone. */
+function schemaOf(text: unknown, sendsTools: boolean): Json | undefined {
+  const format = isPlain(text) ? text.format : undefined;
+  if (format === undefined || format === null || (isPlain(format) && format.type === "text")) return undefined;
+  const type = isPlain(format) ? format.type : undefined;
+  if (type !== "json_schema" && type !== "json_object") throw new ResponsesRefusal(`text.format ${JSON.stringify(type ?? format)} is not taken on this model's route: "text", "json_schema" and "json_object" only`);
+  const schema = type === "json_object" ? { type: "object" } : (format as Json).schema;
+  if (!isPlain(schema)) throw new ResponsesRefusal("text.format json_schema with no schema object is not taken on this model's route");
+  if (sendsTools) throw new ResponsesRefusal(`text.format ${type} beside tools is not taken on this model's route: Ollama holds the whole answer to the format, which leaves the model no way to call a tool, so send it with no tools (or tool_choice "none"), or with no format`);
+  return schema;
 }
 
 /** One Messages SSE event: its JSON data, or, for an error event whose data is the error's words alone, those words; any
@@ -261,9 +300,11 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
       metadata: {},
     };
     const events = messagesEvents(answer.body);
-    if (body.stream === false) {
+    const oneCall = body.parallel_tool_calls === false;
+    // OpenAI's own default: a body streams only when it asks to; one that names no stream is answered whole.
+    if (body.stream !== true) {
       // The whole answer, then its final response as one body.
-      await translate(events, response, () => {});
+      await translate(events, response, () => {}, oneCall);
       if (response.status === "failed") {
         // 500 for a failed answer, as the Messages side answers one asked whole (model-route.ts wholeOf: Anthropic's
         // api_error is a 500, OpenAI's server_error too); a rate limit 429.
@@ -280,7 +321,7 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
         try {
           // translate never throws on the Messages stream (a part that does not read is its own failed end); what throws
           // here is the client gone, whose stream takes nothing more.
-          await translate(events, response, send);
+          await translate(events, response, send, oneCall);
           controller.close();
         } catch {
           // Its loop has already let go of the Messages stream (for await returns it), which ends the route's request.
@@ -297,8 +338,9 @@ const snapshot = (response: Json): Json => ({ ...response, output: [...(response
 /**
  * The Messages events as Responses events, each given to `send`, the response filled as they come: its output items,
  * then its end (completed, incomplete at the output limit, or failed, each with the usage the Messages stream stated).
+ * `oneCall` (the request's parallel_tool_calls false): the answer's first function_call alone.
  */
-async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, send: (event: Json) => void): Promise<void> {
+async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, send: (event: Json) => void, oneCall = false): Promise<void> {
   const output = response.output as Json[];
   const open = new Map<number, Open>();
   let usage: Json | undefined;
@@ -346,7 +388,9 @@ async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, 
           output.push(item);
           send({ type: "response.output_item.added", output_index: index, item: { ...item, summary: [] } });
           send({ type: "response.reasoning_summary_part.added", item_id: item.id, output_index: index, summary_index: 0, part: { type: "summary_text", text: "" } });
-        } else if (block.type === "tool_use") {
+        } else if (block.type === "tool_use" && !(oneCall && output.some((item) => item.type === "function_call"))) {
+          // parallel_tool_calls false: the answer's first call alone (a later one is never opened, so its deltas and its
+          // stop find nothing), since Ollama's chat has no switch for one call per answer.
           const item: Json = { id: idOf("fc"), type: "function_call", status: "in_progress", call_id: String(block.id ?? ""), name: String(block.name ?? ""), arguments: "" };
           open.set(json.index, { index, item, text: "", kind: "function_call" });
           output.push(item);
