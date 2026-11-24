@@ -1064,9 +1064,10 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  connectors, whose rows are the server's. */
 export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
-/** The words a run on this machine's own Claude Code login (~/.claude, the `machine` place) is refused in where each run
- *  is a user of its own: only AgentRun's own login folder is handed to such a run, as its access token. */
-export const LOGIN_MACHINE_NEEDS_SERVER_USER = `A run on this machine's own Claude Code login (~/.claude) needs runs under the server's own user, and this runner runs each run as a user of its own: switch to AgentRun's own login folder under Settings → Model keys, set ${RUN_USER_ENV}=same, or give the run a model_key.`;
+/** The words a run on this machine's own Claude Code login (the `machine` place: claude-login.ts machineFolder, ~/.claude
+ *  or the server's CLAUDE_CONFIG_DIR) is refused in where each run is a user of its own: only AgentRun's own login folder
+ *  is handed to such a run, as its access token. */
+export const LOGIN_MACHINE_NEEDS_SERVER_USER = `A run on this machine's own Claude Code login (~/.claude, or the CLAUDE_CONFIG_DIR AgentRun was started with) needs runs under the server's own user, and this runner runs each run as a user of its own: switch to AgentRun's own login folder under Settings → Model keys, set ${RUN_USER_ENV}=same, or give the run a model_key.`;
 /** The words a run on the login is refused in where each run is a user of its own while runner `other`, on the same data
  *  folder, runs its runs on the login in its own process, whose CLI renews the login in that folder itself. */
 export const loginRunnerInProcessWords = (other: string): string =>
@@ -1081,7 +1082,7 @@ export { RECIPE_SIGN_IN_PERSON_ONLY } from "./harness-loops.js";
  *  Code's login on this machine (claude-login.ts loginForRun), where runs are the runner's own user (`process`), stays in
  *  the runner, its CLI on the login's folder. Where each run is a user of its own (`uid`), a run on AgentRun's own login
  *  folder is a process of its own handed the login's access token alone (held.ts claudeLogin, claude-login-token.ts),
- *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (~/.claude), and
+ *  never the folder; it is refused at its claim (ClaimRefused, in words) on this machine's own login (machineFolder), and
  *  while a `process` runner on the same data folder is live (its CLI renews the folder's login itself). A run its caller
  *  handed a model key (model_key) runs on that key and never on the login (cli-run-spec.ts), so it is a process of its
  *  own like any other. */

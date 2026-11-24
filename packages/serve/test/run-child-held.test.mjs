@@ -230,7 +230,7 @@ test("where runs have users of their own, a claude-agent run on this machine's o
   const launch = { input: {}, place: { mode: "runner" } };
   await assert.rejects(host.staysInRunner(staysDeps(data, "agentic", "machine"), "claude-agent", launch, "run-own", PER_RUN_USERS), (error) => {
     assert.equal(error.name, "ClaimRefused", `refused for good, the run failed in its words: ${error.stack}`);
-    assert.match(error.message, /this machine's own Claude Code login \(~\/\.claude\)/);
+    assert.match(error.message, /this machine's own Claude Code login \(~\/\.claude, or the CLAUDE_CONFIG_DIR AgentRun was started with\)/);
     assert.match(error.message, /AgentRun's own login folder/);
     assert.match(error.message, /AGENTRUN_RUN_USER=same/);
     assert.match(error.message, /model_key/);

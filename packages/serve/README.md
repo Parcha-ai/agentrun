@@ -1616,7 +1616,7 @@ included, fails the run at its start in words that say to open Claude Code once 
 in the same words (or, with no failure to tell, words that say to run the claude CLI once on this login to renew it).
 No token is in the runner's log or in any error, and each token handed is cut from the run's journal, messages and rows
 as the runner writes them. A command the run's CLI starts can read the token,
-as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`) fails at its
+as the run's own user can. Under per-run users, a run on this machine's own Claude Code login (`~/.claude`, or the `CLAUDE_CONFIG_DIR` AgentRun was started with) fails at its
 claim and says so, and so does any login run while another runner on the same data folder runs its login runs under
 the server's user (its CLI renews the folder's login itself), naming that runner. Set `AGENTRUN_RUN_USER=same`, or give
 the run a `model_key`.
