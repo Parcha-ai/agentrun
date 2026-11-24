@@ -5,7 +5,8 @@
 // routes through claimModelEnv, never a run that quietly spends the server's key after its caller handed one.
 //
 // What counts as a read: AGENT_MODEL_API_KEY or ANTHROPIC_API_KEY by name off an env object (`env.NAME`, `env["NAME"]`,
-// or the constants that hold those names), or a call of the saved-key readers (savedModelKeys, tierModelKeys). Comments
+// or the constants that hold those names), or a call of the saved-key readers (savedModelKeys, tierModelKeys,
+// subagentTierKeys). Comments
 // are not reads.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -21,7 +22,7 @@ const ALLOWED = {
   "runner/model-route.ts": "an Anthropic model's route credential: reads the env it is given",
   "decisions.ts": "Jev's OpenRouter route on an openrouter.ai gateway's key: a decision key, never a run's model route",
   "run-model-key.ts": "whether the server holds a key for a run's route (serverKeyMissing, noServerKeyFor)",
-  "runner/claim-secrets.ts": "defines savedModelKeys and tierModelKeys, and claimSpendOff's check of the server's key",
+  "runner/claim-secrets.ts": "defines savedModelKeys, tierModelKeys and subagentTierKeys (which reads through the first two), and claimSpendOff's check of the server's key",
   "runner/harness-loops.ts": "an SDK run's compile turn: asked after its backend reported it complete, with no caller's key, on the server's key or skipped",
   // These two read the saved keys only where the run holds no key of its own: checked line by line below.
   "runner/adapter-run-spec.ts": "the subagent tiers' and learned tiers' keys, read only for a run with no key of its own",
@@ -33,7 +34,7 @@ const ALLOWED = {
 /** The modules whose every read must sit behind the run's own key: `keyed ? {} : <read>` (claim-secrets.ts keyedAtClaim). */
 const GUARDED = new Set(["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/run-child-host.ts"]);
 
-const READ = /\.(AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)\b|\[\s*["'](AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)["']\s*\]|\[\s*(GATEWAY_KEY_ENV|JEV_GATEWAY_KEY_ENV|ANTHROPIC_GATEWAY_KEY)\s*\]|\b(savedModelKeys|tierModelKeys)\s*\(/;
+const READ = /\.(AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)\b|\[\s*["'](AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)["']\s*\]|\[\s*(GATEWAY_KEY_ENV|JEV_GATEWAY_KEY_ENV|ANTHROPIC_GATEWAY_KEY)\s*\]|\b(savedModelKeys|tierModelKeys|subagentTierKeys)\s*\(/;
 const COMMENT = /^\s*(\/\/|\*|\/\*\*?)/;
 
 function sources(dir) {
@@ -58,8 +59,8 @@ test("only the static, server-key path reads AGENT_MODEL_API_KEY, ANTHROPIC_API_
   assert.deepEqual(strangers, [], `a module reads the server's model keys outside the server-key path: ${strangers.map((name) => `${name}:${readers.get(name).map((r) => r.at).join(",")}`).join("; ")}. Route a run's model env through claim-secrets.ts claimModelEnv, or add the module to ALLOWED with why.`);
   for (const name of GUARDED) {
     for (const { at, line } of readers.get(name) ?? []) {
-      if (/\b(savedModelKeys|tierModelKeys)\s*\(/.test(line) && /^export|function /.test(line)) continue;
-      assert.match(line, /keyed \? \{\} : await (savedModelKeys|tierModelKeys)\(/, `${name}:${at} reads the server's saved model keys without checking whether the run brought its own key first: ${line}`);
+      if (/\b(savedModelKeys|tierModelKeys|subagentTierKeys)\s*\(/.test(line) && /^export|function /.test(line)) continue;
+      assert.match(line, /keyed \? \{\} : await (savedModelKeys|tierModelKeys|subagentTierKeys)\(/, `${name}:${at} reads the server's saved model keys without checking whether the run brought its own key first: ${line}`);
     }
   }
   // The allowlist is not wider than what reads today: a module that stopped reading leaves it.

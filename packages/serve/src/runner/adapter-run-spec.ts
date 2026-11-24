@@ -59,7 +59,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -68,7 +68,7 @@ import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLife
 import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
 import { DEFAULT_HARNESS } from "../harness.js";
 import { agentEntriesOf } from "./loop.js";
-import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
+import { routedSubagentTiers, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, costBasisOf, endCostOf, runCostOf, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
@@ -279,10 +279,13 @@ const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE)
 
 /** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
  *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
- *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
- *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone. A run with its
- *  own model key carries that key, and no saved key is read. Undefined when there is no fast model, the revision names
- *  agree_on, or no route can be made (logged: the pair is then compared whole). */
+ *  provider's than the run's own, whose key claimSecrets never opened: so its route reads the saved model keys
+ *  (savedModelKeys: in a run's own process, its runner hands its subagent tiers' keys alone, so a fast model on another
+ *  provider is reached only when the revision grants subagent; run-child-host.ts heldFor), held by the run's redactor, on
+ *  the route's env alone. A run with its own model key carries that key, and no saved key is read. Its fast tier is the
+ *  one routedSubagentTiers names, as the run's subagent tier routes and the runner's handed keys read it. Undefined when
+ *  there is no fast model, the revision names agree_on, or no route can be made (logged: the pair is then compared
+ *  whole). */
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -299,13 +302,45 @@ export async function graderRouteOf(
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey, claim);
-  if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
+  if (!routedSubagentTiers(body, env).tiers.includes("fast")) return undefined;
   try {
     return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
     log(`learning: no grader route (${error instanceof Error ? error.message : String(error)}): the answers are compared whole`);
     return undefined;
   }
+}
+
+/** A subagent run's tier routes (runner/subagent.ts): each tier routedSubagentTiers names, on its model (the revision's
+ *  modelTiers, else the host's tier variable), under its own key (subagentRoute), on a route of its own. A tier's model may
+ *  be another provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's
+ *  model): so the routes read the saved model keys of those tiers' models alone (subagentTierKeys: on the runner, and in
+ *  a run's own process as its runner hands them), held by the run's redactor, on the routes' env alone, never the run's
+ *  tools (toolEnv). A run with its own model key carries that key, and no saved key is read. A tier no route can be made
+ *  for here is in `why`, cut, and no failure of the run: a call on it answers why. */
+export async function subagentTierRoutes(
+  body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>> },
+  keyed: boolean,
+  runKey: ClaimModelKey | undefined,
+  toolEnv: NodeJS.ProcessEnv,
+  cut: HeldRedact,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  claim?: Pick<Claim, "runId" | "turn" | "attempt">,
+): Promise<{ readonly routes: Map<string, ModelRoute>; readonly why: Map<SubagentTier, string> }> {
+  const routes = new Map<string, ModelRoute>();
+  const why = new Map<SubagentTier, string>();
+  const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, tiers, refs);
+  holdClaimed(cut, savedKeys);
+  const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey, claim);
+  for (const tier of tiers) {
+    try {
+      routes.set(subagentRoute(tier), await deps.routeOf(refs[tier], tierEnv, tier, PI_WIRES, undefined, cut));
+    } catch (error) {
+      why.set(tier, cut(error instanceof Error ? error.message : String(error)));
+    }
+  }
+  return { routes, why };
 }
 
 /** The revision's body, as the store keeps it (agent-body.ts); agentic runs only reach here, a workflow run is
@@ -649,9 +684,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // host's for the tier (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), each on a route of its own (its proxy on the session's
   // booking, adapters/pi.ts tiers). A tier with neither is the agent's own model, as a learned workflow's node of it runs
   // on the run's. A tier no route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
-  // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
-  // its route reads the saved model keys (savedModelKeys: in a run's own process, its runner hands the keys of its tiers'
-  // models alone, run-child-host.ts heldFor). Those reach the tier's proxy alone, as its credential, never the run's tools
+  // provider's than the run's own, whose key claimSecrets never opened: so its route reads the saved model keys of its
+  // tiers' models alone (subagentTierRoutes). Those reach the tier's proxy alone, as its credential, never the run's tools
   // (toolEnv).
   // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
   // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
@@ -659,17 +693,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
-    const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
-    holdClaimed(cut, savedKeys);
-    const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey, claim);
-    for (const tier of SUBAGENT_TIERS) {
-      if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
-      try {
-        tierRoutes.set(subagentRoute(tier), await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
-      } catch (error) {
-        tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
-      }
-    }
+    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, deps, claim);
+    for (const [key, at] of subagent.routes) tierRoutes.set(key, at);
+    for (const [tier, why] of subagent.why) tierWhy.set(tier, why);
   }
   // The run's adapter is its runner's (runner/adapters/index.ts RunnerHarness: pi's, or the one a harness module's entry
   // brings), made from the run's launch on its route. Its private files, where it keeps any, go in this claim's folder of

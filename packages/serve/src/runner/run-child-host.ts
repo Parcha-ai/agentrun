@@ -36,7 +36,7 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { cutDeep, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV, GATEWAY_KEY_ENV, tierModelOf } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
@@ -78,7 +78,7 @@ import { exposeSaveSlots } from "./save-slots.js";
 import { type RunBigWrites, runBigWrites } from "./big-writes.js";
 import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
-import { SUBAGENT_TIERS, SUBAGENT_TOOL } from "./subagent.js";
+import { routedSubagentTiers, SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
 import { sourceSyncOf } from "../source-sync/types.js";
@@ -769,8 +769,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // (runsInRunner): their process never asks, and gets none. And never for a run that holds a key of its own (its
       // launch's, read now): the server's keys are not its to spend, whatever its process asks.
       if (revision.kind !== "agentic" || !granted.includes(SUBAGENT_TOOL)) return {};
-      const refs = subagentRefsOf(revision.body);
-      const tiers = SUBAGENT_TIERS.filter((tier) => refs[tier] !== undefined || tierModelOf(keys.env ?? {}, tier) !== undefined);
+      const { tiers, refs } = routedSubagentTiers(revision.body, keys.env ?? {});
       const keyed = await runKeyed();
       return stringsOf(keyed ? {} : await tierModelKeys(keys, tiers, refs));
     },
@@ -973,12 +972,6 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     } } : {}),
   };
 }
-
-/** The models an agentic revision's body names for its subagent tiers (its modelTiers), each a string, by tier. */
-const subagentRefsOf = (body: Record<string, unknown>): Partial<Record<Tier, string>> => {
-  const named = (body as { modelTiers?: Record<string, unknown> }).modelTiers ?? {};
-  return Object.fromEntries(SUBAGENT_TIERS.flatMap((tier) => (typeof named[tier] === "string" ? [[tier, named[tier]]] : [])));
-};
 
 /** `env`'s string values. */
 const stringsOf = (env: NodeJS.ProcessEnv): Record<string, string> => Object.fromEntries(Object.getOwnPropertyNames(env).flatMap((name) => (typeof env[name] === "string" ? [[name, env[name]!]] : [])));

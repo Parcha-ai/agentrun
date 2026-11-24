@@ -28,6 +28,11 @@ const live = await import("../dist/live-reach.js");
 const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
 const { withSavedGateway } = await import("../dist/model-gateway.js");
+const spec = await import("../dist/runner/adapter-run-spec.js");
+const { routedSubagentTiers } = await import("../dist/runner/subagent.js");
+const { MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
+const { putSealedKey } = await import("../dist/server-keys.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -175,6 +180,38 @@ test("a run's process with no subagent tiers gets no saved model key: a run with
   assert.deepEqual(await heldOf(store, { env: TIERED, launch: { ...hello, sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } } }).savedModelKeys(), {}, "an SDK run");
   // The firing case on the same host: a subagent run still gets its strong tier's key.
   assert.deepEqual(await heldOf(store, { env: TIERED, revision: subagentRevision() }).savedModelKeys(), { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, "a subagent run");
+});
+
+test("the runner's handed keys, the run's subagent tier routes and a replay's grader read one set of subagent tiers: each tier routedSubagentTiers names, on the keys of those tiers' models alone, and no other", async (t) => {
+  const { store } = await storeOn(t);
+  // The keys saved in Settings, sealed as the server seals them, and none in the runner's environment: so a route holds a
+  // key only when it is read for it.
+  for (const [name, value] of [["OPENAI_API_KEY", OPENAI_DUMMY], ["ANTHROPIC_API_KEY", ANTHROPIC_DUMMY], ["XAI_API_KEY", XAI_DUMMY]]) await putSealedKey(store, KEY, name, value);
+  const own = { AGENT_MODEL: "openai/gpt-6.1-sol" };
+  const cases = [
+    { words: "the host's strong tier alone", env: { ...own, AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, revision: subagentRevision(), tiers: ["strong"], keys: ["ANTHROPIC_API_KEY"] },
+    { words: "the revision's fast tier and the host's strong tier", env: { ...own, AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5" }, revision: subagentRevision({ fast: "xai/grok-5" }), tiers: ["fast", "strong"], keys: ["ANTHROPIC_API_KEY", "XAI_API_KEY"] },
+    { words: "the host's fast tier alone", env: { ...own, AGENT_MODEL_FAST: "xai/grok-5" }, revision: subagentRevision(), tiers: ["fast"], keys: ["XAI_API_KEY"] },
+    { words: "no tier", env: own, revision: subagentRevision(), tiers: [], keys: [] },
+  ];
+  const dummies = { OPENAI_API_KEY: OPENAI_DUMMY, ANTHROPIC_API_KEY: ANTHROPIC_DUMMY, XAI_API_KEY: XAI_DUMMY };
+  for (const { words, env, revision, tiers, keys } of cases) {
+    assert.deepEqual(routedSubagentTiers(revision.body, env).tiers, tiers, `${words}: the tiers routed`);
+    // The runner hands a run's process those tiers' keys.
+    assert.deepEqual(await heldOf(store, { env, revision }).savedModelKeys(), Object.fromEntries(keys.map((name) => [name, dummies[name]])), `${words}: the runner hands those tiers' keys`);
+    // The run routes those tiers (here on the runner, as a run with no process of its own routes them), each route on the
+    // keys of those tiers' models alone.
+    const asked = [];
+    const routeOf = async (ref, routeEnv, tier) => (asked.push({ tier, ref, keys: MODEL_KEY_NAMES.filter((name) => routeEnv[name]).sort() }), { model: { id: ref ?? `host-${tier}` } });
+    const routed = await spec.subagentTierRoutes(revision.body, false, undefined, {}, heldRedactor((text) => text), { store, sealKey: KEY, env, routeOf });
+    assert.deepEqual([...routed.routes.keys()], tiers.map((tier) => `subagent-${tier}`), `${words}: the run routes those tiers`);
+    assert.deepEqual(asked.map(({ tier, ref }) => [tier, ref]), tiers.map((tier) => [tier, revision.body.modelTiers?.[tier]]), `${words}: each tier on its model`);
+    for (const route of asked) assert.deepEqual(route.keys, keys, `${words}: the routes read those tiers' keys alone`);
+    // A replay's grader routes the fast tier when it is one of them, and no route when it is not.
+    let graded = 0;
+    await spec.graderRouteOf(revision.body, false, undefined, {}, heldRedactor((text) => text), () => {}, { store, sealKey: KEY, env, routeOf: async () => (graded++, { model: { id: "grader" } }) });
+    assert.equal(graded, tiers.includes("fast") ? 1 : 0, `${words}: the grader routes the fast tier only when it is routed`);
+  }
 });
 
 test("the settings a run's process reads are the server's shared configuration and its own run's and agent's rows: another run's SDK record is refused unread, and a listing holds only the readable rows", async () => {

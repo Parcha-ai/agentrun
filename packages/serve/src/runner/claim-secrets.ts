@@ -161,7 +161,9 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
  *  learned workflow nodes of those tiers (adapter-run-spec.ts learnedTierRoutes): claimSecrets opens only the run's own
  *  model's. For the tiers' routes alone, through withModelKeys (never enumerable), never onto a tool's environment.
  *  `refs`: a model named for a tier in place of the host's (an agentic revision's modelTiers, for its subagent tiers:
- *  run-child-host.ts heldFor), read on the runner alone; a run's process names none. */
+ *  subagentTierKeys), read on the runner alone; a run's process names none. It scopes the key names alone: the ChatGPT
+ *  sign-in is given for the host's models of `tiers`, as before (a revision's own model on the plan reaches the sign-in
+ *  through its claim: claimSecrets reachesPlan). */
 export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>> = {}): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
   // A run's own process holds no seal key: its runner reads them, the plan's reader with them (held.ts).
@@ -177,7 +179,7 @@ export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier
   // models reach it), as a symbol withModelKeys reads, never a key.
   const plan = await planReaderOf(deps.store, deps.sealKey);
   const probe = withPlan({ ...working }, plan);
-  return plan && tiers.some((tier) => onPlan(refs[tier] ?? hostModel(probe, tier))) ? withPlan(out, plan) : out;
+  return plan && tiers.some((tier) => onPlan(hostModel(probe, tier))) ? withPlan(out, plan) : out;
 }
 
 /** Every model key a model route reads by name: each of pi-ai's providers' (model.ts PROVIDER_KEYS) and the gateway's. */
@@ -209,6 +211,16 @@ export function withModelKeys(env: NodeJS.ProcessEnv, opened: NodeJS.ProcessEnv)
   for (const [name, value] of fill) Object.defineProperty(out, name, { value, enumerable: false, writable: false, configurable: false });
   // The claim's ChatGPT sign-in (claimSecrets), else the runner's own.
   return withPlan(out, planOf(opened) ?? planOf(env));
+}
+
+/** The saved model keys of a run's subagent tiers' models (`tiers` and `refs` as subagent.ts routedSubagentTiers gives
+ *  them): on the runner, tierModelKeys of those tiers, the revision's model of a tier over the host's; in a run's own
+ *  process, what its runner hands (held.ts savedModelKeys), which run-child-host.ts heldFor scopes by the same tiers.
+ *  So a tier's route reads the key of its own model's provider, or the gateway's, and never another provider's, in
+ *  either. None for no tier. */
+export async function subagentTierKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>>): Promise<NodeJS.ProcessEnv> {
+  if (!tiers.length) return {};
+  return deps.sealKey ? tierModelKeys(deps, tiers, refs) : savedModelKeys(deps);
 }
 
 /** Every model key the server holds, for a model route with no revision to scope it by (an SDK run's compile turn): each

@@ -14,6 +14,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { configure, defineTool, type ModelRef, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earendil-works/pi-durable";
 import { HOST_RESULT_MAX_CHARS } from "@parcha/agentrun-kernel";
+import { tierModelOf } from "../model.js";
 import { ASK_TOOL } from "../tools.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { HOST_TOOL_OUTPUT } from "./adapters/pi.js";
@@ -25,6 +26,17 @@ export const SUBAGENT_TOOL = "subagent";
  *  none runs its child on the agent's own model. */
 export const SUBAGENT_TIERS = ["fast", "strong"] as const;
 export type SubagentTier = (typeof SUBAGENT_TIERS)[number];
+/** The subagent tiers a run routes a model on, with the model its revision names for each: a tier its revision's
+ *  modelTiers names (a string), else one `env`'s tier variable names (AGENT_MODEL_FAST, AGENT_MODEL_STRONG: tierModelOf),
+ *  and no other. The one answer for the runner that hands a run's process its tiers' saved model keys (run-child-host.ts
+ *  heldFor), for the run that routes the tiers (adapter-run-spec.ts) and for a replay's grader on the fast tier, so a
+ *  tier is never routed with no key handed for it, nor a key handed for a tier no route reads. */
+export function routedSubagentTiers(body: { readonly modelTiers?: unknown }, env: NodeJS.ProcessEnv): { readonly tiers: SubagentTier[]; readonly refs: Partial<Record<SubagentTier, string>> } {
+  const named = (body.modelTiers ?? {}) as Record<string, unknown>;
+  const refs: Partial<Record<SubagentTier, string>> = {};
+  for (const tier of SUBAGENT_TIERS) if (typeof named[tier] === "string") refs[tier] = named[tier];
+  return { tiers: SUBAGENT_TIERS.filter((tier) => refs[tier] !== undefined || tierModelOf(env, tier) !== undefined), refs };
+}
 /** How many of a run's children work at once; a call past it waits for a slot. */
 export const SUBAGENT_PARALLEL = 4;
 /** Tools no child is given: a subagent of its own (depth 1), and the person, whom only the run's own conversation asks. */
