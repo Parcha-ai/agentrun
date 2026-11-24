@@ -478,7 +478,7 @@ test("a status folder whose check wrote its end is swept once that end is more t
   assert.deepEqual(readdirSync(dir), []);
 });
 
-test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, empty or only blanks as a check's end is between its create and its write) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
   const dir = scratch();
   const now = Date.now();
   // An hour on: a check reading this end would keep its folder through both sweeps below.
@@ -490,6 +490,10 @@ test("a status folder whose end can't be read as a time (not a number, over 32 b
     ['agentrun-claude-status-Big002', (file) => writeFileSync(file, `${' '.repeat(30)}${later}`, { mode: 0o600 })],
     ['agentrun-claude-status-Lnk003', (file) => symlinkSync(target, file)],
     ['agentrun-claude-status-Dir004', (file) => mkdirSync(file)],
+    // A live check's `ends` between writeFile's create (wx) and its write is empty: read as 0, it would be long past and
+    // a sweep would take the live check's folder.
+    ['agentrun-claude-status-Nil005', (file) => writeFileSync(file, '', { mode: 0o600 })],
+    ['agentrun-claude-status-Spc006', (file) => writeFileSync(file, ' \n', { mode: 0o600 })],
   ];
   // Changed 20 s ago: inside twice a check's limit (2 x 15 s) at `now`, past it 11 s later.
   const folders = unreadable.map(([name, ends]) => statusFolder(dir, name, ends, new Date(now - 20_000))).sort();
