@@ -1241,8 +1241,9 @@ export function whyNotOwnMachine(options: Pick<ServeOptions, "host" | "publicUrl
 
 /** Why `options` on `data` is not one owner's server on their own machine as far as who reaches it goes, each reason in
  *  words: whyNotOwnMachine's facts but its runner's. What may read this machine's own files for whoever asks (GET
- *  /v2/wrapped). */
-export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string): string[] {
+ *  /v2/wrapped). `keys`: the live API keys made in the console (api-keys.ts), each one more caller, as a second token is
+ *  (claude-login.ts whyNotOneOwner counts them too); 0 where none can open the server. */
+export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicUrl" | "apiOnly" | "token" | "tokens">, data: string, keys = 0): string[] {
   const host = options.host ?? DEFAULT_HOST;
   // Every token the server takes (acceptedTokens): AGENTRUN_TOKEN's as `default` beside the list's, or else DIR/.token's alone.
   const tokens = (options.token === undefined ? 0 : 1) + (options.tokens?.length ?? 0);
@@ -1251,6 +1252,7 @@ export function whyNotOwnersServer(options: Pick<ServeOptions, "host" | "publicU
     ...(options.publicUrl ? [`has a public address (${options.publicUrl})`] : []),
     ...(options.apiOnly ? ["has no owner (the API-only profile), so anyone with its token starts runs"] : []),
     ...(tokens > 1 ? [`takes ${tokens} API tokens (AGENTRUN_TOKEN and AGENTRUN_TOKENS together), so more than one person starts runs`] : []),
+    ...(keys > 0 ? [`has ${keys === 1 ? "an API key" : `${keys} API keys`} made for apps (Settings → AgentRun API keys), so more than one caller reaches it`] : []),
     ...(storeTarget(data).kind === "sqlite" ? [] : ["keeps its store in Postgres (AGENTRUN_STORE_URL), which servers elsewhere share"]),
   ];
 }
@@ -5772,10 +5774,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
       case "getWrapped": {
         // The session files of the machine this server runs on, read for whoever holds a token: only one owner's server on
-        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token, its own SQLite
-        // store). A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
+        // their own machine answers (whyNotOwnersServer: loopback, no public URL, an owner, one API token and no live API key
+        // made in the console, its own SQLite store). Keys are counted at each ask: they are made and revoked while it runs.
+        // Dormant keys (API-only, --harness-sign-in) open nothing, so they are not callers here. A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page
         // that rebound one to this address must not read the machine's files: here the Host is a loopback name or address.
-        const notOwn = whyNotOwnersServer(options, data);
+        const notOwn = whyNotOwnersServer(options, data, options.apiOnly === true || options.harnessSignIn === true ? 0 : apiKeys.count);
         if (!isLoopbackName(hostName(req.headers.host))) notOwn.push("was reached at a name that is not this machine's own");
         if (notOwn.length) throw new ApiError("forbidden", `wrapped reads this machine's own session files, so only one owner's server on their own machine, reached by a loopback name, answers it. This one ${notOwn.join("; ")}.`);
         const given = url.searchParams.get("year");
