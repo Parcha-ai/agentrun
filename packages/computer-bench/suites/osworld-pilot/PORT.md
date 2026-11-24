@@ -153,18 +153,18 @@ model names are the ones serve lists for pi when OPENROUTER_API_KEY is its model
 before the run and fix a name there, not the arm's id.
 
 The provider is E2B: linux-desktop verified 30 of 30 on it and the 11-14 Sonnet against Terra run went through it, and
-serve reaches an E2B desktop over E2B's exec, so a serve on 127.0.0.1 works with no public URL. Fly, Cloudflare and
+serve reaches an E2B desktop over E2B's exec, so a serve on the same host as the bench works with no public URL. Fly, Cloudflare and
 Modal desktops dial back to the server, which needs a public URL.
 
 Environment, by name only:
 
-- serve: `OPENROUTER_API_KEY` (the shared OpenRouter key, `RENDER_AGENTRUN_OR_API_KEY`), `E2B_API_KEY`,
+- serve: `OPENROUTER_API_KEY`, `E2B_API_KEY`,
   `AGENTRUN_TELEMETRY=0`. Pages from jalammar.github.io, blog.eleuther.ai and funbrain.com load only if serve's egress
   allow-list (`AGENTRUN_BOX_ALLOW`) lets them; no check needs them to.
 - computer-bench: `AGENTRUN_TOKEN` (serve's token), and `OPENROUTER_API_KEY` for the judge.
 
 ```
-B=packages/computer-bench; S=$B/suites/osworld-pilot; API=http://127.0.0.1:$PORT/v2
+B=packages/computer-bench; S=$B/suites/osworld-pilot; API=$AGENTRUN_URL/v2   # serve's base URL
 node $B/dist/cli.js validate $S
 node $B/dist/cli.js verify --suite $S --arms $S/arms.json --backend serve --serve $API --out $OUT/verify --seeds 1,2,3 --parallel 4
 node $B/dist/cli.js run --suite $S --arms $S/arms.json --backend serve --serve $API --verified $OUT/verify/verify.json \
