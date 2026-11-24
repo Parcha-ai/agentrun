@@ -60,14 +60,14 @@ test("Parallel: credit spent on a search holds its extract, and the page says so
   const w = parallelWeb(searchFirst.send);
   assert.match((await w.search("widgets")).answer.error, /Parallel's search answered 402/);
   const page = await w.fetch(PUBLIC);
-  assert.deepEqual([page.answer.via, page.answer.parallel], ["direct", "not tried: held by its limit"]);
+  assert.deepEqual([page.answer.via, page.answer.parallel], ["direct", "not tried: out of quota for the rest of this run"]);
   assert.deepEqual(searchFirst.got, ["/v1/search"], "extract never sent");
 
   const extractFirst = parallelSend((path) => (path === "/v1/extract" ? { status: 402 } : { json: { results: [] } }));
   const v = parallelWeb(extractFirst.send);
-  assert.equal((await v.fetch(PUBLIC)).answer.parallel, "answered 402");
+  assert.equal((await v.fetch(PUBLIC)).answer.parallel, "out of quota for the rest of this run");
   assert.deepEqual((await v.search("widgets")).answer, { error: web.SEARCH_UNAVAILABLE });
-  assert.equal((await v.fetch(NOTES)).answer.parallel, "not tried: held by its limit", "the extract is off too");
+  assert.equal((await v.fetch(NOTES)).answer.parallel, "not tried: out of quota for the rest of this run", "the extract is off too");
   assert.deepEqual(extractFirst.got, ["/v1/extract"]);
 });
 

@@ -20,7 +20,9 @@ test("each provider is registered once, and made into what its ops need: a searc
     if (provider.key) assert.match(provider.key.env, /^[A-Z][A-Z0-9_]*_API_KEY$/, `${provider.id}: its key is read from a variable`);
   }
   assert.deepEqual(web.PROVIDERS.filter(({ fetch }) => fetch?.ends).map(({ id }) => id), ["direct"], "one provider ends a fetch order: the guarded direct fetch");
-  assert.deepEqual(web.SAID, ["parallel"], "Parallel alone says on the page why it gave none");
+  assert.deepEqual(web.SAID, ["parallel"], "Parallel alone says a turn the guard refused, and records every turn");
+  assert.deepEqual(web.AHEAD, ["parallel", "exa", "firecrawl", "firecrawl-keyless"], "every provider asked ahead of the direct fetch says why it gave none");
+  assert.deepEqual(IDS.map(web.providerName), ["Parallel", "Exa", "Firecrawl", "keyless Firecrawl", "keyless Exa", web.providerOf("native").label, "the guarded direct fetch"], "a keyless provider is named so");
 });
 
 test("an id no provider has is refused by name, never read as another provider", () => {
@@ -65,13 +67,14 @@ test("a reader is held while its breaker holds, typed by the limit's kind, and a
   const reader = web.readerOf({ read: async () => (reads++, { error: "the provider is out of quota", limit: { kind: "quota" } }) }, breaker);
   assert.equal(reader.held(), undefined, "it starts unheld");
   assert.deepEqual(await reader.read("https://example.com/", {}), { error: "the provider is out of quota", limit: { kind: "quota" } });
-  const quota = { class: "quota", code: "HELD", message: "not tried: held by its limit" };
+  const quota = { class: "quota", code: "HELD", message: "not tried: out of quota for the rest of this run" };
   assert.deepEqual(reader.held(), quota);
   now += 3_600_000;
   assert.deepEqual(reader.held(), quota, "a quota naming no reset holds for the run");
   const rate = web.readerOf({ read: async () => ({ error: "busy", limit: { kind: "rate", retryAfter: "10" } }) }, web.searchBreaker(() => now));
   await rate.read("https://example.com/", {});
-  assert.deepEqual(rate.held(), { class: "rate", code: "HELD", message: "not tried: held by its limit" }, "within a rate limit's wait");
+  assert.deepEqual(rate.held(), { class: "rate", code: "HELD", message: "not tried: rate-limited until 01:01 UTC" }, "within a rate limit's wait, to the minute after it ends");
+  assert.deepEqual(rate.holding(), { kind: "rate", until: 3_610_000 });
   now += 10_000;
   assert.equal(rate.held(), undefined, "past it");
   const noKey = { class: "refused", code: "NO_KEY", message: "not tried: no key" };

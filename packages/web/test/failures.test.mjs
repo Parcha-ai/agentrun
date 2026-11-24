@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
-import { answers, dailyLimit, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
+import { dailyLimit, firecrawlServer, refusal } from "./fixtures/fake-firecrawl.mjs";
 import { EXA_CANARY, exaUnread, keyedServer, refused } from "./fixtures/fake-keyed.mjs";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
 import { network } from "./fixtures/fake-network.mjs";
@@ -52,7 +52,6 @@ test("keyless Firecrawl: its daily limit is a quota and holds the key, so the sa
   const fresh = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => START });
   assert.deepEqual(typed((await fresh.search("widgets")).receipt.tries[0]), ["rate", "KEYLESS_LIMIT_REACHED", true]);
   assert.deepEqual(await web.firecrawlScrape(PUBLIC, { endpoint: fc.url, now: () => START }), { error: "Keyless Firecrawl will not serve this server's fetches now (its free daily limit is spent): it is not asked again before 00:00 UTC", limit: { kind: "quota", retryAfter: "Wed, 25 Nov 2026 00:00:00 GMT" } }, "the exported scrape answers as before");
-  void answers;
 });
 
 test("Parallel: no key and spent credit on an extract, typed", async () => {
@@ -61,7 +60,7 @@ test("Parallel: no key and spent credit on an extract, typed", async () => {
   const send = async () => new Response("{}", { status: 402, headers: { "content-type": "application/json" } });
   const w = web.createWeb({ order: { search: ["parallel"], fetch: ["parallel", "direct"] }, keys: { parallel: CANARY }, send: { parallel: send }, guard: guardOf(network()), now: () => START });
   const page = await w.fetch(PUBLIC);
-  assert.deepEqual([typed(page.receipt.tries[0]), page.answer.parallel], [["quota", "HTTP_402", true], "answered 402"]);
+  assert.deepEqual([typed(page.receipt.tries[0]), page.answer.parallel], [["quota", "HTTP_402", true], "out of quota for the rest of this run"]);
 });
 
 test("keyless Exa: a 429 is a rate limit, a 403 a refused connection", async () => {
