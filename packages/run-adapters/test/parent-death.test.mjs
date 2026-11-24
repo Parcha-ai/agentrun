@@ -72,6 +72,9 @@ test('the watch goes in front of the child: setpriv sets the parent-death signal
   const child = { command: '/pinned/cli', args: ['--x', 'y'] };
   assert.deepEqual(parentWatched(child, 'pdeathsig'), { command: SETPRIV, args: ['--pdeathsig', 'KILL', '--', '/pinned/cli', '--x', 'y'] });
   assert.deepEqual(parentWatched(child, 'shim'), { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), '--', '/pinned/cli', '--x', 'y'] });
+  // A grace asked for reaches the shim before `--`; setpriv execs the child in place, so it has no use for one.
+  assert.deepEqual(parentWatched(child, 'shim', { termGraceMs: 2_000 }), { command: process.execPath, args: [PARENT_WATCH_SHIM, String(process.pid), '--term-grace', '2000', '--', '/pinned/cli', '--x', 'y'] });
+  assert.deepEqual(parentWatched(child, 'pdeathsig', { termGraceMs: 2_000 }), parentWatched(child, 'pdeathsig'));
   assert.ok(existsSync(PARENT_WATCH_SHIM), 'the shim ships beside it');
   // What this machine's setpriv can do, read here apart from parentWatchHere: an older one lacks --pdeathsig.
   const canPdeathsig = linux && existsSync(SETPRIV) && execFileSync(SETPRIV, ['--help'], { encoding: 'utf8' }).includes('--pdeathsig');
@@ -121,9 +124,11 @@ test('the shim runs its child with the same stdio, passes TERM on, and exits as 
 
 // A host that ends a child under the shim sends the shim TERM, then SIGKILL after a wait of its own (the sign-in's 5 s).
 // That SIGKILL reaches the shim alone: a child still running then would outlive it with no watch while its host lives.
-// So the shim kills a child that outlasts a TERM it passed on, a grace (2 s) later.
+// So such a host asks for a grace (`termGraceMs`, here 2 s), and the shim kills a child that outlasts a TERM it passed
+// on, that long later.
 test('the shim kills a child that outlasts a TERM it passed on, a grace later, while its host still runs, and ends as it did', { skip: !linux && 'needs /proc', timeout: 30_000 }, async (t) => {
-  const shim = spawn(process.execPath, [PARENT_WATCH_SHIM, String(process.pid), '--', process.execPath, '-e', 'process.on("SIGTERM", () => {}); process.stdout.write(String(process.pid)); setInterval(() => {}, 1000);'], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const watched = parentWatched({ command: process.execPath, args: ['-e', 'process.on("SIGTERM", () => {}); process.stdout.write(String(process.pid)); setInterval(() => {}, 1000);'] }, 'shim', { termGraceMs: 2_000 });
+  const shim = spawn(watched.command, watched.args, { stdio: ['ignore', 'pipe', 'inherit'] });
   let child;
   t.after(() => { for (const pid of [shim.pid, child]) if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {} });
   // Its pid is written once its TERM handler is on.
@@ -176,4 +181,26 @@ test('the shim started with no grace passes a TERM on and kills nothing after it
   } finally {
     for (const pid of [shim.pid, child]) if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
   }
+});
+
+test('the shim takes a grace only as a positive whole number of milliseconds a timer can wait: anything else is a usage error, and it runs nothing', { timeout: 30_000 }, async () => {
+  const run = (args) => new Promise((resolve) => {
+    const p = spawn(process.execPath, [PARENT_WATCH_SHIM, String(process.pid), ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = '';
+    p.stderr.on('data', (d) => (err += d));
+    const timer = setTimeout(() => { p.kill('SIGKILL'); resolve({ code: 'still running after 10 s', err }); }, 10_000);
+    p.on('close', (code) => { clearTimeout(timer); resolve({ code, err }); });
+  });
+  const usage = 'usage: parent-watch.js <parent pid> [--term-grace <ms>] -- <command> [args...]\n';
+  // The child would exit 5: a usage error runs none.
+  const child = ['--', process.execPath, '-e', 'process.exit(5)'];
+  for (const [what, args] of [
+    ['a grace of 0', ['--term-grace', '0', ...child]],
+    ['a grace that is no number', ['--term-grace', 'x', ...child]],
+    ['a grace with a fraction', ['--term-grace', '1.5', ...child]],
+    ['a grace longer than a timer waits', ['--term-grace', '2147483648', ...child]],
+    ['a grace with no value before --', ['--term-grace', ...child]],
+    ['a grace with no value and nothing after', ['--term-grace']],
+  ]) assert.deepEqual(await run(args), { code: 2, err: usage }, what);
+  assert.deepEqual(await run(['--term-grace', '1000', ...child]), { code: 5, err: '' }, 'a grace in milliseconds is taken, and the child runs');
 });

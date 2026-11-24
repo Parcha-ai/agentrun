@@ -1,21 +1,25 @@
 // The parent watch where the kernel's parent-death signal is not available (parent-death.ts). Written for AgentRun.
-//   node parent-watch.js <parent pid> -- <command> [args...]
+//   node parent-watch.js <parent pid> [--term-grace <ms>] -- <command> [args...]
 // Runs the command with this process's stdio and environment, in this process's group (so a group kill ends both),
-// passes TERM, INT and HUP on to it, kills it when it outlasts a TERM passed on by TERM_GRACE_MS, exits as it exits, and
-// kills it when this process is reparented: its parent, the host, is gone.
+// passes TERM, INT and HUP on to it, exits as it exits, and kills it when this process is reparented: its parent, the
+// host, is gone. With `--term-grace <ms>` it also kills the command (SIGKILL) when it outlasts a TERM passed on by
+// that long.
 import { spawn } from "node:child_process";
 
-/** How long the child has to go after a TERM passed on, before this process kills it (SIGKILL). A host that ends a
- *  watched child sends TERM, and SIGKILL after a wait of its own (startClaudeLogin's 5 s): that SIGKILL reaches this
- *  process alone, and a child still running then would outlive it with no watch while its host lives. So the grace is
- *  shorter than any such wait. INT and HUP pass on with no kill after them: a session's CLI may take INT as "stop this
- *  turn" and go on. */
-const TERM_GRACE_MS = 2_000;
-
-const [parentArg, separator, command, ...args] = process.argv.slice(2);
+// `--term-grace`: a host that ends this child with TERM, and SIGKILL after a wait of its own sent to this process
+// alone (startClaudeLogin's 5 s), asks for a grace shorter than that wait, since its SIGKILL would leave a child still
+// running with no watch while the host lives. A host whose SIGKILL reaches the child too (a session machine's group
+// kill) asks for none, and the child keeps all the time that host gives it. INT and HUP pass on with no kill after
+// them: a session's CLI may take INT as "stop this turn" and go on.
+const [parentArg, ...rest] = process.argv.slice(2);
 const parent = Number(parentArg);
-if (!Number.isSafeInteger(parent) || parent < 1 || separator !== "--" || !command) {
-  process.stderr.write("usage: parent-watch.js <parent pid> -- <command> [args...]\n");
+const graceAsked = rest[0] === "--term-grace";
+const graceArg = graceAsked ? rest[1] : undefined;
+// A positive whole number of milliseconds a timer can wait (longer ones fire at once).
+const termGraceMs = graceArg !== undefined && /^[1-9]\d*$/.test(graceArg) && Number(graceArg) <= 2_147_483_647 ? Number(graceArg) : undefined;
+const [separator, command, ...args] = graceAsked ? rest.slice(2) : rest;
+if (!Number.isSafeInteger(parent) || parent < 1 || (graceAsked && termGraceMs === undefined) || separator !== "--" || !command) {
+  process.stderr.write("usage: parent-watch.js <parent pid> [--term-grace <ms>] -- <command> [args...]\n");
   process.exit(2);
 }
 // Started after the host was already gone: nothing to run for.
@@ -27,7 +31,7 @@ let grace: ReturnType<typeof setTimeout> | undefined;
 for (const signal of passed) {
   process.on(signal, () => {
     child.kill(signal);
-    if (signal === "SIGTERM") grace ??= setTimeout(() => child.kill("SIGKILL"), TERM_GRACE_MS);
+    if (signal === "SIGTERM" && termGraceMs !== undefined) grace ??= setTimeout(() => child.kill("SIGKILL"), termGraceMs);
   });
 }
 child.on("error", (error) => {

@@ -396,9 +396,13 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
 
 /** How long the CLI's own sign-in waits for its browser before it is ended. */
 export const SIGN_IN_MS = 10 * 60_000;
-/** After asking an ending sign-in to stop, how long before it is killed. Longer than the parent-watch shim's own grace
- *  (2 s): under the shim this kill reaches the shim alone, which has killed a CLI that outlasted the TERM by then. */
+/** After asking an ending sign-in to stop, how long before it is killed. Longer than SIGN_IN_TERM_GRACE_MS, the grace
+ *  the sign-in asks of the parent-watch shim: under the shim this kill reaches the shim alone, which has killed a CLI
+ *  that outlasted the TERM by then. */
 const SIGN_IN_KILL_MS = 5_000;
+/** Under the parent-watch shim, how long after passing the stop's TERM on the shim kills the CLI (parentWatched's
+ *  `termGraceMs`). Shorter than SIGN_IN_KILL_MS, so the CLI is gone before the server's kill ends the shim. */
+const SIGN_IN_TERM_GRACE_MS = 2_000;
 
 /** How a sign-in ended: the CLI exited by itself (`exited`: `code` 0 when it signed in, or the signal that ended it),
  *  it was ended at its limit (`timed_out`) or by the host (`stopped`), or it never started (`failed`, in the spawn's
@@ -449,7 +453,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   let child: ReturnType<typeof spawn>;
   try {
     startable(cli, path);
-    const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch);
+    const run = parentWatched({ command: cli, args: ["auth", "login", "--claudeai"] }, options.watch, { termGraceMs: SIGN_IN_TERM_GRACE_MS });
     child = spawn(run.command, run.args, {
       env: { PATH: path, HOME: personHome(login), ...display, ...signInEnv(login), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
       stdio: "ignore",
