@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -430,4 +430,30 @@ test("an account file over 32 MiB is copied as nothing, though it reads as a JSO
   const small = fakeCli();
   assert.deepEqual(await claude.claudeLoginStatus(small.cli, login), OUT);
   assert.deepEqual(JSON.parse(copyText(small.seen()[0])), { numStartups: 3 }, 'a regular file under the cap is copied');
+});
+
+test("an account file that is a link to a device that never ends (/dev/zero), or a folder, is copied as nothing, and the check still answers; a link to a regular file is followed", { skip: process.platform === 'win32' ? 'no /dev/zero' : false, timeout: 30_000 }, async () => {
+  for (const [what, make] of [
+    ['a link to /dev/zero', (file) => symlinkSync('/dev/zero', file)],
+    ['a folder', (file) => mkdirSync(file)],
+  ]) {
+    const { home, login } = defaultLogin();
+    const file = join(home, '.claude.json');
+    rmSync(file);
+    make(file);
+    const fake = fakeCli();
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT, what);
+    const [seen] = fake.seen();
+    assert.deepEqual([seen.folder, seen.copy], [[], null], `${what}: copied as nothing`);
+  }
+  // A dotfiles manager's link: what it points to is copied.
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  const kept = join(scratch(), 'claude.json');
+  writeFileSync(kept, '{"numStartups":4}\n', { mode: 0o600 });
+  rmSync(file);
+  symlinkSync(kept, file);
+  const fake = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+  assert.deepEqual(JSON.parse(copyText(fake.seen()[0])), { numStartups: 4 }, 'a link to a regular file is copied as that file');
 });

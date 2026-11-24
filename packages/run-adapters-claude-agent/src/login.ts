@@ -9,7 +9,8 @@
 // leaves out the fields that hold secrets (an API key, exported variables, MCP servers' tokens) and lasts the check.
 // The check runs in the person's own home, as does a run on macOS, where the CLI's tokens are in the login keychain.
 import { spawn } from "node:child_process";
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync } from "node:fs";
+import { type FileHandle, mkdir, open, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
@@ -175,18 +176,49 @@ function withoutSecrets(raw: Buffer): string | undefined {
   return `${JSON.stringify(copy, null, 2)}\n`;
 }
 
-/** A new folder `to` (0700) holding a copy (0600) of the account file `from` without its secrets (withoutSecrets), or
- *  nothing when there is none or it is no JSON object. `from` is only read. */
-function accountCopy(from: string, to: string): string {
-  mkdirSync(to, { mode: 0o700 });
-  let raw: Buffer | undefined;
+/** The largest account file a status check copies. The pinned CLI's own files are far smaller; a bigger one is copied
+ *  as nothing, so no poll parses it. */
+const ACCOUNT_MAX_BYTES = 32 * 1024 * 1024;
+
+/** The bytes of the account file `from`, or undefined when there is none, or when it is no regular file of at most
+ *  ACCOUNT_MAX_BYTES (a FIFO, a device, a folder, a bigger file): copied as nothing, as an unparsable one is. Read off
+ *  the server's thread, and never past the size it had when opened. Opened with O_NONBLOCK, so a FIFO opens at once with
+ *  no writer (rather than holding the open until one comes), and is then refused by its fstat. Links are followed (no
+ *  O_NOFOLLOW): `~/.claude.json` is often a link a dotfiles manager keeps, and the fstat is of what the open reached, so a
+ *  link to a device or a FIFO is refused as they are. Any other failure to open it (EACCES) throws, as before. */
+async function accountBytes(from: string): Promise<Buffer | undefined> {
+  let file: FileHandle;
   try {
-    raw = readFileSync(from);
+    file = await open(from, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > ACCOUNT_MAX_BYTES) return undefined;
+    // One byte past the size it said: a file that grew since is not read whole, and is copied as nothing.
+    const bytes = Buffer.alloc(stat.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    return length > stat.size ? undefined : bytes.subarray(0, length);
+  } finally {
+    await file.close();
+  }
+}
+
+/** A new folder `to` (0700) holding a copy (0600) of the account file `from` without its secrets (withoutSecrets), or
+ *  nothing when there is none, it is no regular file of at most ACCOUNT_MAX_BYTES (accountBytes) or no JSON object.
+ *  `from` is only read. */
+async function accountCopy(from: string, to: string): Promise<string> {
+  await mkdir(to, { mode: 0o700 });
+  const raw = await accountBytes(from);
   const account = raw === undefined ? undefined : withoutSecrets(raw);
-  if (account !== undefined) writeFileSync(join(to, ".claude.json"), account, { mode: 0o600, flag: "wx" });
+  if (account !== undefined) await writeFile(join(to, ".claude.json"), account, { mode: 0o600, flag: "wx" });
   return to;
 }
 
@@ -216,7 +248,7 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
     const HOME = personHome(login, options.home);
     const where = account === undefined
       ? { ...signInEnv(login, options.platform), HOME }
-      : { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: accountCopy(account, join(scratch, "config")) };
+      : { HOME, ...loginEnv(login, options.platform), CLAUDE_CONFIG_DIR: await accountCopy(account, join(scratch, "config")) };
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn(cli, ["auth", "status", "--json"], {
         env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...where, DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
