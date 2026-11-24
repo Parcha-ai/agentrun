@@ -1,0 +1,7 @@
+# fake hits before: 4
+{"url":"http://127.0.0.1:7551/hang","state":"unreachable","read_at":null,"problem":"The marketplace (http://127.0.0.1:7551/hang) did not answer in 10 s.","templates":[]}
+HTTP 200 in 10.003002s
+# fake hits after first ask: 5
+{"url":"http://127.0.0.1:7551/hang","state":"unreachable","read_at":null,"problem":"The marketplace (http://127.0.0.1:7551/hang) did not answer in 10 s.","templates":[]}
+HTTP 200 in 0.000530s
+# fake hits after second ask: 5

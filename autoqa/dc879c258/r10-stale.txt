@@ -1,0 +1,5 @@
+# list read at 2026-11-24T17:58:49Z; mode now hang; asked at 2026-11-24T18:04:13Z; fake hits before: 7
+{"url":"http://127.0.0.1:7551/toggle","state":"stale","read_at":"2026-11-24T17:58:49.114Z","problem":"The marketplace (http://127.0.0.1:7551/toggle) did not answer in 10 s.","count":3}
+HTTP 200 in 0.000910s (second ask, within the retry minute)
+{"state":"stale","read_at":"2026-11-24T17:58:49.114Z","problem":"The marketplace (http://127.0.0.1:7551/toggle) did not answer in 10 s.","count":3}
+# fake hits after: 8

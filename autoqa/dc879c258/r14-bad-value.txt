@@ -1,0 +1,12 @@
+# AGENTRUN_MARKETPLACE=http://example.com
+s6-bad exited
+Starting http://127.0.0.1:7546/ (warming: health says so and the API answers 503 until the server is ready)
+agentrun-serve: AGENTRUN_MARKETPLACE=http://example.com is not one: the marketplace is read over https (http on a loopback host alone), with no user, query or fragment. Default https://marketplace.agentrun.ai; off turns it off.
+# AGENTRUN_MARKETPLACE=maybe
+s6-bad exited
+Starting http://127.0.0.1:7546/ (warming: health says so and the API answers 503 until the server is ready)
+agentrun-serve: AGENTRUN_MARKETPLACE=maybe is not an address: set it to the marketplace's https address (default https://marketplace.agentrun.ai), or to off.
+# AGENTRUN_MARKETPLACE=https://marketplace.agentrun.ai/?q=1
+s6-bad exited
+Starting http://127.0.0.1:7546/ (warming: health says so and the API answers 503 until the server is ready)
+agentrun-serve: AGENTRUN_MARKETPLACE=https://marketplace.agentrun.ai/?q=1 is not one: the marketplace is read over https (http on a loopback host alone), with no user, query or fragment. Default https://marketplace.agentrun.ai; off turns it off.

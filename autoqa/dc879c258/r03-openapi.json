@@ -1,0 +1,14 @@
+{
+  "openapi": "3.1.0",
+  "op": {
+    "operationId": "listMarketplaceTemplates",
+    "x-agentrun-serve": "marketplace/1",
+    "summary": "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is",
+    "resp": [
+      "additionalProperties",
+      "properties",
+      "required",
+      "type"
+    ]
+  }
+}

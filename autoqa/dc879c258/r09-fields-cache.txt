@@ -1,0 +1,45 @@
+# fake hits before: 0
+HTTP 200
+{
+  "url": "http://127.0.0.1:7551/toggle",
+  "state": "read",
+  "read_at": "2026-11-24T17:58:49.114Z",
+  "templates": [
+    {
+      "name": "code-review",
+      "title": "Code review",
+      "summary": "Bundled one, with its agentrun source",
+      "category": "engineering",
+      "tags": [
+        "git"
+      ],
+      "needs": [
+        "GitHub"
+      ],
+      "harness": [
+        "pi"
+      ],
+      "page_url": "http://127.0.0.1:7551/toggle/templates/code-review/",
+      "source": "github:Parcha-ai/agentrun/packages/serve/templates/code-review@312015b560a1bef336de88e1fe7c48936340a329",
+      "here": "code-review"
+    },
+    {
+      "name": "kyb",
+      "title": "KYB  with control chars",
+      "summary": "No source: here by name",
+      "tags": [],
+      "needs": [],
+      "page_url": "http://127.0.0.1:7551/toggle/templates/kyb/",
+      "here": "kyb"
+    },
+    {
+      "name": "community-one",
+      "title": "Community",
+      "summary": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…",
+      "tags": [],
+      "needs": [],
+      "page_url": "http://127.0.0.1:7551/toggle/templates/community-one/"
+    }
+  ]
+}
+# fake hits after 3 calls: 1

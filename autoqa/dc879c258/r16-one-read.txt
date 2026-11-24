@@ -1,0 +1,7 @@
+# fake hits before: 6
+ask 2: HTTP 200 in 10.003165s
+ask 4: HTTP 200 in 10.003227s
+ask 1: HTTP 200 in 10.003301s
+ask 3: HTTP 200 in 10.003366s
+ask 5: HTTP 200 in 10.002756s
+# fake hits after 5 concurrent asks: 7

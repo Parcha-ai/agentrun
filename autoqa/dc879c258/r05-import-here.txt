@@ -1,0 +1,6 @@
+# POST /v2/templates/import source=github:Parcha-ai/agentrun-templates/templates/battlecard@9fad67f067dce7e78c33edba8ed423b3260e2717 trust_publisher=true
+ler can repeat\n\nPrices as published with the date seen; capabilities as documented; incidents as the status page logs them; reviews as\ncounts and short quotes. Anything else is inference, labeled so, or left out.\n"},"publisher_trusted":true,"stored":true,"replaced":null,"console_url":"http://127.0.0.1:7541/#/templates/github%3AParcha-ai%2Fagentrun-templates%2Ftemplates%2Fbattlecard"}
+HTTP 201
+
+# marketplace entry after import
+{"state":"read","read_at":"2026-11-24T17:58:30.290Z","battlecard":{"name":"battlecard","here":"github:Parcha-ai/agentrun-templates/templates/battlecard"},"here_count":6}
