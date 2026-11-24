@@ -34,7 +34,7 @@ const MONID_SAVED = `not-a-secret-${"monid-saved"}`;
 
 /** A run's process that writes what its pipe of keys carries (fd 3, NAME=VALUE pairs each ended by a NUL) to the file its
  *  one argument names, then exits: the runner's claim then ends, failed, as for any process gone before its loop ended. */
-const DUMP = `const fs = require("node:fs"); const net = require("node:net"); const parts = []; const pipe = new net.Socket({ fd: 3, readable: true, writable: false }); pipe.on("data", (part) => parts.push(part)); pipe.on("end", () => { fs.writeFileSync(process.argv[1], Buffer.concat(parts)); process.exit(0); });`;
+const DUMP = `const fs = require("node:fs"); const net = require("node:net"); const parts = []; const pipe = new net.Socket({ fd: 3, readable: true, writable: false }); pipe.on("data", (part) => parts.push(part)); pipe.on("end", () => { fs.writeFileSync(process.argv.at(-1), Buffer.concat(parts)); process.exit(0); });`;
 
 /** The names a dump holds. */
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
