@@ -388,6 +388,38 @@ test('two status checks at once (two tabs) each get a folder of their own, and b
   for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
 });
 
+/** A stand-in CLI that rewrites the account file in its config dir as it starts, as the pinned CLI does when the file's
+ *  migration number is not its own, then answers signed out. */
+function rewritingCli() {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, [
+    `#!${process.execPath}`,
+    `const fs = require('node:fs');`,
+    `const path = require('node:path');`,
+    `const config = process.env.CLAUDE_CONFIG_DIR;`,
+    `if (config) fs.writeFileSync(path.join(config, '.claude.json'), JSON.stringify({ migrationVersion: 99 }));`,
+    `process.stdout.write(${JSON.stringify(SIGNED_OUT)});`,
+    `process.exit(1);`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return cli;
+}
+
+test("a status check on a login its caller marked as nothing (no home, no flag: a CLAUDE_CONFIG_DIR folder, or AgentRun's own) still runs the CLI on a copy of the account file: the folder's .claude.json keeps its bytes and its mtime", async () => {
+  const folder = scratch();
+  const login = { dir: folder, profiles: join(folder, 'anthropic') };
+  const account = join(folder, '.claude.json');
+  writeFileSync(account, `${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`, { mode: 0o600 });
+  // An mtime in the past, so a rewrite within the same clock tick still shows.
+  const past = new Date('2026-01-01T00:00:00Z');
+  utimesSync(account, past, past);
+  const before = { sha: sha256(account), mtime: statSync(account).mtimeMs };
+  assert.deepEqual(await claude.claudeLoginStatus(rewritingCli(), login), OUT);
+  assert.equal(sha256(account), before.sha, "the folder's account file keeps its bytes: the CLI rewrote a copy, never it");
+  assert.equal(statSync(account).mtimeMs, before.mtime, "the folder's account file keeps its mtime");
+});
+
 // The account file is the person's, so it can be anything: a FIFO, a link to a device, a very big file. Reading one of
 // those whole on the server's own thread stops every request (a FIFO's open waits for a writer; /dev/zero never ends), and
 // a big one is parsed on every poll. The copy takes a regular file of at most 32 MiB, and nothing else.
