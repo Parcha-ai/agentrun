@@ -142,7 +142,8 @@ method are gone, replaced by `ui`.
 included, and reports Core and Full per kind ([`kinds.md`](kinds.md#levels-core-and-full)). Among its contract cases:
 
 - **`health.declared`:** a provider's descriptor, its `capabilities()` and each computer's `hello` agree, and `hello`
-  carries a protocol version this one takes ([Versioning](#versioning)).
+  carries exactly the suite's protocol version. A provider is certified by the suite of its own version; the tolerance
+  of a later minor ([Versioning](#versioning)) is for a server and a driver built apart.
 - **`health.no-key-in-errors`:** a provider built with planted keys answers every refusal path with none of them in its
   words.
 - **`screen.watch`:** a computer with a screen gives its live view.

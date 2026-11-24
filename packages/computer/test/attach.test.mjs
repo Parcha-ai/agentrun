@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTACH_CLOSE, ATTACH_SUBPROTOCOL, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, ATTACH_SUBPROTOCOL, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, mintedComputer, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams, upgradeRefusal } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -274,6 +274,17 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(major.serve.closed.code, ATTACH_CLOSE.protocol);
 	assert.match(major.accepted.error.message, /speaks protocol 1\.0, and this server 0\.2: the server is older: it is updated by whoever runs it$/);
 	assert.equal(hub.online("c-1"), false);
+});
+
+test("an upgrade refused for its subprotocols names the side to update as hello does: the server for a later protocol, else the driver, and a minted machine is made again", () => {
+	const mac = pairedFor(new Mac());
+	const update = "update the driver on Test Mac (the download is on the console's Computers page)";
+	assert.equal(upgradeRefusal(mac, ["agentrun.computer.0.1"]), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for agentrun.computer.0.1: ${update}`);
+	assert.equal(upgradeRefusal(mac, []), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for no subprotocol: ${update}`);
+	assert.equal(upgradeRefusal(mac, ["other.0.3", "agentrun.computer.0.3-beta"]), `this server speaks agentrun.computer.0.2, and Test Mac's driver asked for other.0.3, agentrun.computer.0.3-beta: ${update}`);
+	assert.equal(upgradeRefusal(mac, ["agentrun.computer.0.1", "agentrun.computer.1.0"]), "this server speaks agentrun.computer.0.2, and Test Mac's driver asked for agentrun.computer.0.1, agentrun.computer.1.0: the server is older: it is updated by whoever runs it");
+	const machine = mintedComputer("dial-1", { kind: "linux", os: "linux", arch: "amd64" });
+	assert.equal(upgradeRefusal(machine, ["agentrun.computer.0.1"]), "this server speaks agentrun.computer.0.2, and dial-1's driver asked for agentrun.computer.0.1: dial-1 runs a computerd that is not this server's build: create the computer again");
 });
 
 test("a paired computer's token on another machine: another arch or os is closed with mismatch and stops dialing; the same os and arch replaces the live socket", async () => {

@@ -26,7 +26,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, attachSubprotocolOf, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, laterProtocol, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, attachSubprotocolOf, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, laterProtocol, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, RUN_LABEL, upgradeRefusal } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
@@ -172,7 +172,7 @@ export function pairBodyOf(body: unknown): { code: string; name: string; hello: 
 export function pairRefusal(name: string, hello: HelloResult): string | undefined {
   const problem = helloProblem(hello.protocol, "server");
   if (!problem) return undefined;
-  const update = laterProtocol(hello.protocol, PROTOCOL_VERSION) ? "the server is older, so once whoever runs it updates it, pair" : `update the driver on ${name}, then pair`;
+  const update = laterProtocol(hello.protocol) ? "the server is older, so once whoever runs it updates it, pair" : `update the driver on ${name}, then pair`;
   return `${name}'s driver ${hello.version} ${problem}: ${update} with the same code`;
 }
 
@@ -546,7 +546,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
 
   /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's
    *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 when no
-   *  subprotocol it asks for names a protocol this server takes). A minted machine's socket goes to the hub under its name. */
+   *  subprotocol it asks for names a protocol this server takes, in words naming the side to update: upgradeRefusal). A
+   *  minted machine's socket goes to the hub under its name. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, deny: (status: string, words?: string, headers?: Record<string, string>) => void): void {
     void (async () => {
       if (closing) return deny("503 Service Unavailable", "this server is stopping");
@@ -559,9 +560,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       const dialer = row !== undefined ? pairedDialer(row) : machine !== undefined && (relayed || takes(machine)) ? machineDialer(machine) : undefined;
       if (dialer === undefined) return deny("401 Unauthorized", options.machinesOnly ? MACHINE_TOKEN_REFUSED : TOKEN_REFUSED, { "www-authenticate": "Bearer" });
       const asked = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
-      if (attachSubprotocolOf(asked) === undefined) {
-        return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
-      }
+      if (attachSubprotocolOf(asked) === undefined) return deny("426 Upgrade Required", upgradeRefusal(dialer.computer, asked), { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
       if (socket.destroyed || closing) return void socket.destroy();
       if (relayed) return relayDial(machine, bearer!, req, socket, head, deny);
       wss.handleUpgrade(req, socket, head, (ws) => {

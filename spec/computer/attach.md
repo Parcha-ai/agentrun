@@ -216,12 +216,14 @@ A person's installed app updates on its own schedule, so it can lag the server. 
   (`agentrun.computer.<protocol>`), and the `protocol` in its `hello`, name the protocol version it speaks. From 0.2 on,
   a minor step only adds, and the driver's `hello` groups and features say what it has. The server answers the upgrade
   with its own subprotocol when the driver offers it, else with the first it asked for that works. A 0.1 driver (from
-  before 0.2 replaced `apps.ui_tree` with `ui`), a driver of another major, or a version of another shape is refused: at
-  the upgrade when no subprotocol it asks for works, else at `hello`, with close code `4426` and words that say what to
-  do. An older driver gets "update the
-  driver on Ada's MacBook Pro (the download is on the console's Computers page)": the server names no OS and no
-  driver app, so the words read the same for every computer, and a driver may add its own way to update when it
-  shows them. A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app
+  before 0.2 replaced `apps.ui_tree` with `ui`), a driver of another major, or a version of another shape is refused,
+  in words that say what to do. When no subprotocol it asks for works, the upgrade is answered HTTP `426` with the
+  words as its body. A 0.1 driver offers only its own subprotocol, so this is where it is refused. Otherwise the
+  refusal comes at `hello`, with close code `4426` and the words. A driver takes a `426` as it takes `4426`. An older
+  driver, or one whose version is of another shape, gets "update the driver on Ada's MacBook Pro (the download is on
+  the console's Computers page)": the server names no OS and no driver app, so the words read the same for every
+  computer, and a driver may add its own way to update when it shows them. A newer driver than the server gets "the
+  server is older: it is updated by whoever runs it". The app
   shows these words and stops dialing until it is updated, then dials again on its own.
 - **Within the protocols the server takes, any build is accepted.** A newer or older build of the driver (0.2.0, 0.2.3,
   or one speaking 0.3) is the same wire, with more or less of it. The server records the build each `hello` names and shows it on the Computers page.
@@ -262,6 +264,8 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
 | `4426` | It speaks a protocol the server does not take ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
+
+An upgrade the server refuses before the socket opens is taken as its code: `401` as `4401`, `426` as `4426`.
 
 Any other code, or a drop with none (`1006`), is redialed. A driver waits 1 s before its first redial, doubling each
 time to at most 60 s, less up to a fifth at random so a fleet that lost the server together does not return together

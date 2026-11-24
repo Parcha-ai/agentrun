@@ -72,15 +72,17 @@ export const PROTOCOL_VERSION = "0.2";
  * Why a hello's protocol version does not work with this one, or undefined. A "<major>.<minor>" with this major works
  * from 0.2 on, whatever its minor: a minor step only adds, and hello's groups and features say what the other side has.
  * 0.1 is refused, as 0.2 removed its apps.ui_tree for ui. Another major, a version in another shape, and a hello that
- * names none are refused. Every place that reads a hello asks this one check. The words, after whoever answered:
- * "speaks protocol <its>, and this <side> <ours>", `side` naming the reader (server, provider).
+ * names none are refused. Every place that reads a hello asks this one check, but the conformance suite: it certifies a
+ * provider at exactly PROTOCOL_VERSION (health.declared). The words, after whoever answered:
+ * "speaks protocol <its>, and this <side> <ours>", `side` naming the reader (server, provider), and <its> "none" for a
+ * hello that names none.
  */
 export function helloProblem(protocol: unknown, side: string): string | undefined {
 	// The oldest minor of this major that works: the last that broke the wire. A new major starts it again at 0.
 	const oldestMinor = 2;
 	const parts = typeof protocol === "string" ? /^(\d+)\.(\d+)$/.exec(protocol) : null;
 	if (parts !== null && parts[1] === PROTOCOL_VERSION.split(".")[0] && Number(parts[2]) >= oldestMinor) return undefined;
-	return `speaks protocol ${String(protocol)}, and this ${side} ${PROTOCOL_VERSION}`;
+	return `speaks protocol ${protocol === undefined || protocol === null ? "none" : String(protocol)}, and this ${side} ${PROTOCOL_VERSION}`;
 }
 
 export interface HelloParams {
