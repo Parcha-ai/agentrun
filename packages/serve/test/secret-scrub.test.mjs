@@ -2841,9 +2841,8 @@ test("CVI: a subcommand read looks a path's next word up through one index per c
   assert.ok(perChar <= 4, `secret-assign on "npm -x config -x " at 512 KB: ${perChar.toFixed(2)} words passed over a character, past 4`);
 });
 
-test("CVII: a password after `npm config set` is cut however many option words stand between `config` and `set`: 8 to 64 options of three forms, raw and in a JSON string", async () => {
-  // Past PATH_GAP option words the read stops walking options one by one; it must still find `set` and cut the value
-  // after its key, never skip the command.
+test("CVII: a password after `npm config set` is cut whatever option words stand between `config` and `set` within the command's read (1024 to 3072 characters past `npm`): 8 to 64 options of three forms, raw and in a JSON string; a `set` past the read is a documented miss", async () => {
+  // `set` is looked up past any options: the value after its key is cut, the command never skipped.
   const pw = ["Copper9", "lumen9"].join("");
   const FORMS = { "-a 1": () => ["-a", "1"], "--x=y": () => ["--x=y"], quoted: (i) => (i % 2 ? ["--x='y z'"] : ["-a", '"v w"']) };
   const left = [];
@@ -2860,6 +2859,15 @@ test("CVII: a password after `npm config set` is cut however many option words s
     }
   }
   assert.deepEqual(left, [], `npm config set behind option words: password left on ${left.length} of ${rows} rows: ${left.join(", ")}`);
+  // The read ends 1024 to 3072 characters past `npm` (shell-lex.ts commandLimit). Named at 2047, it ends 1025 past
+  // `npm`, short of a `set` about 1300 characters on: a documented miss, the password left. Named at 0, the same
+  // command's read reaches 3072 and the password is cut.
+  const long = ["npm", "config", ...Array.from({ length: 220 }, () => "--x=y"), "set", "//r/:_authToken", pw].join(" ");
+  for (const [where, pad, cut] of [["at 0", "", true], ["at 2047", `${"#".repeat(2046)}\n`, false]]) {
+    const out = await scrub(`${pad}${long}\n`, { mode: "cut" });
+    assert.equal(out.ok, true, `failed closed on npm named ${where}`);
+    assert.equal(!out.text.includes(pw), cut, `npm config set with 220 options, npm named ${where}: password ${cut ? "left, expected cut" : "cut, expected left (documented miss past the read)"}`);
+  }
 });
 
 test("XCIX: the shipped readers at 512 KB: at most 8 counted reads a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, and each unit's rule CPU bounded against main's span scan for that rule, timed in the same call", async (t) => {
