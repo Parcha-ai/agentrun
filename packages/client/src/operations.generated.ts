@@ -1805,8 +1805,8 @@ export type ListLearningPromotionsResponse = {
         fields?: Array<string>;
         expected?: Array<{
           field: string;
-          known: "label" | "grade";
-          value: string;
+          known: "label" | "grade" | "unknown";
+          value?: string;
         }>;
       }>;
       stopped?: true;
@@ -1834,8 +1834,8 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade";
-            value: string;
+            known: "label" | "grade" | "unknown";
+            value?: string;
           }>;
         }>;
         agent_agreed?: number;
@@ -1977,8 +1977,8 @@ export type ListLearningPromotionsResponse = {
           fields?: Array<string>;
           expected?: Array<{
             field: string;
-            known: "label" | "grade";
-            value: string;
+            known: "label" | "grade" | "unknown";
+            value?: string;
           }>;
         }>;
         stopped?: true;
@@ -2006,8 +2006,8 @@ export type ListLearningPromotionsResponse = {
             fields?: Array<string>;
             expected?: Array<{
               field: string;
-              known: "label" | "grade";
-              value: string;
+              known: "label" | "grade" | "unknown";
+              value?: string;
             }>;
           }>;
           agent_agreed?: number;

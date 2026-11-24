@@ -107,12 +107,13 @@ A new revision is checked once before it serves (`runner/promotion.ts` startChec
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
 workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
 (`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, a
-label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`, cut to the field),
-else the agent's own recorded answer to it; no teacher is read. With no agree_on, a graded input's whole answer is two
-kinds of field: each key of the grade's expected answer (`answer.<key>`) judged against it, and the whole answer
-(`answer`) still judged against the agent's, as an ungraded input's is (equal, or the same decision by the grader's
-verdict); where the grade corrected the agent on a key, the rest of the answer outside the grade's keys must equal the
-agent's (or the grader call the two the same decision). A grade with no expected answer still says something: not
+label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`), else the agent's
+own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
+owner's own names): there each path is judged against the grade's value at that path. With no agree_on there is one
+field, the whole answer (`answer`), judged against a grade's expected answer as a whole (equal, or the same decision by
+the grader's verdict on the draft and that answer, which the replay run asks; the grade says whether the agent's own
+answer was right), else against the agent's (equal, or the grader's same decision). No field name is ever taken from a
+grade's keys: they are a person's data, and a run's purge leaves them nowhere in the record. A grade with no expected answer still says something: not
 correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any other answer unjudged (under
 agree_on it names no field, so it changes nothing); correct changes nothing (the agent's answer is known as with no
 grade, at the same bar: a thumbs-up never makes the check stricter). An unjudged input is never right: not on every
@@ -124,7 +125,9 @@ when at least the agent's self-agreement on it less the margin, or `agree_min` w
 `agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
 every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
 together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
-each a label or grade gave (`expected`, its value and source), which the recompile is asked to say. The record counts
+each a label or grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
+say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked
+the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The record counts
 the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
 every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
 connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new

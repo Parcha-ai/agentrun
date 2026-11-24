@@ -1,5 +1,6 @@
 // A replay run's and an audit shadow's own comparison, at its end (learn/promote.ts gradeAnswers): with no agree_on and
-// a fast model, the run asks that model once whether its answer and the other one reach the same decision, through its
+// a fast model, the run asks that model once whether its answer and the other one (the agent's; for a replay of a graded
+// run, the grade's expected answer) reach the same decision, through its
 // own session (the grader's route, a tier proxy beside the session's) on its own cap, booked as its own spend: a replay's
 // is the check's cost, a shadow's the served run's learning cost. Its verdict is a root entry of the run's journal
 // (KINDS.compared), which pathMetrics keeps on its record (metrics `replay.compared`, `audit.compared`), where the check
@@ -7,7 +8,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LearningFolder } from "../learn/folder.js";
-import { type Compared, type GraderReply, gradeAnswers, sameAnswer } from "../learn/promote.js";
+import { type Compared, expectedAnswerText, type GraderReply, gradeAnswers, gradesOf, sameAnswer } from "../learn/promote.js";
 import type { PortModels } from "../port-models.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -34,15 +35,18 @@ export type CompareEndDeps = {
 /** The job input as the grader reads it: the launch's text, or its typed input as JSON. */
 const inputText = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input ?? null));
 
-/** The two answers a replay run or a shadow compares at its end: the agent's and the workflow's. A replay's workflow
- *  answer is its own, when the workflow it replays answered it; the agent's is its graded run's. A shadow's agent answer
- *  is its own; the workflow's is the served run's answer it audits (its open ledger line's turn). Null: nothing to
- *  compare. */
+/** The two answers a replay run or a shadow compares at its end: the known one and the workflow's. A replay's workflow
+ *  answer is its own, when the workflow it replays answered it; its known answer is its source run's newest grade's
+ *  expected answer, as a whole (expectedAnswerText, which the check reads too), else that run's own answer. A shadow's
+ *  agent answer is its own; the workflow's is the served run's answer it audits (its open ledger line's turn). Null:
+ *  nothing to compare. */
 async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): Promise<{ agent: string; workflow: string } | null> {
   if (launch.replay) {
     const path = await runPathOverStore(deps.store, runId, launch.learning, deps.redact);
     if (path.path !== "workflow" || path.workflow !== launch.replay.workflow) return null;
-    const [workflow, agent] = [await answerOf(deps.store, runId, BACKGROUND_CONTEXT), await answerOf(deps.store, launch.replay.of, BACKGROUND_CONTEXT)];
+    const workflow = await answerOf(deps.store, runId, BACKGROUND_CONTEXT);
+    const expected = await expectedOf(deps.store, launch.replay.of);
+    const agent = expected ?? (await answerOf(deps.store, launch.replay.of, BACKGROUND_CONTEXT));
     return workflow === null || agent === null ? null : { agent, workflow };
   }
   if (launch.audit) {
@@ -50,6 +54,13 @@ async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): P
     return workflow === null || agent === null ? null : { agent, workflow };
   }
   return null;
+}
+
+/** Run `of`'s newest grade's expected answer as text (expectedAnswerText), when it has one that is not empty. */
+async function expectedOf(store: Store, of: string): Promise<string | undefined> {
+  const source = await store.runs.get(of);
+  const grade = source ? (await gradesOf(store.settings, source.agentId)).findLast((one) => one.run === of) : undefined;
+  return grade?.expected && Object.keys(grade.expected).length ? expectedAnswerText(grade.expected) : undefined;
 }
 
 /** The end-of-run step of a replay run or an audit's shadow (its callers pass no other run): its comparison (above),

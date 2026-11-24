@@ -225,8 +225,9 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const { promotions } = (await api("GET", "/agents/calc/learning/promotions")).body;
   const [check, audit] = ["d-check", "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
   assert.deepEqual([check?.decided, check?.check.n, check?.check.agreed, check?.check.alone, check?.check.of], ["hold", 2, 1, 2, [gone, kept.body.run_id]], `the check's decision and numbers are kept: ${JSON.stringify(check)}`);
-  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "", fields: ["answer"] }], "its disagreement names the run and the field it had wrong still, its content blanked");
-  assert.match(check.reason, /reached a different decision from the agent's on 1 of 2;/, "its reason keeps its numbers, the grader's words gone");
+  assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }], "its disagreement names the run, the field it had wrong and where its known answer came from still, its content and that answer blanked");
+  assert.deepEqual(Object.keys(check.check.fields), ["answer"], "no field is named from its grade's keys");
+  assert.match(check.reason, /answer: 0 of 1 right against the grades' expected answers \(0\.0%, the bar 90\.0%\).*; 1 of 1 said what the agent said/, "its reason keeps its numbers, the grade's answer and the grader's words gone");
   assert.deepEqual([audit?.decided, audit?.audit.rows, audit?.audit.disagreements], ["hold", 1, [{ run: shadowRunId(gone), served: gone, input: "", agent: null, draft: null }]], `the audit's hold keeps its numbers and run ids: ${JSON.stringify(audit)}`);
   const turns = promotions.find((one) => one.digest === "d-turns")?.check.turns;
   assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);

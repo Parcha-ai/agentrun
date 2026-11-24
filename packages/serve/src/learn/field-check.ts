@@ -14,19 +14,22 @@
 // right on every field at once, and a field judged on fewer than `alone_min` of the inputs that carried it fails. The
 // workflow serves only when it answered at least `alone_min` of the inputs alone, at least `agree_min` of those were
 // right on every field at once (the joint floor: misses spread over several fields add up, and an unjudged field is not
-// right), and every field passes; a hold names each failing field and its misses. Field names are the definition's (agree_on paths): they key Maps here, never a plain object's lookup, so a name
-// Object.prototype holds (`__proto__`, `constructor`) is a field like any other.
+// right), and every field passes; a hold names each failing field and its misses, an unjudged input among them (known
+// "unknown": marked wrong, with no right answer to show). Field names are the caller's (agree_on paths, else the whole
+// answer): they key Maps here, never a plain object's lookup, so a name Object.prototype holds (`__proto__`,
+// `constructor`) is a field like any other.
 
 /** Where a field's known answer came from, strongest first. */
 export const KNOWN = ["label", "grade", "agent"] as const;
 export type Known = (typeof KNOWN)[number];
 
 /** One field of one input: the workflow's value and the agent's (undefined: missing, never right), and the label's and
- *  the grade's when one exists. `agrees`: how the workflow's value compared with the agent's when something other than
- *  equal values decides it (the grader's verdict on a whole answer); absent, equal JSON values agree. `agent_correct`
- *  false: a grade with no expected answer said the agent's answer was wrong, so repeating it is wrong and any other value
- *  has no known answer (unjudged). True changes nothing: the agent's answer is known as it is with no grade, at the
- *  same bar (a thumbs-up never makes the check stricter than none). */
+ *  the grade's when one exists. `agrees`: whether the workflow's value is right against the field's best known answer
+ *  when something other than equal values decides it (a whole answer: equal, else the grader's verdict on that pair);
+ *  absent, equal JSON values are right. `agent_correct`: what a grade said of the agent's answer. Against the grade's
+ *  value, it decides whether the agent was right. With no grade value, false says the agent's answer was wrong, so
+ *  repeating it is wrong and any other value has no known answer (unjudged); true changes nothing: the agent's answer is
+ *  known as it is with no grade, at the same bar (a thumbs-up never makes the check stricter than none). */
 export type FieldAnswers = {
   readonly workflow: unknown;
   readonly agent: unknown;
@@ -88,8 +91,9 @@ export type FieldVerdict = FieldCount & {
   readonly by: Partial<Record<Known, FieldCount & { readonly pass: boolean }>>;
 };
 
-/** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from. */
-export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known };
+/** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from;
+ *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one. */
+export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "unknown" };
 
 export type CheckVerdict = {
   readonly verdict: "serve" | "hold";
@@ -125,12 +129,16 @@ function knownOf(one: FieldAnswers): { value: unknown; known: Known } {
 }
 
 /** Whether the workflow's value on one field is right, and the agent's, against that field's best known answer;
- *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another). */
-function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean } | undefined {
+ *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another).
+ *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). */
+function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true } | undefined {
   const { value, known } = knownOf(one);
-  if (known !== "agent") return { known, expected: value, workflow: right(one.workflow, value), agent: right(one.agent, value) };
+  if (known !== "agent") {
+    const agent = known === "grade" && one.agent_correct !== undefined ? one.agent_correct : right(one.agent, value);
+    return { known, expected: value, workflow: one.agrees ?? right(one.workflow, value), agent };
+  }
   const same = one.agrees ?? right(one.workflow, one.agent);
-  if (one.agent_correct === false) return same ? { known: "grade", expected: undefined, workflow: false, agent: false } : undefined;
+  if (one.agent_correct === false) return same ? { known: "grade", expected: undefined, workflow: false, agent: false, marked: true } : undefined;
   return { known, expected: value, workflow: same, agent: true };
 }
 
@@ -179,11 +187,13 @@ const countsOf = (by: FieldTally): Counting => ({
   ...(Object.hasOwn(by, "unjudged") && typeof by.unjudged === "number" && by.unjudged > 0 ? { unjudged: by.unjudged } : {}),
 });
 
-/** The misses in `rows`: each field the workflow had wrong on an input it answered alone, inputs in order. */
+/** The misses in `rows`: each field the workflow had wrong on an input it answered alone, inputs in order, and each it
+ *  had no known answer on (never right): those a grade marked wrong without the right one are "unknown", no value. */
 export function missesOf(rows: readonly CheckInput[]): Miss[] {
-  return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]) => {
+  return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]): Miss[] => {
     const j = judged(one);
-    return !j || j.workflow ? [] : [{ field, input_id: row.input_id, workflow: one.workflow, expected: j.expected, known: j.known }];
+    if (j?.workflow) return [];
+    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: !j || j.marked ? "unknown" : j.known }];
   }));
 }
 

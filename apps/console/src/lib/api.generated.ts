@@ -4841,8 +4841,8 @@ export interface operations {
             fields?: string[];
             expected?: {
               field: string;
-              known: "label" | "grade";
-              value: string;
+              known: "label" | "grade" | "unknown";
+              value?: string;
             }[];
           }[];
           stopped?: true;
@@ -4870,8 +4870,8 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade";
-                value: string;
+                known: "label" | "grade" | "unknown";
+                value?: string;
               }[];
             }[];
             agent_agreed?: number;
@@ -5013,8 +5013,8 @@ export interface operations {
               fields?: string[];
               expected?: {
                 field: string;
-                known: "label" | "grade";
-                value: string;
+                known: "label" | "grade" | "unknown";
+                value?: string;
               }[];
             }[];
             stopped?: true;
@@ -5042,8 +5042,8 @@ export interface operations {
                 fields?: string[];
                 expected?: {
                   field: string;
-                  known: "label" | "grade";
-                  value: string;
+                  known: "label" | "grade" | "unknown";
+                  value?: string;
                 }[];
               }[];
               agent_agreed?: number;

@@ -159,15 +159,17 @@ export interface CheckDisagreement {
   /** The decision the grader said they differ on, or why its verdict could not be had (cut to CHECK_TEXT_MAX). */
   readonly differs_on?: string;
   /** The fields the draft's answer had wrong on it, against each field's known answer (CheckRecord.fields): agree_on's
-   *  paths, or `answer` for the whole answer and `answer.<key>` for each key of a grade's expected answer. */
+   *  paths (the definition's names), else `answer`, the whole answer. Never a name taken from a grade. */
   readonly fields?: readonly string[];
   /** Of those, each one known from a label or a grade (never the agent's own answer, `agent` above): the known answer
-   *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say. */
+   *  (its text or JSON, cut to CHECK_TEXT_MAX) and where it came from, which the recompile is asked to say; or
+   *  "unknown", no value, where a grade marked the agent's answer wrong without giving the right one. */
   readonly expected?: readonly CheckKnown[];
 }
 
-/** A known answer a draft missed on one field of one input: the field, its source, and the value as text. */
-export type CheckKnown = { readonly field: string; readonly known: "label" | "grade"; readonly value: string };
+/** A known answer a draft missed on one field of one input: the field, its source, and the value as text; none when the
+ *  grade gave no right answer ("unknown"). */
+export type CheckKnown = { readonly field: string; readonly known: "label" | "grade" | "unknown"; readonly value?: string };
 
 /** A check's numbers, once decided: `n` inputs it ran on (a skipped write is none), `agreed` of them answered alone right
  *  on every field, `alone` answered alone (no escalate, no failed step), each field's verdict (`fields`,
@@ -348,7 +350,7 @@ const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
   ...(one.escalated !== undefined ? { escalated: "" } : {}),
   ...(one.failed ? { failed: true as const } : {}),
   ...(one.fields ? { fields: one.fields } : {}),
-  ...(one.expected ? { expected: one.expected.map(({ field, known }) => ({ field, known, value: "" })) } : {}),
+  ...(one.expected ? { expected: one.expected.map(({ field, known, value }) => ({ field, known, ...(value !== undefined ? { value: "" } : {}) })) } : {}),
 });
 
 /** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
@@ -675,19 +677,10 @@ export const valueAtPath = (value: unknown, path: string): unknown => {
 /** The value at dotted `path` of an answer (its JSON, valueOf), undefined where it does not resolve or there is none. */
 export const answerAt = (answer: string | null, path: string): unknown => (answer === null ? undefined : valueAtPath(valueOf(answer), path));
 
-/** An answer's JSON object without `keys` (a grade's expected answer's own keys): the rest of it, which a corrected
- *  answer still compares with the agent's. Undefined when the answer is none, or no JSON object. */
-export const answerOmitted = (answer: string | null, keys: readonly string[]): Record<string, unknown> | undefined => {
-  const value = answer === null ? undefined : valueOf(answer);
-  return isObject(value) ? Object.fromEntries(Object.keys(value).filter((key) => !keys.includes(key)).map((key) => [key, value[key]])) : undefined;
-};
-
-/** An answer's JSON object cut to `keys` (a grade's expected answer's own keys), each it holds: what that expected answer
- *  is compared with on a whole answer. Undefined when the answer is none, or no JSON object. */
-export const answerPicked = (answer: string | null, keys: readonly string[]): Record<string, unknown> | undefined => {
-  const value = answer === null ? undefined : valueOf(answer);
-  return isObject(value) ? Object.fromEntries(keys.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]])) : undefined;
-};
+/** A grade's expected answer as the answer a whole-answer check compares a draft with: its JSON. A replay run's grader
+ *  (runner/compare-end.ts) and the check (runner/promotion.ts judgeRows) read the same text, so its verdict's pair is
+ *  this answer's. */
+export const expectedAnswerText = (expected: Readonly<Record<string, unknown>>): string => JSON.stringify(expected);
 
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's

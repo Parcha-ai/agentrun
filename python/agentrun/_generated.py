@@ -2824,9 +2824,12 @@ class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLe
     expected: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem]
 
 
-class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(TypedDict):
+class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade"]
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemExpectedItemRequired, total=False):
     value: str
 
 
@@ -2867,9 +2870,12 @@ class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_L
     expected: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem]
 
 
-class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(TypedDict):
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade"]
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
     value: str
 
 
@@ -3045,9 +3051,12 @@ class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_L
     expected: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem]
 
 
-class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(TypedDict):
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade"]
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemExpectedItemRequired, total=False):
     value: str
 
 
@@ -3088,9 +3097,12 @@ class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsIt
     expected: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem]
 
 
-class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(TypedDict):
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired(TypedDict):
     field: str
-    known: Literal["label", "grade"]
+    known: Literal["label", "grade", "unknown"]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
     value: str
 
 
