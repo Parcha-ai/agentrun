@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { deciderFrom, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
+import { deciderFrom, judgePart, judgeRequest, LEFT_OUT, passagesOf, PaidRefused, QUESTIONS_PER_REQUEST, searchText, siftRequest, siftSearch, STATE_BUDGET_BYTES, TEXT_CAP, THRESHOLD, webFetchText } from "../dist/index.js";
 import fakeParallel from "./fixtures/faux-parallel.mjs";
 import { fakeWeb, PUBLIC } from "./fixtures/web-runs.mjs";
 
@@ -356,6 +356,21 @@ test("passages over the state budget go in several requests, each within it and 
   assert.deepEqual(got.verdicts.map((v) => v.keep), passages.map((_, i) => i % 2 === 1));
   assert.deepEqual(got.questions_sha256, asked.map(({ request }) => sha256(JSON.stringify(request.questions))));
   assert.deepEqual([got.tokens, got.cost], [{ in: 100 * asked.length, out: 4 * asked.length, basis: "reported" }, { usd: Math.round(0.0001 * asked.length * 1e6) / 1e6, basis: "estimate" }]);
+});
+
+test("a request after the first that fails keeps the step from running, at what every request sent cost", async () => {
+  const passages = Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(995)}\n\n`);
+  for (const [failure, cost] of [
+    [Object.assign(new Error("upstream 500"), { code: "provider_error" }), { usd: null, basis: "unknown" }],
+    [Object.assign(new Error("no route"), { code: "connection" }), { usd: 0.0001, basis: "estimate" }],
+  ]) {
+    const { asked, provider } = fakeProvider();
+    const decide = provider.decide;
+    provider.decide = async (request, ctx) => (asked.length ? (asked.push({ request, ctx }), Promise.reject(failure)) : decide(request, ctx));
+    const { classifier } = await judgePart(priced(provider), PUBLIC, { ok: true, url: PUBLIC, text: passages.join("") }, { task: TASK });
+    assert.deepEqual([classifier.ran, classifier.requests, classifier.error.code, classifier.cost, classifier.questions_sha256], [false, 2, failure.code, cost, []]);
+    assert.match(classifier.error.message, /^request 2 of \d+: /);
+  }
 });
 
 test("a fetched part over the budget is judged in several requests: the record counts them with a hash each, and the cap books each", async () => {

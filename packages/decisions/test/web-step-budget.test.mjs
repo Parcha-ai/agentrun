@@ -41,7 +41,7 @@ const wideHits = Array.from({ length: 10 }, (_, i) => ({ url: `https://wide.exam
 const passages = Array.from({ length: 200 }, (_, i) => `${String(i).padStart(3, '0')} ${'word '.repeat(199)}\n\n`);
 
 test("the budget is within every arm's own state limit", () => {
-  for (const provider of [parallelProvider(), jevProvider(), anthropicProvider()]) {
+  for (const provider of [parallelProvider(settings), jevProvider(settings), anthropicProvider(settings)]) {
     const limit = provider.capabilities.maxStateBytes;
     assert.ok(limit === null || STATE_BUDGET_BYTES <= limit, `${provider.id}: ${limit}`);
     assert.ok(provider.capabilities.maxQuestions === null || QUESTIONS_PER_REQUEST <= provider.capabilities.maxQuestions, provider.id);

@@ -2,7 +2,8 @@ import { type Fee, type Pay, PaidRefused } from "../fees.js";
 import type { WebPage } from "../fetch.js";
 import type { Page } from "../page.js";
 import type { Search } from "../search.js";
-import type { Cost, DecisionPay, Temperature, Tokens, Verdicts, WebDecider } from "./decider.js";
+import type { Cost, DecisionPay, Temperature, Tokens, Trimmed, Verdicts, WebDecider } from "./decider.js";
+import { codeOf, costOf, unbilled } from "./failure.js";
 import { passagesOf } from "./passages.js";
 
 /** What one call's classifier step did. `ran` false: the items passed unsifted, and `error` or `skipped` says why. */
@@ -21,7 +22,10 @@ export type DecisionRecord = {
   cost: Cost;
   /** The requests sent: 0 when none was (the cap refused it, or nothing was asked). */
   requests: number;
-  questions_sha256: string | null;
+  /** One per request answered, in order. */
+  questions_sha256: string[];
+  /** The snippets cut so a search's state fits STATE_BUDGET_BYTES; the model still reads them whole. */
+  trimmed?: Trimmed;
   error?: { code: string; message: string };
   skipped?: "no results" | "no page" | "no task";
 };
@@ -33,19 +37,6 @@ export type StepOptions = { task?: string | undefined; signal?: AbortSignal | un
 
 type Sifted<A> = { answer: A; classifier: DecisionRecord };
 type Failure = { code: string; message: string; cost: Cost };
-
-// A request refused before it was billed, or never sent: nothing to book. Any other failure may have been billed.
-const UNBILLED = new Set(["configuration", "auth", "rate_limited", "invalid_request", "connection", "pay_refused"]);
-
-const fields = (thrown: unknown): Record<string, unknown> => (thrown !== null && typeof thrown === "object" ? (thrown as Record<string, unknown>) : {});
-const codeOf = (thrown: unknown): string => (thrown instanceof PaidRefused ? "pay_refused" : typeof fields(thrown).code === "string" ? (fields(thrown).code as string) : "error");
-const unbilled = (thrown: unknown): boolean => UNBILLED.has(codeOf(thrown)) || fields(thrown).unsent === true;
-
-function costOf(thrown: unknown): Cost {
-  const error = fields(thrown);
-  if (typeof error.costUsd === "number") return { usd: error.costUsd, basis: typeof error.costBasis === "string" ? (error.costBasis as Cost["basis"]) : "estimate" };
-  return unbilled(thrown) ? { usd: 0, basis: "none" } : { usd: null, basis: "unknown" };
-}
 
 /** `pay` as a decider's: each request's fee goes on `lines` once it is sent, and one refused unbilled settles at $0
  *  (answered as a 4xx, which a cap books at nothing) with a $0 line. */
@@ -94,17 +85,19 @@ async function bounded(ask: (ctx: { signal: AbortSignal; deadlineMs: number; pay
 }
 
 const skipped = (decider: WebDecider, op: DecisionRecord["op"], why: NonNullable<DecisionRecord["skipped"]>, n = 0): DecisionRecord => ({
-  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: false, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, requests: 0, questions_sha256: null, skipped: why,
+  provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: false, tokens: null, latency_ms: 0, cost: { usd: 0, basis: "none" }, requests: 0, questions_sha256: [], skipped: why,
 });
 
 function failed(decider: WebDecider, op: DecisionRecord["op"], n: number, ms: number, requests: number, failure: Failure): DecisionRecord {
   const { code, message, cost } = failure;
-  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: "unknown", tokens: null, latency_ms: ms, cost, requests, questions_sha256: null, error: { code, message } };
+  return { provider: decider.id, op, ran: false, items: { in: n, kept: n }, dropped: [], model: null, temperature_sent: null, temperature_applied: "unknown", tokens: null, latency_ms: ms, cost, requests, questions_sha256: [], error: { code, message } };
 }
 
 function ran(decider: WebDecider, op: DecisionRecord["op"], got: Verdicts, ms: number, requests: number, dropped: DecisionRecord["dropped"]): DecisionRecord {
   const n = got.verdicts.length;
-  return { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, temperature_sent: got.temperature_sent, temperature_applied: got.temperature_applied, tokens: got.tokens, latency_ms: ms, cost: got.cost, requests, questions_sha256: got.questions_sha256 };
+  const record: DecisionRecord = { provider: decider.id, op, ran: true, items: { in: n, kept: n - dropped.length }, dropped, model: got.model, temperature_sent: got.temperature_sent, temperature_applied: got.temperature_applied, tokens: got.tokens, latency_ms: ms, cost: got.cost, requests, questions_sha256: got.questions_sha256 };
+  if (got.trimmed) record.trimmed = got.trimmed;
+  return record;
 }
 
 const since = (start: number) => Math.round(performance.now() - start);

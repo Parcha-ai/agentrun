@@ -57,8 +57,12 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
 
 - `deciderFrom(provider, { price, threshold?, model?, count? })` takes any `DecisionProvider` (`jevProvider`,
   `parallelProvider`, `anthropicProvider` from `@parcha/agentrun-decisions`); web declares only the `decide` method it
-  calls (`DecisionAsker`), so it depends on no provider. Each call is one request of noul questions, one per result or
-  passage, in fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
+  calls (`DecisionAsker`), so it depends on no provider. Each call asks noul questions, one per result or passage, in
+  fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing.
+- Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
+  96,000) and asks at most `QUESTIONS_PER_REQUEST` (100). A search over the budget has every snippet cut to the longest
+  length that fits (`trimmed: { snippets, to_chars }`; the model still reads them whole). Passages over it are asked
+  in several requests, one after another, ids counted across the part, and the verdicts merged in order.
 - An item is dropped when `1 - p(needed) >= threshold` (`THRESHOLD`, 0.8 by default; a threshold is above 0.5 and at
   most 1). A refused question keeps its item.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
@@ -69,14 +73,15 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
   (`DECIDE_MS`, 30 s) never drops anything silently: the items pass unsifted and the record says why.
 - `receipt.classifier` is the decision's record: `{ provider, op, ran, items: { in, kept }, dropped: [{ id, score,
   reason, at? }], model, temperature_sent, temperature_applied, tokens: { in, out, basis }, latency_ms, cost: { usd,
-  basis }, questions_sha256, error?, skipped? }`. `tokens` are the provider's when it reports them, else counted on
-  the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
+  basis }, requests, questions_sha256: [one per request], trimmed?, error?, skipped? }`. `tokens` are the provider's
+  when it reports them, else counted on the request by `count`, else null. `temperature_sent` and `temperature_applied` (true, false or "unknown") are what
   the provider says its request carried; one that says nothing sent none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
   `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
   `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
   cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
-  figure for what was spent, `requests` how many were sent.
+  figure for what was spent, summed over its requests, and `requests` how many were sent. A request after the first that
+  fails fails the step, at what every request sent cost.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
