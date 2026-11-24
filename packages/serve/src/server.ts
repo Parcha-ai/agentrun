@@ -1606,11 +1606,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
-    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
-    // leaves the inputs as they are (a tool key's) starts none while the probe out has read these inputs: with the offers
-    // held made from them too it recomposes at once; with them behind (a turn-on's probe out) it waits until that probe
-    // lands, or a later one overtakes it, and fails if it fails. With no probe out, it recomposes when the offers held
-    // are made from these inputs and probes when they are not.
+    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. While the probe
+    // out has read these inputs, a change starts none: with the offers held made from them too it recomposes at once;
+    // with them behind (a tool key saved while a turn-on's probe is out) it waits until that probe lands, or a later one
+    // overtakes it, and fails if it fails. With no probe out that has read its inputs (none out, or the latest still
+    // reading the Ollama listing), it recomposes when the offers held are made from these inputs and probes when not.
     const out = probing !== undefined && sameInputs(probing, inputs);
     if (out && !offersMadeFrom(inputs)) {
       log?.(logLine("harness_offers_wait", { why: "key" }));
