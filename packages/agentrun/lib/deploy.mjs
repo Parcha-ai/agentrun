@@ -120,7 +120,7 @@ export const packageFiles = async (dir, fail) => filesBody(await readFolder(dir,
 
 /** A lock read back from its file's text (none when there is no file): its fields as written, or a refusal naming the
  *  file. */
-function lockOf(text, file, fail) {
+export function lockOf(text, file, fail) {
   if (text === undefined) return undefined;
   let value;
   try {

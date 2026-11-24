@@ -9,14 +9,16 @@
 // files' content hashes, read from the agent's package (whose texts name MCP tools by toolkit too); a trigger by its
 // name, without its id, times, hook or the agent it names. `unread` lists each field the install did not serve, with
 // why: such a field is never compared, and a pass needs none (unreadFields). What a deploy legitimately changes (ids,
-// revisions, timestamps, links, the place and computer provider a host picks, the pins of a host's listings) is not in
-// a description at all.
+// revisions, timestamps, links, the place a host picks, every setting of the computer but its kind and needs (its
+// provider, image, gpu, persistence, surface, exec and record, which the target sets again), the pins of a host's
+// listings) is not in a description at all.
 
 /** A granted MCP tool: mcp:<server>/<tool>. */
 const MCP_TOOL = /^mcp:([^/]+)\/(.+)$/;
-/** An MCP tool named in prose, whole, as serve's apply finds it (templates.ts MCP_NAME_IN_TEXT): `mcp:<server>/` before a
- *  tool or `*`, not the tail of a longer word. */
-const MCP_IN_TEXT = /(?<![A-Za-z0-9_.:/-])mcp:([a-z][a-z0-9-]{0,31})\/(?=\*|[A-Za-z0-9_-])/g;
+/** An MCP tool named in prose, whole, by serve's grammar: its apply's MCP_NAME_IN_TEXT (templates.ts) with the server
+ *  captured. `mcp:<server>/<tool>` or `mcp:<server>/*`, not the tail of a longer word nor cut short of a longer tool
+ *  name; a unit test fails if serve's pattern drifts from this one. */
+export const MCP_IN_TEXT = /(?<![A-Za-z0-9_.:/-])mcp:([a-z][a-z0-9-]{0,31})\/(?:\*|[A-Za-z0-9_-]{1,64}(?![A-Za-z0-9_-]))/g;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /** The definition's fields an install sets on its own, never compared, each with why. Every other field is. */
@@ -33,7 +35,7 @@ const SEALED_MASK = "[sealed]";
 
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 /** JSON with every object's keys sorted: two values are the same when their texts are. */
-const stable = (value) => (value === undefined ? "undefined" : JSON.stringify(value, (_key, inner) => (isObject(inner) ? Object.fromEntries(Object.keys(inner).sort().map((key) => [key, inner[key]])) : inner)));
+export const stable = (value) => (value === undefined ? "undefined" : JSON.stringify(value, (_key, inner) => (isObject(inner) ? Object.fromEntries(Object.keys(inner).sort().map((key) => [key, inner[key]])) : inner)));
 const same = (a, b) => stable(a) === stable(b);
 const sortedObject = (entries) => Object.fromEntries([...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 
@@ -69,15 +71,13 @@ function portableSource(source, byName) {
 /** `[name, setting]` entries by name. A name two grants share (two saved servers of one source and toolkit) holds each
  *  one's setting, sorted, so neither is lost to the other. */
 function grouped(entries) {
-  const byName = new Map();
-  for (const [name, setting] of entries) byName.set(name, [...(byName.get(name) ?? []), setting]);
   const order = (x, y) => (stable(x) < stable(y) ? -1 : stable(x) > stable(y) ? 1 : 0);
-  return sortedObject([...byName].map(([name, settings]) => [name, settings.length === 1 ? settings[0] : settings.sort(order)]));
+  return sortedObject([...Map.groupBy(entries, ([name]) => name)].map(([name, group]) => [name, group.length === 1 ? group[0][1] : group.map(([, setting]) => setting).sort(order)]));
 }
 
 /** `text` with each MCP tool it names on a saved server named by that server's toolkit, as the export writes it
  *  (agent-package.ts), so the name an apply gave it on one install reads the same on another. */
-const byToolkit = (text, byName) => text.replace(MCP_IN_TEXT, (whole, server) => (byName.has(server) ? `mcp:${byName.get(server).toolkit ?? server}/` : whole));
+const byToolkit = (text, byName) => text.replace(MCP_IN_TEXT, (whole, server) => (byName.has(server) ? `mcp:${byName.get(server).toolkit ?? server}/${whole.slice(`mcp:${server}/`.length)}` : whole));
 
 /** The agent's skills by folder from its package's files (`[{path, sha256}]`, readAgent): each file under skills/, and
  *  each rules/ file beside every SKILL.md, as an apply puts it, by path to its content hash. Or why they can't be read:
@@ -90,11 +90,7 @@ function skillFilesOf(files) {
   const skills = tree.filter((file) => file.path.startsWith("skills/")).map((file) => [file.path.slice("skills/".length), file.sha256]);
   const folders = skills.filter(([path]) => /^[^/]+\/SKILL\.md$/.test(path)).map(([path]) => path.split("/")[0]);
   const rules = tree.filter((file) => file.path.startsWith("rules/")).flatMap((file) => folders.map((folder) => [`${folder}/${file.path.slice("rules/".length)}`, file.sha256]));
-  const byFolder = new Map();
-  for (const [path, sha] of [...skills, ...rules]) {
-    const folder = path.split("/")[0];
-    byFolder.set(folder, [...(byFolder.get(folder) ?? []), [path, sha]]);
-  }
+  const byFolder = Map.groupBy([...skills, ...rules], ([path]) => path.split("/")[0]);
   return { skillFiles: sortedObject([...byFolder].map(([folder, entries]) => [folder, sortedObject(entries)])) };
 }
 
@@ -136,7 +132,9 @@ export function describeAgent({ agent, triggers = null, servers = null, template
   let triggersOf = {};
   if (!Array.isArray(triggers)) unread.push({ field: "triggers", why: "GET /v2/triggers is not served here, so the agent's triggers can't be read" });
   else {
-    triggersOf = sortedObject(triggers.filter((trigger) => isObject(trigger) && trigger.target?.agent_id === agent?.agent_id).map((trigger) => {
+    // An agent with no id owns no trigger: a trigger that names no agent is never its own.
+    const own = (trigger) => isObject(trigger) && typeof agent?.agent_id === "string" && trigger.target?.agent_id === agent.agent_id;
+    triggersOf = sortedObject(triggers.filter(own).map((trigger) => {
       const { agent_id: _agent, ...target } = trigger.target;
       return [trigger.name, { enabled: trigger.enabled, source: portableSource(trigger.source, byName), target, catchup_window_s: trigger.catchup_window_s, max_active_runs: trigger.max_active_runs ?? null }];
     }));
