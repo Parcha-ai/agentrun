@@ -1,7 +1,8 @@
 // A run's census: where in each of its files the secrets its caller handed it sat when its end erased them (its launch's
 // sealed part: its MCP credentials, its own model key and tool keys, store/seal.ts), never the secrets, nor a hash of one
-// (each file is named by a MAC under a key derived from the server's seal key, so a file that is a value alone has no
-// hash of the value in the census).
+// (each file's bytes are named by a MAC under a key derived from the server's seal key, so a file that is a value alone
+// has no hash of the value in the census, and each file by a MAC of its path, so a file named by a value leaves no trace
+// of it: pathMac).
 // The runner makes it just before its final patch, while the launch still holds them, over the run's files as the cut
 // read serves them (GET /v2/runs/{id}/files/{path}?cut=run: the same Workspace, the same text rule, the same cap), and
 // the end's commit writes it in the erased secrets' place (store/sqlite/run-patch.ts refuseLeftovers). A cut read after
@@ -38,7 +39,7 @@ export const CENSUS_JSON_MAX = 512 * 1024;
 /** One file as the census counted it: its bytes' MAC (fileMac, hex), and what the cut does to it for the handed secrets:
  *  the byte ranges [start, end) of its UTF-8 bytes cut in place, in order, or "whole" (the text is cut whole). */
 export type CensusFile = { readonly mac: string; readonly cut: readonly (readonly [number, number])[] | "whole" };
-/** A census: every file counted, by its path under the run's folder; `partial` when files went uncounted (past a cap, a
+/** A census: every file counted, by the MAC of its path under the run's folder (pathMac), never the path; `partial` when files went uncounted (past a cap, a
  *  folder deeper than the list goes, a read that failed). */
 export type Census = { readonly v: 1; readonly files: Readonly<Record<string, CensusFile>>; readonly partial?: true };
 
@@ -48,6 +49,15 @@ export type Census = { readonly v: 1; readonly files: Readonly<Record<string, Ce
 export function fileMac(sealKey: Buffer, bytes: Uint8Array): string {
   const key = createHmac("sha256", sealKey).update("agentrun-serve run census file mac v1").digest();
   return createHmac("sha256", key).update(bytes).digest("hex");
+}
+
+/** What names a file's entry in a census: the MAC of its `path` under the run's folder, HMAC-SHA256 under a key derived
+ *  from the seal key `sealKey` (apart from fileMac's), so a run that named a file by a handed value (`cache/<key>.json`)
+ *  leaves the value nowhere in the census once its end erased the seal, nor a plain hash of the path. A read finds the
+ *  file's entry by the MAC of the path it was asked for. */
+export function pathMac(sealKey: Buffer, path: string): string {
+  const key = createHmac("sha256", sealKey).update("agentrun-serve run census path mac v1").digest();
+  return createHmac("sha256", key).update(path).digest("hex");
 }
 
 /** A census of `counted` (each file's entry, in order), its entries cut to the limits: a file's ranges past
@@ -87,7 +97,7 @@ function byteRanges(text: string, spans: readonly Span[]): [number, number][] {
  *  cut read would answer (text by its type, UTF-8 with no NUL, at most RUN_FILE_CUT_MAX bytes; a byte order mark kept as
  *  a character, as the cut read keeps it, so each byte range falls where the text's cut does) counted with where
  *  redactSecrets would cut the values in it (heldSpans), up to CENSUS_FILES_MAX files and CENSUS_BYTES_MAX bytes, each
- *  named by its MAC under `sealKey` (fileMac), within the entry limits (bounded). A file a cut read refuses (415, 413)
+ *  keyed by its path's MAC and holding its bytes' MAC under `sealKey` (pathMac, fileMac), within the entry limits (bounded). A file a cut read refuses (415, 413)
  *  is left out: it is refused after the end too. */
 export async function censusOf(workspace: Workspace, values: readonly string[], sealKey: Buffer): Promise<Census> {
   const { files, deep } = await listFiles(workspace, CENSUS_FILES_MAX, { owned: (name) => name === RECORDINGS });
@@ -121,7 +131,7 @@ export async function censusOf(workspace: Workspace, values: readonly string[], 
     }
     if (text.includes("\u0000")) continue;
     const spans = heldSpans(text, values);
-    counted.push([file.path, { mac: fileMac(sealKey, bytes), cut: spans === "whole" || spans.length > CENSUS_RANGES_MAX ? "whole" : byteRanges(text, spans) }]);
+    counted.push([pathMac(sealKey, file.path), { mac: fileMac(sealKey, bytes), cut: spans === "whole" || spans.length > CENSUS_RANGES_MAX ? "whole" : byteRanges(text, spans) }]);
   }
   return bounded(counted, partial);
 }
@@ -140,8 +150,9 @@ export function censusCut(census: string, path: string, bytes: Uint8Array, text:
   }
   if (typeof parsed !== "object" || parsed === null || (parsed as { v?: unknown }).v !== 1) return "unreadable";
   const files = (parsed as { files?: unknown }).files;
-  if (typeof files !== "object" || files === null || !Object.hasOwn(files, path)) return "unreadable";
-  const entry = (files as Record<string, unknown>)[path] as { mac?: unknown; cut?: unknown } | null;
+  const named = pathMac(sealKey, path);
+  if (typeof files !== "object" || files === null || !Object.hasOwn(files, named)) return "unreadable";
+  const entry = (files as Record<string, unknown>)[named] as { mac?: unknown; cut?: unknown } | null;
   if (typeof entry !== "object" || entry === null || entry.mac !== fileMac(sealKey, bytes)) return "unreadable";
   if (entry.cut === "whole") return "whole";
   if (!Array.isArray(entry.cut)) return "unreadable";

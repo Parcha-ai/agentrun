@@ -133,15 +133,18 @@ test("a run's own model_key is cut from its files by a cut read while it runs, a
   await writeFile(join(run.work, "notes.txt"), notes);
   await writeFile(join(run.work, "out", "deep.md"), deep);
   await writeFile(join(run.work, "clean.txt"), "nothing held here\n");
+  // A file the run named by its key: the census names each file by a MAC of its path, so the key stays out of it.
+  await writeFile(join(run.work, `cache-${KEY}.txt`), "cached\n");
 
   assert.deepEqual(await cutRead(run, "notes.txt"), [200, "key=[redacted]\nthe rest stays.\n"], "live: cut by the value its launch holds");
   assert.deepEqual(await cutRead(run, "out/deep.md"), [200, "# ñandú\n\n→ [redacted] ✓\n"]);
 
   await run.ended();
   const launch = await run.store.runs.launch(run.runId);
-  assert.ok(launch.census && JSON.parse(launch.census).files["notes.txt"], `its census in the erased key's place: ${launch.census}`);
+  assert.equal(launch.census && Object.keys(JSON.parse(launch.census).files).length, 5, `its census in the erased key's place, each of its 5 files counted (inputs/message.md too): ${launch.census}`);
   assert.equal(launch.census.includes(KEY), false, "the census holds no key");
   assert.deepEqual(await cutRead(run, "notes.txt"), [200, "key=[redacted]\nthe rest stays.\n"], "ended: cut by its census");
+  assert.deepEqual(await cutRead(run, `cache-${KEY}.txt`), [200, "cached\n"], "ended: the file named by the key found by its path");
   assert.deepEqual(await cutRead(run, "out/deep.md"), [200, "# ñandú\n\n→ [redacted] ✓\n"], "a file in a folder, past multibyte text");
   assert.deepEqual(await cutRead(run, "clean.txt"), [200, "nothing held here\n"], "a file that held none reads whole");
   const rawNotes = await get(run.baseUrl, run.token, `/runs/${run.runId}/files/notes.txt`);

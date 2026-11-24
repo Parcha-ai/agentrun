@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { redactSecrets } from "../dist/learn/secrets.js";
-import { CENSUS_JSON_MAX, CENSUS_RANGES_MAX, censusAfter, censusCut, censusOf, fileMac } from "../dist/run-census.js";
+import { CENSUS_JSON_MAX, CENSUS_RANGES_MAX, censusAfter, censusCut, censusOf, fileMac, pathMac } from "../dist/run-census.js";
 import { RUN_FILE_CUT_MAX } from "../dist/run-files.js";
 import { censusOnSeal } from "../dist/store/sqlite/run-launch.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
@@ -33,6 +33,8 @@ const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 /** The server's seal key, as a test holds one: each census names a file by a MAC under it. */
 const SEAL = Buffer.alloc(32, 5);
 const mac = (bytes) => fileMac(SEAL, bytes);
+/** A file's entry key in a census under SEAL: the MAC of its path (pathMac), never the path. */
+const keyOf = (path) => pathMac(SEAL, path);
 
 /** A scratch folder as a run's Workspace, its files `files` ({path: text | Buffer}). */
 async function folder(t, files) {
@@ -69,12 +71,12 @@ test("censusOf counts each text file with the byte ranges of the handed values, 
   const census = await censusOf(workspace, [KEY], SEAL);
   assert.equal(census.v, 1);
   assert.equal(census.partial, undefined, "every file counted");
-  assert.deepEqual(Object.keys(census.files).sort(), ["clean.json", "notes.txt", "out/wide.md"], "a type that isn't text, a NUL and a file over the cap are left out: a cut read refuses them");
-  assert.deepEqual(census.files["notes.txt"], { mac: mac(Buffer.from(plain)), cut: [[4, 4 + KEY.length]] }, "the value's byte range, no value, no hash of one");
+  assert.deepEqual(Object.keys(census.files).sort(), ["clean.json", "notes.txt", "out/wide.md"].map(keyOf).sort(), "a type that isn't text, a NUL and a file over the cap are left out: a cut read refuses them");
+  assert.deepEqual(census.files[keyOf("notes.txt")], { mac: mac(Buffer.from(plain)), cut: [[4, 4 + KEY.length]] }, "the value's byte range, no value, no hash of one");
   assert.equal(JSON.stringify(census).includes(KEY), false, "the census holds no value");
   const at = Buffer.from(wide).indexOf(KEY);
-  assert.deepEqual(census.files["out/wide.md"].cut[0], [at, at + KEY.length], "byte offsets of the UTF-8 bytes, past multibyte characters");
-  assert.deepEqual(census.files["clean.json"].cut, [], "a file with none counted with nothing to cut");
+  assert.deepEqual(census.files[keyOf("out/wide.md")].cut[0], [at, at + KEY.length], "byte offsets of the UTF-8 bytes, past multibyte characters");
+  assert.deepEqual(census.files[keyOf("clean.json")].cut, [], "a file with none counted with nothing to cut");
 
   const json = JSON.stringify(census);
   assert.equal(readAfter(json, "notes.txt", plain), "key=[redacted]\nthe rest stays.\n");
@@ -86,12 +88,12 @@ test("censusCut withholds a file with no entry, changed bytes, a marker, a damag
   const text = `ñ=${KEY}\n`;
   const bytes = Buffer.from(text);
   const from = Buffer.byteLength("ñ=");
-  const good = JSON.stringify({ v: 1, files: { "a.txt": { mac: mac(bytes), cut: [[from, from + KEY.length]] } } });
+  const good = JSON.stringify({ v: 1, files: { [keyOf("a.txt")]: { mac: mac(bytes), cut: [[from, from + KEY.length]] } } });
   assert.equal(readAfter(good, "a.txt", text), "ñ=[redacted]\n", "the counted file is cut");
   assert.equal(readAfter(good, "b.txt", text), "withheld", "no entry: written after the end, or past the census's caps");
   assert.equal(readAfter(good, "a.txt", `${text}more\n`), "withheld", "changed since it was counted");
   for (const marker of [CENSUS_UNSCANNED, CENSUS_PENDING, "not json", JSON.stringify({ v: 2, files: {} }), JSON.stringify({ v: 1 })]) assert.equal(readAfter(marker, "a.txt", text), "withheld", marker);
-  const forged = (cut) => JSON.stringify({ v: 1, files: { "a.txt": { mac: mac(bytes), cut } } });
+  const forged = (cut) => JSON.stringify({ v: 1, files: { [keyOf("a.txt")]: { mac: mac(bytes), cut } } });
   assert.equal(readAfter(forged([[1, 3]]), "a.txt", text), "withheld", "a range splitting ñ's two bytes");
   assert.equal(readAfter(forged([[from, bytes.length + 1]]), "a.txt", text), "withheld", "a range past the end");
   assert.equal(readAfter(forged([[4, 6], [2, 5]]), "a.txt", text), "withheld", "ranges out of order");
@@ -240,10 +242,24 @@ test("a census holds no hash of a file that is a handed value alone: each file i
   const census = await censusOf(workspace, [KEY], SEAL);
   const json = JSON.stringify(census);
   for (const plain of [KEY, `${KEY}\n`]) assert.equal(json.includes(sha(Buffer.from(plain))), false, `no SHA-256 of ${JSON.stringify(plain.slice(-3))}`);
-  assert.deepEqual(census.files["only.txt"], { mac: mac(Buffer.from(KEY)), cut: [[0, KEY.length]] });
+  assert.deepEqual(census.files[keyOf("only.txt")], { mac: mac(Buffer.from(KEY)), cut: [[0, KEY.length]] });
   assert.equal(readAfter(json, "only.txt", KEY), "[redacted]");
   assert.equal(readAfter(json, "only.txt", KEY, [], Buffer.alloc(32, 6)), "withheld", "another seal key: not the file counted");
   assert.equal(readAfter(json, "only.txt", KEY, [], null), "withheld", "no seal key: withheld");
+});
+
+test("a census holds no file's path: a file the run named by a handed value leaves the value nowhere in it once the end erased the seal, and a read after the end still finds the file's entry by its path", async (t) => {
+  const named = `cache/${KEY}.json`;
+  const { workspace } = await folder(t, { [named]: "{}", "notes.txt": `key=${KEY}\n` });
+  const census = await censusOf(workspace, [KEY], SEAL);
+  const json = JSON.stringify(census);
+  assert.equal(json.includes(KEY), false, "no handed value, in a path or anywhere");
+  for (const path of [named, "notes.txt", "cache/"]) assert.equal(json.includes(path), false, `no path: ${path}`);
+  for (const path of [named, "notes.txt"]) assert.equal(json.includes(sha(Buffer.from(path))), false, `no plain hash of a path: ${path}`);
+  assert.equal(Object.keys(census.files).length, 2, "both files counted");
+  assert.equal(readAfter(json, named, "{}"), "{}", "found by its path after the end, nothing to cut in its text");
+  assert.equal(readAfter(json, "notes.txt", `key=${KEY}\n`), "key=[redacted]\n");
+  assert.equal(readAfter(json, "notes.txt", `key=${KEY}\n`, [], Buffer.alloc(32, 6)), "withheld", "another seal key names no entry as the file's");
 });
 
 test("a census stays small: a file past CENSUS_RANGES_MAX cuts is cut whole, entries past CENSUS_JSON_MAX are left out (partial, withheld), and a census past it is read as none", async (t) => {
@@ -256,16 +272,16 @@ test("a census stays small: a file past CENSUS_RANGES_MAX cuts is cut whole, ent
   const { workspace } = await folder(t, files);
   const census = await censusOf(workspace, [KEY], SEAL);
   const json = JSON.stringify(census);
-  assert.equal(census.files["many.log"]?.cut, "whole", "past CENSUS_RANGES_MAX: whole");
+  assert.equal(census.files[keyOf("many.log")]?.cut, "whole", "past CENSUS_RANGES_MAX: whole");
   assert.equal(readAfter(json, "many.log", many), "[redacted]");
   assert.ok(json.length <= CENSUS_JSON_MAX, `the census within CENSUS_JSON_MAX: ${json.length}`);
   assert.equal(census.partial, true, "entries left out: partial");
-  const left = Object.keys(files).filter((path) => !Object.hasOwn(census.files, path));
+  const left = Object.keys(files).filter((path) => !Object.hasOwn(census.files, keyOf(path)));
   assert.ok(left.length > 0, "some files have no entry");
   assert.equal(readAfter(json, left[0], files[left[0]]), "withheld", "a file left out is withheld after the end");
   const merged = censusAfter(JSON.stringify({ v: 1, files: { "a.txt": { mac: "aa", cut: Array.from({ length: CENSUS_RANGES_MAX }, (_, i) => [i * 4, i * 4 + 2]) } } }), { v: 1, files: { "a.txt": { mac: "aa", cut: [[CENSUS_RANGES_MAX * 4 + 10, CENSUS_RANGES_MAX * 4 + 12]] } } });
   assert.equal(merged.files["a.txt"].cut, "whole", "two ends' cuts past CENSUS_RANGES_MAX together: whole");
-  const huge = JSON.stringify({ v: 1, files: { "a.txt": { mac: mac(Buffer.from("a")), cut: [] }, pad: { mac: "x".repeat(CENSUS_JSON_MAX), cut: [] } } });
+  const huge = JSON.stringify({ v: 1, files: { [keyOf("a.txt")]: { mac: mac(Buffer.from("a")), cut: [] }, pad: { mac: "x".repeat(CENSUS_JSON_MAX), cut: [] } } });
   assert.equal(readAfter(huge, "a.txt", "a"), "withheld", "a census past CENSUS_JSON_MAX is no census");
 });
 
