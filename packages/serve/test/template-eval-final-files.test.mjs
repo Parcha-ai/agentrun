@@ -194,6 +194,40 @@ test("a write whose text the cut of its file takes from <files> is not cut at 2,
   assert.match(shown, /1\. append \{"path":"big\.md","content":"p+ \[\.\.\. \d+ characters cut \.\.\.\] p+APPENDMK"\}/);
 });
 
+// A grader reads at most 120,000 bytes of a run's files (finalFilesOf), so a cut file is about this size.
+test("a write of a whole file that <files> shows cut is cut at 2,000 in its call: its head and tail are there already, and the other calls keep their results' room", () => {
+  const text = `${"h".repeat(60_000)}MIDMK${"t".repeat(39_995)}`;
+  const file = { name: "report.md", bytes: 100_000, text };
+  const calls = [
+    { tool: "write", arguments: { path: "report.md", content: text }, status: "ok", result: "wrote" },
+    ...Array.from({ length: 20 }, (_, i) => ({ tool: "read", arguments: { path: `src-${i}.txt` }, status: "ok", result: `${"r".repeat(3_000)}${i}` })),
+  ];
+  const input = graderInput(GRADER, "Write it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  assert.match(input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>")), /h \[\.\.\. \d+ characters cut \.\.\.\] t/);
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
+  assert.match(shown, /1\. write \{"path":"report\.md","content":"h{1997}\.\.\."\} -> ok \[the file report\.md is in <files>, whole unless marked cut\]: wrote/);
+  // Each read keeps about 1,280 of its 3,001 characters; with the write's head and tail copied into its call, about 670.
+  const kept = shown.split("\n").filter((line) => /^\d+\. read /.test(line)).map((line) => line.slice(line.indexOf(" -> ok: ") + 8).replace(/ \[\.\.\. \d+ characters cut \.\.\.\] /, "").length);
+  assert.equal(kept.length, 20);
+  assert.ok(kept.every((n) => n >= 1_000), String(kept));
+});
+
+test("a write the timeline cut at its budget (its text ending ...) counts as one <files> shows: it is cut at 2,000, and the call's other text keeps the room", () => {
+  const file = { name: "doc.md", bytes: 50_004, text: `${"n".repeat(50_000)}\nEND` };
+  // As tool_input carries an edit whose two texts pass its 120,000-character budget: new_text cut there, ending "...".
+  const calls = [{ tool: "edit", arguments: { path: "doc.md", old_text: "o".repeat(70_000), new_text: `${"n".repeat(49_980)}...` }, status: "ok", result: "edited doc.md" }];
+  const input = graderInput(GRADER, "Edit it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  assert.ok(input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>")).includes(file.text), "the file is whole in <files>");
+  const shown = input.slice(input.indexOf("<tool-calls untrusted>"));
+  assert.match(shown, /"new_text":"n{1997}\.\.\."\}/);
+  const old = shown.match(/"old_text":"(o+)(?: \[\.\.\. \d+ characters cut \.\.\.\] (o+))?"/);
+  assert.ok(old, shown.slice(0, 200));
+  // About 67,000 of old_text's 70,000 characters; with new_text's 50,000 kept in the call, about 46,000.
+  assert.ok(old[1].length + (old[2]?.length ?? 0) > 60_000, String(old[1].length + (old[2]?.length ?? 0)));
+});
+
 test("a long argument stays whole when the calls fit", () => {
   const calls = [{ tool: "create_issue", arguments: { title: "Release notes", body: `${"b".repeat(30_000)}BODYEND` }, status: "ok", result: "created #12" }];
   const input = graderInput(GRADER, "File it.", record(calls, []));
