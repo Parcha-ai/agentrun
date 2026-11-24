@@ -354,15 +354,15 @@ test("readAgent reads the agent's package and hashes each file's bytes, text or 
 
 /** A loopback listener answering with `answer(request)` (`[status, body]`), each request's method, path and
  *  Authorization header kept in `seen`: `{base, seen, stray}`, `base` ending /v2. Closed at the test's end.
- *  Every request the check sends is under `base`, so a request outside /v2 with no Authorization header is not the
- *  check's: a local port prober can send `GET /` to any new listener. It goes to `stray` with a 404. A request
- *  carrying a token is counted on any path, so a leaked token is never missed. */
+ *  A local port prober can send a keyless `GET /` to any new listener, and that request alone is not the check's: it
+ *  goes to `stray` with a 404. Every other request is counted: a token on any path, so a leaked token is never
+ *  missed, and a keyless request with any other method or path, so a stray request of the check's is never hidden. */
 async function listener(t, answer = () => [404, { error: { code: "not_found", message: "Not found." } }]) {
   const seen = [];
   const stray = [];
   const server = createServer((request, response) => {
     const one = { method: request.method, path: request.url, authorization: request.headers.authorization ?? null };
-    if (!/^\/v2(?:[/?#]|$)/.test(request.url) && one.authorization === null) {
+    if (request.method === "GET" && request.url === "/" && one.authorization === null) {
       stray.push(one);
       response.writeHead(404, { "content-type": "application/json" }).end("{}");
       return;
@@ -629,13 +629,20 @@ test("a lock the check can't use is refused with the check's own advice, never a
   assert.deepEqual(wrong, [], "each lock is refused with exit 2 and the check's advice (pass --target-agent ID, or a lock deploy wrote for this target)");
 });
 
-test("the fake install counts the check's requests, never a port probe's: a keyless GET / is stray, a token on any path is counted", async (t) => {
+test("the fake install counts every request but a port probe's: only a keyless GET / is stray, a token on any path or any other request is counted", async (t) => {
   const install = await listener(t);
   const root = new URL("/", install.base);
   await (await fetch(root)).text();
   assert.deepEqual(install.seen, [], "a port probe's GET / is counted as the check's request");
+  const probe = (one) => one.method === "GET" && one.path === "/" && one.authorization === null;
+  assert.ok(install.stray.some(probe), "the port probe's GET / is not kept as stray");
   await (await fetch(root, { headers: { authorization: "Bearer probe-test" } })).text();
   assert.deepEqual(install.seen.map((one) => one.path), ["/"], "a request carrying a token outside /v2 is not counted");
   await (await fetch(`${install.base}/agents/agt_a1`)).text();
   assert.deepEqual(install.seen.map((one) => one.path), ["/", "/v2/agents/agt_a1"], "a keyless request under /v2 is not counted");
+  await (await fetch(new URL("/v2x", install.base))).text();
+  assert.deepEqual(install.seen.map((one) => one.path), ["/", "/v2/agents/agt_a1", "/v2x"], "a keyless GET /v2x is not counted");
+  await (await fetch(root, { method: "POST" })).text();
+  assert.deepEqual(install.seen.map((one) => `${one.method} ${one.path}`), ["GET /", "GET /v2/agents/agt_a1", "GET /v2x", "POST /"], "a keyless POST / is not counted");
+  assert.ok(install.stray.every(probe), "a request other than the probe's GET / is kept as stray");
 });
