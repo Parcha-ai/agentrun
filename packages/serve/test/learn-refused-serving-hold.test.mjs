@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, startAt, putPromotions } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -28,10 +28,9 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { claimPromotion, promotionGate } = await import("../dist/runner/promotion.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, promotionsShown } = await import("../dist/learn/promote.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
-const { secretsShown, seedOf } = await import("../dist/learning.js");
+const { secretsShown } = await import("../dist/learning.js");
 const { readAudits, servingLinesOf } = await import("../dist/learn/audit.js");
 const { AUDIT_DEFAULTS } = await import("../dist/learning-setting.js");
 const { openapiDocument } = await import("../dist/openapi.js");
@@ -112,15 +111,15 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
   const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flow }]);
-  await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: digestOf(flow), at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
+  const seed = await landWorkflows(server, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flow }]);
+  await putPromotions(server, "agent-1", [{ workflow: "answer", digest: digestOf(flow), at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }]);
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return FINAL.includes(row?.state) && row.runner === null && row;
   }, `run ${id} ended`);
-  const launchOf = async (question) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt((await seedOf(dir, "agent-1")).sha) });
+  const launchOf = async (question) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt((await server.learning.seed("agent-1")).save.id) });
   const shadows = async () => {
     const out = [];
     for (const row of await server.runs.list({ agentId: "agent-1" })) {
@@ -140,19 +139,12 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
     asks.set(id, gw.requests.slice(before).map((request) => compileAskOf(request.body)).filter(Boolean));
     return row;
   };
-  const audits = async () => {
-    const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
-    try {
-      return await readAudits(folder.workspace);
-    } finally {
-      await folder.end();
-    }
-  };
+  const audits = () => readAudits(server.learning, "agent-1");
   /** The promotions read as GET /agents/{id}/learning/promotions builds it (no audit rows, the default numbers). A
-   *  workflow nothing serves has no champion (null); the route reads a serving one's from the learning folder, which this
+   *  workflow nothing serves has no champion (null); the route reads a serving one's from the learning rows, which this
    *  read does not, so a serving row here has none and fails the schema: only a read where nothing serves is checked. */
   const read = async () => {
-    const records = await promotionsOf(server.settings, "agent-1");
+    const records = await promotionsOf(server.learning, "agent-1");
     const same = { text: (text) => text, name: (name) => name };
     const shown = promotionsShown(records, same);
     const lines = servingLinesOf(records, [], AUDIT_DEFAULTS, () => false);
@@ -161,7 +153,7 @@ async function world(t, { learning = true, flow, submit, revise = "broken" }) {
   return { dir, server, store, logs, seed, start, asks, shadows, audits, read, launchOf };
 }
 
-const decisions = async (server) => (await promotionsOf(server.settings, "agent-1")).map(({ digest, decided }) => [digest, decided]);
+const decisions = async (server) => (await promotionsOf(server.learning, "agent-1")).map(({ digest, decided }) => [digest, decided]);
 const doc = openapiDocument(() => undefined);
 const meetsPromotions = (value) => assert.deepEqual(schemaProblems(doc, doc.paths["/agents/{agent_id}/learning/promotions"].get.responses["200"].content["application/json"].schema, value), [], JSON.stringify(value));
 
@@ -172,7 +164,7 @@ test("(a) a promoted workflow the DSL refuses: the run hands back, one hold with
   // The run still hands back as before, and the agent answers it.
   assert.deepEqual([first.state, first.metrics?.path, first.metrics?.workflow_digest], ["ended", "handed_back", digest], JSON.stringify(first.metrics));
   assert.deepEqual(await decisions(w.server), [[digest, "promote"], [digest, "hold"]]);
-  const held = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
+  const held = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.match(held.reason, REFUSAL, held.reason);
   assert.ok(held.reason.includes("tidy"), `the DSL's own words name the key: ${held.reason}`);
   assert.deepEqual([held.workflow, held.check, held.audit, held.commit], ["answer", undefined, undefined, w.seed], "a hold by its reason: neither a check's numbers nor an audit's rows");
@@ -193,16 +185,16 @@ test("(a) two claims serving the refused revision at once write one hold between
   const launch = readLaunchBody(await w.launchOf("What is six times seven"));
   const claim = (runId) => promotionGate(claimPromotion({
     store: w.server, agentId: "agent-1", runId, revisionId: "rev-1", launch, context: BACKGROUND_CONTEXT, log: () => {},
-    shown: async () => secretsShown([]), folder: () => learningWorkspace({ mode: "local", data: w.dir, agentId: "agent-1" }),
+    shown: async () => secretsShown([]),
   }));
   const laid = { name: "answer", description: "Answers a question as a number", workflow: JSON.stringify(REFUSED) };
   await Promise.all([claim("claim-a")(laid, digest), claim("claim-b")(laid, digest)]);
-  const records = await promotionsOf(w.server.settings, "agent-1");
+  const records = await promotionsOf(w.server.learning, "agent-1");
   assert.deepEqual(records.map(({ digest: at, decided }) => [at, decided]), [[digest, "promote"], [digest, "hold"]], JSON.stringify(records));
   assert.match(records[1].reason, REFUSAL);
   // A later claim finds the hold: nothing serves, nothing is written.
   assert.equal(await claim("claim-c")(laid, digest), undefined);
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).length, 2);
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).length, 2);
 });
 
 test("(b) the next due run asks the one recompile with the DSL's refusal in its ask; that recompile's failed draft stops it", { timeout: 300_000 }, async (t) => {
@@ -215,7 +207,7 @@ test("(b) the next due run asks the one recompile with the DSL's refusal in its 
   assert.ok(ask?.startsWith("One more turn: revise your learned workflow `answer`"), ask?.slice(0, 300));
   assert.match(ask, /does not run first: it was held \(this release's workflow DSL refuses it: NODE_KEY_UNKNOWN at \/root\/steps\/0/, ask.slice(0, 1200));
   // Its draft failed its checks: the recompile's attempt, so it stops, and no later run compiles anything.
-  const records = await promotionsOf(w.server.settings, "agent-1");
+  const records = await promotionsOf(w.server.learning, "agent-1");
   assert.deepEqual(records.slice(0, 2).map(({ digest: at, decided }) => [at, decided]), [[digest, "promote"], [digest, "hold"]]);
   const failed = records.at(-1);
   assert.equal(records.length, 3, JSON.stringify(records));
@@ -224,7 +216,7 @@ test("(b) the next due run asks the one recompile with the DSL's refusal in its 
   const second = await w.start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent");
   assert.deepEqual(w.asks.get("run-2"), [], "nothing compiles again");
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).length, 3);
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).length, 3);
 });
 
 test("(c) a handed-back run is never drawn for an audit, and the draw's served count leaves it out", { timeout: 240_000 }, async (t) => {

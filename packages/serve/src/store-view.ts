@@ -90,7 +90,7 @@ export interface ViewDeps {
    *  run's error names a refused key in plain words, as its Timeline's error row does. Default: this process's
    *  environment (the server passes it with the keys a person saved). */
   readonly keyEnv?: () => NodeJS.ProcessEnv;
-  /** Each learned item's status on agent `agentId`'s learning folder's main (learning-routes.ts statusesOf): what a run held
+  /** Each learned item's status at agent `agentId`'s newest learning save (learning-routes.ts statusesOf): what a run held
    *  for its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
   /** Run `runId`'s screen recordings (run-recordings.ts recordingsOf), the run ended at `endedAt` (null: it has not). Only
@@ -326,7 +326,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   // reads the figure this read shows. One conditional write (Runs.healCost); a failure is said and the next read tries again.
   if (run?.heal) await healStoredCost(store, runId, run.heal);
   if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd, since };
-  // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
+  // What the learning end held for its owner's OK reads as it stands now at its agent's newest save (learning.ts
   // currentLearning); its record stays as the merge wrote it.
   return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)), since };
 }
@@ -704,7 +704,7 @@ function healOf(endCost: RunCost | undefined, runRow: RunRow): StoreRun["heal"] 
 }
 
 /** The start sweep's heal of run `runId` (cost-heal.ts): the same rule as its run read's (bookedCostOf, healOf), from its
- *  row, its launch and its journal alone, so a sweep over many runs reads no timeline and no learning folder. True when
+ *  row, its launch and its journal alone, so a sweep over many runs reads no timeline and no learning. True when
  *  it wrote the booking's figure; a failed read or write throws, for the sweep to count. */
 export async function healedOverStore(store: Store, runId: string): Promise<boolean> {
   const heal = await store.snapshot(async (snapshot) => {

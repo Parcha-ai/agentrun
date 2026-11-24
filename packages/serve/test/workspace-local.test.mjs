@@ -11,10 +11,9 @@ import { dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import { Worker } from "node:worker_threads";
 import { agentDiskDir } from "../dist/server-fs.js";
-import { learningRepo } from "../dist/learning.js";
 import { sendFile } from "../dist/run-files.js";
 import { ID } from "../dist/validate.js";
-import { agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
+import { agentHomeFolder, COMPUTER_ROOT, DISK_DIR, EXEC_OUTPUT_MAX, localWorkspace, portPath, relativePath, relativeSegments, runFolder, scratchFolder } from "../dist/workspace/index.js";
 import { suite } from "./workspace-conformance.mjs";
 
 const SHIM = new URL("./store-fixtures/fsync-snapshot.c", import.meta.url).pathname;
@@ -47,18 +46,17 @@ async function refused(promise, code) {
   await assert.rejects(promise, (error) => error?.name === "WorkspaceError" && error.code === code);
 }
 
-test("paths: a run's folder and an agent's learning folder are where today's code keeps them", () => {
+test("paths: a run's folder is where today's code keeps it", () => {
   for (const agent of ["acme", "Acme", "a.b_c-9", "x".repeat(128)]) {
     assert.equal(runFolder("/data", agent, "run-1"), join(join(agentDiskDir("/data", agent), "runs", "run-1"), "work"), agent);
-    assert.equal(agentLearningFolder("/data", agent), learningRepo("/data", agent), agent);
   }
   assert.match(runFolder("/data", "acme", "r1"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
   assert.notEqual(runFolder("/data", "Acme", "r"), runFolder("/data", "acme", "r"), "ids that differ in case never share a folder");
 });
 
-test("paths: an agent's home is beside its learning folder; a run's scratch folder is on this machine's disk, outside every Workspace", () => {
+test("paths: an agent's home is in its folder on the disk; a run's scratch folder is on this machine's disk, outside every Workspace", () => {
   assert.match(agentHomeFolder("/data", "acme"), /^\/data\/disk\/agents\/acme-[0-9a-f]{16}\/home$/);
-  assert.equal(dirname(agentHomeFolder("/data", "acme")), dirname(agentLearningFolder("/data", "acme")), "the agent's folder holds both");
+  assert.equal(dirname(agentHomeFolder("/data", "acme")), dirname(dirname(dirname(runFolder("/data", "acme", "r1")))), "the agent's folder holds its home and its runs");
   const scratch = scratchFolder("/data", "acme", "run-1");
   assert.match(scratch, /^\/data\/scratch\/acme-[0-9a-f]{16}\/run-1$/);
   assert.ok(!scratch.startsWith(`/data/${DISK_DIR}/`), "never on the disk the Workspaces hold (the owner's, in Mode 2)");
@@ -74,7 +72,7 @@ test("paths: ids follow the API's id rule; a bad one is refused", () => {
   for (const bad of ["", ".", "..", "a/b", "../x", "-a", ".a", "a b", "a\0", "x".repeat(129), "é"]) {
     assert.throws(() => runFolder("/data", bad, "r"), /agent id/, `agent ${JSON.stringify(bad)}`);
     assert.throws(() => runFolder("/data", "a", bad), /run id/, `run ${JSON.stringify(bad)}`);
-    assert.throws(() => agentLearningFolder("/data", bad), /agent id/, `learning ${JSON.stringify(bad)}`);
+    assert.throws(() => agentHomeFolder("/data", bad), /agent id/, `home ${JSON.stringify(bad)}`);
   }
 });
 

@@ -1,4 +1,4 @@
-// A learned workflow draft: `workflows/<name>/workflow.json` with its `README.md`, their place in the learning folder, the
+// A learned workflow draft: `workflows/<name>/workflow.json` with its `README.md`, their place in the learning, the
 // shape each file must have, and what its dry run reads. check.ts checks a draft; nothing here reads a file, runs a draft
 // or calls a model.
 import { mcpNameOf } from "../tool-names.js";
@@ -373,7 +373,7 @@ function frontLine(key: string, value: string): string {
  *  README with no description, which the checker refuses; what the JSON holds is the checker's to judge. `example`, its
  *  `example:` front matter line as written (the run's own input to the workflow, one JSON object): what its dry run runs
  *  on (draftDryRun), and never a file's: the README holds its name and description alone, so the run's input, which can
- *  be a customer's data, is never kept in the learning folder. */
+ *  be a customer's data, is never kept in the learning. */
 export function draftFiles(name: string, block: string): { json: string; readme: string; example?: string } {
   const front = frontOf(block);
   if (typeof front === "string") return { json: block, readme: readmeOf(name, "") };

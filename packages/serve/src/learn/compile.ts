@@ -14,7 +14,7 @@ import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
-import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf, type Refused, resetAtOf } from "./promote.js";
+import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf, resetAtOf } from "./promote.js";
 import { listed } from "../learning-words.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
@@ -143,13 +143,12 @@ export function promotedOf(records: readonly PromotionRecord[], workflow: string
 /** The learned workflows whose newest revision other than their champion (learn/promote.ts championOf, which serves while
  *  that revision is held) is held: each one's compile turn is asked for a revision (once per hold). A champion's own
  *  hold counts: with it held there is no champion. Not one a check stopped (its recompile's check held it too): nothing
- *  compiles it again. A record `refused` names (the purge gate's: purged-workflow.ts refusedOf) is skipped as championOf
- *  skips it, so no purged run's revision is the champion or the hold a compile revises. */
-export function heldNamesOf(records: readonly PromotionRecord[], refused?: Refused): Set<string> {
-  const kept = refused ? records.filter((one) => !refused(one)) : records;
-  return new Set([...new Set(kept.map(({ workflow }) => workflow))].filter((name) => {
-    const champion = championOf(kept, name)?.digest;
-    const newest = kept.findLast((one) => one.workflow === name && one.digest !== champion);
+ *  compiles it again. A purged run's records are gone with it (Store.learning purgeRun): no purged run's revision is the
+ *  champion or the hold a compile revises. */
+export function heldNamesOf(records: readonly PromotionRecord[]): Set<string> {
+  return new Set([...new Set(records.map(({ workflow }) => workflow))].filter((name) => {
+    const champion = championOf(records, name)?.digest;
+    const newest = records.findLast((one) => one.workflow === name && one.digest !== champion);
     return newest?.decided === "hold" && !newest.check?.stopped && !newest.audit?.stopped;
   }));
 }

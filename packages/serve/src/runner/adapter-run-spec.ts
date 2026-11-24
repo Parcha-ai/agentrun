@@ -43,9 +43,8 @@ import { webCut } from "../timeline/web-calls.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
-import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
+import { laidLearned, type LearnedWorkflow, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
-import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type LearnedAction, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpCalls, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
@@ -548,15 +547,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
   const kindSkills = movedProject ? [] : await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
   const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
-  // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
-  // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
-  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none. None a purged run wrote, by the
-  // store's runs; a run's own process (no seal key) reads no other run, and its runner reads the seed again
-  // (learned-first.ts learnedFirstWhereHeld).
+  // A learning run's seed, read once from its agent's learning rows (runner/learning-seed.ts): its learned workflows,
+  // cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's tools are bound. A
+  // learning fault, or a seed that failed (seedFailed), gives none.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
-  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, store: deps.sealKey ? deps.store : null, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
+    ? await layLearningSeed({ seed: start.seed, store: deps.store, agentId: runRow.agentId, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
@@ -768,10 +764,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // are skipped, in words, where the run brought its own key or the server holds none.
   const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
+  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -840,7 +836,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
   // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
-  // reads no learning folder), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
+  // reads no learning rows), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
   // outputContract, the CLI spec's too), then the effort guidance (the launch's effort, never this process's environment).
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
@@ -898,14 +894,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
   // compile turn and the owner's correction over the run's store, asked in the end turn while the claim is held
-  // (adapter-loop.ts stepOf). Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the
-  // data directory, Mode 2 the agent's folder on THIS claim's Archil disk (the draft is checked against the seed on the disk, never this machine's
-  // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
+  // (adapter-loop.ts stepOf), its draft checked against the seed in the agent's learning rows.
   // A replay run or an audit's shadow run learns nothing at its end: it is the promotion's, never the agent's to learn
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -918,9 +912,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-    learningFolder: archil === undefined
-      ? (agentId: string) => learningFolderOf(deps.data, agentId)
-      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
   }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
 
   return {

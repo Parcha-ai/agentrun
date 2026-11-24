@@ -21,13 +21,20 @@ const draftSays = (fields) => `\`\`\`json\n${JSON.stringify(fields)}\n\`\`\``;
 const AGENT = { mcc: "7832", riskTier: "low", riskRationale: "A cinema with a public box office and a long trading history.", evidence: ["example.com/tickets lists showtimes"], confidence: 0.86 };
 const DRAFT = { riskTier: "low", mcc: "7832", riskRationale: "Motion picture theatre; low chargeback exposure.", evidence: ["Showtimes page on example.com"], confidence: 0.74 };
 
-/** The settings a promotion record is written through, in memory. */
-function settingsOf() {
-  const kv = new Map();
+/** The agent's learning records in memory, as Store.learning keeps them (records, changeRecords in one write each), and
+ *  its workflow "classify" held at digest d1, the one each check here decides. */
+function learningRowsOf() {
+  const kinds = new Map();
+  let seq = 0;
+  const stamp = (one) => ({ ...one, seq: one.seq ?? ++seq, at: one.at ?? Date.now() });
   return {
-    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
-    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
-    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+    records: async (_agentId, kind) => structuredClone(kinds.get(kind) ?? []),
+    changeRecords: async (_agentId, kind, update) => {
+      const out = update(structuredClone(kinds.get(kind) ?? []));
+      if ("records" in out) kinds.set(kind, out.records.map(stamp));
+      return out.result;
+    },
+    versions: async (_agentId, _kind, name) => (name === "classify" ? [{ digest: "d1" }] : []),
   };
 }
 
@@ -38,11 +45,11 @@ const readOf = (draft, n = 5, said = AGENT) => {
 };
 
 async function decide(bar, read) {
-  const settings = settingsOf();
+  const learning = learningRowsOf();
   const logs = [];
-  const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => secretsShown([]) };
+  const deps = { store: { learning }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => secretsShown([]) };
   const decided = await decideCheck(deps, "classify", "d1", { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, ...bar }, read, () => true, {});
-  return { record: decided.record, stored: (await promotionsOf(settings, "a")).at(-1), logs };
+  return { record: decided.record, stored: (await promotionsOf(learning, "a")).at(-1), logs };
 }
 
 test("check on live-shaped answers: same mcc and riskTier, other rationale, evidence and confidence: agreed on agree_on, promoted; on the whole answer, held", async () => {
@@ -147,8 +154,8 @@ test("agree_on round-trips through the definition PUT; a bad one is a 422 naming
 });
 
 test("a record written with agree_on reads back with it (the promotions read keeps what the check compared)", async () => {
-  const settings = settingsOf();
+  const learning = learningRowsOf();
   const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, agree_on: ["verdict.decision"], attempt: 1, n: 1, agreed: 1, alone: 1, of: ["r-0"] };
-  await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", check }, () => true);
-  assert.deepEqual((await promotionsOf(settings, "a")).at(-1).check, check);
+  await recordPromotion(learning, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", check }, () => true);
+  assert.deepEqual((await promotionsOf(learning, "a")).at(-1).check, check);
 });

@@ -30,7 +30,7 @@ export type ServedTimelineDeps = {
   readonly signIns?: SignInReader;
   /** The environment a run's model key is read from, with the keys a person saved (withSecrets, as main's plainKey). */
   readonly keyEnv: () => NodeJS.ProcessEnv;
-  /** Each learned item's status on an agent's learning folder's main (learning-routes.ts statusesOf): what a run held for
+  /** Each learned item's status on an agent's newest learning save (learning-routes.ts statusesOf): what a run held for
    *  its owner's OK reads as it stands there. None: as the merge wrote it. */
   readonly statuses?: (agentId: string) => Promise<ReadonlyMap<string, ItemStatus> | undefined>;
 };

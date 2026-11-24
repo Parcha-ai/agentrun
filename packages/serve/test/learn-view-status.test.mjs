@@ -4,13 +4,10 @@
 // and stopped never reads as though it served; one with no promotion record yet reads `checking` (the first run it fits
 // starts its check).
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
 import { workflow } from "./learn-format-support.mjs";
-import { git, learner, made, resnap } from "./learn-support.mjs";
+import { learner, made, putLearning } from "./learn-support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { serve } from "./support.mjs";
 
@@ -20,26 +17,18 @@ const CHECK = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, n: 5, of: [] }
 const at = (minutes) => new Date(Date.UTC(2026, 10, 18, 9, minutes)).toISOString();
 
 test("each workflow's status says whether it serves: promoted serving, held twice stopped, held once held, no record checking, pending pending", { timeout: 60_000 }, async (t) => {
-  const { api, data, baseUrl, store } = await serve(t, { learning: "on" });
+  const { api, baseUrl, store } = await serve(t, { learning: "on" });
   await made(api, learner("viewer"));
-  await seedOf(data, "viewer");
-  const repo = join(agentFolderOf(data, "viewer"), "learning");
   const files = { ...draft("promoted"), ...draft("stopped"), ...draft("held"), ...draft("fresh"), ...draft("waits", "status: pending\n"), ...draft("replays") };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "viewer");
-  await store.settings.put("learning.promotions.viewer", { v: 1, items: [
+  await putLearning(store, "viewer", files);
+  await putPromotions(store, "viewer", [
     { workflow: "promoted", digest: "a".repeat(16), at: at(1), decided: "promote", reason: "checked: promoted", check: { ...CHECK, attempt: 1, agreed: 5, alone: 5 } },
     // The live demo's: its check held, its recompile's check held too, and it stopped.
     { workflow: "stopped", digest: "b".repeat(16), at: at(2), decided: "hold", reason: "checked: held", check: { ...CHECK, attempt: 1, agreed: 1, alone: 2 } },
     { workflow: "stopped", digest: "c".repeat(16), at: at(3), decided: "hold", reason: "checked: held again, stopped", check: { ...CHECK, attempt: 2, agreed: 1, alone: 2, stopped: true } },
     { workflow: "held", digest: "d".repeat(16), at: at(4), decided: "hold", reason: "checked: held", check: { ...CHECK, attempt: 1, agreed: 1, alone: 2 } },
     { workflow: "replays", digest: "e".repeat(16), at: at(5), decided: "replaying", reason: "checking", check: { ...CHECK, attempt: 1 } },
-  ] });
+  ]);
 
   const view = await api("GET", "/agents/viewer/learning");
   assert.equal(view.status, 200, JSON.stringify(view.body));
@@ -61,20 +50,12 @@ test("each workflow's status says whether it serves: promoted serving, held twic
 // promotions read's state and the cost read's state say the same: it does not serve.
 test("a promoted workflow the money rule stopped reads stopped, never serving, in the learning view and the promotions read", { timeout: 60_000 }, async (t) => {
   // No runner beside the server: the test claims and ends each seeded run itself (one beside would claim it first).
-  const { api, data, store } = await serve(t, { learning: "on", runner: false });
+  const { api, store } = await serve(t, { learning: "on", runner: false });
   await made(api, learner("costly"));
-  await seedOf(data, "costly");
-  const repo = join(agentFolderOf(data, "costly"), "learning");
   const files = { ...draft("dear"), ...draft("cheap") };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "costly");
+  await putLearning(store, "costly", files);
   const promoted = (workflow, digest, minutes) => ({ workflow, digest, at: at(minutes), decided: "promote", reason: "checked: promoted", check: { ...CHECK, attempt: 1, agreed: 5, alone: 5 } });
-  await store.settings.put("learning.promotions.costly", { v: 1, items: [promoted("dear", "f".repeat(16), 1), promoted("cheap", "9".repeat(16), 2)] });
+  await putPromotions(store, "costly", [promoted("dear", "f".repeat(16), 1), promoted("cheap", "9".repeat(16), 2)]);
 
   const revisionId = (await store.agents.get("costly")).currentRevision;
   const body = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" } };

@@ -6,7 +6,7 @@
 // words naming the sentinel too), an audit hold that disagreed with it, and its kept learning's proposal. Each is read
 // back before the purge (the scan sees each place it looks at). After the purge the sentinel is nowhere:
 //   - in no column of any row of any table the store's schema made, listed from the database itself (SQLite's
-//     sqlite_master, Postgres' information_schema), the settings' rows among them;
+//     sqlite_master, Postgres' information_schema), the settings' and the learning records' rows among them;
 //   - in no file under the server's data directory, the agents' folders among them (the store's own file aside on SQLite:
 //     its rows are read above);
 //   - in no answer of any GET route the OpenAPI document lists whose parameters the test can fill (the purged run's own
@@ -176,7 +176,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   assert.equal(decided.won, true, "the check is decided");
   assert.equal(decided.record.decided, "hold", `it disagreed, so it is held: ${decided.record.reason}`);
   // An audit hold that disagreed with it, as runner/audit.ts applyHold writes one.
-  await recordPromotion(store.settings, "calc", {
+  await recordPromotion(store.learning, "calc", {
     workflow: "flow", digest: "d-audit", at: new Date().toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 1 of 1",
     audit: { window: 1, disagree: 1, rows: 1, disagreements: [{ run: shadow, served: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] },
   }, () => true);
@@ -185,7 +185,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
     workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
     check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
   };
-  await recordPromotion(store.settings, "calc", collecting, () => true);
+  await recordPromotion(store.learning, "calc", collecting, () => true);
   // Its kept learning: what its learning turn asked and what it proposed.
   const db = await raw(place);
   try {
@@ -205,10 +205,10 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   // Before: each place holds it, so each scan below is known to see what it looks at.
   const before = { tables: await inTables(place, word), files: await inFiles(data, word), routes: await inRoutes(api, paths, word) };
   t.diagnostic(`before the purge: ${JSON.stringify(before)}`);
-  for (const where of ["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "settings[learning.promotions.calc]", "settings[learning.grades.calc]"]) {
+  for (const where of ["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "learning_records.data"]) {
     assert.ok(before.tables.includes(where), `${where} holds it before: ${before.tables.join(", ")}`);
   }
-  assert.ok(before.tables.some((where) => !where.startsWith("settings[") && !["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal"].includes(where)), `its journal holds it before: ${before.tables.join(", ")}`);
+  assert.ok(before.tables.some((where) => !where.startsWith("settings[") && !["run_launch.body", "learning_proposals.turn", "learning_proposals.proposal", "learning_records.data"].includes(where)), `its journal holds it before: ${before.tables.join(", ")}`);
   assert.ok(before.files.some((path) => path.endsWith("/work/kept.md")), `the file it wrote holds it before: ${before.files.join(", ")}`);
   assert.ok(before.routes.some((one) => one.startsWith(`/runs/${gone}/timeline `)), `its timeline holds it before: ${before.routes.join(", ")}`);
   assert.ok(before.routes.some((one) => one.startsWith("/agents/calc/learning/promotions ")), `the promotions read holds it before: ${before.routes.join(", ")}`);
@@ -230,7 +230,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);
   // A next turn's write built on the turns read before the purge (sdkCheckTurn, racing it) keeps what the purge blanked.
   const next = { ...collecting, at: new Date().toISOString(), check: { ...collecting.check, turns: { ...collecting.check.turns, n: 2, alone: 2, agreed: 1, of: [kept.body.run_id, gone] } } };
-  const written = await recordPromotion(store.settings, "calc", next, () => true);
+  const written = await recordPromotion(store.learning, "calc", next, () => true);
   assert.deepEqual([written.won, written.record.check.turns.n, written.record.check.turns.disagreements], [true, 2, [{ run: gone, input: "", agent: null, draft: "" }]], `the copy read before the purge is written blanked: ${JSON.stringify(written.record)}`);
   assert.deepEqual(await inTables(place, word), [], "no table holds the sentinel again");
   // The sibling is untouched.

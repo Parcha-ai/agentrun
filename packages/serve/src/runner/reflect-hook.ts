@@ -1,5 +1,5 @@
 // The learning lane's end-of-run step on the runner (loop-contract.ts EndOfRunTurn): what a run that learns keeps
-// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning folder:
+// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning:
 //   - its owner's feedback (a grade's words, a message after its first), appended to corrections.md as one line, with
 //     no model turn;
 //   - its compile turn (learn/compile.ts), when one is due: the job written as a workflow, or a revision of a held one,
@@ -61,7 +61,7 @@ export interface ReflectDeps {
   /** One compile draft through the checks (learning-end.ts checkDraftOf): its errors, else what is committed and its
    *  digest. `revised`: a revision's workflow and the commit of main it was read at, its conflict base. */
   readonly checkDraft: (input: { runId: string; agentId: string; draft: { name: string; text: string }; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<DraftChecked<DraftCommit>>;
-  /** The round's merge on the agent's learning folder (learning-end.ts commitDirect): its draft and its owner's
+  /** The round's merge on the agent's learning (learning-end.ts commitDirect): its draft and its owner's
    *  correction, one commit by the run. */
   readonly commit: (input: { runId: string; agentId: string; round: number; draft?: DraftCommit; correction?: string; refuse: readonly string[] }) => Promise<Committed>;
   /** Every value the run must never learn: the host's secrets and what the run was handed, its sign-in pointer among

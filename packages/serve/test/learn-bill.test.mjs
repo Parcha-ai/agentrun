@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
@@ -134,10 +135,10 @@ async function ledgerStore(t) {
     if (one.learning_usd) await end(`audit.${one.run_id}`, one.learning_usd, { path: "audit", audit: { of: one.run_id, workflow: "answer", digest: A } }, shadow(one.run_id, A));
   }
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [
+  await putPromotions(store, "agent-1", [
     { workflow: "answer", digest: A, at: PROMOTED, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"], cost_usd: 0.6 } },
     { workflow: "answer", digest: B, at: at(11), decided: "hold", reason: "held", check: { ...bar, attempt: 2, n: 1, agreed: 0, alone: 1, of: ["run-01"], cost_usd: 0.5, stopped: true } },
-  ] });
+  ]);
   return store;
 }
 
@@ -233,7 +234,7 @@ async function splitStore(t, { replay = 0.3, records, capped = false } = {}) {
   await end("run-08", 3, { path: "agent" });
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = { workflow: "answer", digest: C, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 2, agreed: 2, alone: 2, of: ["run-01", "run-02"] } };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: records ?? [promote] });
+  await putPromotions(store, "agent-1", records ?? [promote]);
   return store;
 }
 
@@ -323,10 +324,10 @@ test("the bill's holds: each at its run of the whole series, placed by the serve
 test("the bill's holds say what held each: a hold this release's workflow DSL wrote (neither check nor audit) is `dsl`, never a check's", async (t) => {
   const { DSL_REFUSES } = await import("../dist/runner/promotion.js");
   const store = await ledgerStore(t);
-  const { items } = await store.settings.get("learning.promotions.agent-1");
+  const items = (await store.learning.records("agent-1", "promotion")).map((one) => one.data);
   // At run-12's start (minute 13): the 9th run that does a job.
   const refused = { workflow: "answer", digest: A, at: at(13), decided: "hold", reason: `${DSL_REFUSES}: SCHEMA_UNKNOWN_KEY at root: a key this release does not take`, commit: "c".repeat(40) };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [...items, refused] });
+  await putPromotions(store, "agent-1", [...items, refused]);
   const read = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(read.bill.holds.map((one) => [one.n, one.by]), [[8, "check"], [9, "dsl"]], JSON.stringify(read.bill.holds));
   assert.equal(read.bill.holds[1].reason, refused.reason);
@@ -358,7 +359,7 @@ test("A8 (4): two workflows whose workflow.json is the same text (one digest): e
   for (const [i, workflow] of served.entries()) await end(`run-${String(i + 3).padStart(2, "0")}`, 0.1, { path: "workflow", workflow, workflow_digest: D });
   const bar = { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1 };
   const promote = (workflow) => ({ workflow, digest: D, at: promotedAt, decided: "promote", reason: "checked: promoted", check: { ...bar, n: 1, agreed: 1, alone: 1, of: ["run-01"] } });
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [promote("answer"), promote("lookup")] });
+  await putPromotions(store, "agent-1", [promote("answer"), promote("lookup")]);
 
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.bill.revisions.map((one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.served, one.attributed_usd, one.unattributed_usd]), [["answer", D, 0.3, 0.3, 0.6, 4, 0.6, 0], ["lookup", D, 0.6, 0.9, 1.5, 4, 1.5, 0]]);

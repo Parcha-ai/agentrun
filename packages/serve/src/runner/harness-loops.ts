@@ -127,8 +127,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
     if (tooBig) throw new NeverFits(tooBig);
     const entry = harnessOf(env, harness);
     // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
-    // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
-    // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+    // (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
     // run that does not learn supplies none. The same for the pi and the CLI spec.
     return createAdapterLoop((claim, adapterRun) =>
       entry?.facts && entry.adapter

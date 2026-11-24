@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ended, LEARN, learner, made, started } from "./learn-support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
@@ -82,7 +83,7 @@ test("the promotions list cuts a known secret from every text of a record: its w
   const { api, store } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("promoted"))).status, 201);
   const record = { workflow: `answer-${value}`, digest: "d2", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: `check of answer-${value}: held, it disagreed on check-${value}`, check: { compile_after: 20, agree_min: 0.9, alone_min: 0.5, attempt: 1, n: 4, agreed: 1, alone: 2, of: ["g-0"], disagreements: [{ run: "g-0", input: `ask ${value}`, agent: "no" }] } };
-  await store.settings.put("learning.promotions.promoted", { v: 1, items: [record] });
+  await putPromotions(store, "promoted", [record]);
   const read = await api("GET", "/agents/promoted/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.promotions.length, 1);
@@ -102,7 +103,7 @@ test("the promotions list answers a hold, a promote on its dry run and a replayi
   const dry = { workflow: "answer", digest: "d0", at: "2026-11-13T00:00:00.000Z", decided: "promote", reason: "nothing to replay on: promoted on its passing dry run", check: { ...bar, n: 0, agreed: 0, alone: 0, of: [] } };
   const held = { workflow: "answer", digest: "d1", at: "2026-11-14T00:00:00.000Z", decided: "hold", reason: "it handed back every one of its 6 replayed inputs: it would never answer alone", check: { ...bar, n: 6, agreed: 0, alone: 0, of: ["g-0"], stopped: true } };
   const replaying = { workflow: "answer", digest: "d2", at: "2026-11-14T00:00:01.000Z", decided: "replaying", reason: "its check is replaying", check: bar, runs: ["r-1"], inputs: ["g-0"], replay_id: "rp-1" };
-  await store.settings.put("learning.promotions.switched", { v: 1, items: [dry, held, replaying] });
+  await putPromotions(store, "switched", [dry, held, replaying]);
   const read = await api("GET", "/agents/switched/learning/promotions");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual(schemaProblems(doc, schema, read.body), [], JSON.stringify(read.body));

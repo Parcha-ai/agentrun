@@ -465,7 +465,117 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** The agent's learning at its newest save, what a run starts from: its items there, and every version's facts (no
+   *  bodies) up to it. An agent with no save yet is given its first, empty (an `init` save), so every seed names one. */
+  seed(agentId: string): Promise<LearningAt>;
+  /** The agent's learning at its newest save, as seed reads it; undefined before its first save (none is made). */
+  newest(agentId: string): Promise<LearningAt | undefined>;
+  /** The agent's learning as save `id` (a version id) left it, read now: a purged run's rows are gone from every
+   *  version. Undefined when the agent's learning holds no such save (a reset removed it, or it never was). */
+  itemsAt(agentId: string, id: string): Promise<LearningAt | undefined>;
+  /** The agent's saves its log shows (a purged run's left out), newest first: at most `limit`, below version `before`
+   *  when given; `total`, how many the log shows in all. */
+  saves(agentId: string, options?: { limit?: number; before?: number }): Promise<{ saves: LearningSave[]; more: boolean; total: number }>;
+  /** One save of the agent's, by its version id or by its merge key; undefined when there is none. */
+  saveOf(agentId: string, by: { id: string } | { mergeKey: string }): Promise<LearningSave | undefined>;
+  /** Every version of one item, newest first, bodies included (a gone version's body null), each with its save. */
+  versions(agentId: string, kind: LearningItemKind, name: string): Promise<(LearningItem & { readonly save: LearningSave })[]>;
+  /** What save `id` changed: each item it wrote, with its body just before the save and at it (null: none there). */
+  diff(agentId: string, id: string): Promise<LearningDiff | undefined>;
+  /** One save, in one transaction: refused as stale unless the agent's newest version is `base`, as already done when a
+   *  save with its merge key is there, and as refused when its seed is not held. */
+  save(agentId: string, save: LearningSaveInput): Promise<LearningSaved>;
+  /** Run `runId`'s learning gone, every agent's: the item versions it wrote (a person's change of its text with them),
+   *  its grades, its audits, and the promotions and audits of each workflow version it wrote. Its saves stay as facts with
+   *  no text (their merge keys still taken). Idempotent. */
+  purgeRun(runId: string): Promise<void>;
+  /** The agent's learning gone: items, saves and records. Its runs and what they cost stay. */
+  reset(agentId: string): Promise<void>;
+  /** Every learning row of the agent gone, its reset's included: its delete. */
+  erase(agentId: string): Promise<void>;
+  /** The agent's records of `kind`, oldest first. */
+  records(agentId: string, kind: LearningRecordKind): Promise<LearningRecord[]>;
+  /** Adds one record of `kind`, after every other. */
+  addRecord(agentId: string, kind: LearningRecordKind, record: LearningRecordWrite): Promise<LearningRecord>;
+  /** The agent's records of `kind` changed in one transaction: `update` reads them all and answers the list they become
+   *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change. */
+  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[]) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }): Promise<T>;
 }
+
+/** A learning item: one line of the owner's notes (corrections.md), or one learned workflow's folder. */
+export type LearningItemKind = "note" | "workflow";
+/** What a version of an item was: a run's merge, or a person's change. */
+export type LearningChangeKind = "learned" | "approved" | "edited" | "created" | "retired" | "restored";
+/** One version of an item. A note's body is its line; a workflow's is JSON, its files by path. */
+export interface LearningItem {
+  readonly kind: LearningItemKind;
+  readonly name: string;
+  readonly version: number;
+  /** Null: the item is gone at this version. */
+  readonly body: string | null;
+  /** The run whose text it is: the run whose merge wrote it, kept by a person's change of it; null for a person's own. */
+  readonly byRun: string | null;
+  readonly change: LearningChangeKind;
+  readonly person: boolean;
+  /** A note's place among the notes. */
+  readonly pos: number;
+  /** A workflow's digest (its workflow.json's), which its promotions and audits name. */
+  readonly digest: string | null;
+  readonly at: number;
+}
+/** One save: a version of the agent's learning. `id` is the version id a run's seed names. */
+export interface LearningSave {
+  readonly version: number;
+  readonly id: string;
+  readonly at: number;
+  readonly by: LearningSaveBy;
+  readonly reason: string;
+  /** The paths the save changed, as the folder names them. */
+  readonly files: readonly string[];
+  readonly mergeKey: string | null;
+}
+/** Who saved: a run's merge (its round past the first), a person's change, or the host: the empty first save of a run's
+ *  seed (`init`), or a purged run's save with its words gone (`purged`). */
+export type LearningSaveBy = { readonly run: string; readonly round?: number } | { readonly person: Exclude<LearningChangeKind, "learned">; readonly file: string; readonly approved?: boolean } | { readonly host: "init" | "purged" };
+/** The agent's learning at one save: the save, its live items, and the facts of every item version up to it. */
+export interface LearningAt {
+  readonly save: LearningSave;
+  readonly items: readonly LearningItem[];
+  readonly history: readonly Omit<LearningItem, "body">[];
+}
+export type LearningItemWrite = Omit<LearningItem, "version" | "at">;
+export interface LearningSaveInput {
+  /** The version the save was computed on (0 before the first). */
+  readonly base: number;
+  readonly by: Exclude<LearningSaveBy, { host: string }>;
+  readonly reason: string;
+  readonly files: readonly string[];
+  readonly items: readonly LearningItemWrite[];
+  /** A run's merge: one save per key, ever (a purge keeps the key taken). */
+  readonly mergeKey?: string;
+  /** A version id the agent's learning must still hold (a run's seed). */
+  readonly seed?: string;
+}
+export type LearningSaved =
+  | { readonly saved: LearningSave }
+  | { readonly stale: number }
+  | { readonly refused: { readonly seed: string } }
+  | { readonly already: LearningSave };
+export interface LearningDiff {
+  readonly save: LearningSave;
+  readonly parent: LearningSave | undefined;
+  readonly items: readonly { readonly kind: LearningItemKind; readonly name: string; readonly before: string | null; readonly after: string | null }[];
+}
+export type LearningRecordKind = "promotion" | "grade" | "audit";
+export interface LearningRecord {
+  readonly seq: number;
+  readonly runId: string | null;
+  readonly workflow: string | null;
+  readonly digest: string | null;
+  readonly data: unknown;
+  readonly at: number;
+}
+export type LearningRecordWrite = Omit<LearningRecord, "seq" | "at"> & { readonly seq?: number };
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
 export interface LearningSpend {
@@ -1045,7 +1155,7 @@ export interface Runs {
   /** Run `runId`'s list_mark now (the mark a build of its listing starts from), or undefined when there is no such run. */
   listMark(runId: string): Promise<number | undefined>;
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
-   *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
+   *  of agent `agentId` when given: the server's keys changed, or an agent's learning did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;
   /** Writes `cost`, what its booking gives by the end's own rule (metrics.ts endCostOf: a figure, the most the run can
    *  have cost when `costUpperBound`), as ended run `runId`'s stored cost, as its end would have, only while that cost is
@@ -1062,7 +1172,7 @@ export interface Runs {
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
    *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
-   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
+   *  its purge time and its disk (RunRow.disk). */
   every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
@@ -1077,8 +1187,8 @@ export interface Runs {
    *  comes first (one that can't be written, a full disk, throws with nothing purged), and a WAL checkpoint (TRUNCATE)
    *  follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; a checkpoint another
    *  connection holds back keeps the marker for the next start's scrub. Postgres keeps old row versions until its
-   *  VACUUM. The run's text in its agent's learning folder is the server's to take off (agent-delete.ts forgetCopies),
-   *  and the purge time set here is what the folder's history reads skip its merges by. */
+   *  VACUUM. The run's learning rows go in the same transaction (Learning.purgeRun): its saves' words, its notes and
+   *  workflow files, its records. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,

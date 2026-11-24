@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_ROWS, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -42,6 +42,7 @@ const seqOf = (cursor: RunChangeCursor): number => {
 };
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
+import { dropAgentLearning, dropRunLearning, learningRows } from "./learning-rows.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
@@ -346,6 +347,7 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
+  { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -552,6 +554,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
         { sql: RUN_ATTEMPTS },
+        // Nor any agent's learning as rows (schema.ts LEARNING_ROWS): learning kept before it is not read.
+        ...LEARNING_ROWS.map((sql) => ({ sql })),
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       // A computer_intervals an earlier build of this version made has no disk or booked time (schema.ts
@@ -689,12 +693,15 @@ async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> 
   await tx.run("DELETE FROM hand_backs WHERE run_id = ?", runId);
   // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
   await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
+  // What it learned and what its agent's learning kept of it (learning-rows.ts dropRunLearning).
+  await dropRunLearning(tx, runId);
 }
 
 /** An agent's own rows no tombstone keeps (its learning, its saved sign-ins and their tombstones), gone: what an agent's
  *  purge (Agents.purge) and its delete (Agents.remove) both drop. */
 async function dropAgentPrivate(tx: SqliteExecutor, agentId: string): Promise<void> {
   await tx.run("DELETE FROM learning WHERE agent_id = ?", agentId);
+  await dropAgentLearning(tx, agentId);
   await tx.run("DELETE FROM sign_ins WHERE agent_id = ?", agentId);
   await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ?", agentId);
 }
@@ -1977,6 +1984,7 @@ class SqliteStore implements Store {
     // A purged run's kept learning is its state alone (Runs.purge), for the learning meter: no reader of learning reads it.
     const NOT_PURGED = "NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = learning_proposals.run_id AND runs.purged_at IS NOT NULL)";
     this.learning = {
+      ...learningRows(db, now),
       // A round asked for, else the run's newest.
       proposal: async (runId, round) => {
         const row = round === undefined

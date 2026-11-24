@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { openSqliteStore } from '../dist/store/index.js';
 import { launchBody, readLaunchBody } from '../dist/run-launch.js';
-import { learningWorkspace } from '../dist/learn/folder.js';
 import { startAudit } from '../dist/runner/audit.js';
 import { runProjectCheckpoint } from '../dist/runner/project-checkpoint.js';
 import { projectCandidate, projectCheckpointStatuses, reconcileProjectCheckpoints } from '../dist/source-sync/checkpoints.js';
@@ -24,11 +23,11 @@ async function fixture(t) {
 }
 
 test('a read-only moved agent starts an audit through fresh auxiliary admission, without copying its parent receipt', async t => {
-  const { store, data } = await fixture(t), calls = [], logs = [];
+  const { store } = await fixture(t), calls = [], logs = [];
   const launch = { ...base, learning: { seed: '0'.repeat(40), section: '', seededAt: Date.now() } };
   await store.runs.create({ id: 'served', agentId: 'agent', revisionId: 'revision' }, { body: launchBody(launch) });
   await startAudit({ store, agentId: 'agent', runId: 'served', revisionId: 'revision', launch, context: {},
-    folder: () => learningWorkspace({ mode: 'local', data, agentId: 'agent' }), shown: async () => ({ text: value => value }), log: value => logs.push(value),
+    shown: async () => ({ text: value => value }), log: value => logs.push(value),
     admitAuxiliary: async request => { calls.push(request); return { run: { id: request.runId }, created: true }; },
   }, { name: check.workflow, digest: check.digest });
   assert.equal(calls.length, 1, logs.join('\n'));
@@ -39,12 +38,12 @@ test('a read-only moved agent starts an audit through fresh auxiliary admission,
 });
 
 test('auxiliary placement does not bypass the existing conservative audit tool policy', async t => {
-  const { store, data } = await fixture(t), logs = [];
+  const { store } = await fixture(t), logs = [];
   await store.agents.addRevision({ agentId: 'agent', id: 'writer-revision', kind: 'agentic', body: { instructions: 'Answer.', tools: ['read'], learning: { audit_every: 1 }, sourceSync: binding } });
   const launch = { ...base, sourceProject: { ...placed, baselineRevision: 'writer-revision' }, learning: { seed: '0'.repeat(40), section: '', seededAt: Date.now() } };
   await store.runs.create({ id: 'served', agentId: 'agent', revisionId: 'writer-revision' }, { body: launchBody(launch) });
   await startAudit({ store, agentId: 'agent', runId: 'served', revisionId: 'writer-revision', launch, context: {},
-    folder: () => learningWorkspace({ mode: 'local', data, agentId: 'agent' }), shown: async () => ({ text: value => value }), log: value => logs.push(value),
+    shown: async () => ({ text: value => value }), log: value => logs.push(value),
     admitAuxiliary: async () => assert.fail('placement must not relax the audit capability policy'),
   }, { name: check.workflow, digest: check.digest });
   assert.match(logs.join('\n'), /audits off: read can write/);

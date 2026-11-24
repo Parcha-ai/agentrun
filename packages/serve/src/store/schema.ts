@@ -206,6 +206,64 @@ export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand
 /** How long a hand-back's row is kept: the longest window the capacity read takes. */
 export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
 
+/** An agent's learning as versioned rows (store.learning: seed, itemsAt, save, purgeRun, reset, erase, diff).
+ *  - learning_saves: each save of the agent's learning, one version (1, 2, ...), its id (40 hex, random: what a run's
+ *    seed and the log name), its kind (`init`, the empty first one a run's seed makes; a `run`'s merge; a `person`'s
+ *    change; `purged`, a purged run's), who saved it and why (`change`: its reason and the paths it changed), and a
+ *    run's merge key (one merge a run's round). A purged run's save keeps its version, id and merge key (a seed read
+ *    from it stays held, and the round never merges again) and loses its words (`by_run`, `change`).
+ *  - learning_items: each item's versions, never updated: a note (one line of corrections.md, `pos` its place) or a
+ *    workflow (its folder's files as one JSON object of path to text, `digest` its workflow.json's). The item at a
+ *    version is its newest row at or before it; a null body is gone. `by_run`: the run whose text it is (a person's
+ *    change of a run's workflow keeps it), so a run's purge deletes its rows and the version before serves again.
+ *  - learning_records: the agent's promotion records, grades and audit rows, each its data whole, never trimmed; its
+ *    run, workflow and digest read out for a purge.
+ *  In STORE_DDL, and made at a server open on a store an earlier build of this version made. */
+export const LEARNING_ROWS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS learning_saves (
+    agent_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('init', 'run', 'person', 'purged')),
+    by_run TEXT,
+    merge_key TEXT,
+    ${json("change")},
+    PRIMARY KEY (agent_id, version)
+  ) STRICT`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS learning_saves_id ON learning_saves (agent_id, id)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS learning_saves_merge ON learning_saves (agent_id, merge_key)",
+  "CREATE INDEX IF NOT EXISTS learning_saves_run ON learning_saves (by_run)",
+  `CREATE TABLE IF NOT EXISTS learning_items (
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('note', 'workflow')),
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT,
+    by_run TEXT,
+    change TEXT NOT NULL,
+    person INTEGER NOT NULL,
+    pos INTEGER NOT NULL,
+    digest TEXT,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, kind, name, version)
+  ) STRICT`,
+  "CREATE INDEX IF NOT EXISTS learning_items_version ON learning_items (agent_id, version)",
+  "CREATE INDEX IF NOT EXISTS learning_items_run ON learning_items (by_run)",
+  `CREATE TABLE IF NOT EXISTS learning_records (
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit')),
+    seq INTEGER NOT NULL,
+    run_id TEXT,
+    workflow TEXT,
+    digest TEXT,
+    ${json("data")},
+    at INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, kind, seq)
+  ) STRICT`,
+  "CREATE INDEX IF NOT EXISTS learning_records_run ON learning_records (run_id)",
+];
+
 /** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
  *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
  *  (`cut`), its runner, the run's state it took the run from, the first journal entry id it could write
@@ -693,6 +751,7 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
+  ...LEARNING_ROWS,
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,

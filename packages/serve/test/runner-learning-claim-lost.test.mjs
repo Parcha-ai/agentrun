@@ -64,7 +64,7 @@ async function lostRun(t, { capUsd, runCap, held, losses, endOfRun }) {
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning: true } });
-  const seed = await seedOf(dir, "agent-1");
+  const seed = await seedOf(dir, server, "agent-1");
   const body = { input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, learning: { seed: seed.sha, section: "" }, max_cost_usd: capUsd };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body });
   const launch = readLaunchBody(body);

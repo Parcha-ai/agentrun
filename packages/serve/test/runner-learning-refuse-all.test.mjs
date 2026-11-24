@@ -5,18 +5,19 @@
 // and the pi spec builder (adapter-run-spec.ts adapterRunSpecFromLaunch), whose input, owner's correction and compile
 // drafts quote a webhook trigger's signing secret with no shape a check knows, the GitHub App's webhook secret, an MCP
 // server's bearer header, a key saved on the server (one the run is not handed), the server's API token and its session
-// secret, learns none of them: not in the agent's learning folder, not in the run's kept learning, not in what its compile
+// secret, learns none of them: not in the agent's learning, not in the run's kept learning, not in what its compile
 // turn is asked. A webhook trigger's secret is refused by its value as the store holds it now (after a rotation, the new
 // one), and another server's whsec_ secret by its shape (trigger-secrets-learning.test.mjs, moved onto the runner).
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { seal } from "../dist/sealing.js";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { mergesOf, repoOf } from "./learn-support.mjs";
+import { mergesOf } from "./learn-support.mjs";
 
 const { openSqliteStore, sealMcpCredential } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -24,13 +25,12 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { learningFolderOf, seedOf } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
 const { webhook } = await import("../dist/trigger-webhook.js");
 const { TOKEN_FILE } = await import("../dist/files.js");
 const { SESSION_SECRET_FILE } = await import("../dist/owner.js");
-const { agentLearningFolder } = await import("../dist/workspace/index.js");
 
 after(closeOpenSessions);
 
@@ -54,31 +54,27 @@ const draft = (quoted) => `\`\`\`\`workflow answer\n---\ndescription: Calls it w
 const compileAsks = (requests) => requests.flatMap((body) => (body.messages ?? []).filter((message) => message.role === "user").map((message) => (typeof message.content === "string" ? message.content : message.content.map((part) => part.text ?? "").join(""))))
   .filter((text) => text.startsWith("One more turn:") || text.startsWith("Your workflow draft did not pass the checks"));
 
-/** Every file of the agent's learning folder but git's own (its working tree, `.agentrun/snapshot.json`), by path. */
-function folderFiles(dir) {
-  const files = {};
-  const walk = (at) => {
-    let names;
-    try {
-      names = readdirSync(at);
-    } catch {
-      return;
+/** Every row of the agent's learning (its saves, its items at every version, its records), by table and key, as the text
+ *  of its values: what a run's learning wrote anywhere in the store. */
+function learningFiles(dir) {
+  const db = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
+  try {
+    const files = {};
+    for (const table of ["learning_saves", "learning_items", "learning_records"]) {
+      for (const row of db.prepare(`SELECT * FROM ${table} WHERE agent_id = ?`).all(AGENT)) {
+        files[`${table} ${[row.kind, row.name ?? row.workflow, row.version ?? row.seq].filter((one) => one != null).join(" ")}`] = Object.values(row).map(String).join("\n");
+      }
     }
-    for (const name of names) {
-      if (name === ".git") continue;
-      const path = join(at, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else files[path] = readFileSync(path, "utf8");
-    }
-  };
-  walk(agentLearningFolder(dir, AGENT));
-  return files;
+    return files;
+  } finally {
+    db.close();
+  }
 }
 
 /** A learning agent's run (due to compile at every run) through a real runner on the pi spec builder, after
  *  `plant(server, dir)` keeps the secrets it gives back; its input, its owner's feedback (queued before the claim) and
- *  every compile draft quote each of them. Resolves with its kept learning, the learning folder's files, the compile
- *  turn's asks and the run's merges on main. */
+ *  every compile draft quote each of them. Resolves with its kept learning, the agent's learning rows, the compile
+ *  turn's asks and the run's saves of the agent's learning. */
 async function learnedQuoting(t, plant) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-learning-refuse-all-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -93,7 +89,7 @@ async function learnedQuoting(t, plant) {
   await server.agents.create({ id: AGENT, name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } } });
   const values = await plant(server, dir);
   const quoted = values.join(" and ");
-  const seed = await seedOf(dir, AGENT);
+  const seed = await seedOf(dir, server, AGENT);
   const launch = { input: { content: `Use ${quoted} for the call.` }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { seed: seed.sha, section: "" } };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
   await sendCommand(server, RUN, { kind: "steer", body: { text: `Next time call it with ${quoted}.` } });
@@ -104,7 +100,7 @@ async function learnedQuoting(t, plant) {
   const provider = { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"x"}` };
   const routeOf = async () => ({ model: MODEL, provider, price: () => 0, fetch: scriptedOrigin([{ say: `Called it with ${quoted}.` }, { say: "Noted." }, { say: leaky }, { say: leaky }, { say: leaky }, { say: leaky }], requests) });
   const deps = { env: {}, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }) };
-  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+  const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {} });
   const createLoop = (loopDeps) => createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(launch, run, deps, claim))({ ...loopDeps, endOfRun });
   runner = startRunner({ store, createLoop, name: "runner-a", ...TIMING });
 
@@ -115,13 +111,13 @@ async function learnedQuoting(t, plant) {
     if (Date.now() > deadline) throw new Error(`not within ${WAIT_MS} ms: run-1 ended`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  return { values, kept: await server.learning.proposal(RUN), files: folderFiles(dir), asks: compileAsks(requests), merges: mergesOf(repoOf(dir, AGENT), RUN) };
+  return { values, kept: await server.learning.proposal(RUN), files: learningFiles(dir), asks: compileAsks(requests), merges: await mergesOf(server, AGENT, RUN) };
 }
 
 /** Each value `values` names that `text` holds. */
 const held = (values, text) => values.filter((value) => text.includes(value));
 
-/** The run learned none of `values`, anywhere: its kept learning, the learning folder, the compile turn's asks. */
+/** The run learned none of `values`, anywhere: its kept learning, the agent's learning, the compile turn's asks. */
 function learnedNone({ values, kept, files, asks }) {
   assert.ok(kept, "the run kept its learning's end");
   assert.deepEqual(held(values, JSON.stringify(kept)), [], `its kept learning holds a secret: ${JSON.stringify(kept).slice(0, 800)}`);

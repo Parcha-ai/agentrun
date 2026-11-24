@@ -9,7 +9,6 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/context';
 import { ROOT_CONVERSATION_ID, type StorageWrite } from '@earendil-works/pi-durable';
-import { learningFolderOf } from '../learning.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from '../native/binding.js';
 import { launchNative } from '../native/connection.js';
 import { openNativeSession } from '../native/runtime.js';
@@ -198,7 +197,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
      await append(KINDS.message,{role:'person',text:retry,at:Date.now(),origin:{kind:'server',reason:'output_retry'}});
      result=await task(retry);
     }
-    const end=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,learningFolder:id=>learningFolderOf(host.data,id),env:process.env,stored:()=>storeSecrets(host.store,host.sealKey,host.data)});
+    const end=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,env:process.env,stored:()=>storeSecrets(host.store,host.sealKey,host.data)});
     if(end){reflect=true;also=(await end({runId:claim.runId,agentId,claim,outcome:'completed',signal,ask:async(prompt,opts)=>{
      const requestId=reflectRequestId(claim.runId,opts.again);await append(KINDS.endOfRunTurn,{role:'person',text:prompt,requestId});
      try{const answer=await send(prompt,'reflection',opts.deadlineMs);await append(KINDS.endOfRunTurn,{role:'model',text:redact(answer.answer),requestId});return {ended:true,answer:answer.answer};}
@@ -221,7 +220,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     // A waiting run may receive its cancel before the source owner releases the lock. Its stop is final even while
     // the project is busy; parking it again would keep the optimistic cancelled view unsettled indefinitely.
     if(error instanceof NativeProjectBusy){await append(`${MARK}.waiting`,{project:launch.native?.project},{state:'parked',summary:'Waiting for the other native job in this source project.'});return {state:'parked' as const,wakeAt:Date.now()+1000};}
-    const hook=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,learningFolder:id=>learningFolderOf(host.data,id)});
+    const hook=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data});
     if(hook&&!also)also=(await hook({runId:claim.runId,agentId,claim,outcome:'failed',cut:reflect?'stopped-looking':'faulted',signal,ask:async()=>({failed:{code:'native_failed',message}})}))?.also;
     await append(KINDS.end,{state:'failed',error:message},{state:'failed',outcome:null,summary:message,...partial},also);
     return {state:'failed' as const,error:{code:'native_failed',message}};

@@ -1,14 +1,9 @@
 // What the learning tests share: an agent that learns, a run followed until its learning ended (its end-of-run step on
-// the runner: its owner's correction appended, its compile turn checked and committed), and git in the test's own hands
-// to read the agent's folder.
+// the runner: its owner's correction appended, its compile turn checked and saved), and the agent's learning rows read
+// and written in the test's own hands (Store.learning).
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { agentFolderOf } from "../dist/files.js";
-import { learningRepair } from "../dist/learn/folder.js";
-import { learningFolderOf } from "../dist/learning.js";
-import { localWorkspace } from "../dist/workspace/index.js";
+import { learningOf, readOf, writeLearning } from "../dist/learn/rows.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { agent, follow } from "./support.mjs";
 
@@ -59,11 +54,12 @@ export async function fedBack(api, id, { content = "Go.", label = "Keep the summ
   return ended(api, runId);
 }
 
-/** `read` over the server's store: the test's own handle on it (server.store), else one opened on the server's data
- *  for the read. */
-async function overStore(server, read) {
-  if (server.store) return read(server.store);
-  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+/** `read` over a store: `target` itself when it is one, a test server's own handle on it (`server.store`), else one
+ *  opened on the data directory (`target`, or `target.data`) for the read. */
+export async function overStore(target, read) {
+  if (target?.learning) return read(target);
+  if (target?.store) return read(target.store);
+  const store = await openSqliteStore({ dataDir: typeof target === "string" ? target : target.data, role: "runner" });
   try {
     return await read(store);
   } finally {
@@ -129,57 +125,67 @@ export async function savedOf(data, runId) {
   }
 }
 
-/** git in the test's own hands: no hook, and no system or global config. */
-export function git(cwd, args) {
-  const out = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], { cwd, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "person", GIT_AUTHOR_EMAIL: "person@example.invalid", GIT_COMMITTER_NAME: "person", GIT_COMMITTER_EMAIL: "person@example.invalid" }, encoding: "utf8" });
-  assert.equal(out.status, 0, `git ${args.join(" ")}: ${out.stderr}`);
-  return out.stdout.trim();
-}
-/** After a commit by the test's own hand (git, outside the learning script): the folder's snapshot rebuilt from main,
- *  as the server rebuilds it when a write finds main moved under its snapshot (learn/folder.ts learningRepair). Every
- *  read is the snapshot, so a hand commit is seen only once it is. */
-export async function resnap(data, agentId) {
-  const { workspace, end } = learningFolderOf(data, agentId);
+/** Agent `agentId`'s learning at its newest save, as every reader reads it (learn/rows.ts readOf): `view` (undefined
+ *  before its first save) and `text(path)`. */
+export const learningAt = (target, agentId) => overStore(target, async (store) => readOf(await store.learning.newest(agentId)));
+
+/** Agent `agentId`'s learning made unreadable in the SQLite store under `data` (a test server's): one workflow saved, its
+ *  row's body then not JSON, as a damaged row reads. Its seed read fails, so a run of the agent starts with nothing
+ *  learned (seed_failed). */
+export async function unreadable(data, agentId) {
+  await putLearning(data, agentId, { "workflows/answer/workflow.json": "{}", "workflows/answer/README.md": "---\nname: answer\ndescription: Answers\n---\n" });
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(data, "store.sqlite"));
   try {
-    await learningRepair(workspace);
+    assert.equal(db.prepare("UPDATE learning_items SET body = 'not json' WHERE agent_id = ? AND kind = 'workflow'").run(agentId).changes, 1);
   } finally {
-    await end();
+    db.close();
   }
 }
-/** resnap for a folder by its path, at once: in a child process, for a helper that commits synchronously. */
-export function resnapSync(repo) {
-  const code = `const { learningRepair } = await import(${JSON.stringify(new URL("../dist/learn/folder.js", import.meta.url).href)}); const { localWorkspace } = await import(${JSON.stringify(new URL("../dist/workspace/index.js", import.meta.url).href)}); await learningRepair(localWorkspace(process.argv[1]));`;
-  const out = spawnSync(process.execPath, ["--input-type=module", "-e", code, repo], { encoding: "utf8" });
-  assert.equal(out.status, 0, `the snapshot rebuilt: ${out.stderr}`);
-}
-/** A folderTestHooks.workspace (learn/folder.ts learningWorkspace's stand-in) that gives each agent's local learning
- *  folder with every call recorded in `calls`: [method, path] (exec: [method, its argv joined]), and each open and end
- *  counted in `calls.opened` and `calls.ended`. */
-export const spiedWorkspace = (calls) => {
-  calls.opened = 0;
-  calls.ended = 0;
-  return ({ agentId, data }) => {
-    const root = repoOf(data, agentId);
-    mkdirSync(root, { recursive: true });
-    const ws = localWorkspace(root);
-    const record = (method) => (first, ...rest) => {
-      calls.push([method, Array.isArray(first) ? first.join(" ") : first]);
-      return ws[method](first, ...rest);
-    };
-    calls.opened++;
-    return {
-      workspace: { read: record("read"), write: record("write"), append: record("append"), stat: record("stat"), list: record("list"), mkdir: record("mkdir"), grep: record("grep"), remove: record("remove"), exec: record("exec"), process: ws.process, mountSpec: () => ws.mountSpec(), attach: (...args) => ws.attach(...args) },
-      end: async () => void calls.ended++,
-    };
-  };
-};
-/** Every object of the repository, read whole: what a scan for a value must search. */
-export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], { cwd: repo, env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, maxBuffer: 1 << 26 }).stdout.toString("latin1");
 
-/** The agent's learning folder: `learning/` in its folder on the disk, as files.ts agentFolderOf names it. */
-export const repoOf = (data, agentId) => join(agentFolderOf(data, agentId), "learning");
-/** The commits on main that name run `runId` in a Run-Id trailer. */
-export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
+/** Writes `files` (path to text: corrections.md, `workflows/<name>/<file>`; null deletes) on agent `agentId`'s learning
+ *  in one save, as a run's merge writes it (run `runId`, `reason` its log line) or, with `person` (a PersonKind), as a
+ *  person's change of `file`. Answers the save's version id. What a test lays down by hand. */
+export async function putLearning(target, agentId, files, { runId = "run-hand", reason = "learned by hand", person, file } = {}) {
+  const entries = Object.entries(files);
+  const by = person ? { person, file: file ?? entries[0][0] } : { run: runId, reason };
+  return overStore(target, async (store) => {
+    const { saved } = await writeLearning(learningOf(store, agentId), async () => ({
+      result: undefined,
+      change: { by, writes: entries.filter(([, text]) => text !== null).map(([path, text]) => ({ path, text })), deletes: entries.filter(([, text]) => text === null).map(([path]) => path) },
+    }));
+    assert.ok(saved, "the write saved");
+    return saved.id;
+  });
+}
+
+/** Agent `agentId`'s saves its log shows, newest first (Store.learning.saves). */
+export const savesOf = (target, agentId) => overStore(target, async (store) => (await store.learning.saves(agentId, { limit: 10_000 })).saves);
+
+/** The saves of agent `agentId`'s learning that run `runId` merged (its log's run saves), newest first. */
+export const mergesOf = async (target, agentId, runId) => (await savesOf(target, agentId)).filter((save) => save.by.run === runId);
+
+/** Every text agent `agentId`'s learning rows hold, read whole through the store: each save (its log line and paths),
+ *  each version of each item it ever had (its body), each save's diff and every record (grades, promotions, audits).
+ *  What a scan for a value must search. */
+export async function learningText(target, agentId) {
+  return overStore(target, async (store) => {
+    const parts = [];
+    const at = await store.learning.newest(agentId);
+    const all = await store.learning.saves(agentId, { limit: 100_000 });
+    for (const save of all.saves) {
+      parts.push(JSON.stringify(save));
+      parts.push(JSON.stringify(await store.learning.diff(agentId, save.id)));
+    }
+    const names = new Set((at?.history ?? []).map((one) => `${one.kind}\u0000${one.name}`));
+    for (const key of names) {
+      const [kind, name] = key.split("\u0000");
+      parts.push(JSON.stringify(await store.learning.versions(agentId, kind, name)));
+    }
+    for (const kind of ["promotion", "grade", "audit"]) parts.push(JSON.stringify(await store.learning.records(agentId, kind)));
+    return parts.join("\n");
+  });
+}
 
 /** The end-of-run turn's own rows, and the run's learning rows. */
 export const reflectRows = (rows) => rows.filter((row) => row.agent_label === "learning" && row.kind !== "learning");

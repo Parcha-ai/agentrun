@@ -26,9 +26,9 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { checkedOf, landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
+import { checkedOf, landWorkflows, promoteChecked, readmeOf, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
-import { mergesOf, repoOf } from "./learn-support.mjs";
+import { learningAt, mergesOf, overStore } from "./learn-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -51,9 +51,8 @@ const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
 const { recordPromotion } = await import("../dist/learn/promote.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
-const { readSnapshot, textsAt } = await import("../dist/learn/folder.js");
+const { learningOf } = await import("../dist/learn/rows.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -132,7 +131,7 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them; none given,
   // each landed workflow as its check promoted it (no run of the agent's to check it on here, so it would stop unchecked).
-  for (const record of promotions ?? (learned ? checkedOf(flows) : [])) await recordPromotion(server.settings, "agent-1", record, () => true);
+  for (const record of promotions ?? (learned ? checkedOf(flows) : [])) await recordPromotion(server.learning, "agent-1", record, () => true);
   // `saved`: keys saved on the server after the learning landed (a value in a workflow that became a secret).
   for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   // `beforeRun(dir)`: what changes on the agent's main after the run's seed was pinned, before the run starts.
@@ -565,26 +564,18 @@ test("handed back: the run asks no compile; its learning is dropped with nothing
 const MAINS_INSTRUCTIONS = "Answer the question as a whole number; say whether you are sure.";
 const REVISED_INSTRUCTIONS = "Answer the question as a whole number, checking the product twice; say whether you are sure.";
 const answerWith = (instructions) => ({ ...answerFlow, root: { ...answerFlow.root, steps: [{ ...answerFlow.root.steps[0], instructions }, answerFlow.root.steps[1]] } });
-/** Merges `answer` with `instructions` on agent-1's main under `data`, as another run's revision lands. */
-async function answerOnMain(data, instructions, runId) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const merged = await learningCommit(folder.workspace, { runId, reason: "revised", files: [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }] });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-    return merged.main;
-  } finally {
-    await folder.end();
-  }
-}
-/** Agent-1's main under `data` now, and `paths`' texts on it. */
+/** Saves `answer` with `instructions` in agent-1's learning under `data`, as another run's revision lands: its folder
+ *  whole, as a run's merge writes it. */
+const answerOnMain = (data, instructions, runId) => overStore(data, async (store) => {
+  const files = [{ path: "workflows/answer/workflow.json", text: JSON.stringify(answerWith(instructions)) }, { path: "workflows/answer/README.md", text: readmeOf("answer", FLOWS[0].description) }];
+  const merged = await learningCommit(learningOf(store, "agent-1"), { runId, reason: "revised", files });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
+  return merged.main;
+});
+/** Agent-1's newest learning save under `data` now, and `paths`' texts in it. */
 async function mainOf(data, paths) {
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const main = (await readSnapshot(folder.workspace)).main;
-    return { main, texts: await textsAt(folder.workspace, main, paths) };
-  } finally {
-    await folder.end();
-  }
+  const read = await learningAt(data, "agent-1");
+  return { main: read.view?.main, texts: Object.fromEntries(paths.map((path) => [path, read.text(path)])) };
 }
 const revisedBlock = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify(answerWith(REVISED_INSTRUCTIONS))}\n\`\`\`\``;
 /** `answer`'s hold at the digest of `flow` (its replay held it): the only thing that asks for its revision. */
@@ -647,7 +638,7 @@ test("a restart after the compile answer is saved replays it against the main it
   const now = await mainOf(dir, [json]);
   assert.equal(now.main, moved, `main keeps the other run's change: ${JSON.stringify(kept.proposal)}`);
   assert.ok(now.texts[json].includes(OTHERS), "the other run's text is main's, never overwritten");
-  assert.equal(mergesOf(repoOf(dir, "agent-1"), RUN).length, 1, "the run merged once, before its crash; the restart merged nothing more");
+  assert.equal((await mergesOf(dir, "agent-1", RUN)).length, 1, "the run merged once, before its crash; the restart merged nothing more");
 });
 
 test("a learned workflow named as only a workflow may be (sort_invoice): held, the end-of-run turn still asks for its revision", async (t) => {
@@ -1214,7 +1205,7 @@ async function cliRun(t, { sure = true } = {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Say your thinking.", harness: HARNESS, tools: ["read"], learning: true } });
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
-  await promoteChecked(server.settings, "agent-1", FLOWS);
+  await promoteChecked(server, "agent-1", FLOWS);
   const launch = { input: { content: `${QUESTION}?`, question: QUESTION }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-6.1-terra" }, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();

@@ -9,16 +9,16 @@
 // policy in front of a faux gateway on loopback.
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import * as adapters from "../dist/adapters.js";
-import { agentFolderOf } from "../dist/files.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { MODEL_KEYS } from "../dist/model.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -38,23 +38,12 @@ const flowFiles = (name, workflow) => ({
   [`workflows/${name}/workflow.json`]: JSON.stringify(workflow),
   [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: ${DESCRIPTION}\n---\n`,
 });
-async function folderWith(data, id, files) {
-  await learning.seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
 /** Agent `id` on `harness`, learning, with the `answer` workflow learned; one run of `ask`, ended. */
 async function ran(api, data, store, id, harness, { fields = {}, ask = ASK, ends = ["completed", "failed"], model } = {}) {
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, ...(model ? { model } : {}) }))).status, 201);
-  await folderWith(data, id, flowFiles("answer", answerFlow()));
+  await putLearning(store, id, flowFiles("answer", answerFlow()));
   // Route, booking and cap tests exercise a workflow whose independent check already passed.
-  await promoteChecked(store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
+  await promoteChecked(store, id, [{ name: "answer", workflow: answerFlow() }]);
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -224,8 +213,10 @@ test("R9 no run is offered fewer learned workflows for where its harness's reque
   for (const name of ["learnedRoute", "learnedWorkflowsOff", "learnedOriginOk"]) assert.equal(adapters[name], undefined, `adapters.ts exports no ${name}`);
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
-  await folderWith(data, "pinned", flowFiles("answer", answerFlow()));
-  const seed = await learning.seedOf(data, "pinned");
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(() => store.close());
+  await putLearning(store, "pinned", flowFiles("answer", answerFlow()));
+  const seed = await learning.seedOf(data, store, "pinned");
   // The choice takes the seed and the host's secrets, nothing about a harness or its route: every learned workflow is
   // the run's.
   assert.equal(learning.chooseWorkflows.length, 2);
