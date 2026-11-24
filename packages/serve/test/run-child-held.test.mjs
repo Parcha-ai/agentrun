@@ -289,6 +289,8 @@ test("in a run's own process, with no seal key, the subagent tiers' keys are its
   assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: its runner asked once");
   assert.deepEqual(await subagentTierKeys(deps, [], {}), {}, "a run's process: no tier, nothing asked");
   assert.deepEqual(asked, ["subagentTierKeys"], "a run's process: no tier, its runner not asked again");
+});
+
 test("a replay's or audit's process is handed the saved key of its grader's provider alone: an Anthropic agent's OpenAI fast tier, with Anthropic's, OpenAI's and Mistral's keys saved, gets OpenAI's and grades on it; a gateway route its key alone; no fast tier, a run that is neither, or a replay that brings its own key, none", async (t) => {
   const { store } = await storeOn(t);
   const { setHeld } = await import("../dist/runner/held.js");
