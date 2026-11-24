@@ -71,8 +71,9 @@ export const LOGIN_SEALED = "Claude Code's login on this machine is kept in a fo
  *  write back that did not land); the file's own read wins otherwise. */
 export type Renewed = { readonly access: string; readonly expiresAt: number };
 /** Renews `login` in its own file, the one whose access token was read as `seen`, unless the file holds another by then
- *  (another holder renewed it: nothing to do). Throws when it could not. */
-export type Renew = (login: ClaudeAgentLogin, seen: string) => Promise<Renewed | undefined>;
+ *  (another holder renewed it: nothing to do). Throws when it could not. `refused`: the token Anthropic refused (the
+ *  run's CLI's 401), when there is one: a held pair holding it is renewed once saved, never handed again. */
+export type Renew = (login: ClaudeAgentLogin, seen: string, refused?: string) => Promise<Renewed | undefined>;
 
 export interface LoginTokensOptions {
   /** The login's directories (claude-login.ts loginAt): its file is LOGIN_FILE in `dir`. */
@@ -145,7 +146,7 @@ export class LoginTokens {
       let renewed: Renewed | undefined;
       let notSaved = false;
       try {
-        renewed = await this.#renew(this.#login, seen);
+        renewed = await this.#renew(this.#login, seen, this.#refusedAccess);
       } catch (error) {
         // Refused below in LOGIN_NOT_SAVED's, LOGIN_REFUSED_NOT_RENEWED's or LOGIN_RUNNING_OUT's words: a renewal's
         // own never reach a run.
@@ -155,6 +156,9 @@ export class LoginTokens {
       read = await this.#read();
       if (!("refused" in read) && read.access === seen) {
         if (notSaved) throw new Error(LOGIN_NOT_SAVED);
+        // A held pair, still unsaved, whose token Anthropic refused: its refresh token is not the file's, and the runner
+        // renews only from the file, so it is refused in those words rather than the file's old token handed.
+        if (!renewed && this.#refusedAccess !== undefined && heldPairs.get(this.#file)?.renewed.access === this.#refusedAccess) throw new Error(LOGIN_REFUSED_NOT_RENEWED);
         if (renewed) read = renewed;
       }
     }
@@ -304,17 +308,22 @@ async function credentialsNow(file: string): Promise<{ json: Record<string, unkn
 /** The pinned CLI's renewal of a login (the adapter's login-refresh.ts), as the runner does it in the CLI's place. */
 export function renewLogin(options: RenewLoginOptions = {}): Renew {
   const now = options.now ?? Date.now;
-  return async (login, seen) => {
+  return async (login, seen, refusedAccess) => {
     const file = join(login.dir, LOGIN_FILE);
     // A pair renewed here and not saved yet: its token is handed and its write tried again (under the refresh locks, read
     // again there: saveHeldUnderLock), and nothing is posted, for the file's refresh token is spent. Once saved, a token
-    // near its own end is renewed from the file as any other.
+    // near its own end, or one Anthropic refused (refusedAccess), is renewed from the file as any other.
     const held = heldPairs.get(file);
     if (held) {
       const kept = await saveHeldUnderLock(login.dir, file, held, options);
       if (kept === "dropped") return undefined;
-      if (held.renewed.expiresAt - now() >= LOGIN_MARGIN_MS) return held.renewed;
-      if (kept === "held") throw new LoginNotSaved();
+      const refusedHeld = held.renewed.access === refusedAccess;
+      if (!refusedHeld && held.renewed.expiresAt - now() >= LOGIN_MARGIN_MS) return held.renewed;
+      if (kept === "held") {
+        // Unsaved, nothing can renew it here: refused (LoginTokens.token says which words), never handed again.
+        if (refusedHeld) throw new Error("Anthropic refused the held token, and its pair is not saved");
+        throw new LoginNotSaved();
+      }
       seen = held.renewed.access;
     }
     const read = await credentialsNow(file);
