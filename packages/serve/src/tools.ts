@@ -39,7 +39,7 @@ import { forModel } from "./result.js";
 import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
-import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
+import { LENGTH_TYPES, SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -748,7 +748,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
   // effect has only a local work path, not the run's Workspace.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s an mp3, wav, mp4 or m4a's length in seconds) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s the length in seconds of an ${LENGTH_TYPES}) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
     needs: [],
     nodes: false,
     bind: async (host) => {
