@@ -203,10 +203,14 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
     const owed = revision ? deps.keysOwed(revision) : [];
     return firingsOwe(owed, target.kind, deps.hooked === true) ? keysOwedRefusal(owed) : undefined;
   }
+  /** Whether run `runId`'s row is a purge's tombstone. */
+  const purged = async (runId: string): Promise<boolean> => ((await store.runs.get(runId))?.purgedAt ?? null) !== null;
   return {
     targetRefusal,
     async targetIssues(target) {
       if (target.kind === "message_run") {
+        // A purged run's row stays as a tombstone (Runs.purge): it takes no message, as a run with no row takes none.
+        if (await purged(target.run_id)) return [{ field: "target.run_id", reason: "not_found", message: `the run ${target.run_id} was deleted` }];
         const run = await deps.momentOf(target.run_id);
         if (!run) return [{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }];
         if (run.kind === "workflow") return [{ field: "target.run_id", reason: "not_allowed", message: "A workflow run takes no messages here." }];
@@ -264,6 +268,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       return { run_id: run.id };
     },
     async message(target, input, key, from, bound) {
+      if (await purged(target.run_id)) throw new ApiError("not_found", `The run ${target.run_id} was deleted.`);
       const run = await deps.momentOf(target.run_id);
       if (!run) throw new ApiError("not_found", `There is no run ${target.run_id}.`);
       if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here.");

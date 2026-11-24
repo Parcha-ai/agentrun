@@ -719,8 +719,9 @@ export interface NewTrigger {
  *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
  *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
  *  write that must never land over another source write (a seal, an edit) gives both. */
-/** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string };
+/** `ifAgent`: it is still that agent's (a PATCH may move it to another meanwhile). `ifTarget`: its target is still this
+ *  one, compared as `ifSource` is (a write decided by the run a target names never lands on a trigger moved meanwhile). */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown; readonly ifAgent?: string; readonly ifTarget?: unknown };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns" | "templateId">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload, attrs (unless `keepAttrs`) nor the reason its
  *  last try gave (unless given), and no time but a sent firing's `startBy`. */

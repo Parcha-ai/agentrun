@@ -2721,7 +2721,8 @@ checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PR
 and restarts it, which the refusal says, at the `PUT` and in a try's log entry. A `DIR/webhook.json` an earlier build left is not read: the
 server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again. A new secret for the
 same URL is `POST /v2/settings/webhook/secret` (Settings → Webhook → Rotate secret in the console), from the owner's
-signed-in session alone, as every secret write is: it answers the new secret once, as `signing_secret`, and retires the
+signed-in session alone, as every secret write is (an [API-only](#api-only) server's token, the receiver's, rotates it
+and removes the webhook): it answers the new secret once, as `signing_secret`, and retires the
 old one at once, so every try after it is signed with the new one, a message queued before it included. A `404` says no
 webhook is set. A secret that no longer opens under the server's key (sealed under another) is replaced, and shown
 once, by a rotation or the next `PUT`. The URL and its secret go live together: a `PUT` whose write the store
@@ -3483,6 +3484,16 @@ serves these routes alone:
   own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
   server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
   way;
+- the [webhook](#webhooks) this server sends its notices to, for a backend that hears of its runs and triggers:
+  `run.needs_input`, `run.ended` and `trigger.failed`, the last how a [launch hook](#launch-hook)'s host hears of a
+  firing whose run did not start. `GET /settings/webhook` reads it (never its secret), `PUT /settings/webhook` sets it
+  (the first `PUT` makes the secret and answers `201` with it, once), `POST /settings/webhook/secret` rotates the
+  secret, `DELETE /settings/webhook` removes it and `POST /settings/webhook/test` sends one test message. The secret is
+  the receiver's own key to check what it is sent, and the backend is the receiver, so here the token is shown it,
+  rotates it and removes it; it writes no credential of another service. The URL is checked as on the full server: `http`
+  or `https`, no user or password, at most 2048 characters, and no private network or this machine unless the server
+  starts with `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. The log of attempts and its redeliver stay refused: the receiver
+  sees each message itself, a failed one is tried again on its own, and the test answers how one try went;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on

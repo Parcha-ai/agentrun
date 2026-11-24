@@ -113,8 +113,10 @@ function checkOf(text: string | undefined): { at: string; ok: boolean; message: 
     return undefined;
   }
 }
-/** Why a message_run trigger turned itself off: the run it messages is gone. */
+/** Why a message_run trigger turned itself off: the run it messages is gone, or was purged. */
 const RUN_DELETED = "its run was deleted";
+/** Whether a message_run target's run is gone: no row, or a purged one, whose row stays as a tombstone (Runs.purge). */
+const gone = (run: { purgedAt: number | null } | undefined): boolean => run === undefined || run.purgedAt !== null;
 
 /** What a source's sender keeps of a trigger, set up from here (composio-triggers.ts: Composio's trigger instance): made
  *  before the trigger is kept and undone when it is not, kept in step as the owner turns the trigger on and off (and as
@@ -1171,28 +1173,36 @@ export class Triggers {
   /** A message_run firing: its message to the target's run, under its key, queued as a command row the run takes at its
    *  next safe point, within the bound per (trigger, run): a clock's firings coalesce to one waiting message, a pushed
    *  source's or a run now's keep each, up to DUE_KEPT; past it the firing is skipped in words. A target run that is gone
-   *  turns the trigger off. */
+   *  or purged (its row kept as a tombstone: Runs.purge) turns the trigger off at once, the firing skipped and no failure
+   *  counted: read before the message, and again when the message fails, for a purge that landed in between. The run read
+   *  is the one `trigger` named when it was read; a trigger moved to another run since stays on (runDeleted). */
   private async send(trigger: Trigger, firing: FiringRow): Promise<void> {
     if (trigger.target.kind !== "message_run") return;
     const { target } = trigger;
-    if (!(await this.store.runs.get(target.run_id))) {
-      await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } });
-      await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED, from: "due" });
-      this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
-      await this.offThere([trigger]);
-      return;
-    }
+    if (gone(await this.store.runs.get(target.run_id))) return this.runDeleted(trigger, firing);
     const bound = adapterIn(this.adapters, firing.by)?.delivery === "clock" && !eventful(adapterIn(this.adapters, firing.by)) ? { max: 1, reason: "A message from this trigger is already waiting." } : { max: DUE_KEPT, reason: `${DUE_KEPT} messages from this trigger are already waiting for its run.` };
     let skipped: string | undefined;
     try {
       skipped = (await this.deps.message(target, this.inputOf(trigger, firing), firing.key, this.originOf(trigger), bound))?.skipped;
     } catch (error) {
       if (this.closed) return;
+      if (gone(await this.store.runs.get(target.run_id))) return this.runDeleted(trigger, firing);
       return this.answered(trigger.id, firing.key, error, target.run_id);
     }
     if (this.closed) return;
     if (skipped) return void (await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: skipped, from: "due" }));
     await this.store.triggers.settle(trigger.id, firing.key, { status: "sent", runId: target.run_id, from: "due" }, { reset: true });
+  }
+
+  /** A message_run firing whose run, as `trigger` named it when read, is gone or purged: the firing skipped, no failure
+   *  counted, and the trigger turned off (source_unreadable) only while it still names that run, compared in the store's
+   *  statement: one moved to another run meanwhile is left on. */
+  private async runDeleted(trigger: Trigger, firing: FiringRow): Promise<void> {
+    const off = await this.store.triggers.update(trigger.id, { enabled: false, nextAt: null, disabled: { at: iso(this.clock.now()), reason: "source_unreadable", detail: RUN_DELETED } }, undefined, { ifTarget: trigger.target });
+    await this.store.triggers.settle(trigger.id, firing.key, { status: "skipped", reason: RUN_DELETED, from: "due" });
+    if (!off) return;
+    this.deps.say({ condition: "trigger_source_unreadable", trigger: trigger.id, error: RUN_DELETED });
+    await this.offThere([trigger]);
   }
 
   /** The firing kept due, waiting for its trigger's room (no try counted, no retry time): a tick drives it once the store
@@ -1683,11 +1693,12 @@ export class Triggers {
     return asTrigger(row);
   }
 
-  /** The agent a trigger belongs to: its start_run target's, or the run its message_run target names. */
+  /** The agent a trigger belongs to: its start_run target's, or the run its message_run target names (refused when that
+   *  run is gone or purged). */
   private async agentOf(target: Target): Promise<string> {
     if (target.kind === "start_run") return target.agent_id;
     const run = await this.store.runs.get(target.run_id);
-    if (!run) throw invalid([{ field: "target.run_id", reason: "not_found", message: `no run ${target.run_id}` }]);
+    if (!run || run.purgedAt !== null) throw invalid([{ field: "target.run_id", reason: "not_found", message: run ? `the run ${target.run_id} was deleted` : `no run ${target.run_id}` }]);
     return run.agentId;
   }
 

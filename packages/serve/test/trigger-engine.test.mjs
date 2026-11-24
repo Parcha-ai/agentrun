@@ -196,6 +196,109 @@ test("a trigger.failed names the agent its trigger runs as: a start_run's agent,
   assert.deepEqual(Object.keys(of(started.id)).sort(), ["agent_id", "agent_name", "auto_paused", "error", "firing_key", "name", "nominal_at", "trigger_id"], "no input or output beside them");
 });
 
+/** Run-9 ended and released, then purged as DELETE /runs/{id} purges it (Runs.purge): its row stays as a tombstone. */
+async function purgedRun9(store) {
+  const claim = await store.claim("run-9", "runner-test", { leaseMs: 30_000 });
+  assert.ok(claim, "run-9 is claimed");
+  await store.runs.update(claim, { state: "ended", summary: "done" });
+  await store.release(claim, {});
+  await store.runs.purge("run-9", { meters: null, spend: { usd: null }, learning: null });
+  assert.notEqual((await store.runs.get("run-9")).purgedAt, null, "run-9's row is a purge's tombstone");
+}
+
+test("a message_run trigger whose run was purged turns off at its next firing, as one whose run is gone: disabled source_unreadable \"its run was deleted\", the firing skipped with that reason, nothing sent and no failure counted", async (t) => {
+  const sent = [];
+  const said = [];
+  const told = [];
+  const { store, triggers } = await engine(t, { message: async (target) => void sent.push(target.run_id), say: (fields) => said.push(fields), notify: (failed) => (told.push(failed), "queued") });
+  await run9(store);
+  const made = await triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 });
+  await purgedRun9(store);
+
+  const fired = await triggers.fire(made.id, "one");
+  assert.deepEqual([fired.firing.status, fired.firing.reason], ["skipped", "its run was deleted"], JSON.stringify(fired.firing));
+  assert.deepEqual(sent, [], "no message is sent to a purged run");
+  const off = await triggers.get(made.id);
+  assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason, off.disabled?.detail, off.failures_in_a_row], [false, null, "source_unreadable", "its run was deleted", 0], JSON.stringify(off));
+  assert.deepEqual(said.filter((one) => one.condition === "trigger_source_unreadable").map((one) => [one.trigger, one.error]), [[made.id, "its run was deleted"]]);
+  assert.deepEqual(told, [], "no trigger.failed: nothing failed");
+});
+
+test("a run purged after the firing checked it but before its message lands turns the trigger off the same way: the message's not_found is no failed firing", async (t) => {
+  const said = [];
+  const told = [];
+  // The purge lands while the message is on its way; the message then fails as the server's message() fails for a purged
+  // run (trigger-targets.ts).
+  const purgedMeanwhile = async () => {
+    await purgedRun9(opened.store);
+    throw new ApiError("not_found", "The run run-9 was deleted.");
+  };
+  const opened = await engine(t, { message: purgedMeanwhile, say: (fields) => said.push(fields), notify: (failed) => (told.push(failed), "queued") });
+  const { store, triggers } = opened;
+  await run9(store);
+  const made = await triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 });
+
+  const fired = await triggers.fire(made.id, "one");
+  assert.deepEqual([fired.firing.status, fired.firing.reason], ["skipped", "its run was deleted"], JSON.stringify(fired.firing));
+  const off = await triggers.get(made.id);
+  assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason, off.disabled?.detail, off.failures_in_a_row], [false, null, "source_unreadable", "its run was deleted", 0], JSON.stringify(off));
+  assert.deepEqual(said.filter((one) => one.condition === "trigger_source_unreadable").map((one) => [one.trigger, one.error]), [[made.id, "its run was deleted"]]);
+  assert.deepEqual(told, [], "no trigger.failed: nothing failed");
+});
+
+test("a trigger moved to another run while its message to the old one is on its way stays on when the old run is then purged: only that firing is skipped", async (t) => {
+  const messages = [];
+  const said = [];
+  const told = [];
+  const { store, triggers } = await engine(t, {
+    message: () => {
+      const next = held();
+      messages.push(next);
+      return next.promise;
+    },
+    say: (fields) => said.push(fields),
+    notify: (failed) => (told.push(failed), "queued"),
+  });
+  await run9(store);
+  await store.runs.create({ id: "run-10", agentId: "a", revisionId: "rev-a" });
+  const made = await triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 });
+
+  const firing = triggers.fire(made.id, "one");
+  await until(() => messages.length === 1, "the message to run-9 on its way");
+  await triggers.update(made.id, { target: { ...toRun9, run_id: "run-10" } });
+  await purgedRun9(store);
+  // The message to run-9 then fails as the server's message() fails for a purged run (trigger-targets.ts).
+  messages[0].reject(new ApiError("not_found", "The run run-9 was deleted."));
+
+  const fired = await firing;
+  assert.deepEqual([fired.firing.status, fired.firing.reason], ["skipped", "its run was deleted"], JSON.stringify(fired.firing));
+  const kept = await triggers.get(made.id);
+  assert.deepEqual([kept.enabled, kept.target.run_id, kept.disabled ?? null, kept.failures_in_a_row], [true, "run-10", null, 0], JSON.stringify(kept));
+  assert.deepEqual(said.filter((one) => one.condition === "trigger_source_unreadable"), [], "no turn-off said");
+  assert.deepEqual(told, [], "no trigger.failed: nothing failed");
+});
+
+test("a trigger update on the target it was read with (ifTarget) is refused once the target moved, compared in the update's own statement", async (t) => {
+  const { store } = await shared(t, "2026-06-01T00:00:00Z");
+  await store.triggers.create({ id: "trg-t", agentId: "a", name: "t", enabled: true, source: { kind: "webhook" }, target: toRun9, nextAt: null, catchupWindowS: 0 });
+  const read = await store.triggers.get("trg-t");
+  const moved = await store.triggers.update("trg-t", { target: { ...toRun9, run_id: "run-10" } });
+  assert.equal(await store.triggers.update("trg-t", { enabled: false }, undefined, { ifTarget: read.target }), undefined, "the old target's write is refused");
+  assert.equal((await store.triggers.get("trg-t")).enabled, true, "and nothing is written");
+  assert.equal((await store.triggers.update("trg-t", { enabled: false }, undefined, { ifTarget: moved.target }))?.enabled, false, "one on the target it holds lands");
+});
+
+test("a message_run trigger is not made, nor moved, onto a purged run: 422 not_found under target.run_id", async (t) => {
+  const { store, triggers } = await engine(t, {});
+  await run9(store);
+  await purgedRun9(store);
+  const refused = (error) => error.code === "input_invalid" && error.extra?.fields?.[0]?.field === "target.run_id" && error.extra.fields[0].reason === "not_found";
+  await assert.rejects(triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 }), refused, "made");
+  const other = await triggers.create(body({ every_s: 600 }));
+  await assert.rejects(triggers.update(other.id, { target: toRun9 }), refused, "moved");
+  assert.equal((await triggers.get(other.id)).target.kind, "start_run", "the trigger moved onto it is kept as it was");
+});
+
 test("an every-minute schedule down a year and a day, with a window that long, starts in a bounded number of steps: its latest time fires, and the rest are one missed row of 10000 or more", { timeout: 300_000 }, async (t) => {
   const first = await engine(t, {});
   const made = await first.triggers.create({ ...body({ cron: "* * * * *" }), catchup_window_s: 366 * 86_400 });

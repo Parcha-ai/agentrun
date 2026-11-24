@@ -446,6 +446,9 @@ test("every route, called with no credential, enforces its public, owner, API or
       // computer view, a full-control credential for its session, its take-over and its hand-back, refused before the run
       // is looked up (browser-live.test.mjs, browser-take-over.test.mjs, api-only-computer.test.mjs).
       else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer" || COMPUTER_ROUTES.has(route.name)) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // The outbound webhook's rotation and removal are refused the token by what this server is, not by any body
+      // (trigger-secrets-shown.ts webhookSecretRefused): an API-only server serves them to its token (api-only.test.mjs).
+      else if ((route.name === "rotateWebhookSecret" || route.name === "deleteWebhook") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);

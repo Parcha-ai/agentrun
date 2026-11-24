@@ -295,6 +295,37 @@ test("a firing's message to a run on a plan-billed harness recipe is skipped in 
   assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent");
 });
 
+/** run-1 ended and released, then purged (Runs.purge): its row stays as a tombstone, its purge time set. */
+async function purgedRun1(store) {
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  const claim = await store.claim("run-1", "runner-test", { leaseMs: 30_000 });
+  assert.ok(claim, "run-1 is claimed");
+  await store.runs.update(claim, { state: "ended", summary: "done" });
+  await store.release(claim, {});
+  await store.runs.purge("run-1", { meters: null, spend: { usd: null }, learning: null });
+  assert.notEqual((await store.runs.get("run-1")).purgedAt, null, "run-1's row is a purge's tombstone");
+}
+
+test("a message_run target to a purged run is not_found, though its row is kept as a tombstone and the run view still answers a moment for it", async () => {
+  const store = await freshStore();
+  await purgedRun1(store);
+  const t = triggerTargets(store, deps());
+  const issues = await t.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } });
+  assert.deepEqual(issues.map((issue) => [issue.field, issue.reason]), [["target.run_id", "not_found"]]);
+  assert.match(issues[0].message, /run-1 was deleted/);
+});
+
+test("a firing's message to a purged run is refused not_found, nothing written and its firing not sent", async () => {
+  const store = await freshStore();
+  await purgedRun1(store);
+  await dueFirings(store, ["f1"]);
+  const t = triggerTargets(store, deps());
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "from the schedule" } };
+  await assert.rejects(t.message(target, { content: "from the schedule" }, "f1", from, BOUND), (error) => error.code === "not_found" && /run-1 was deleted/.test(error.message));
+  assert.equal((await store.commands("run-1", 0)).length, 0, "no turn queued");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent");
+});
+
 test("a firing's message is sent in its run's agent's delete turn (runWrite): refused there, as a purge of the run refuses it, it writes nothing and its firing stays due", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });

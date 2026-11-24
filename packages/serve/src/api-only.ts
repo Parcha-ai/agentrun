@@ -1,9 +1,9 @@
 // The API-only profile (AGENTRUN_API_ONLY=1): a server that runs behind its caller's backend serves the run routes and a
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
 // its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save and the delete of a server
-// (the secret-write gate lets the token save over or delete only a server it saved, mcp-secret-writes.ts), the MCP
-// endpoint, triggers and their webhook hooks (all but a firing's release, which the launch hook's host sends), the rest
-// of agents and templates. Off by default.
+// (the secret-write gate lets the token save over or delete only a server it saved, mcp-secret-writes.ts), the outbound
+// webhook, the MCP endpoint, triggers and their webhook hooks (all but a firing's release, which the launch hook's host
+// sends), the rest of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -38,6 +38,14 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    There is no list or read of the servers here (listMcpServerNames above is the listing), and no generic save (saveMcpServer), so the
  *    token saves no server at an address or with headers of its own. Previews, refreshes, sign-ins and Composio's
  *    triggers stay refused;
+ *  - a backend owns where this server's notices go, the outbound webhook (getWebhook, saveWebhook, rotateWebhookSecret,
+ *    deleteWebhook, testWebhook): run.needs_input, run.ended and trigger.failed, the last how a launch hook's host hears
+ *    of a firing whose run did not start. The signing secret a first save or a rotation answers is the receiver's own key
+ *    to check those messages, and the backend is the receiver: its token is shown it once, rotates it and removes it
+ *    (trigger-secrets-shown.ts webhookSecretRefused). That writes no credential of another service, so the rule above
+ *    stands. The URL is checked as on a whole server (http or https, no user or password, 2048 characters, no private
+ *    target unless AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1). The delivery log and its redeliver stay refused: the receiver
+ *    sees each message itself, a failed one is tried again on its own, and the test send says how one try went.
  *  - the launch hook's host (the backend in front of this server) releases a firing it took and will start no run for
  *    (releaseTriggerFiring, triggers.ts release), so its trigger's room frees at once; with no launch hook the route is
  *    the route's own 422. */
@@ -54,6 +62,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
   "saveComposioServer", "deleteMcpServer", "releaseTriggerFiring",
+  "getWebhook", "saveWebhook", "rotateWebhookSecret", "deleteWebhook", "testWebhook",
   // Refused in its own words (403): it reads the machine's session files, which a server behind a backend does not have to give.
   "getWrapped",
 ]);

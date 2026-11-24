@@ -22,7 +22,7 @@ export function banner(o: { url: string; baseUrl: string; data: string; token: s
     `AGENTRUN_API_KEY=${key}`,
     ...(o.tokenIds && (o.tokenIds.length > 1 || o.source === "list") ? [`API tokens taken (ids): ${o.tokenIds.join(", ")}`] : []),
     o.apiOnly
-      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."
+      ? "API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save, a server's delete and the outbound webhook are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."
       : o.accounts || o.launchCode === undefined ? `Open ${o.publicUrl ?? o.url}/` : `Open ${o.publicUrl ?? o.url}/?launch=${o.launchCode}`,
     ...(o.boxes ? [o.boxes] : []),
   ];
