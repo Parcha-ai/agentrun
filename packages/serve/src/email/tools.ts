@@ -2,7 +2,8 @@
 // it (PEEK only: every message stays as unread as it was), email_draft keeps a message in its Drafts folder, email_send
 // sends one, marked as this server's (X-AgentRun-Sent, its value the run's id) so the email trigger never starts a run on
 // it, and files a copy in Sent unless the provider files its own (Gmail); email_file files a message under a Gmail label
-// or in a folder, and never deletes one (the trash and junk folders are refused). Host tools on every harness, bound beside
+// or in a folder, and never deletes one (the trash and junk folders are refused) nor files one into Sent or Drafts. Host
+// tools on every harness, bound beside
 // web_fetch (tool-list.ts `host`); the password is read in the runner, from the one store under its seal key, and never
 // in an answer. Each answer is held under the host's result bound (answer.ts).
 // Thread scope: a run an email trigger started reads only that email's thread (the message, and every message whose
@@ -385,8 +386,9 @@ const listed = (names: readonly string[]) => (names.length < 2 ? names.join("") 
 
 /** Why an email_send its setting allows asks a person anyway (tools.ts ToolEntry.asks), or nothing: the run has sent
  *  SEND_CAP emails or more (its record's count, across pauses); or, on a run that reads only its email's thread (email_read's
- *  scope), it sends to someone outside the thread's people (Mail.people), each named; or, on any other run a trigger
- *  started, it sends to an address the account has never sent to (newWords), each named. Each that holds, joined. A thread
+ *  scope), it sends to someone outside the thread's people (Mail.people), each named; or, on any run a trigger started
+ *  (that thread run too), it sends to an address the account has never sent to (newWords), each named. Each that holds,
+ *  joined. A thread
  *  or a Sent folder that can't be read asks too, saying so. A call whose arguments don't read asks nothing: the tool
  *  refuses it in its own words. */
 export async function sendAsks(args: Record<string, unknown>, ctx: AskContext): Promise<string | undefined> {
@@ -407,15 +409,17 @@ function recipientsOf(args: Record<string, unknown>): string[] {
 }
 
 /** On a run a trigger started (host.startedBy: a schedule, a webhook, an email, any source), the recipients of the send
- *  `args` this account has never sent to, in words: none of its Sent mail is to them (mail.ts neverSentTo, To, Cc or Bcc,
- *  the exact address). The account's own address is never new, nor one this run already sent to (its earlier sends,
- *  unasked or approved, from its record: a copy in Sent or not). A Sent folder that can't be read asks, saying so (fail
- *  closed). Nothing on a run no trigger started, nor on one that reads only its email's thread, whose ask (outsideWords)
- *  already holds every address outside it and leaves the thread's people, its sender first, unasked. */
+ *  `args` this account has never sent to, in words: none of its Sent mail, from the account and no draft, is to them
+ *  (mail.ts neverSentTo, To, Cc or Bcc, the exact address). The account's own address is never new, nor one this run
+ *  already sent to (its earlier sends, unasked or approved, from its record: a copy in Sent or not), nor, on a run that
+ *  reads only its email's thread, the thread's starter (its root's From, as the trigger read it: ThreadRoot.from), whom
+ *  an auto-responder answers. Everyone else that message names, its Cc's strangers among them, is checked as on any
+ *  other run. A Sent folder that can't be read asks, saying so (fail closed). Nothing on a run no trigger started. */
 async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise<string | undefined> {
   const host = ctx.host;
   if (!host.startedBy || !opens(host)) return undefined;
-  if ((await scopeOf(host, EMAIL_READ)).kind === "thread") return undefined;
+  const scope = await scopeOf(host, EMAIL_READ);
+  const starter = scope.kind === "thread" && scope.root ? [scope.root.from] : [];
   let recipients: string[];
   try {
     const letter = letterOf(args);
@@ -427,10 +431,10 @@ async function newWords(ctx: AskContext, args: Record<string, unknown>): Promise
     const account = await accountOf(host);
     // No account, or one a template eval's run may not open: the send itself is refused in its own words.
     if (!account || !fakeHeld(host, account)) return undefined;
-    const known = new Set([account.address.trim().toLowerCase(), ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
+    const known = new Set([account.address.trim().toLowerCase(), ...starter, ...(await ctx.made(EMAIL_SEND)).flatMap((one) => (isObject(one) ? recipientsOf(one) : []))]);
     const unknown = recipients.filter((one) => !known.has(one));
     if (!unknown.length) return undefined;
-    const never = await withImap(account, (session) => neverSentTo(session, unknown), { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS });
+    const never = await withImap(account, (session) => neverSentTo(session, unknown, account.address), { socketTimeoutMs: TOOL_SOCKET_TIMEOUT_MS });
     return never.length ? `${listed(never)}: this account has never sent to them` : undefined;
   } catch (error) {
     return `its recipients couldn't be checked against this account's sent mail (${(error as Error)?.message ?? String(error)})`;
@@ -472,6 +476,10 @@ function fakeHeld(host: ToolHost, account: { imap: { host: string; port: number 
 
 /** The names email_file refuses whatever the account flags: the trash and junk folders by their usual names. */
 const BINS = new Set(["trash", "junk", "spam", "[gmail]/trash", "[gmail]/spam", "\\trash", "\\junk"]);
+/** The names email_file refuses as Sent or Drafts whatever the account flags: those ImapSession.resolve takes for them,
+ *  Gmail's folders and its \Sent and \Draft labels. Sent holds what the account sent (the never-written-to check reads
+ *  it), so only email_send and email_draft put mail there. */
+const KEPT = new Set(["sent", "drafts", "\\sent", "\\drafts", "\\draft", "[gmail]/sent mail", "[gmail]/drafts"]);
 /** A folders server's answer to an explicit archive: false, a filing that would keep the message in the inbox. */
 const FOLDERS_REFUSAL = "this server has folders: filing moves the message out of the inbox; pass archive: true to move it";
 /** Gmail's label for a message in the inbox: taken off, the message is archived. */
@@ -479,17 +487,23 @@ const INBOX_LABEL = "\\Inbox";
 
 /** The message `id` filed under `to`: a Gmail label (archive: true takes its \Inbox label off too), else a move to the
  *  folder `to`, created if missing, with no archive or archive: true. Never a delete: the trash and junk folders are
- *  refused before anything is touched; and an explicit archive: false never takes mail out of the inbox. */
+ *  refused before anything is touched; and an explicit archive: false never takes mail out of the inbox. Never into Sent
+ *  or Drafts either (KEPT, or the folder flagged \Sent or \Drafts): a message filed there would read as the account's
+ *  own sent mail to the never-written-to check. */
 async function file(mail: Mail, args: Record<string, unknown>) {
   const id = messageId(text(args, "message_id", 998, true)!);
   const to = text(args, "to", 300, true)!.trim();
   if (/[\u0000-\u001f]/.test(to)) throw new BadArgs("to is a folder's or a label's name, on one line.");
   if (args.archive !== undefined && typeof args.archive !== "boolean") throw new BadArgs("archive is true or false.");
   const refused = () => new BadArgs(`${EMAIL_FILE} files mail, it never deletes it: ${to} is the trash or junk folder.`);
+  const kept = () => new BadArgs(`${EMAIL_FILE} never files into Sent or Drafts: ${to} is the account's sent or drafts mail, which only ${EMAIL_SEND} and ${EMAIL_DRAFT} write.`);
   if (BINS.has(to.toLowerCase())) throw refused();
+  if (KEPT.has(to.toLowerCase())) throw kept();
   return withMail(mail, async (session) => {
-    const bin = (await session.mailboxes()).find((box) => box.path === to && (box.specialUse === "\\Trash" || box.specialUse === "\\Junk"));
+    const boxes = await session.mailboxes();
+    const bin = boxes.find((box) => box.path === to && (box.specialUse === "\\Trash" || box.specialUse === "\\Junk"));
     if (bin) throw refused();
+    if (boxes.some((box) => box.path.toLowerCase() === to.toLowerCase() && (box.specialUse === "\\Sent" || box.specialUse === "\\Drafts"))) throw kept();
     const found = await findById(session, id, mail);
     if (!found) throw new MailError("missing", mail.scope.kind === "thread" ? `${id} is ${OUTSIDE_THREAD}, or not in this account: this run files only the thread of the email that started it.` : `No message ${id} in this account.`);
     const done = (archived: boolean, note?: string) => ({ filed: true, message_id: id, to, archived, subject: found.subject, ...(note ? { note } : {}) });

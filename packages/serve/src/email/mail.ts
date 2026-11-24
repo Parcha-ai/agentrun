@@ -150,23 +150,25 @@ async function headOf(row: Pick<FetchMessageObject, "uid" | "internalDate" | "si
   return { uid: row.uid, mailbox, size: typeof row.size === "number" ? row.size : 0, ...head };
 }
 
-/** The bare addresses, lowercased, of the To, Cc and Bcc of a message's header fields (`headers`, as fetched), parsed as
- *  every address header is: display names, groups and encoded words read. */
-async function recipientsOf(headers: Buffer | undefined): Promise<Set<string>> {
+/** The bare addresses, lowercased, of the From and of the To, Cc and Bcc of a message's header fields (`headers`, as
+ *  fetched), parsed as every address header is: display names, groups and encoded words read. */
+async function addressesOf(headers: Buffer | undefined): Promise<{ from: string[]; recipients: Set<string> }> {
   const parsed = await simpleParser(Buffer.concat([headers ?? Buffer.alloc(0), Buffer.from("\r\n")]), { skipImageLinks: true, skipTextLinks: true });
-  return new Set([parsed.to, parsed.cc, parsed.bcc].flatMap((one) => addresses(one)).map((one) => one.address.trim().toLowerCase()));
+  const bare = (one: AddressObject | AddressObject[] | undefined) => addresses(one).map((a) => a.address.trim().toLowerCase());
+  return { from: bare(parsed.from), recipients: new Set([parsed.to, parsed.cc, parsed.bcc].flatMap(bare)) };
 }
 
-/** Of `addresses` (bare), those the account has never sent to: no message of its Sent folder (the special-use \Sent,
- *  Gmail's Sent Mail) is to them in its To, Cc or Bcc. Mail received from them counts for nothing. Sent is opened
- *  read-only (EXAMINE) and only the To, Cc and Bcc headers of the messages its search takes are read (ImapSession.holdsTo).
- *  No Sent folder: MailError `missing`. */
-export async function neverSentTo(session: ImapSession, addresses: readonly string[]): Promise<string[]> {
+/** Of `addresses` (bare), those the account `own` (its address) has never sent to: no message of its Sent folder (the
+ *  special-use \Sent, Gmail's Sent Mail) from `own`, not a draft, is to them in its To, Cc or Bcc. Mail received from
+ *  them counts for nothing, and so does a draft or another's message that ended up in Sent. Sent is opened read-only
+ *  (EXAMINE) and only the From, To, Cc and Bcc headers and the flags of the messages its search takes are read
+ *  (ImapSession.holdsTo). No Sent folder: MailError `missing`. */
+export async function neverSentTo(session: ImapSession, addresses: readonly string[], own: string): Promise<string[]> {
   if (!addresses.length) return [];
   const sent = await session.resolve("Sent");
   await session.open(sent);
   const never: string[] = [];
-  for (const address of addresses) if (!(await session.holdsTo(sent, address))) never.push(address);
+  for (const address of addresses) if (!(await session.holdsTo(sent, address, own))) never.push(address);
   return never;
 }
 
@@ -259,17 +261,23 @@ export class ImapSession {
     return (await Promise.all(rows.map((row) => headOf(row, path)))).sort((a, b) => a.uid - b.uid);
   }
 
-  /** Whether the open mailbox `path` holds a message to `address`: the exact address, case-blind, in its To, Cc or Bcc.
-   *  The server's search only finds the candidates, since TO, CC and BCC take a substring (RFC 3501: "a@b.co" takes
-   *  data@b.com); each candidate's To, Cc and Bcc are then read (BODY.PEEK of those fields, never a body) and parsed,
-   *  newest first, SENT_HITS_MAX at most. Past those with no match: MailError `failed`, saying how many. */
-  async holdsTo(path: string, address: string): Promise<boolean> {
+  /** Whether the open mailbox `path` holds a message from `own` to `address`: the exact address, case-blind, in its To,
+   *  Cc or Bcc, its From `own` alone, and no \Draft flag (a draft, or another's message, put in Sent is no send). The
+   *  server's search only finds the candidates, since TO, CC and BCC take a substring (RFC 3501: "a@b.co" takes
+   *  data@b.com); each candidate's From, To, Cc and Bcc (BODY.PEEK of those fields, never a body) and flags are then read
+   *  and parsed, newest first, SENT_HITS_MAX at most. Past those with no match: MailError `failed`, saying how many. */
+  async holdsTo(path: string, address: string, own: string): Promise<boolean> {
     const wanted = address.trim().toLowerCase();
+    const self = own.trim().toLowerCase();
     const hits = (await this.uids({ or: [{ to: wanted }, { cc: wanted }, { bcc: wanted }] })).reverse();
     const read = hits.slice(0, SENT_HITS_MAX);
     for (let at = 0; at < read.length; at += SENT_HITS_BATCH) {
-      const rows = await this.client.fetchAll(read.slice(at, at + SENT_HITS_BATCH).join(","), { uid: true, headers: ["to", "cc", "bcc"] }, { uid: true });
-      for (const row of rows) if ((await recipientsOf(row.headers)).has(wanted)) return true;
+      const rows = await this.client.fetchAll(read.slice(at, at + SENT_HITS_BATCH).join(","), { uid: true, flags: true, headers: ["from", "to", "cc", "bcc"] }, { uid: true });
+      for (const row of rows) {
+        if (row.flags?.has("\\Draft")) continue;
+        const { from, recipients } = await addressesOf(row.headers);
+        if (from.length === 1 && from[0] === self && recipients.has(wanted)) return true;
+      }
     }
     if (hits.length > read.length) throw new MailError("failed", `${path} has ${hits.length} messages whose To, Cc or Bcc holds ${wanted}; the newest ${read.length} were read and none is to that exact address, and no more are read, so a send's check stays short`);
     return false;

@@ -1,8 +1,9 @@
 // email_send on a run a trigger started (a schedule, a webhook, an email or any other source: the run's startedBy) asks
 // a person, even on allow, before it sends to an address this account has never sent to: no message of its Sent folder
-// is to it in To, Cc or Bcc (the exact address, case-blind; display names, groups and encoded words read). Mail received
-// from someone counts for nothing; the account's own address and an address this run already sent to (unasked or
-// approved, a copy in Sent or not) are never new. The server's search by TO, CC or BCC takes a substring, so it only finds
+// from the account's own address, not a \Draft, is to it in To, Cc or Bcc (the exact address, case-blind; display
+// names, groups and encoded words read). Mail received from someone counts for nothing, nor does a draft or another's
+// message in Sent, and email_file refuses Sent and Drafts, so a run can't file its own evidence there; the account's own
+// address and an address this run already sent to (unasked or approved, a copy in Sent or not) are never new. The server's search by TO, CC or BCC takes a substring, so it only finds
 // candidates: "a@example.co" is not data@example.com. A Sent folder that can't be read asks, saying so. A playground or
 // API run is held to the 5-send cap alone. The words: "<a> and <b>: this account has never sent to them".
 import assert from "node:assert/strict";
@@ -136,12 +137,13 @@ test("the server's TO/CC/BCC search is a substring: Sent to data@example.com and
   // The fake's search took the lookalikes (a real server's would too), and only their address headers were read.
   const commands = faux.commands();
   assert.ok(commands.some((c) => /SEARCH .*BCC "?bob@example\.com"?/i.test(c)), `searched by To, Cc and Bcc: ${commands.join(" | ")}`);
-  assert.ok(commands.some((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)), `read the hits' To, Cc and Bcc: ${commands.join(" | ")}`);
+  assert.ok(commands.some((c) => /FETCH .*FLAGS.*HEADER\.FIELDS \(FROM TO CC BCC\)|FETCH .*HEADER\.FIELDS \(FROM TO CC BCC\).*FLAGS/i.test(c)), `read the hits' flags and From, To, Cc and Bcc: ${commands.join(" | ")}`);
+  assert.ok(!commands.some((c) => /FETCH .*(BODY(\.PEEK)?\[\]|RFC822\b|BODY(\.PEEK)?\[TEXT\])/i.test(c)), `no body read: ${commands.join(" | ")}`);
 });
 
-/** The uids of every To/Cc/Bcc header FETCH the fake was sent (a range a:b read as each uid in it), in order. */
+/** The uids of every From/To/Cc/Bcc header FETCH the fake was sent (a range a:b read as each uid in it), in order. */
 function headerFetches(faux) {
-  return faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)).flatMap((c) => {
+  return faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(FROM TO CC BCC\)/i.test(c)).flatMap((c) => {
     const set = /FETCH (\S+)/i.exec(c)?.[1] ?? "";
     return set.split(",").flatMap((part) => {
       const [from, to = from] = part.split(":").map(Number);
@@ -168,7 +170,7 @@ test("an exact match past the first batch of candidates is found: Sent to the ad
   // Newest first, 50 at a time: the oldest message, the exact match, is in the second batch.
   const fetched = headerFetches(faux);
   assert.equal(fetched.length, 61, `every candidate read: ${fetched.join(",")}`);
-  assert.ok(faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)).length >= 2, "read in more than one batch");
+  assert.ok(faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(FROM TO CC BCC\)/i.test(c)).length >= 2, "read in more than one batch");
 });
 
 test("past 200 lookalike candidates with no exact match the send asks, saying the recipients couldn't be checked, and no more than 200 are read", { timeout: 150_000 }, async (t) => {

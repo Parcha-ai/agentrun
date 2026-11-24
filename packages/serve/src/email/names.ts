@@ -44,7 +44,7 @@ export const ARCHIVE = {
 /** The kind of server a run's account is on, read from the saved account (no connection), or undefined when none is saved. */
 export type ServerKind = keyof typeof FILING;
 export const fileDescription = (kind: ServerKind | undefined) =>
-  `File a message of the server's email account by its message_id under to, a label or a folder (made if missing). ${kind ? FILING[kind] : `${FILING.gmail} ${FILING.folders.replace("On this server", "On a server with folders,")}`} It never deletes mail: the trash and junk folders are refused. Answers JSON {filed: true, message_id, to, archived, subject, note?}, archived saying whether it left the inbox and note, on a move, "moved out of the inbox to <to>". On a run an email started, only that email's thread (the messages its sender took part in) can be filed.`;
+  `File a message of the server's email account by its message_id under to, a label or a folder (made if missing). ${kind ? FILING[kind] : `${FILING.gmail} ${FILING.folders.replace("On this server", "On a server with folders,")}`} It never deletes mail: the trash and junk folders are refused, and so are Sent and Drafts. Answers JSON {filed: true, message_id, to, archived, subject, note?}, archived saying whether it left the inbox and note, on a move, "moved out of the inbox to <to>". On a run an email started, only that email's thread (the messages its sender took part in) can be filed.`;
 export const archiveDescription = (kind: ServerKind | undefined) => (kind ? ARCHIVE[kind] : `On Gmail: ${ARCHIVE.gmail} On a server with folders: ${ARCHIVE.folders}`);
 
 /** Each tool's one text: the model's description (email/tools.ts) and the tool catalog's summary (tools.ts). email_file's

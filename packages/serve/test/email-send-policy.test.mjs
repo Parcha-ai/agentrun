@@ -2,9 +2,10 @@
 // allow, a run's first 5 sends go unasked and each one after asks, saying "this run has sent N emails", across a pause
 // too (the count is the run's record's, not the process's). On a run an email started (its thread), a send to anyone
 // outside the thread's participants (the account's own address and every From, To and Cc of the thread's messages)
-// asks even on allow, naming them. A run that reads the whole account (scope "mailbox") has no thread ask, but as any
-// run a trigger started it asks before a send to an address the account never sent to (email-trigger-ask.test.mjs); a
-// run no trigger started is held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
+// asks even on allow, naming them. As any run a trigger started, it also asks before a send to an address the account
+// never sent to (email-trigger-ask.test.mjs), the thread's starter (the root message's From) alone exempt, so a stranger
+// the starter Cc'd is asked about. A run that reads the whole account (scope "mailbox") has no thread ask, and the same
+// new-address ask with no one exempt; a run no trigger started is held to the cap alone. A template eval's run never reads a real account to list its thread's people: with another
 // account saved than its case's fake, a send asks nothing and is refused in the eval's words, no IMAP command sent.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -176,23 +177,24 @@ test("email_send on allow: a subagent's 5 sends count toward the run's cap after
   assert.equal(faux.sent().length, 5);
 });
 
-test("on a thread run with email_send on allow, a send to the thread's sender goes unasked; one that also reaches someone outside the thread asks, naming them", { timeout: 150_000 }, async (t) => {
+test("on a thread run with email_send on allow, a send to the thread's sender goes unasked; one that also reaches someone outside the thread asks, naming them, and names everyone the account never wrote to", { timeout: 150_000 }, async (t) => {
   const server = await served(t);
   const faux = await mailbox(t);
   thread(faux);
   await saved(server.api, faux);
   const runId = await fired(server, faux, "replier", [
-    ["email_send", { to: ["ana@example.com"], cc: ["bo@example.com"], subject: "Re: Plan", text: "Tuesday it is.", in_reply_to: "<m3@example.com>" }],
-    ["email_send", { to: ["ana@example.com"], cc: ["eve@example.com"], subject: "Re: Plan", text: "Looping in Eve.", in_reply_to: "<m3@example.com>" }],
+    ["email_send", { to: ["ana@example.com"], subject: "Re: Plan", text: "Tuesday it is.", in_reply_to: "<m3@example.com>" }],
+    ["email_send", { to: ["ana@example.com"], cc: ["bo@example.com", "eve@example.com"], subject: "Re: Plan", text: "Looping in Eve.", in_reply_to: "<m3@example.com>" }],
   ], ANSWER, { tool_settings: ALLOW });
   const { status, pending } = await settled(server.api, runId);
-  assert.equal(faux.sent().length, 1, "the reply to ana and bo, both in her thread, sent unasked");
+  assert.equal(faux.sent().length, 1, "the reply to ana, her thread's starter, sent unasked");
   assert.equal(status, "input_required", `a send that reaches eve asks: ${JSON.stringify(pending)}`);
   assert.deepEqual([pending?.kind, pending?.tool], ["approval", "email_send"]);
   const outside = /([^\n"]*?) (?:is|are) outside this email's thread/.exec(shown(pending))?.[1];
   assert.match(outside ?? "", /eve@example\.com/, `the ask names who is outside it: ${shown(pending)}`);
   assert.doesNotMatch(outside ?? "", /ana@|bo@/, "and only them");
-  asksBecause(pending, /eve@example\.com (?:is|are) outside this email's thread/);
+  // Bo is in the thread (ana Cc'd him) but the account never wrote to him, so he is named as never sent to, beside eve.
+  asksBecause(pending, /^eve@example\.com is outside this email's thread; bo@example\.com and eve@example\.com: this account has never sent to them$/);
   assert.equal(await server.decide(runId, pending.id, "deny"), 204);
   await follow(server.api, runId, ["completed"], { deadlineMs: 55_000 });
   assert.equal(faux.sent().length, 1);

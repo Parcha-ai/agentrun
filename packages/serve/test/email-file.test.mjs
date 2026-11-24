@@ -5,7 +5,8 @@
 // creating it if missing, as archive: true does; only an explicit `archive: false` is refused in words, nothing moved;
 // the account holds as many messages, and the answer's note says "moved out of the inbox to <to>". Its description,
 // built for the server it is bound on, says which in one line. The trash and junk folders are refused, by special use or
-// by name, with nothing changed. It is allowed by default, scoped to a run's thread as email_read and email_search are
+// by name, with nothing changed, and so are Sent and Drafts (a message filed there would read as the account's own sent
+// mail). It is allowed by default, scoped to a run's thread as email_read and email_search are
 // (`scope: "mailbox"` widens it). Its answer is {filed, message_id, to, archived, subject, note?} (the note on a move
 // only), and its timeline line, read from that answer, says "Filed <subject> under <to>".
 import assert from "node:assert/strict";
