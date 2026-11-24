@@ -34,11 +34,11 @@ export type WebLog = (event: string, fields: Record<string, string>) => void;
 export type FetchTry = { provider: FetchProvider; outcome: "ok" | "error"; error?: string };
 
 /** The URL a provider is sent for `url`, as parsed (its href), so the provider reads the host the guard checked; null
- *  where it may not go: it fails readDirect's own refusals (port, length, a user name or password), or the guard's check
- *  within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
+ *  where it may not go: it fails readDirect's own refusals (port, the href's length, a user name or password), or the
+ *  guard's check within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
 async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<string | null> {
   const target = URL.parse(url);
-  if (!guard || !target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return null;
+  if (!guard || !target || !PORTS.has(target.port) || target.href.length > URL_MAX || target.username || target.password) return null;
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
   return guard.check(target.href, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => target.href, () => null);
 }
