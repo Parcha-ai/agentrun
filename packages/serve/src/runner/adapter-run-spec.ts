@@ -296,7 +296,7 @@ const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
 /** A model route as the run's GenAI trace names it: its provider, its host, its model. */
-const traceOfRoute = (route: ModelRoute) => routeTrace({ ...(route.named ? { named: route.named } : {}), origin: route.provider.origin, model: route.model });
+export const traceOfRoute = (route: ModelRoute) => routeTrace({ ...(route.named ? { named: route.named } : {}), origin: route.provider.origin, model: route.model });
 
 /** The model a replay run's or an audit shadow's grader runs on (graderRouteOf): the revision's modelTiers.fast, else
  *  `env`'s fast tier (AGENT_MODEL_FAST); undefined when there is neither, or the revision names agree_on (no grader). */
