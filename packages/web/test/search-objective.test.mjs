@@ -211,3 +211,12 @@ test("a search's own session (SearchOptions.session) is Parallel's session_id, o
   await bare.search({ objective: OBJECTIVE }, { n: 1 });
   assert.deepEqual(fake.sent.map(({ body }) => [body.session_id, body.client_model]), [["task-3-seed-1", "claude-opus-4-7"], ["task-3-seed-2", undefined], [undefined, undefined]], "the call's session wins, the Web's model kept; nothing made up");
 });
+
+test("Parallel's session_id is cut at its 1,000-character cap: a 1,500-character session, the call's or the Web's, is sent as its first 1,000", async () => {
+  const long = "s".repeat(1_000) + "t".repeat(500);
+  const fake = keyed(() => json({ results: [{ url: "https://a.example/", title: "A", excerpts: ["An excerpt."] }] }));
+  const told = web.createWeb({ order: { search: ["parallel"], fetch: [] }, keys: { parallel: KEY }, send: { parallel: fake.send }, client: { session: long } });
+  await told.search({ objective: OBJECTIVE }, { n: 1 });
+  await told.search({ objective: OBJECTIVE }, { n: 1, session: long });
+  assert.deepEqual(fake.sent.map(({ body }) => body.session_id), ["s".repeat(1_000), "s".repeat(1_000)], "each session_id is the session's first 1,000 characters");
+});
