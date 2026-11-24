@@ -776,6 +776,16 @@ const JSON_ESCAPE: Decoder = {
     return first.end;
   },
 };
+/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels, and where it ends;
+ *  undefined where no escape starts (the "\" is then itself). key-refusal.ts's peek counts an escape by it, so the
+ *  read past a call's stop and the JSON view see the same characters. */
+export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
+  let char: string | undefined;
+  const end = JSON_ESCAPE.decode(text, at, (decoded) => {
+    char = decoded;
+  });
+  return end < 0 || char === undefined ? undefined : { char, end };
+}
 
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes. `special`: where viewOf stops to do more than copy. */

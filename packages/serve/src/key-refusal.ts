@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { scanned, type Span } from "./redact/match.js";
+import { jsonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -242,15 +242,18 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 }
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
- *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's \uXXXX
- *  escapes, so a "+", an encoded byte and an escape that decodes to whitespace count no more than whitespace does, and
- *  any other escape counts as the one character it decodes to: padding of any of them never hides the rest of a value
- *  split before it. Undefined, so the caller withholds the text, when that takes more than a piece of text
- *  (a run of whitespace counted as one): no redaction pass reads more than a piece. */
+ *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes and JSON's escapes
+ *  (one level and two, as the JSON view reads them), so a "+", an encoded byte and an escape that decodes to whitespace
+ *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
+ *  to. A character that renders as nothing (a zero-width space, a soft hyphen) counts as nothing too: the views drop it.
+ *  Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds the text,
+ *  when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads more than a
+ *  piece. */
 function peek(text: string, from: number, count: number): string | undefined {
   const parts: string[] = [];
   let span = 0;
   let found = 0;
+  let escape: { char: string; end: number } | undefined;
   for (let at = from; at < text.length && found < count; ) {
     SPACES.lastIndex = at;
     let end = SPACES.test(text) ? SPACES.lastIndex : at;
@@ -260,12 +263,12 @@ function peek(text: string, from: number, count: number): string | undefined {
     } else {
       while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8").replace(/\s+/g, "").length;
-      else if (text[at] === "\\" && text[at + 1] === "u" && HEX_QUAD.test(text.slice(at + 2, at + 6))) {
-        end = at + 6;
-        if (!/\s/.test(String.fromCharCode(Number.parseInt(text.slice(at + 2, end), 16)))) found++;
+      else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
+        end = escape.end;
+        found += squeeze(escape.char).length;
       } else {
         end = at + 1;
-        if (text[at] !== "+") found++;
+        if (text[at] !== "+") found += squeeze(text[at]!).length;
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -279,7 +282,6 @@ function peek(text: string, from: number, count: number): string | undefined {
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-const HEX_QUAD = /^[0-9A-Fa-f]{4}$/;
 
 /** Where the piece of `text` read from `from` ends: at its last whitespace before ANSWER_PIECE characters; with none, at
  *  runCut's place, else at the next whitespace (a run read as one, or unread past ANSWER_PIECE). */
