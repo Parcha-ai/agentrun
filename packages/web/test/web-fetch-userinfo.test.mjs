@@ -185,6 +185,24 @@ test("the URL asked, holding a user name and password: every page web_fetch give
   assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), Object.keys(pages).map((row) => [row, PUBLIC]), "the url of each page, without them");
 });
 
+// An asked URL that does not parse is no URL to name: a scrub of its text stops at a space, so a page names none.
+test("the URL asked, holding a user name and password behind a space, that does not parse: every page web_fetch gives for it names no url at all", async () => {
+  const asked = credentialed().replace("not-a-secret", "not a-secret").replace("public.example/", "public.example:99999/");
+  assert.equal(URL.canParse(asked), false, "the URL asked does not parse");
+  const parallel = { live: () => true, read: async () => "asked", post: async () => { throw new Error("not posted"); } };
+  const pages = {};
+  pages.direct = (await fetched({ order: ["direct"] }, asked)).page;
+  pages.none = (await fetched({ parallel, order: ["parallel"] }, asked)).page;
+  pages.stopped = (await fetched({ order: ["direct"], signal: AbortSignal.abort() }, asked)).page;
+  pages["part refused"] = (await createWeb({ order: { search: [], fetch: ["direct"] }, guard }).fetch(asked, { maxChars: 1 })).answer;
+  pages.fetchPage = await fetchPage(asked, network());
+  pages.readDirect = await readDirect(asked, network());
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok, page.via]), [["direct", false, "direct"], ["none", false, "none"], ["stopped", false, "stopped"], ["part refused", false, undefined], ["fetchPage", false, undefined], ["readDirect", false, undefined]], "no page was read");
+  const leaks = Object.entries(pages).flatMap(([row, page]) => leaking({ [`${row}: the page`]: page, [`${row}: the text the model reads`]: webFetchText(page) }));
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), Object.keys(pages).map((row) => [row, ""]), "no page names a url");
+});
+
 // A provider names the URL it ended at, and its client cuts that url at URL_MAX. A password running past the cut leaves
 // no "@" for a later scrub to find, and the cut url no longer parses: each client clears them before its cut.
 test("a provider's page url whose password runs past where a url is cut: Firecrawl's scrape, Parallel's extract and the page web_fetch returns name it without any part of them", async (t) => {
