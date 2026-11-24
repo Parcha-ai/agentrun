@@ -3508,7 +3508,9 @@ serves these routes alone:
     owner's included: `422` under `user_id`, before anything is sent. Nor does the token's save stand on a connected
     account it did not connect: when Composio already has ACTIVE accounts for that user under its auth config, the save
     is `403` before anything is made, unless a server the token saved holds each of them as one it made (connected
-    through the token's own link). That check sees the accounts there when the token saves; the namespace is what
+    through the token's own link). The lookup reads 50 accounts a page, at most 10 pages (500 for that user and auth
+    config): past that the token's save is `403`, since it can't check them all, and an owner's save goes on with the
+    ones it read. That check sees the accounts there when the token saves; the namespace is what
     keeps the user the token's after it, since no save here names it. A server the token saved before the namespace
     (0.1.0-beta.56) keeps calling as its bare `user_id` until it is saved again. Its next save moves it to the
     namespaced user and returns a connect link for it: connect the account again there. That save deletes at Composio
