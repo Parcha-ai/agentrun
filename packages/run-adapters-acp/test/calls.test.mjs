@@ -45,3 +45,26 @@ test('an announcement with no input still matches a waiting call of its tool', a
   ids.add('call_0', 'lookup', undefined);
   assert.equal(await waiting, 'call_0');
 });
+
+test('an announcement whose title names no tool of ours is matched by the arguments alone; a title that names the tool only breaks a tie between announcements with the same arguments', async () => {
+  const ids = new CallIds();
+  const signal = new AbortController().signal;
+  // Before: an announcement the title did not tie was dropped, so the MCP call ran under no id of the agent's.
+  ids.add('call_0', undefined, { path: 'proof.txt', content: 'x' });
+  assert.equal(await ids.take('write', { content: 'x', path: 'proof.txt' }, signal, 50), 'call_0', 'the same arguments, in any key order');
+  assert.equal(ids.announced('call_0'), undefined, 'it names no tool: a permission request is never tied to it');
+  // Two announcements with the same arguments: the one whose title named the tool is taken first, then the other.
+  ids.add('call_1', undefined, { q: 'a' });
+  ids.add('call_2', 'lookup', { q: 'a' });
+  assert.equal(await ids.take('lookup', { q: 'a' }, signal, 50), 'call_2', 'the title breaks the tie');
+  assert.equal(await ids.take('lookup', { q: 'a' }, signal, 50), 'call_1');
+  // An MCP call that reached the server first waits for it.
+  const waiting = ids.take('write', { path: 'b' }, signal, 2_000);
+  ids.add('call_3', undefined, { path: 'b' });
+  assert.equal(await waiting, 'call_3');
+  // Other arguments never take it, nor does an announcement with none.
+  ids.add('call_4', undefined, { path: 'c' });
+  ids.add('call_5', undefined, undefined);
+  assert.equal(await ids.take('write', { path: 'd' }, signal, 50), undefined);
+  assert.equal(ids.has('call_4'), true, 'still announced, still waiting for its own call');
+});
