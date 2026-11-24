@@ -97,9 +97,9 @@ export function offUntil(limit: Limit, nowMs: number): number | undefined {
 
 /** A breaker on one backend, read at `now`. `held`: what a call answers unsent while it holds (SEARCH_UNAVAILABLE once
  *  off, searchBusy for the seconds left of a wait). `read` takes a search and its limit: a quota answer, or a rate limit
- *  naming a wait past 15 minutes, turns it off (offUntil); a shorter rate limit opens a wait, never shrinking one
- *  already open; a repeatIsQuota limit after an earlier one whose wait has
- *  passed, with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
+ *  naming a wait past 15 minutes, turns it off (offUntil), the call keeping any results it has; a shorter rate limit
+ *  opens a wait, never shrinking one already open; a repeatIsQuota limit after an earlier one whose wait has passed,
+ *  with no success between, is a quota answer and the call answers SEARCH_UNAVAILABLE. */
 export type Breaker = { held(): Search | undefined; read(searched: Searched): Search; off(): boolean; left(): number; holding(): Holding | undefined };
 /** What holds a breaker now: the kind of the limit that last held it, and when it may be asked again (Infinity: not in
  *  the breaker's life). */
@@ -133,11 +133,12 @@ export function searchBreaker(now: () => number = Date.now): Breaker {
       if (!limit) return answer;
       const at = now();
       const till = offUntil(limit, at);
-      // The call that turns search off for a rate limit answers so itself, never its limit's "try again" words.
+      // The call that turns search off for a rate limit answers its results if it has any (a merged search's other
+      // requests), else SEARCH_UNAVAILABLE, never its limit's "try again" words.
       if (till !== undefined) {
         if (till >= offTill) offKind = limit.kind;
         offTill = Math.max(offTill, till);
-        return limit.kind === "quota" ? answer : { error: SEARCH_UNAVAILABLE };
+        return limit.kind === "quota" || !("error" in answer) ? answer : { error: SEARCH_UNAVAILABLE };
       }
       if (limit.kind === "rate" && limit.repeatIsQuota && marked && at >= until) {
         offTill = Number.POSITIVE_INFINITY;
