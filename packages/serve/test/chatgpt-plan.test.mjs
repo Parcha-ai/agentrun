@@ -975,6 +975,25 @@ test("a start never waits for its settle: while OpenAI holds a carried pair's re
   assert.equal((await openRow(store, sealKey)).retired, undefined, "then it settles");
 });
 
+test("a start's settle that lists the plan's models tells the server (its change callback), so offers made from the fallback list are made again; a start with nothing to settle tells nothing", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  await seatUnsettled(store, sealKey, old);
+  let changes = 0;
+  const changed = () => void (changes += 1);
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey, changed }));
+  t.after(() => plan.close());
+  await until(() => changes === 1, "the listed models told to the server");
+  assert.equal((await openRow(store, sealKey)).unlisted, undefined);
+  const quiet = await startOf(new ChatGPTPlan({ store, sealKey, changed }));
+  await quiet.close();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(changes, 1, "nothing to settle: no change told");
+});
+
 /** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */
 async function browserReturns(authorizeUrl, options) {
   const url = new URL(callbackFor(authorizeUrl, options));
