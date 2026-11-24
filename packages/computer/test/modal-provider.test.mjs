@@ -16,6 +16,7 @@ import test from "node:test";
 import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
@@ -625,7 +626,7 @@ test("the provider's create() reads no environment: the token, the app and the s
 test("the server URL is https alone, loopback included, so the token never crosses in the clear: another is refused before any client is made", async () => {
 	for (const serverUrl of ["http://api.modal.com:443", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "grpc://api.modal.com:443"]) {
 		const { ModalClient, made } = fakeClient();
-		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), (error) => /must be https/.test(error.message) && !error.message.includes(TOKEN_OPTIONS.tokenId), serverUrl);
+		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, serverUrl, ModalClient, daemonPath: DAEMON_PATH }), refusesHttp("the Modal server URL (options.serverUrl)", serverUrl, TOKEN_OPTIONS.tokenId));
 		assert.deepEqual(made, [], serverUrl);
 	}
 	const { ModalClient, made } = fakeClient();
@@ -676,7 +677,8 @@ test("the provider refuses an ambient MODAL_SERVER_URL in process.env, the one v
 		const { ModalClient, made } = fakeClient();
 		await assert.rejects(modal.create({ ...TOKEN_OPTIONS, app: APP, ModalClient, daemonPath: DAEMON_PATH }), (error) => {
 			assert.match(error.message, /MODAL_SERVER_URL is set/);
-			assert.match(error.message, /options\.serverUrl/);
+			// The default named as the client gets it, with no :443 (https's own port).
+			assert.match(error.message, /pass the server as options\.serverUrl if it is not https:\/\/api\.modal\.com$/);
 			return true;
 		});
 		assert.deepEqual(made, []);

@@ -9,6 +9,7 @@ import test, { after } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { fakeCommands, recorder } from "./fake-groundbox.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { GroundboxProvider, create } = await import("../dist/groundbox.js");
 const { GROUNDBOX, GROUNDBOX_OWN_IMAGE } = await import("../dist/descriptors/index.js");
@@ -1015,7 +1016,7 @@ test("a start that does not hear `started` within its bound ends the command: it
 
 test("the API URL is https alone, loopback included, so the key never crosses in the clear", () => {
 	for (const apiUrl of ["http://api.groundbox.dev/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8080/v1", "http://localhost:8080/v1", "ws://api.groundbox.dev/v1"]) {
-		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), (error) => /must be https/.test(error.message) && !error.message.includes(KEY), apiUrl);
+		assert.throws(() => new GroundboxProvider({ apiKey: KEY, apiUrl, daemonPath: "/nonexistent/computerd" }), refusesHttp("the Groundbox API URL", apiUrl, KEY));
 	}
 	assert.doesNotThrow(() => new GroundboxProvider({ apiKey: KEY, apiUrl: "https://api.groundbox.dev/v1", daemonPath: "/nonexistent/computerd" }));
 });

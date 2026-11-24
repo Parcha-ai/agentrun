@@ -6,6 +6,7 @@
 // fake docker, answers here: nothing reaches a daemon.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { getEventListeners } from "node:events";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -143,6 +144,27 @@ test("the stop's signal cuts a read another caller started with no signal: the s
   assert.deepEqual(readdirSync(join(state, "containers")), [], "the helper container is removed");
   const calls = readFileSync(join(state, "argv.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(calls.map((args) => args[0]), ["run", "rm", "inspect"]);
+});
+
+// The server's retry asks again with its one stop signal every few minutes while Docker stays down (server.ts): each ask's
+// handler on that signal goes when its read settles, so a long outage piles none up (Node warns past 10 on one signal).
+test("reads asked again on one long-lived signal leave no abort listener on it once each settles, failed or answered", async (t) => {
+  const stopping = new AbortController();
+  const missing = ownEnv();
+  for (let tries = 0; tries < 12; tries++) {
+    assert.deepEqual(await hostRead.hostAddressesOnce(missing, stopping.signal), { why: "the read through Docker's socket failed (exit ENOENT: )" });
+  }
+  assert.equal(getEventListeners(stopping.signal, "abort").length, 0, "after 12 failed reads");
+  const dir = await scratch(t);
+  const bin = join(dir, "bin");
+  const state = join(dir, "state");
+  await mkdir(bin);
+  await mkdir(join(state, "containers"), { recursive: true });
+  const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  const answering = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state };
+  assert.deepEqual(await hostRead.hostAddressesOnce(answering, stopping.signal), { addresses: [] });
+  assert.equal(getEventListeners(stopping.signal, "abort").length, 0, "after a read that answered");
 });
 
 // Through the tests' fake docker, whose read stalls while `host-addresses-hold` is in its state (its container made and

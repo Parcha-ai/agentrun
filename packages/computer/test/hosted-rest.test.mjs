@@ -33,9 +33,12 @@ test("httpsBase takes an https URL with its trailing slashes stripped, and refus
 	assert.throws(() => httpsBase("http://api.example.test/?key=fake-test-key", "the API URL"), (error) => !error.message.includes("fake-test-key"));
 });
 
-test("httpsBase returns the normalized URL: a lower-case scheme and host, a default port dropped, so a case-sensitive reader of the scheme sees https", () => {
+test("httpsBase returns the normalized URL: a lower-case scheme and host, a default port dropped, so a case-sensitive reader of the scheme sees https; the path and query keep their case", () => {
 	assert.equal(httpsBase("HTTPS://API.EXAMPLE.TEST:443/", "the API URL"), "https://api.example.test");
 	assert.equal(httpsBase("HTTPS://Api.Example.test:8443/v1/", "the API URL"), "https://api.example.test:8443/v1");
+	// Only the scheme and host are case-blind: a path or query is the server's to read, so its case stays.
+	assert.equal(httpsBase("HTTPS://Api.Example.test/V1/Tenant/", "the API URL"), "https://api.example.test/V1/Tenant");
+	assert.equal(httpsBase("HTTPS://Api.Example.test/v1?Region=EU", "the API URL"), "https://api.example.test/v1?Region=EU");
 });
 
 test("httpCode maps a status to one code", () => {

@@ -3,6 +3,7 @@
 // lifecycle is tested once, against its fake host (hosted-provider.test.mjs); smol cloud's own is proven live.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { SmolcloudProvider } = await import("../dist/smolcloud.js");
 const { SMOLCLOUD_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/smolcloud.js");
@@ -206,8 +207,8 @@ test("the API URL is https alone, loopback included, so the key never crosses in
 	const heard = [];
 	const fetch = async (url) => (heard.push(url), new Response("[]", { status: 200 }));
 	for (const apiUrl of ["http://api.smolmachines.com", "http://10.0.0.5:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "ws://api.smolmachines.com"]) {
-		assert.throws(() => new SmolcloudProvider({ apiKey: key, apiUrl, fetch }), (error) => /must be https/.test(error.message) && !error.message.includes(key), apiUrl);
-		await assert.rejects(createProvider({ env: { [ENV.key]: key, [ENV.live]: "1", [ENV.apiUrl]: apiUrl } }), (error) => /must be https/.test(error.message) && !error.message.includes(key), apiUrl);
+		assert.throws(() => new SmolcloudProvider({ apiKey: key, apiUrl, fetch }), refusesHttp("the smol cloud API URL", apiUrl, key));
+		await assert.rejects(createProvider({ env: { [ENV.key]: key, [ENV.live]: "1", [ENV.apiUrl]: apiUrl } }), refusesHttp("the smol cloud API URL", apiUrl, key));
 	}
 	assert.throws(() => new SmolcloudProvider({ apiKey: key, apiUrl: "api.smolmachines.com", fetch }), (error) => /the smol cloud API URL is not a URL/.test(error.message) && !error.message.includes(key));
 	assert.deepEqual(heard, [], "no call went out");
