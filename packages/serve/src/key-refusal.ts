@@ -185,14 +185,14 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
         shapes.splice(run.at);
         reads.splice(run.at);
       }
+      // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
+      // tail (tailOf: `hold` characters the matcher sees, at most a piece), covered too, for the head of a value whose
+      // rest comes after it. One read, the two joined by a line break, as each piece is one.
       const head = peek(text, start, hold);
-      if (head === undefined) unread = true;
+      const tail = head === undefined ? undefined : tailOf(text, start, to, hold);
+      if (head === undefined || tail === undefined) unread = true;
       else {
         shapes.push(`${redactSecrets(head, secrets, Buffer.byteLength(head))}[redacted]`);
-        // The run is shown as "[redacted]": its head is read, covered, for the rest of a value split before it, and its
-        // tail (at most `hold` characters, at most a piece), covered too, for the head of a value whose rest comes after
-        // it. One read, the two joined by a line break, as each piece is one.
-        const tail = text.slice(Math.max(start, to - Math.min(hold, ANSWER_PIECE)), to);
         const both = `${head}\n${tail}`;
         reads.push({ text: both, cuts: [[0, both.length]] });
       }
@@ -250,18 +250,40 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads more than a
  *  piece. */
 function peek(text: string, from: number, count: number): string | undefined {
+  const read = visible(text, from, count, text.length);
+  return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
+}
+
+/** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
+ *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
+ *  them, so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, an escape or encoded bytes
+ *  that decode to either) between that head and the run's end never pushes the head out of it. Read forward from a
+ *  start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the caller
+ *  withholds the text, when that takes more than a piece of text. */
+function tailOf(text: string, start: number, to: number, count: number): string | undefined {
+  const want = Math.min(count, ANSWER_PIECE);
+  for (let width = Math.min(want, to - start); ; width = Math.min(2 * width, ANSWER_PIECE, to - start)) {
+    const from = to - width;
+    if (from === start || visible(text, from, want, to).found >= want) return text.slice(from, to);
+    if (width >= ANSWER_PIECE) return undefined;
+  }
+}
+
+/** text[from, to) read as peek says, until `count` characters the matcher sees are found or the read passes a piece
+ *  of text (`span`, a run of whitespace counted as one): what it read, as peek returns it, and how many it found. */
+function visible(text: string, from: number, count: number, to: number): { parts: string[]; found: number; span: number } {
   const parts: string[] = [];
   let span = 0;
   let found = 0;
   let escape: { char: string; end: number } | undefined;
-  for (let at = from; at < text.length && found < count; ) {
+  for (let at = from; at < to && found < count && span <= ANSWER_PIECE; ) {
     SPACES.lastIndex = at;
     let end = SPACES.test(text) ? SPACES.lastIndex : at;
     if (end > at) {
       parts.push(" ");
       span++;
     } else {
-      while (end - at <= ANSWER_PIECE && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
+      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
       if (end > at) found += squeeze(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8")).length;
       else if (text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) {
         end = escape.end;
@@ -275,10 +297,9 @@ function peek(text: string, from: number, count: number): string | undefined {
     }
     // Each character read, a percent-encoded run's twice more (its hex parsed, then decoded).
     scanned.chars += text[at] === "%" && end > at + 1 ? 3 * (end - at) : end - at;
-    if (span > ANSWER_PIECE) return undefined;
     at = end;
   }
-  return parts.join("");
+  return { parts, found, span };
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
