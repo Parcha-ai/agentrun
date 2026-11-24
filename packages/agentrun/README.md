@@ -46,7 +46,7 @@ one when the last has run out) until the password is set, the console after. It 
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
 `agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. The
 Ollama on this machine needs nothing here: the server lists its models itself. For an Ollama off its default address,
-`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. For a local model
+`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than 65,536. For a local model
 behind a gateway, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare
 --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` does the same (`none` alone:
 without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
