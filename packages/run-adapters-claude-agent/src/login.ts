@@ -335,9 +335,10 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  Asks once. Throws when the CLI gives no answer that reads as one: ClaudeLoginTimedOut when it was still running at
  *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else ClaudeLoginNoStatus. A CLI that never
  *  started throws the spawn's own error. At the limit the CLI is asked to go (SIGTERM) and killed STATUS_KILL_MS later;
- *  once it has exited or was killed, the check waits at most STATUS_DRAIN_MS more for its output, which a process it
- *  started may hold open. So a check settles within its limit and 2 s, whatever the CLI does. A `timeoutMs` that is no
- *  whole number of ms from 1 to 2^31 - 1 throws a RangeError before anything starts. */
+ *  once it has exited or was killed, the check waits STATUS_DRAIN_MS more at most for its output, which a process it
+ *  started may hold open, and then one more pass of the event loop's reads. So a check settles within its limit, 2 s and
+ *  that pass, whatever the CLI does. A `timeoutMs` that is no whole number of ms from 1 to 2^31 - 1 throws a RangeError
+ *  before anything starts. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   // The limit is the check's timer and, with 2 s more, the end it writes for the sweep, which reads only a whole number
@@ -373,9 +374,11 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
         child.stdout.destroy();
         resolve({ stdout: out, timedOut });
       });
-      // Once the CLI has exited or was killed, its pipe gets a short while to close, and is then left.
+      // Once the CLI has exited or was killed, its pipe gets a short while to close, and is then left. The timer gives up
+      // only after one more pass of the loop's reads (setImmediate runs after them): a loop held up past the drain, as on
+      // a busy server, runs its timers before its reads, and what the pipe already held would be dropped unread.
       const drainSoon = () => {
-        drain ??= setTimeout(done, STATUS_DRAIN_MS);
+        drain ??= setTimeout(() => setImmediate(done), STATUS_DRAIN_MS);
       };
       // The limit is kept here, not by spawn's `timeout`, so the check knows it ended the CLI, and kills a CLI that
       // outlasts the TERM.
