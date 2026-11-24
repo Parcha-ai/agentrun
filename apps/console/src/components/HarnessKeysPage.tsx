@@ -17,7 +17,7 @@ const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiEr
 /** Why a key saved for a harness is not one its runs get (the view's `reenter`), in words beside it. */
 const REENTER_WORDS: Record<HarnessKeysEntry["reenter"][number]["why"], string> = {
   recipe_changed: "Saved for another version of this recipe file: paste it again",
-  not_bound: "Not tied to a recipe file (saved before keys were, or its save was cut off): paste it again",
+  not_bound: "Not tied to a recipe file it opens with (saved before keys were bound, or its save did not finish): paste it again",
   seal_key_changed: "Sealed under another seal key: paste it again",
   file_unreadable: "Its saved row does not read: paste it again",
 };

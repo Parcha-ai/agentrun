@@ -170,7 +170,8 @@ test("a key its recipe runs on no more is kept, listed beside the recipe's keys,
   const view = later.view(SLIM);
   assert.deepEqual([view.keys.map((k) => k.name), view.kept.map((k) => [k.name, k.set])], [["harness:acme:ACME_API_KEY"], [["harness:acme:ACME_ORG", true]]]);
   assert.deepEqual(later.held("acme").keys, ["ACME_API_KEY", "ACME_ORG"]);
-  await assert.rejects(later.save(SLIM, "ACME_ORG", { value: ORG }), (e) => fieldsOf(e).some((i) => i.reason === "not_an_option"), "never saved again for it");
+  // A PUT names the keys the recipe runs on (a DELETE, the keys the harness holds).
+  await assert.rejects(later.save(SLIM, "ACME_ORG", { value: ORG }), (e) => fieldsOf(e).some((i) => i.reason === "not_an_option" && i.message === "Acme Agent runs on ACME_API_KEY."), "never saved again for it");
   await later.remove(later.held("acme"), "ACME_ORG");
   assert.equal(await store.sealedKeys.get(harnessKeyRow("acme", "ACME_ORG")), undefined);
   assert.deepEqual(later.view(SLIM).kept, []);
