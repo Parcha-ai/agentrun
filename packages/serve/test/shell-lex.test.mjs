@@ -193,9 +193,10 @@ test("a word's value keeps where each character is written, and an expansion sta
   assert.equal(wordFrom(sub, subWord, 1).kind, "sub");
 });
 
-/** Each command named by `name` in `text` read as the scrubber reads it (secret-rules.ts commandsOf): from its name,
- *  at most `max` on, one Misses for the text, the next search after where the read stopped. The read count per
- *  character of the text, the reading stopped once it passes `bound` (so a super-linear reader fails fast). */
+/** The lexer alone, driven as secret-rules.ts commandWords drives it with its re-read budget spent: each command named
+ *  by `name` in `text` read from its name, at most `max` on, one Misses for the text, the next search after where the
+ *  read stopped. The read count per character of the text, the reading stopped once it passes `bound` (so a
+ *  super-linear reader fails fast). The shipped readers are counted the same way in secret-scrub's XCIX. */
 function readsPerChar(text, name, bound, max = 4096, ends = curlEnds) {
   const misses = new Map();
   const re = new RegExp(name, "g");

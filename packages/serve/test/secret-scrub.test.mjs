@@ -2672,6 +2672,25 @@ test("XCVIII: the lexer read cuts where the span scan beside it does not: a name
   }
 });
 
+test("XCIX: the shipped readers' counted reads at 512 KB: at most 8 a character over the lexer test's units, 12 where a command is named inside the quotes of an unclosed construct, each read by the rule that reads its command", async () => {
+  const ruleOf = (unit) => (unit.startsWith("curl") ? "curl-user" : unit.startsWith("mysql") ? "mysql-password" : unit.startsWith("npm") ? "secret-assign" : "password-flag");
+  const units = [
+    'curl -H "$(curl $(curl $(date)))" -u a:b ', 'curl "$(', "curl $(((((( -u a:b ", "curl \x60 -u a:b ", 'curl "\x60$(" -u a:b ',
+    `mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`,
+    'curl "', "curl '", "curl $(", "curl \x60", "curl $'", "curl ${", "curl <(", "curl $((", "curl $( $( ", 'curl "$(\x60',
+    "curl $( $(a) ", 'curl "$(echo "b") ', "curl ${a:-${b} ", "curl -s $(cat f; curl -s x $(date -u +%H:%MZ) ", "curl $(a; ", 'curl "$(a; ', "curl $(a $(b); ",
+    "npm set x ", "mysql ${a ${b ${c ", "redis-cli -h o'neil -a x 'y' ",
+  ];
+  for (const unit of units) {
+    const { [ruleOf(unit)]: perChar } = await rulesRead([ruleOf(unit)], repeatTo(unit, 512 * 1024));
+    assert.ok(perChar <= 8, `${ruleOf(unit)} on ${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
+  }
+  for (const unit of ["curl $(x|'curl ''$(a ", "curl -s $(cat f|'curl -s ''$(date -u +%H:%M:%S)' ", "curl $(x|'curl ${a:-$(a ", "curl $(x|'curl ${a:-$(a; ", `curl "$(x|'curl "$(a; `]) {
+    const { "curl-user": perChar } = await rulesRead(["curl-user"], repeatTo(unit, 512 * 1024));
+    assert.ok(perChar <= 12, `curl-user on ${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
+  }
+});
+
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
   const long = "Tq7Wm2Rk9Zx".repeat(137);
   const [head, tail] = [long.slice(0, 200), long.slice(-200)];
