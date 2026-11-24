@@ -624,12 +624,38 @@ test("a park never writes over a kept row pinned to another runner still there: 
   // runner-a gone: its row (left as its park wrote it) is replaced by runner-b's park, as before.
   const gone = await reclaimed({ live: async () => [] });
   assert.deepEqual(gone.resumed.replaced, { kind: "sandbox", folderKept: false, lost: true }, "lost with its runner, said so");
-  assert.equal(await gone.one.store.settings.get(key), undefined, "runner-a gone: its row stays off");
+  assert.equal(JSON.stringify(await gone.one.store.settings.get(key)), JSON.stringify({ ...gone.written, ending: true }), "runner-a gone: its row back all the same, marked ending, for any janitor to end");
   await gone.one.store.settings.put(key, gone.written);
   assert.equal(await gone.resumed.park("approval"), true, "runner-b's park keeps its sandbox");
   assert.deepEqual(await readKept(gone.one.store.settings, "run-1"), { provider: "docker", kind: "sandbox", id: "c2", name: "c2", epoch: 5, until: T0 + 60_000 + KEEP_MS, folder: "bind", ...RUNNER_B }, "runner-b's row replaced runner-a's");
   assert.deepEqual(deletes(gone.one.account), [], "nothing deleted at the park");
   await gone.resumed.release();
+});
+
+// A claim that took a kept row pinned to another runner and could not reach its machine puts the row back marked ending
+// whatever its read of who is there says: that read can say gone for a runner still running (its word late), whose own
+// end at its time must still find its row.
+test("a claim that can't reach a kept machine pinned to another runner puts its row back marked ending though its read says that runner is gone: a runner whose word was only late still ends its machine at its time", async () => {
+  const key = keptKeyOf("run-1");
+  const one = await server(SANDBOX);
+  await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const atPark = await readKept(one.store.settings, "run-1");
+  const written = await one.store.settings.get(key);
+  // runner-a's container is on its own engine: runner-b's lists none of it.
+  const onA = one.account.computers.get("c1");
+  one.account.computers.delete("c1");
+  one.clock.now = T0 + 60_000;
+  const said = [];
+  const resumed = await one.claim(5, { hadComputer: async () => true, onConnected: (words) => void said.push(words) }, { holder: RUNNER_B }, { live: async () => [] });
+  one.account.computers.set("c1", onA);
+  assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lost: true }, "said lost, as the read said");
+  assert.equal(JSON.stringify(await one.store.settings.get(key)), JSON.stringify({ ...written, ending: true }), "the row back, marked ending, though the read said its runner was gone");
+  // runner-a was there all along: its end at its time finds its row and ends its machine.
+  const ended = [];
+  assert.equal(await endKept(one.store.settings, "run-1", atPark, async () => void ended.push(atPark.id)), true, "runner-a's end finds its row");
+  assert.deepEqual(ended, ["c1"]);
+  assert.equal((await readKept(one.store.settings, "run-1")).ended, true);
+  await resumed.release();
 });
 
 /** The store's next clock read waits until `release()`: `reached` resolves once a read is waiting. Later reads answer

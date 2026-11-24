@@ -421,7 +421,7 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   assert.equal(said.filter((summary) => summary.includes(`${LOST} ${NEW}`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.endsWith(SAME)), [], "never called the same one");
   assert.deepEqual(said.filter((summary) => summary.includes("10 minutes passed")), [], "not the lapsed words: its time had not passed");
-  assert.equal(await readKept(one.server.settings, RUN), undefined, "the keep was taken");
+  assert.equal((await readKept(one.server.settings, RUN))?.ending, true, "the keep given back marked ending, for any janitor to end: no claim takes it");
 });
 
 test("park on A, A still there but refusing claims: B claims on the answer, can't reach A's desktop, and puts the kept row back as A's park wrote it, marked ending, so A's own end at its time deletes the desktop", { timeout: 120_000 }, async (t) => {
