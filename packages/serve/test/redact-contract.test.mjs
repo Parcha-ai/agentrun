@@ -660,6 +660,22 @@ const CASES = [
       ["a held value holding a literal \\u0041, JSON-escaped", JSON.stringify({ v: literal }), [literal], `{"v":"[redacted]"}`],
     ].map(([what, text, values, shown]) => ({ name: `no false positive: ${what} is cut in place or shown as it came (control)`, text, values, hides: [P24[0]], exact: all(shown) }));
   })(),
+  // Never less than the views of one family each: a view that decodes percent-encoding alone, or JSON's escapes alone
+  // with an escaped quote read as a quote, reads a held value that has a family's text of its own (a literal "\n", a
+  // literal "%41", a quote) as itself. The stacked views decode that text too, so each of these withheld at the base and
+  // must still: a held value holding a literal "\n", split by a percent-encoded space; one holding a literal "%41" and a
+  // "/", written by a JSON writer that escapes "/" (PHP's); one holding "é" and a quote, written by one that escapes
+  // every non-ASCII character (Python's).
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["holding a literal \\n, split by a percent-encoded space", `${H}${B}n${R}`, `x ${H.slice(0, 8)}%20${H.slice(8)}${B}n${R} y`],
+      ["holding a literal %41 and a /, its / escaped as \\/", `${H}%41/${R}`, `{"k":"${H}%41${B}/${R}"}`],
+      ["holding é and a quote, written with é as a \\u escape", `${H}é"${R}`, `{"k": "${H}${B}u00e9${B}"${R}"}`],
+    ].map(([what, value, text]) => ({ name: `one family's view: a held value ${what} withholds the text`, text, values: [value], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
   // A combining mark (P2-B): NFKC composes a letter and the mark after it into one character, so a held value with a
   // mark after its first or last letter, written as it is, escaped or percent-encoded, lost that letter. The squeeze
   // decomposes and drops every combining mark, on the held value's side and the text's, so each withholds the text. A

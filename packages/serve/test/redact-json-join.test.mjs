@@ -52,6 +52,21 @@ test("a held value split across two arguments of a call: tool_input is withheld,
   assert.deepEqual(shows(JSON.stringify(named.tool_input ?? {})), []);
 });
 
+test("a read with no calls (the run's view, its Timeline): a held value split across two arguments of a call shows no half in any row, and its preview is \"[redacted]\"", () => {
+  const read = (args) =>
+    timelineOf([user("Run it."), assistant([call("c1", "bash", args)]), result("c1", "bash", "ok")], {
+      redact: (part) => redacted(part, SECRETS),
+      holds: (whole) => withheldWhole(whole, SECRETS),
+    });
+  for (const args of [{ command: `echo ${HEAD}`, note: REST }, { command: "ls", [HEAD]: REST }]) {
+    const rows = read(args);
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(args));
+    assert.equal(rowOf(rows, "tool_use").tool_input_preview, "[redacted]");
+  }
+  // A held value whole in one argument is cut in place there too (control).
+  assert.equal(rowOf(read({ command: `echo ${KEY}` }), "tool_use").tool_input_preview, "echo [redacted]");
+});
+
 test("a held value whole in one argument is cut in place: tool_input keeps the call's shape (control)", () => {
   const use = rowOf(rowsOf("bash", { command: `echo ${KEY}`, note: "x" }, "ok"), "tool_use");
   assert.deepEqual(use.tool_input, { command: "echo [redacted]", note: "x" });
