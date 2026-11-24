@@ -22,9 +22,6 @@ const BASE = COMPOSIO_ORIGIN;
 const SAVE_FIELDS = ["api_key", "api_key_env", "toolkit", "tools", "user_id", "auth_config_id", "price_usd"] as const;
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
-/** COMPOSIO_USER in words, for the refusals that keep it to the owner's single-user servers: a run's binding and an API
- *  token's save. */
-export const COMPOSIO_USER_WORDS = "the Composio preset's shared default user, the one single-user preset servers call as";
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
@@ -217,8 +214,7 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  check of the auth config named (before anything is sent) or found (before anything is made against it): an API token's
  *  save never stands on one a server the owner saved stands on. `accountOn`: the caller's check of an ACTIVE account the
  *  save found for its user, before anything is made (an API token's save: only one a server the token saved holds). Each
- *  refuses by throwing, and the save makes nothing. A save with `accountOn` names a user of its own: the default user
- *  (COMPOSIO_USER, an omitted user_id) is 422 under user_id before anything is sent. */
+ *  refuses by throwing, and the save makes nothing. */
 export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>, standsOn?: (authConfig: string) => Promise<void>, accountOn?: (user: string, account: string) => Promise<void>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   // No address and no headers of the caller's own: Composio makes the server and answers its address, and the key is the
   // one header sent. Any field the save does not take is refused before anything is sent, never ignored.
@@ -234,9 +230,6 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
   if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", `A user_id is ${COMPOSIO_USER_ID_WORDS}, or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
-  // A caller that checks the account (an API token's save, accountOn) never stands on the default user: Composio picks the
-  // account at each call by user and auth config, so an account the owner connects for it later would serve the token.
-  else if (accountOn && user === COMPOSIO_USER) issues.push(issue("user_id", "not_allowed", `The user_id ${COMPOSIO_USER} (what an omitted user_id means) is ${COMPOSIO_USER_WORDS}: an API token's server never calls as it. Name a user_id of the token's own, one no one else connects under. Nothing was saved.`));
   if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
   if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));
   if (issues.length) throw invalid(issues);
