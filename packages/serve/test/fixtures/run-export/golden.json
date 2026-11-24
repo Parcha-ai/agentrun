@@ -354,16 +354,16 @@
       "created_at": "2026-11-23T10:00:04.000Z",
       "id": "row_4",
       "kind": "text_block",
-      "summary": "The host [redacted:private-ip] answered from /home/<user>/work.",
-      "text": "The host [redacted:private-ip] answered from /home/<user>/work.",
+      "summary": "The host [redacted:private-ip] answered from {home}/<user>/work.",
+      "text": "The host [redacted:private-ip] answered from {home}/<user>/work.",
       "timestamp": "2026-11-23T10:00:04.000Z"
     },
     {
       "created_at": "2026-11-23T10:00:05.000Z",
       "id": "row_5",
       "kind": "final_answer",
-      "summary": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
-      "text": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
+      "summary": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
+      "text": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
       "timestamp": "2026-11-23T10:00:05.000Z"
     }
   ],
@@ -383,7 +383,7 @@
     },
     "kind": "agentic",
     "result": {
-      "final_answer": "Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].",
+      "final_answer": "Done. Mail [redacted:email] about {home}/<user>/work; key [redacted:sk-key].",
       "output": null
     },
     "review": null,

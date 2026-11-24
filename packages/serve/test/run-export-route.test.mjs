@@ -15,6 +15,7 @@ import { scrub } from "../dist/secret-cut.js";
 import { ROUTES } from "../dist/server.js";
 import { marked, server, sha, written } from "./custody-support.mjs";
 import { flowAgent, follow } from "./support.mjs";
+import { unixHome } from "./scrub-positives.mjs";
 
 /** Fresh synthetic secrets of each kind: an sk- key (format), a value the server holds (an environment variable named
  *  as a key: held), a PGPASSWORD= value (label), a home path's user and an email (personal). */
@@ -99,7 +100,7 @@ test("GET /runs/{id}/export: an ended run's bundle, cut of every planted value; 
   let failing = false;
   const shareScrub = async (text, opts) => (failing ? { ok: false, counts: {} } : scrub(text, opts));
   const s = await server(t, { agentTools: [], env: { SHARETEST_API_KEY: p.held }, shareScrub });
-  const said = `Connect with PGPASSWORD=${p.pg} psql -h db; key ${p.sk}; token ${p.held}; notes in /home/${p.user}/work; mail ${p.email}.`;
+  const said = `Connect with PGPASSWORD=${p.pg} psql -h db; key ${p.sk}; token ${p.held}; notes in ${unixHome(p.user)}/work; mail ${p.email}.`;
   const notes = await uploaded(s, "notes.txt", `The notes: ${said}\n`);
   const { runId } = await ran(s, said, { files: [notes] });
 
