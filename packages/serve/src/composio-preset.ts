@@ -49,6 +49,9 @@ const ADDRESS_ACCOUNT = "connected_account_id";
 export const COMPOSIO_AUTH_CONFIG_ID = /^ac_[A-Za-z0-9_-]{1,64}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;
+/** The connected accounts a lookup asks for a page. Composio documents `limit` on GET /api/v3/connected_accounts with no
+ *  default or maximum; 50 is the page it documents for auth configs, the one such list it bounds. */
+const ACCOUNT_PAGE = 50;
 const MAX_TOOLS = 500;
 /** The longest action slug a save takes: Composio's are far shorter. */
 const MAX_SLUG = 128;
@@ -219,7 +222,8 @@ export const composioRunQuery = (binding: { readonly user_id: string; readonly c
  *  sends `api_key_env` (head): then `stands.key_env` names it, and the store seals no credential. `standsOn`: the caller's
  *  check of the auth config named (before anything is sent) or found (before anything is made against it): an API token's
  *  save never stands on one a server the owner saved stands on. `accountOn`: the caller's check of an ACTIVE account the
- *  save found for its user, before anything is made (an API token's save: only one a server the token saved holds). Each
+ *  save found for its user, before anything is made (an API token's save: only one a server the token saved holds); with
+ *  it, a user whose accounts run past the lookup's pages is 403, since they can't all be checked. Each
  *  refuses by throwing, and the save makes nothing. `userAs`: the Composio user the body's `user_id` (or the default) is
  *  sent as, in every call, the address and the record (an API token's save: composioTokenUser); per_run is never mapped.
  *  A user_id in the token's namespace (COMPOSIO_TOKEN_USER_PREFIX) is the server's to add, so no body names one: 422. */
@@ -305,14 +309,18 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
     // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
     // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It checks every ACTIVE
-    // one, on every page (at most MAX_PAGES; a longer list is refused): Composio may serve any of them for this user and config.
+    // one, on every page: Composio may serve any of them for this user and config. Past MAX_PAGES a save with that check
+    // is refused, since it can't check them all; one without it (the owner's) goes on with what it read.
     let active: Json | undefined;
     if (authConfig && !perRun) {
       const actives: Json[] = [];
       let cursor: string | undefined;
       for (let page = 0; ; page++) {
-        if (page === MAX_PAGES) throw new ApiError("upstream_failed", `Composio listed more than ${MAX_PAGES} pages of connected accounts for this user under the auth config ${authConfig}: nothing was saved.`);
-        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        if (page === MAX_PAGES) {
+          if (accountOn) throw new ApiError("forbidden", `Composio lists more than ${MAX_PAGES} pages of connected accounts for the user_id ${given} under the auth config ${authConfig} (${ACCOUNT_PAGE} a page), so this save can't check that each ACTIVE one is one a server the API token saved connected: an API token's server never stands on one it can't check. Name another user_id. Nothing was saved.`);
+          break;
+        }
+        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
         actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));
         cursor = text(listed.next_cursor) || undefined;
         if (!cursor) break;
