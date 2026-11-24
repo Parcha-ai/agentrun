@@ -133,8 +133,8 @@ test("a fetch past keyless Firecrawl's daily limit (as firecrawl_scrape served i
   const midnight = Date.parse("2026-11-25T00:00:00Z") - START;
   await run(f, w, [
     { url: PUBLIC, at: 0, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct", check: unsaid },
-    { url: NOTES, at: 16 * 60_000, asks: ["direct"], tries: [["direct", "ok"]], by: "direct" },
-    { url: `${PUBLIC}?run=a`, at: midnight - 1, asks: ["direct"], tries: [["direct", "ok"]], by: "direct" },
+    { url: NOTES, at: 16 * 60_000, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
+    { url: `${PUBLIC}?run=a`, at: midnight - 1, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
     { url: `${PUBLIC}?run=b`, at: midnight, asks: ["firecrawl-keyless"], tries: [["firecrawl-keyless", "ok"]], by: "firecrawl-keyless" },
   ], "fetch firecrawl daily");
 });
@@ -249,7 +249,7 @@ test("keyless Firecrawl with the direct fetch behind it: Firecrawl reads a publi
     { url: PUBLIC, part: { offset: 10 }, asks: [], tries: [], by: "firecrawl-keyless", check: (_answer, receipt) => assert.equal(receipt.cache, "hit") },
     { url: EVIL, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.match(answer.refused, /^refused: evil\.example is not a public host/) },
     { url: NOTES, asks: ["firecrawl-keyless", "direct"], tries: [["firecrawl-keyless", "error"], ["direct", "ok"]], by: "direct" },
-    { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["direct", "ok"]], by: "direct" },
+    { url: `${PUBLIC}?run=a`, asks: ["direct"], tries: [["firecrawl-keyless", "held"], ["direct", "ok"]], by: "direct" },
   ], "fetch firecrawl-keyless");
 });
 

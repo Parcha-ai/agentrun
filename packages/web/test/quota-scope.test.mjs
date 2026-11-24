@@ -29,7 +29,7 @@ test("keyed Exa: credit spent on a fetch holds web_search too, unsent; spent on 
   const v = web.createWeb({ order: { search: ["exa"], fetch: ["exa", "direct"] }, keys: { exa: EXA_CANARY }, endpoints: { exa: searchFirst.url }, guard: guardOf(network()), now: () => START });
   assert.match((await v.search("widgets")).answer.error, /Exa's search answered 402/);
   const page = await v.fetch(NOTES);
-  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome])], ["direct", [["direct", "ok"]]]);
+  assert.deepEqual([page.answer.via, page.receipt.tries.map((one) => [one.provider, one.outcome])], ["direct", [["exa", "held"], ["direct", "ok"]]]);
   assert.deepEqual(searchFirst.got.map((one) => one.path), ["/search"], "the fetch never sent");
 });
 
@@ -100,4 +100,15 @@ test("a call given its own breakers keeps a key's quota in them; asking for the 
   const shared = webOf();
   await shared.search("widgets", { breakers: web.breakers(() => START), keyLimits: "web" });
   assert.equal((await shared.fetch(PUBLIC)).answer.via, "direct", "the Web's fetch is held");
+});
+
+test("a held fetch turn is on the receipt as search's is: outcome held, its failure the hold, no error words; Parallel's too", async (t) => {
+  const searchFirst = parallelSend((path) => (path === "/v1/search" ? { status: 402 } : parallelPage));
+  const w = parallelWeb(searchFirst.send);
+  await w.search("widgets");
+  const page = await w.fetch(PUBLIC);
+  assert.deepEqual(page.receipt.tries, [
+    { provider: "parallel", outcome: "held", failure: { class: "quota", code: "HELD", message: "not tried: out of quota for the rest of this run" }, ms: 0 },
+    { provider: "direct", outcome: "ok" },
+  ]);
 });

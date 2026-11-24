@@ -2,7 +2,7 @@
 // provider asked ahead of it, why it gave none, and a line after the page's JSON naming it and why. A page a provider
 // behind it read carries none (said-scope.test.mjs).
 // A limit is said by what holds the provider (rate-limited or out of quota, until the minute it lifts, UTC, or for the
-// rest of the run), never by the provider's words for it. The receipt and the server's log are as they were.
+// rest of the run), never by the provider's words for it. The server's log is as it was.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
@@ -33,7 +33,7 @@ test("keyless Firecrawl rate-limited on a fetch: the page says until when, and s
   const second = await w.fetch(NOTES);
   assert.deepEqual([second.answer.via, second.answer["firecrawl-keyless"]], ["direct", "not tried: rate-limited until 12:01 UTC"]);
   assert.equal(lineOf(second.answer), "keyless Firecrawl was picked for web_fetch and gave no page (not tried: rate-limited until 12:01 UTC); this one was fetched directly.");
-  assert.deepEqual(turns(second.receipt), [["direct", "ok"]], "a turn not asked is not on the receipt, as before");
+  assert.deepEqual(turns(second.receipt), [["firecrawl-keyless", "held"], ["direct", "ok"]], "a held turn is on the receipt");
   assert.equal(fc.calls("firecrawl_scrape"), 1);
 });
 

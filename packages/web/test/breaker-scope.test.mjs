@@ -40,7 +40,7 @@ test("keyed Exa: a rate limit on a fetch holds web_fetch alone, and one on a sea
   assert.deepEqual(limited.receipt.tries.map((one) => [one.provider, one.outcome, one.limit]), [["exa", "error", { kind: "rate", retryAfter: "30" }], ["direct", "ok", undefined]]);
   assert.equal((await w.search("widgets")).answer.provider, "exa", "search is asked within fetch's wait");
   const held = await w.fetch(NOTES);
-  assert.deepEqual(held.receipt.tries.map((one) => [one.provider, one.outcome]), [["direct", "ok"]], "fetch waits");
+  assert.deepEqual(held.receipt.tries.map((one) => [one.provider, one.outcome]), [["exa", "held"], ["direct", "ok"]], "fetch waits");
   const searchLimited = await w.search("gadgets");
   assert.deepEqual(searchLimited.receipt.tries.map((one) => [one.outcome, one.limit]), [["error", { kind: "rate", retryAfter: "30" }]]);
   clock.now += 31_000;

@@ -128,7 +128,7 @@ test("a page Exa could not read is a failed turn naming its tag; the direct fetc
   const second = await w.fetch(NOTES);
   assert.deepEqual(second.receipt.tries.map((one) => [one.provider, one.outcome, one.limit]), [["exa", "error", { kind: "quota" }], ["direct", "ok", undefined]]);
   const third = await w.fetch(`${PUBLIC}?run=a`);
-  assert.deepEqual(third.receipt.tries.map((one) => [one.provider, one.outcome]), [["direct", "ok"]]);
+  assert.deepEqual(third.receipt.tries.map((one) => [one.provider, one.outcome, one.failure?.code]), [["exa", "held", "HELD"], ["direct", "ok", undefined]], "a held turn is on the receipt, as search's is");
   assert.equal(exa.got.length, 2, "off for the run after its credit ran out");
 });
 
