@@ -21,10 +21,26 @@ const LOGIN = { place: "agentrun", command: "claude auth login", can_start: fals
 const SIGNED_IN = { ...LOGIN, state: "signed_in", account: { method: "claude.ai", email: "person@example.com", plan: "max" } };
 const agentOn = (harness: string): Agent => ({ ...SERVED_AGENT, agent_id: `on-${harness}`, kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: `On ${harness}`, instructions: "Answer.", harness, skills: [], tools: [] } });
 const CLAUDE_AGENT = agentOn("claude-agent");
+// An agent's revisions as the server lists them: the current one first, with `current`'s fields, and an older one with
+// `older`'s. Null is a revision listed without its definition, which the page then does not hold.
+type Rev = { revision: string; version: number; current: boolean; note: string | null; definition?: Record<string, unknown> };
+const revOn = (revision: string, version: number, current: boolean, definition: Record<string, unknown> | null): Rev =>
+  ({ revision, version, current, note: null, ...(definition ? { definition: { version: 1, name: "Rev", instructions: "Answer.", skills: [], tools: [], ...definition } } : {}) });
+const twoRevisions = (current: Record<string, unknown> | null, older: Record<string, unknown> | null) => [revOn("r2", 2, true, current), revOn("r1", 1, false, older)];
 
 const settle = async () => { for (let i = 0; i < 40; i++) await act(async () => { await new Promise((r) => setTimeout(r, 10)); }); };
+const key = async (el: Element, k: string) => { await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); }); await settle(); };
+// Picks the first ("Home": the current revision) or last ("End": the older one) entry of the Playground's Revision
+// picker, as a person does with the keyboard.
+const pickRevision = async (host: Element, at: "Home" | "End") => {
+  await act(async () => { (host.querySelector('button[aria-haspopup="listbox"][aria-label="Revision"]') as HTMLButtonElement).click(); });
+  await settle();
+  const list = document.querySelector('[role="listbox"]')!;
+  await key(list, at);
+  await key(list, "Enter");
+};
 
-async function open(login: unknown, caps: unknown = CAPS, agents: Agent[] = [CLAUDE_AGENT]) {
+async function open(login: unknown, caps: unknown = CAPS, agents: Agent[] = [CLAUDE_AGENT], revisions: Rev[] = []) {
   let reads = 0;
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
@@ -35,6 +51,7 @@ async function open(login: unknown, caps: unknown = CAPS, agents: Agent[] = [CLA
     if (path === "/v2/settings/chatgpt") return json(200, { state: "signed_out" });
     if (path === "/v2/settings/tool-keys") return json(200, { keys: [], reenter: null });
     if (path === "/v2/runs" || path === "/v2/agents") return json(200, { runs: [], agents, next_cursor: null });
+    if (path.startsWith("/v2/agents/") && path.endsWith("/revisions")) return json(200, { revisions, next_cursor: null });
     return json(404, { error: { code: "not_found", message: path, retryable: false } });
   });
   location.hash = "#/playground";
@@ -103,5 +120,42 @@ describe("the Playground's No model bar and Claude Code's login on this machine"
     await settle();
     expect(page.host.textContent).toContain("Scripted refusal");
     expect(page.reads(), "a run started, and the login was not read again").toBeGreaterThan(before);
+  });
+});
+
+// The bar describes the run the Playground will start, and a picked revision runs its own definition: its harness (and
+// whether it runs natively) decides, not the agent's current one. A picked revision whose definition the page does not
+// hold is not known to run on the login, so the bar stays.
+describe("the Playground's No model bar follows the picked revision", () => {
+  it("an older revision on Claude Agent has a model from a signed-in login though the current one is on pi: the bar goes, and comes back for the current one", async () => {
+    const page = await open(SIGNED_IN, CAPS, [agentOn("pi")], twoRevisions({ harness: "pi" }, { harness: "claude-agent" }));
+    expect(page.bar()?.textContent, "the bar over the current revision, on pi").toContain("No model yet.");
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent ?? null, "the bar over a picked revision on Claude Agent while the login reads signed in").toBeNull();
+    await pickRevision(page.host, "Home");
+    expect(page.bar()?.textContent, "the bar over the current revision again").toContain("No model yet.");
+  });
+
+  it("an older revision on pi has no model from the login though the current one is on Claude Agent: the bar comes up", async () => {
+    const page = await open(SIGNED_IN, CAPS, [CLAUDE_AGENT], twoRevisions({ harness: "claude-agent" }, { harness: "pi" }));
+    expect(page.bar()?.textContent ?? null, "the bar over the current revision, on Claude Agent").toBeNull();
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent, "the bar over a picked revision on pi").toContain("No model yet.");
+  });
+
+  it("a picked revision whose definition the page does not hold keeps the bar, signed in or not", async () => {
+    const page = await open(SIGNED_IN, CAPS, [CLAUDE_AGENT], twoRevisions(null, null));
+    expect(page.bar()?.textContent ?? null, "the bar over the current revision, on Claude Agent").toBeNull();
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent, "the bar over a picked revision the page holds no definition for").toContain("No model yet.");
+  });
+
+  it("an older revision that runs here, not natively, needs a model though the current one runs on its source machine: the bar comes up", async () => {
+    const native = { runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready", connected: true, capabilities: { launch: true } } as NonNullable<Agent["definition"]["native"]>;
+    const agent: Agent = { ...agentOn("pi"), agent_id: "native", definition: { ...agentOn("pi").definition, native } };
+    const page = await open(SIGNED_IN, CAPS, [agent], twoRevisions({ harness: "pi", native }, { harness: "pi" }));
+    expect(page.bar()?.textContent ?? null, "the bar over a native agent's current revision").toBeNull();
+    await pickRevision(page.host, "End");
+    expect(page.bar()?.textContent, "the bar over a picked revision that runs on this server").toContain("No model yet.");
   });
 });
