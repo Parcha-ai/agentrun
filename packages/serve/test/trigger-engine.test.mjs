@@ -224,6 +224,28 @@ test("a message_run trigger whose run was purged turns off at its next firing, a
   assert.deepEqual(told, [], "no trigger.failed: nothing failed");
 });
 
+test("a run purged after the firing checked it but before its message lands turns the trigger off the same way: the message's not_found is no failed firing", async (t) => {
+  const said = [];
+  const told = [];
+  // The purge lands while the message is on its way; the message then fails as the server's message() fails for a purged
+  // run (trigger-targets.ts).
+  const purgedMeanwhile = async () => {
+    await purgedRun9(opened.store);
+    throw new ApiError("not_found", "The run run-9 was deleted.");
+  };
+  const opened = await engine(t, { message: purgedMeanwhile, say: (fields) => said.push(fields), notify: (failed) => (told.push(failed), "queued") });
+  const { store, triggers } = opened;
+  await run9(store);
+  const made = await triggers.create({ name: "to-run-9", source: { kind: "webhook" }, target: toRun9 });
+
+  const fired = await triggers.fire(made.id, "one");
+  assert.deepEqual([fired.firing.status, fired.firing.reason], ["skipped", "its run was deleted"], JSON.stringify(fired.firing));
+  const off = await triggers.get(made.id);
+  assert.deepEqual([off.enabled, off.next_at, off.disabled?.reason, off.disabled?.detail, off.failures_in_a_row], [false, null, "source_unreadable", "its run was deleted", 0], JSON.stringify(off));
+  assert.deepEqual(said.filter((one) => one.condition === "trigger_source_unreadable").map((one) => [one.trigger, one.error]), [[made.id, "its run was deleted"]]);
+  assert.deepEqual(told, [], "no trigger.failed: nothing failed");
+});
+
 test("a message_run trigger is not made, nor moved, onto a purged run: 422 not_found under target.run_id", async (t) => {
   const { store, triggers } = await engine(t, {});
   await run9(store);
