@@ -1261,9 +1261,14 @@ test("a sign-in's authorize code is said only when it is one OpenAI's authorize 
   // While a sign-in waits, any process on the machine can answer the loopback callback with ?error=<anything>.
   assert.equal(said("Call_admin_now"), "AgentRun's ChatGPT sign-in did not finish (authorize_other): Settings → API Keys says why; start it again there.");
   assert.doesNotMatch(said("Visit_example_com_to_fix"), /Visit|example/);
-  for (const known of ["access_denied", "invalid_scope", "server_error", "temporarily_unavailable", "3p_delegated_access_policy_denied"]) {
-    assert.match(said(known), new RegExp(`\\(authorize_${known}\\)`));
-  }
+  // Every code the authorize step can send: RFC 6749 4.1.2.1's, OpenID Connect Core 3.1.2.6's, and OpenAI's own.
+  const sent = [
+    "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable",
+    "interaction_required", "login_required", "account_selection_required", "consent_required", "invalid_request_uri", "invalid_request_object",
+    "request_not_supported", "request_uri_not_supported", "registration_not_supported",
+    "3p_delegated_access_policy_denied",
+  ];
+  for (const known of sent) assert.match(said(known), new RegExp(`\\(authorize_${known}\\)`), known);
   // OpenAI's own token answer is not a local sender's: its status and code are said as they are.
   assert.match(told("at=x event=chatgpt chatgpt=sign_in_failed reason=token_403_unsupported_country"), /\(token_403_unsupported_country\)/);
 });

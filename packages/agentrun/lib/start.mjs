@@ -288,12 +288,19 @@ function fieldsOf(line) {
   return fields;
 }
 
-/** The authorize step's error codes (RFC 6749 4.1.2.1) and OpenAI's own for a workspace whose admin turned the plan off. */
-const AUTHORIZE_CODES = new Set(["invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable", "3p_delegated_access_policy_denied"]);
+/** The error codes the authorize step can send: OAuth's (RFC 6749 4.1.2.1), OpenID Connect's (Core 3.1.2.6), and OpenAI's
+ *  own for a workspace whose admin turned the plan off. */
+const AUTHORIZE_CODES = new Set([
+  "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable",
+  "interaction_required", "login_required", "account_selection_required", "consent_required", "invalid_request_uri", "invalid_request_object",
+  "request_not_supported", "request_uri_not_supported", "registration_not_supported",
+  "3p_delegated_access_policy_denied",
+]);
 
 /** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
  *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
- *  sends is said as `authorize_other` (the server's log keeps it). */
+ *  sends is said as `authorize_other`. Under this command that is all that is kept of it (the server's stdout reaches
+ *  only this teller); `agentrun-serve` run on its own logs the tagged code. */
 function signInReason(reason) {
   if (reason === undefined) return "no reason given";
   const authorize = /^authorize_(.+)$/.exec(reason);
