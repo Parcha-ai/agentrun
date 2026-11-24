@@ -44,7 +44,7 @@ export {
   searchText,
   snippetOf,
 } from "./search.js";
-export { type FetchProvider, type Pages, type WebFetchOptions, type WebLog, type WebPage, type WebRead, type WebUnread, FETCH_ORDER, PAGES_HELD, webFetch, webFetchText } from "./fetch.js";
+export { type FetchProvider, type FetchTry, type Pages, type WebFetchOptions, type WebLog, type WebPage, type WebRead, type WebUnread, FETCH_ORDER, PAGES_HELD, webFetch, webFetchText } from "./fetch.js";
 export {
   type Page,
   type Part,
