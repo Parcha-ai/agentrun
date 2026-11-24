@@ -360,11 +360,13 @@ test("a stream that does not start says why: the sandbox read for a refused upgr
 	};
 	const saying = stub((listeners) => listeners.message({ data: JSON.stringify({ type: "error", message: "Sandbox sbx_0123456789ab is paused", code: "conflict" }) }));
 	await assert.rejects(hostOf(() => undefined, saying).host.exec(ID, ["true"], CTX), (error) => error.code === "refused" && /Groundbox ended the command: Sandbox sbx_0123456789ab is paused/.test(error.message));
-	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout.
+	// No `started` within the call's bound (an image with no Node runs no resumable command): the call's timeout. The
+	// bound is 10 minutes, past the test's own timeout, so only the mocked clock can reach it.
 	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
+	clockedTimeouts(t);
+	const refusedAtBound = assert.rejects(hostOf(() => undefined, stub()).host.exec(ID, ["true"], { timeoutMs: 600_000 }), (error) => error.name === "TimeoutError");
 	await turn();
-	t.mock.timers.tick(50);
+	t.mock.timers.tick(600_000);
 	await refusedAtBound;
 });
 
@@ -461,6 +463,16 @@ const markOf = (dir) => `agentrun-ready:${dir.slice(dir.lastIndexOf("-") + 1)}\n
 const marked = (dir, text = "", seq = Buffer.byteLength(markOf(dir) + text)) => err(markOf(dir) + text, seq);
 /** One turn of the event loop: what a promise or a stream moves on to next has run. No clock. */
 const turn = () => new Promise(setImmediate);
+/**
+ * AbortSignal.timeout on the test's clock. Node's mock timers leave it on the real one, so a call's bound (made with it)
+ * would wait real time; this one fires at the mocked setTimeout's tick. Enable the mock timers first.
+ */
+const clockedTimeouts = (t) =>
+	t.mock.method(AbortSignal, "timeout", (ms) => {
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+		return controller.signal;
+	});
 
 /** What `promise` gives, or a failure naming `what` once `ms` have passed: a process that never ends fails its test. */
 const within = async (promise, what, ms = 10_000) => {
@@ -999,11 +1011,13 @@ test("a start that does not hear `started` within its bound ends the command: it
 	t.after(streams.stopAll);
 	streams.holdStarted();
 	t.mock.timers.enable({ apis: ["setTimeout"] });
+	clockedTimeouts(t);
 	const { host } = hostOf(() => undefined, streams);
-	const starting = host.exec(ID, ["sleep", "600"], { timeoutMs: 100 });
+	// A 10-minute bound, past the test's own timeout: only the mocked clock reaches it.
+	const starting = host.exec(ID, ["sleep", "600"], { timeoutMs: 600_000 });
 	const refused = assert.rejects(starting, (error) => error.name === "TimeoutError");
 	await turn();
-	t.mock.timers.tick(100);
+	t.mock.timers.tick(600_000);
 	await refused;
 	// The sandbox's late `started`, said after the bound: the socket is closed, so it reaches nothing.
 	streams.releaseStarted();
