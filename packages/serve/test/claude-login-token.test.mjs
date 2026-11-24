@@ -67,8 +67,8 @@ function noPosts(t) {
 }
 
 /** A fake token endpoint on loopback, answering each post with `answer(post, count)` ({ status, json } or { status,
- *  text }); `fetch` is the renewal's seam, which sends the request there whatever URL it names. `asked`: the URLs the
- *  renewal named; `posts`: what reached the endpoint. */
+ *  text }, and any more `headers`); `fetch` is the renewal's seam, which sends the request there whatever URL it names.
+ *  `asked`: the URLs the renewal named; `posts`: what reached the endpoint. */
 async function tokenEndpoint(t, answer) {
   const posts = [];
   const server = createServer((request, response) => {
@@ -78,8 +78,8 @@ async function tokenEndpoint(t, answer) {
     request.on("end", async () => {
       const post = { method: request.method, path: request.url, headers: request.headers, body: JSON.parse(body) };
       posts.push(post);
-      const { status = 200, json, text } = await answer(post, posts.length);
-      response.writeHead(status, { "content-type": json === undefined ? "text/plain" : "application/json" });
+      const { status = 200, json, text, headers = {} } = await answer(post, posts.length);
+      response.writeHead(status, { "content-type": json === undefined ? "text/plain" : "application/json", ...headers });
       response.end(json === undefined ? (text ?? "") : JSON.stringify(json));
     });
   });
@@ -665,6 +665,69 @@ test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refu
     assert.deepEqual(readFileSync(file), bytes, `${why}: the file byte for byte as it was`);
     assert.deepEqual(listing(login.dir), [".credentials.json"], `${why}: no temp file or lock left`);
   }
+});
+
+test("the renewal never follows a redirect: a 307 to another origin gets no request there, so the refresh token goes to the token endpoint alone; the ask is refused in LOGIN_RUNNING_OUT's words, the file keeps its pair byte for byte, and the refresh token is not taken as refused (the next ask posts it again, to the endpoint alone)", { timeout: 30_000 }, async (t) => {
+  assert.equal(typeof tokens.LoginTokens, "function", "the runner has a reader of the login's access token");
+  // Another origin on loopback (another port): every request that reaches it is counted with its body, and it answers
+  // a token, as a host the refresh token was steered to would.
+  const elsewhere = [];
+  const other = createServer((request, response) => {
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      elsewhere.push({ method: request.method, path: request.url, body });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: fake("access-elsewhere"), expires_in: 3600 }));
+    });
+  });
+  await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    other.closeAllConnections();
+    other.close(resolve);
+  }));
+  const location = `http://127.0.0.1:${other.address().port}/v1/oauth/token`;
+  // The token endpoint answers the post with a 307 there: a fetch that follows it posts the same body again, there.
+  const endpoint = await tokenEndpoint(t, () => ({ status: 307, text: "", headers: { location } }));
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const refresh = fake("refresh-kept");
+  write(oauthOf(fake("access-near"), now + 60_000, refresh));
+  const file = join(login.dir, ".credentials.json");
+  const bytes = readFileSync(file);
+  const reader = new tokens.LoginTokens({ login, now: () => now, fetch: endpoint.fetch });
+  // One ask, bounded by its own timer: an ask that hangs fails here rather than stalling the file.
+  const ask = async () => {
+    const timer = new AbortController();
+    try {
+      return await Promise.race([
+        reader.token().then((token) => ({ token }), (error) => ({ error })),
+        sleep(10_000, undefined, { signal: timer.signal }).then(() => ({ hung: true }), () => undefined),
+      ]);
+    } finally {
+      timer.abort();
+    }
+  };
+  const first = await ask();
+  assert.ok(!first.hung, "the ask ended within 10 s");
+  assert.deepEqual(elsewhere.map(({ method, path }) => `${method} ${path}`), [], "the redirect was followed: a request (the refresh token in its body) reached another origin");
+  assert.equal(endpoint.posts.length, 1, "the token endpoint saw the one post");
+  assert.equal(endpoint.posts[0].body.refresh_token, refresh, "the file's refresh token, to the token endpoint");
+  assert.equal(first.token, undefined, "no token handed");
+  assert.equal(first.error?.message, tokens.LOGIN_RUNNING_OUT, "refused in the words of a renewal that failed under the margin");
+  assert.ok(!String(first.error?.stack).includes(refresh), "the refresh token is in no word of the refusal");
+  assert.deepEqual(readFileSync(file), bytes, "the file keeps its pair byte for byte");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no temp file or lock left");
+  // A redirect is not invalid_grant: the refresh token is still the login's, and the next ask posts it again, to the
+  // token endpoint alone.
+  const second = await ask();
+  assert.ok(!second.hung, "the next ask ended within 10 s");
+  assert.equal(second.error?.message, tokens.LOGIN_RUNNING_OUT, "the next ask: the same words");
+  assert.equal(endpoint.posts.length, 2, "the next ask posts again: a redirect did not mark the refresh token refused");
+  assert.equal(endpoint.posts[1].body.refresh_token, refresh);
+  assert.equal(elsewhere.length, 0, "nothing reached another origin at the next ask either");
+  assert.deepEqual(readFileSync(file), bytes, "the file still keeps its pair byte for byte");
 });
 
 test("the run's CLI's 401 (refused): the next ask renews the refused token once, though it had hours left, and hands the new one; a refused token another holder renewed meanwhile is never renewed again; a failed renewal is refused in words", async (t) => {
