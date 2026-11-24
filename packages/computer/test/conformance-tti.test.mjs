@@ -96,6 +96,28 @@ test("a burst makes every computer at once; one that does not come up counts aga
 	assert.equal(report.pass, false, "a computer that did not come up fails the run");
 });
 
+test("a burst's creates are all in flight together, where the serial shape's are one at a time", async () => {
+	// Each create stays open for a turn of the event loop: a burst that awaited each computer in turn would show one.
+	const fake = fakeComputers();
+	const create = fake.provider.create.bind(fake.provider);
+	let open = 0;
+	let most = 0;
+	fake.provider.create = async (spec, context) => {
+		open += 1;
+		most = Math.max(most, open);
+		await new Promise((resolve) => setImmediate(resolve));
+		open -= 1;
+		return create(spec, context);
+	};
+	const burst = await measureTti(fake.provider, { image: IMAGE, iterations: 0, burst: 4, clock: fakeClock() });
+	assert.equal(burst.burst.ok, 4);
+	assert.equal(most, 4, "all four creates were asked before any answered");
+	most = 0;
+	const serial = await measureTti(fake.provider, { image: IMAGE, iterations: 3, burst: 0, clock: fakeClock() });
+	assert.equal(serial.serial.ok, 3);
+	assert.equal(most, 1);
+});
+
 test("a provider that makes no computer did not come up, and says why in create's words", async () => {
 	const fake = timed({ failCreate: "no capacity in this region" });
 	const report = await measureTti(fake.provider, { image: IMAGE, iterations: 2, burst: 2, clock: fake.clock });
