@@ -56,17 +56,17 @@ test("a port in use is passed over: under a range from 1025 the one candidate is
 
 test("every port in 14000-15999 that binds now is handed out here and stays claimed for the rest of this file: the two tests below each import their own copy of the helper, so no earlier pick reaches them", async () => {
   for (const low of [15000, 16000]) {
+    // At most one call per port in the range and one more, so a helper that never keeps a claim fails here by name.
     let got;
-    do got = await freePort({ low }).then((port) => ({ port }), (error) => ({ error }));
-    while (!got.error);
-    assert.equal(String(got.error), `Error: no free port below the ephemeral range: none in ${low - 1000}-${low - 1} (it starts at ${low})`, `the claims ended with: ${got.error}`);
+    for (let call = 0; call < 1001 && !got?.error; call++) got = await freePort({ low }).then((port) => ({ port }), (error) => ({ error }));
+    assert.equal(String(got.error), `Error: no free port below the ephemeral range: none in ${low - 1000}-${low - 1} (it starts at ${low})`, `the claims ended with: ${got.error ?? `port ${got.port}, still handed out on call 1,001`}`);
   }
 });
 
 test("two freePort calls at once never get the same port, and a port found in use is released: with H held and H+1 free, the call that starts at H+1 is handed it, the one that starts at H another, and H once it is free", async (t) => {
-  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free pair found now in a range only
-  // the claiming test above also asks for (from 15000: 14000-14999), not fixed ports, so a port something on this
-  // machine holds is never read as a helper bug.
+  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free pair found now in a range the
+  // claiming test above fills, whoever else in this file asked for it (from 15000: 14000-14999), not fixed ports, so a
+  // port something on this machine holds is never read as a helper bug.
   const { freePort } = await import("./fixtures/ports.mjs?fresh=15000");
   const low = 15000;
   const from = 14000;
@@ -88,15 +88,15 @@ test("two freePort calls at once never get the same port, and a port found in us
   // helper that claims a port only after probing it hands H+1 to both.
   const calls = await Promise.allSettled([freePort({ low }), freePort({ low })]);
   const [first, second] = calls.map((call) => call.value ?? call.reason.message);
-  assert.ok(second === next && first !== next && first !== held, `the ports handed out: ${first} and ${second}, with ${held} held and ${next} free`);
+  assert.ok(Number.isInteger(first) && Number.isInteger(second) && second === next && first !== next && first !== held, `the ports handed out: ${first} and ${second}, with ${held} held and ${next} free`);
   await closeServer(holder);
   starts.push(at(held));
   assert.equal(await freePort({ low }), held, `the port found in use (${held}) is handed out once it is free`);
 });
 
 test("a port whose probe fails with another error is released: the call rejects with that error, and the next call is handed the port", async (t) => {
-  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free port found now in a range only
-  // the claiming test above also asks for (from 16000: 15000-15999).
+  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free port found now in a range the
+  // claiming test above fills, whoever else in this file asked for it (from 16000: 15000-15999).
   const { freePort } = await import("./fixtures/ports.mjs?fresh=16000");
   const low = 16000;
   const from = 15000;
