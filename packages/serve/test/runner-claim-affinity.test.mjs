@@ -56,19 +56,33 @@ const HELD = "The desktop wasn't kept: another runner kept it and couldn't take 
 /** The run's timeline as a park keeps its desktop (computer-deps.ts computerKeptWords). */
 const KEPT = "The desktop is kept for 10 minutes while you decide.";
 
-const until = async (done, what, ms = 60_000) => {
-  const end = Date.now() + ms;
+/** What a wait in this file waits on, in place of a clock: `fire()` after anything that can change what a test reads (a
+ *  runner's event, each call into a runner's store once it settles, a host's create or release), `next()` the next one. */
+function changes() {
+  const waiting = [];
+  return {
+    fire: () => {
+      for (const resolve of waiting.splice(0)) resolve();
+    },
+    next: () => new Promise((resolve) => waiting.push(resolve)),
+  };
+}
+
+/** Until `done()` answers something truthy, read again after each change (`changed`, changes()); never on a clock. A
+ *  change that never comes is bounded by the test's own timeout. */
+const until = async (changed, done) => {
   for (;;) {
+    // Taken before the read, so a change while it reads is not missed.
+    const next = changed.next();
     const value = await done();
     if (value) return value;
-    if (Date.now() > end) throw new Error(`not within ${ms} ms: ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await next;
   }
 };
 
 /** One host's vendor of --faux's desktops, its ids prefixed by the host: create starts one under the spec's labels,
- *  attach and connect find only this host's, delete ends it. */
-function hostVendor(host) {
+ *  attach and connect find only this host's, delete ends it. Each create and release says so on `changed`. */
+function hostVendor(host, changed) {
   const entry = FAUX.kinds.PROVIDERS.find((one) => one.id === "faux-desktop");
   const computers = new Map();
   const calls = [];
@@ -86,6 +100,7 @@ function hostVendor(host) {
       const id = `${host}-d${++made}`;
       calls.push(["create", id]);
       computers.set(id, { id, labels: { ...spec.labels }, desk: await FAUX.launch(entry, { kind: "desktop", keys: {} }) });
+      changed.fire();
       return { ok: true, value: { id, name: id } };
     },
     async attach({ id }) {
@@ -108,6 +123,7 @@ function hostVendor(host) {
         await computers.get(ref.id)?.desk.release().catch(() => {});
         computers.delete(ref.id);
       }
+      changed.fire();
       return { ok: true, value: undefined };
     },
   };
@@ -120,8 +136,9 @@ const creates = (vendor) => vendor.calls.filter(([verb]) => verb === "create").m
  *  `calls.claimed`) and, while `gate.shut`, held until the gate opens (claimGate; each call counted in flight from the
  *  gate to its return): how the test makes A's poll wait while B's polls run, so a B that may claim the run claims it
  *  first whatever the timing. With `keptReads` ({ fail, failed }), the next `fail` reads of run-1's kept row throw as a
- *  store that did not answer, each counted in `failed`. */
-function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, keptReads = undefined) {
+ *  store that did not answer, each counted in `failed`. Each call into it, or into one of its parts, says so on `changed`
+ *  once it settles (told): the store's own change signal, which the test's waits read again on. */
+function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, keptReads = undefined, changed = changes()) {
   const settings = keptReads && new Proxy(store.settings, {
     get(target, key) {
       const value = Reflect.get(target, key, target);
@@ -154,12 +171,36 @@ function watchedStore(store, gate = claimGate(), calls = { n: 0, claimed: [] }, 
       };
     },
   });
-  return new Proxy(store, {
+  return told(new Proxy(store, {
     get(target, key) {
       if (key === "runs") return runs;
       if (key === "settings" && settings) return settings;
       const value = Reflect.get(target, key, target);
       return typeof value === "function" ? value.bind(target) : value;
+    },
+  }), changed);
+}
+
+/** `target` with each of its calls, and each call of its parts' (`depth` levels: store.runs, store.runners, ...), firing
+ *  `changed` once it settles, a throw included. */
+function told(target, changed, depth = 1) {
+  const parts = new Map();
+  return new Proxy(target, {
+    get(from, key) {
+      const value = Reflect.get(from, key, from);
+      if (typeof value === "function") {
+        return (...args) => {
+          const result = value.apply(from, args);
+          if (result instanceof Promise) return result.finally(changed.fire);
+          changed.fire();
+          return result;
+        };
+      }
+      if (depth > 0 && value !== null && typeof value === "object") {
+        if (!parts.has(key)) parts.set(key, told(value, changed, depth - 1));
+        return parts.get(key);
+      }
+      return value;
     },
   });
 }
@@ -240,7 +281,10 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
   await server.flush?.();
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
-  const hosts = { a: hostVendor("a"), b: hostVendor("b") };
+  /** Fired at each thing a wait here reads again on (changes()): every runner's events, every call into a runner's store,
+   *  each host's creates and releases. */
+  const changed = changes();
+  const hosts = { a: hostVendor("a", changed), b: hostVendor("b", changed) };
   const claimManyCalls = {};
   /** The runs any runner said ended (its `ended` event: after the run's loop, its computers' release with it, settled). */
   const ended = [];
@@ -248,13 +292,16 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
     const raw = await openSqliteStore({ dataDir: dir, role: "runner", now });
     stores.push(raw);
     claimManyCalls[name] = { n: 0, claimed: [] };
-    const store = watchedStore(raw, gate, claimManyCalls[name], keptReads);
+    const store = watchedStore(raw, gate, claimManyCalls[name], keptReads, changed);
     const computerDeps = { kinds: PINNED_KINDS, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => hosts[host].provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open" }), check: { readBackOf } };
     const deps = { env: {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
     const runner = startRunner({
       store, name, ...TIMING,
       ...(refusal ? { claimGate: async () => refusal.words } : {}),
-      onEvent: (event) => void (event.type === "ended" && ended.push(event.runId)),
+      onEvent: (event) => {
+        if (event.type === "ended") ended.push(event.runId);
+        changed.fire();
+      },
       createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
     });
     runners.push(runner);
@@ -263,27 +310,30 @@ async function parkedOnA(t, { skewMs = 0, script = [{ call: "computer_screenshot
   const gate = claimGate();
   const refusal = { words: undefined };
   const a = await start("runner-a", "a", { gate, refusal });
-  const parked = await until(async () => {
+  const parked = await until(changed, async () => {
     const row = await server.runs.get(RUN);
     return ["ended", "failed", "stopped", "parked"].includes(row.state) && row.runner === null && row;
-  }, "the run rests");
+  });
   assert.equal(parked.state, "parked", JSON.stringify(parked));
   const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: parked.epoch, until: 0, from: parked.state }), ctx);
   const [ask] = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
   assert.ok(ask, "parked on the screenshot's ask");
   assert.deepEqual(creates(hosts.a), ["a-d1"], "runner-a made the desktop on its host");
-  return { server, clock, hosts, ask, a, gate, refusal, start, claimManyCalls, ended, parkedEpoch: parked.epoch };
+  return { server, clock, storeNow: now, changed, hosts, ask, a, gate, refusal, start, claimManyCalls, ended, parkedEpoch: parked.epoch };
 }
+
+/** Until runner-a's word in the store says it refuses claims. */
+const refusing = (one) => until(one.changed, async () => (await one.server.runners.list()).find((row) => row.runner === "runner-a")?.refused);
 
 /** Two screenshots, each asking and parking, then done: a run that parks again after its first resume. */
 const TWO_ASKS = [{ call: "computer_screenshot", args: {} }, { call: "computer_screenshot", args: {} }, { say: "done" }];
 
 /** Until the run rests parked again at an epoch past `epoch`; its row and its newest ask. */
-async function parksAgain(server, epoch) {
-  const row = await until(async () => {
+async function parksAgain({ server, changed }, epoch) {
+  const row = await until(changed, async () => {
     const now = await server.runs.get(RUN);
     return now.state === "parked" && now.runner === null && now.epoch > epoch && now;
-  }, "the run parks again");
+  });
   const records = await journalRecords(server.journal({ runId: RUN, runner: "reader", epoch: row.epoch, until: 0, from: row.state }), ctx);
   const ask = records.entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data).at(-1);
   return { row, ask };
@@ -296,10 +346,10 @@ async function reparkedOnB(t) {
   const atPark = await readKept(one.server.settings, RUN);
   assert.equal(atPark?.id, "a-d1");
   one.refusal.words = "this runner's disk is full";
-  await until(async () => (await one.server.runners.list()).find((row) => row.runner === "runner-a")?.refused, "runner-a's word says it refuses", 10_000);
+  await refusing(one);
   const b = await one.start("runner-b", "b");
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  const again = await parksAgain(one.server, one.parkedEpoch);
+  const again = await parksAgain(one, one.parkedEpoch);
   assert.ok(again.ask && again.ask.callId !== one.ask.callId, `parked on the second ask: ${JSON.stringify(again.ask)}`);
   assert.deepEqual(creates(one.hosts.b), ["b-d1"], "B went on on a new desktop of its own host");
   assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
@@ -307,11 +357,11 @@ async function reparkedOnB(t) {
 }
 
 /** Until the run ends; its row and its timeline's summaries. */
-async function ends(server, state = "ended") {
-  const row = await until(async () => {
+async function ends({ server, changed }, state = "ended") {
+  const row = await until(changed, async () => {
     const now = await server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
-  }, "the run ends");
+  });
   assert.equal(row.state, state, JSON.stringify(row));
   return (await runTimeline(server, RUN, ctx)).map((entry) => entry.summary ?? "");
 }
@@ -334,7 +384,7 @@ async function answeredWhileBPolls(one, { pastTheGate = false } = {}) {
   }
   await answered;
   const polledFrom = one.claimManyCalls["runner-b"].n;
-  await until(async () => one.claimManyCalls["runner-b"].n - polledFrom >= 25 || (await one.server.runs.get(RUN)).epoch !== one.parkedEpoch, "B polls 25 times");
+  await until(one.changed, async () => one.claimManyCalls["runner-b"].n - polledFrom >= 25 || (await one.server.runs.get(RUN)).epoch !== one.parkedEpoch);
 }
 
 test("park on A, answered while A is alive and B polls: B claims nothing and moves nothing at its usual poll, A claims it, and the same desktop comes back", { timeout: 120_000 }, async (t) => {
@@ -349,7 +399,7 @@ test("park on A, answered while A is alive and B polls: B claims nothing and mov
   assert.equal(kept?.incarnation, rowA.incarnation, "and that runner's incarnation");
 
   one.gate.open();
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: no create at the resume");
   assert.deepEqual(creates(one.hosts.b), [], "nothing on B's host");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
@@ -365,7 +415,7 @@ test("the gate holds a poll that was already past it when it closed: A's poll in
   assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
 
   one.gate.open();
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: no create at the resume");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `the resume said it is the same one: ${JSON.stringify(said)}`);
 });
@@ -376,13 +426,13 @@ test("park on A with the runners' clocks a keep and more behind the store's: the
   const one = await parkedOnA(t, { skewMs: KEEP_MS + 60_000 });
   const kept = await readKept(one.server.settings, RUN);
   assert.ok(kept, "kept at the park");
-  const storeNow = Date.now() + one.clock.skewMs;
+  const storeNow = one.storeNow();
   assert.ok(kept.until > storeNow && kept.until <= storeNow + KEEP_MS, `the keep's end is stamped on the store's clock, KEEP_MS from the park: ${kept.until - storeNow} ms ahead of the store's now`);
   await answeredWhileBPolls(one);
   assert.equal((await one.server.runs.get(RUN)).epoch, one.parkedEpoch, "B claimed nothing: the pin holds on the store's clock");
   assert.deepEqual(creates(one.hosts.b), [], "B made no desktop");
   one.gate.open();
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop: A's resume judged the keep on the store's clock too");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1, `said the same one: ${JSON.stringify(said)}`);
 });
@@ -394,7 +444,7 @@ test("leak (a): another runner's resume never orphans A's kept container: once t
   assert.equal(atPark?.id, "a-d1");
   await answeredWhileBPolls(one);
   one.gate.open();
-  await ends(one.server);
+  await ends(one);
   // A's timer at the keep's time: its end deletes the machine only while the row still reads as it wrote it.
   const timerDeleted = [];
   await endKept(one.server.settings, RUN, atPark, async () => {
@@ -404,7 +454,7 @@ test("leak (a): another runner's resume never orphans A's kept container: once t
   const named = (await readKept(one.server.settings, RUN))?.id;
   const leftOnA = () => [...one.hosts.a.computers.keys()].filter((id) => id !== named);
   // The run's end lets its desktop go a moment after its row reads ended: the runner says the run ended once that is done.
-  await until(async () => one.ended.includes(RUN), "the runner says the run ended");
+  await until(one.changed, () => one.ended.includes(RUN));
   assert.deepEqual(leftOnA(), [],`no container left on A's host that no kept row names: the resume's taking of the row left A's timer nothing to end (it deleted ${JSON.stringify(timerDeleted)})`);
 });
 
@@ -415,7 +465,7 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   one.clock.skewMs += RUNNER_STALE_MS + 1_000;
   await one.start("runner-b", "b");
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.b), ["b-d1"], "a new desktop on B's host");
   assert.deepEqual(creates(one.hosts.a), ["a-d1"], "nothing more on A's");
   assert.equal(said.filter((summary) => summary.includes(`${LOST} ${NEW}`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
@@ -434,10 +484,10 @@ test("park on A, A still there but refusing claims: B claims on the answer, can'
   // A's claim gate refuses (a disk that filled up): A stays there, renewing its word, and claims nothing. The pin needs a
   // runner that claims, so the run is any runner's.
   one.refusal.words = "this runner's disk is full";
-  await until(async () => (await one.server.runners.list()).find((row) => row.runner === "runner-a")?.refused, "runner-a's word says it refuses", 10_000);
+  await refusing(one);
   await one.start("runner-b", "b");
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.b), ["b-d1"], "B went on on a new desktop of its own host");
   // runner-a is there: the words say it kept the desktop and ends it, never that it is gone.
   assert.equal(said.filter((summary) => summary.includes(`${HELD} ${NEW}`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
@@ -461,7 +511,7 @@ test("park on A, A there but refusing: B gives the row back, goes on on a new de
   const row = await readKept(one.server.settings, RUN);
   assert.deepEqual([row?.id, row?.runner], ["a-d1", "runner-a"], `the kept row is still runner-a's: ${JSON.stringify(row)}`);
   // B's park kept nothing: its desktop goes as at a run's end, so no machine is left with no row and no runner to end it.
-  await until(async () => !one.hosts.b.computers.has("b-d1"), "B's desktop is ended at its park", 5_000);
+  await until(one.changed, () => !one.hosts.b.computers.has("b-d1"));
   // So the run's timeline never says B's park kept it: the keep line is A's park's alone.
   const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary ?? "");
   assert.equal(said.filter((summary) => summary.includes(KEPT)).length, 1, `the desktop is said kept at A's park only, never at B's, which kept nothing: ${JSON.stringify(said)}`);
@@ -480,7 +530,7 @@ test("park on A, A there but refusing, B gives the row back, goes on on a new de
   await one.b.close();
   one.refusal.words = undefined;
   await one.server.command(RUN, { kind: "approve", body: { approval: one.again.ask.callId } });
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.a), ["a-d1", "a-d2"], "a new desktop on A's host: the one A kept stopped being the run's when B went on without it");
   assert.deepEqual(said.filter((summary) => summary.endsWith(SAME)), [], `never called the same one: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.includes("10 minutes passed")), [], "nor said to have lapsed: its time had not passed");
@@ -497,10 +547,10 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   await one.server.command(RUN, { kind: "stop" });
   const polledFrom = one.claimManyCalls["runner-b"].n;
   // A person's stop never waits on the pin: the poll B had in flight when it landed, or B's next, claims the run.
-  const ended = await until(async () => {
+  const ended = await until(one.changed, async () => {
     const row = await one.server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(row.state) && row.runner === null && row;
-  }, "B ends the run on the stop, runner-a live with its loops full", 10_000);
+  });
   assert.equal(ended.state, "stopped", JSON.stringify(ended));
   const claimedAt = one.claimManyCalls["runner-b"].claimed.find(({ runIds }) => runIds.includes(RUN))?.n;
   assert.ok(claimedAt !== undefined && claimedAt - polledFrom <= 1, `B claimed it within one poll of the stop: at poll ${claimedAt}, the stop landed at ${polledFrom}`);
@@ -515,7 +565,7 @@ test("a stop of a parked run pinned to a live runner whose loops are full ends w
   one.gate.open();
 
   // B's janitor leaves it though the run is final: runner-a is still there (leak (b)).
-  const janitor = (self) => sweepKept({ settings: one.server.settings, runs: one.server.runs, now: Date.now() + one.clock.skewMs, providerOf: async () => (self.runner === "runner-a" ? one.hosts.a.provider : one.hosts.b.provider), runners: one.server.runners, self });
+  const janitor = (self) => sweepKept({ settings: one.server.settings, runs: one.server.runs, now: one.storeNow(), providerOf: async () => (self.runner === "runner-a" ? one.hosts.a.provider : one.hosts.b.provider), runners: one.server.runners, self });
   const byB = await janitor({ runner: "runner-b", incarnation: "b-any" });
   assert.deepEqual(byB.ended, [], "B's janitor ends nothing of runner-a's");
   assert.equal((await readKept(one.server.settings, RUN))?.runner, "runner-a", "the row stays runner-a's");
@@ -537,10 +587,10 @@ test("a stop of a parked run pinned to a live runner, claimed by another runner 
   await one.start("runner-b", "b", { keptReads });
   await one.gate.close();
   await one.server.command(RUN, { kind: "stop" });
-  const ended = await until(async () => {
+  const ended = await until(one.changed, async () => {
     const row = await one.server.runs.get(RUN);
     return ["ended", "failed", "stopped"].includes(row.state) && row.runner === null && row;
-  }, "B ends the run on the stop, its read of the kept row failed", 10_000);
+  });
   assert.equal(ended.state, "stopped", JSON.stringify(ended));
   assert.equal(keptReads.failed, 1, "B's read of who holds the kept machine failed");
   // An unreadable holder counts as held elsewhere: B ends the run with no loop, so its provider is asked nothing.
@@ -556,7 +606,7 @@ test("a stop of a parked run pinned to a live runner, claimed by another runner 
 test("a single runner, unchanged: its resume gets the same desktop at once; after its clean restart, the next runner on the same host gets it too", { timeout: 120_000 }, async (t) => {
   const one = await parkedOnA(t);
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
-  const said = await ends(one.server);
+  const said = await ends(one);
   assert.deepEqual(creates(one.hosts.a), ["a-d1"], "the same desktop");
   assert.equal(said.filter((summary) => summary.endsWith(SAME)).length, 1);
 
@@ -565,7 +615,7 @@ test("a single runner, unchanged: its resume gets the same desktop at once; afte
   await two.a.close();
   await two.start("runner-a2", "a");
   await two.server.command(RUN, { kind: "approve", body: { approval: two.ask.callId } });
-  const again = await ends(two.server);
+  const again = await ends(two);
   assert.deepEqual(creates(two.hosts.a), ["a-d1"], "the same container, from the same host's engine");
   assert.equal(again.filter((summary) => summary.endsWith(SAME)).length, 1, `the same one: ${JSON.stringify(again)}`);
 });
