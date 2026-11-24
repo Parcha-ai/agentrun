@@ -596,6 +596,55 @@ test("two data folders are two machines: each gets an id of its own, and a login
   assert.notEqual(ids[0], ids[1]);
 });
 
+// The start route (POST /settings/claude-login/login, startLoginHere) is the third reader of the machine id, beside the
+// view and a run's loginForRun: a sign-in started for another machine's login would sign this machine's CLI in to a
+// login no run here reads.
+test("the CLI's sign-in is refused for a login turned on over another data folder (another machine's id): no CLI starts, and the answer says to sign in there; over its own data folder it starts", async (t) => {
+  const [one, two] = await Promise.all(["one", "two"].map((name) => mkdtemp(join(process.env.TMPDIR ?? tmpdir(), `claude-login-start-${name}-`))));
+  const signIns = new ClaudeSignIns();
+  t.after(async () => {
+    await signIns.close();
+    for (const data of [one, two]) rmSync(data, { recursive: true, force: true });
+  });
+  const pinned = join(two, "claude");
+  writeFileSync(pinned, "", { mode: 0o755 });
+  const setting = settingFor("agentrun", one);
+  const started = [];
+  const depsOver = (data) => ({
+    signIns,
+    settings: { get: async (key) => (key === CLAUDE_LOGIN_SETTING ? setting : undefined), put: async () => {}, remove: async () => {} },
+    data,
+    env: { HOME: data, PATH: "/usr/bin:/bin" },
+    pinned: async () => pinned,
+    refused: undefined,
+    sameMachine: true,
+    claude: async () => ({
+      claudeLoginCommand: () => "claude auth login",
+      claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
+      // A stand-in sign-in that waits until it is stopped.
+      startClaudeLogin: (cli, login) => {
+        started.push({ cli, dir: login.dir });
+        let end;
+        const ended = new Promise((resolve) => { end = resolve; });
+        return { ended, stop: () => end({ end: "stopped" }) };
+      },
+    }),
+    changed: async () => {},
+  });
+  const other = depsOver(two);
+  assert.equal((await claudeLoginView(other)).state, "other_machine", "the view reads it as another machine's");
+  await assert.rejects(startLoginHere(other), (error) => {
+    assert.equal(error.code, "agent_not_runnable");
+    assert.equal(error.message, "It was turned on for another machine: sign in there.");
+    return true;
+  });
+  assert.deepEqual(started, [], "no CLI's sign-in started for another machine's login");
+  // The same request over the data folder it was turned on over starts the CLI's sign-in.
+  const own = await startLoginHere(depsOver(one));
+  assert.equal(own.sign_in?.state, "waiting", JSON.stringify(own));
+  assert.deepEqual(started, [{ cli: pinned, dir: join(one, "claude-login") }]);
+});
+
 test("the machine's id is a file of the owner's alone (0600) in the data folder, kept across a restart, so the login stays this machine's; a setting saved with a hostname and no id reads as another machine's until turned on again", { timeout: 180_000 }, async (t) => {
   const fake = await fakeCli(t);
   withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
