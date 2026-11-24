@@ -918,12 +918,12 @@ test("a host start whose read of the trigger is older than another firing's star
   assert.equal(await store.runs.get("run-b"), undefined, "one run at a time: the overlap check's");
 });
 
-test("with max_active_runs 1, a firing started by another server between a host start's trigger read and its count of runs in progress still fills the room: the start waits on that firing, never takes the place", async (t) => {
+test("with max_active_runs 1, a firing started between a host start's trigger read and its count of runs in progress still fills the room: the start waits on that firing, never takes the place", async (t) => {
   const on = await shared(t, "2026-06-01T00:00:00Z");
   const host = await heldHost(t);
   const trap = { armed: false };
   const elsewhere = async (id, key) => {
-    // Another server on the same store starts firing `key` with its run: the trigger's last run is set in that write.
+    // Firing `key` started with its run, written to the store in that gap: the trigger's last run is set in that write.
     await on.store.runs.create({ id: "run-a", agentId: "a", revisionId: "rev-a", origin: { key } });
     await on.store.triggers.settle(id, key, { status: "started", runId: "run-a" }, { reset: true });
   };
@@ -1578,24 +1578,21 @@ function settledThrough(store, settle) {
   });
   return { ...store, triggers, runs: store.runs };
 }
-/** Firing evt-a of a max_active_runs 1 webhook trigger, its host's hook answered 2xx with no run (sent), on server `a`;
- *  and server `b`, a second engine on the same store with the same hook, each of whose firing writes goes through
- *  `settle` (the test's hold on it; `a`'s through `settleA`, and its log lines to `sayA`). Neither server's own checks
- *  know of the other's work: the store is all they share. */
-async function twoServers(t, settle = (write) => write(), { settleA = (write) => write(), sayA = () => {} } = {}) {
+/** Firing evt-a of a max_active_runs 1 webhook trigger, its host's hook answered 2xx with no run (sent), on an engine each
+ *  of whose firing writes goes through `settle` (the test's hold on it). A release writes after its room check, so a
+ *  host start can check and write between a release's read and its write on one server. */
+async function sentFiring(t, settle = (write) => write()) {
   const host = await heldHost(t);
   const told = [];
-  const notify = (failed) => (told.push(failed.firing_key), "queued");
   const on = await shared(t, "2026-06-01T00:00:00Z");
-  const a = await engine(t, { launchHook: host.launchHook, notify, say: sayA, store: settledThrough(on.store, settleA) }, { on });
-  const made = await a.triggers.create({ ...hookBody, max_active_runs: 1 });
-  await a.triggers.receive(made.id, "evt-a", "{}");
+  const { store, triggers } = await engine(t, { launchHook: host.launchHook, notify: (failed) => (told.push(failed.firing_key), "queued"), store: settledThrough(on.store, settle) }, { on });
+  const made = await triggers.create({ ...hookBody, max_active_runs: 1 });
+  await triggers.receive(made.id, "evt-a", "{}");
   const key = firingKey("webhook", made.id, "evt-a");
   await until(() => host.open.length === 1, "the host has the POST");
   host.open[0].writeHead(200).end();
-  await until(async () => (await a.store.triggers.firing(made.id, key)).status === "sent", "its host took it with no run");
-  const b = await engine(t, { launchHook: host.launchHook, notify, store: settledThrough(a.store, settle) }, { on: a });
-  return { a, b, id: made.id, key, told, store: a.store };
+  await until(async () => (await store.triggers.firing(made.id, key)).status === "sent", "its host took it with no run");
+  return { triggers, id: made.id, key, told, store };
 }
 /** The 422 not_due a release is refused with once firing's run `runId` started: details run_started and the run. */
 const runStarted = (runId) => (error) => {
@@ -1609,7 +1606,7 @@ test("a release that read its firing sent before the host's start wrote its run,
   const reached = held();
   const go = held();
   const wrote = held();
-  const { a, b, id, key, told, store } = await twoServers(t, async (write, change) => {
+  const { triggers, id, key, told, store } = await sentFiring(t, async (write, change) => {
     if (change.status !== "failed") return write();
     reached.resolve();
     await go.promise;
@@ -1619,14 +1616,14 @@ test("a release that read its firing sent before the host's start wrote its run,
       wrote.resolve();
     }
   });
-  const released = b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  const released = triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
   // Its refusal can land before this start answers (on Postgres, each of the release's reads and writes is a round trip
   // that can finish ahead of the start's own): handled from now on, so the node:test runner never sees it as unhandled,
   // and asserted below.
   released.catch(() => {});
-  // Server b read the firing sent with no run under its key, and holds its write.
+  // The release read the firing sent with no run under its key, and holds its write.
   await reached.promise;
-  const started = await a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
+  const started = await triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
     const run = await hostRun(store, key, "run-host")(handed);
     // The release's write lands after the run's, before this start goes on to start the firing with it.
     go.resolve();
@@ -1641,17 +1638,31 @@ test("a release that read its firing sent before the host's start wrote its run,
   assert.deepEqual(told, [], "no trigger.failed");
 });
 
-test("a host start that read its firing sent before a release wrote it, and writes its run after, is refused naming the release: the run and the firing's start are one conditional write, so no run is left, the firing stays failed host_released, and one trigger.failed goes out", async (t) => {
-  const { a, b, id, key, told, store } = await twoServers(t);
+test("a host start that checked its firing sent before a release wrote it, and writes its run after, is refused naming the release: the run and the firing's start are one conditional write, so no run is left, the firing stays failed host_released, and one trigger.failed goes out", async (t) => {
+  const reached = held();
+  const go = held();
+  const { triggers, id, key, told, store } = await sentFiring(t, async (write, change) => {
+    if (change.status !== "failed") return write();
+    reached.resolve();
+    await go.promise;
+    return write();
+  });
+  const releasing = triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  // Handled from here (a refusal can land before the test awaits it), and asserted below.
+  releasing.catch(() => {});
+  // The release read the firing sent with no run, and holds its write: the host's start checks its room meanwhile.
+  await reached.promise;
   const writing = held();
   const at = { entered: false };
-  const start = a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
+  const start = triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
     at.entered = true;
     await writing.promise;
     return hostRun(store, key, "run-host")(handed);
   });
+  start.catch(() => {});
   await until(() => at.entered, "the host's start checked its room and is writing its run");
-  const released = await b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  go.resolve();
+  const released = await releasing;
   assert.deepEqual([released.status, released.error?.code], ["failed", "host_released"], JSON.stringify(released));
   writing.resolve();
   await assert.rejects(start, (error) => {

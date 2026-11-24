@@ -162,8 +162,8 @@ export type RunTrigger = { id: string; firing_key: string; name?: string; attrs?
  *  origin and title a start here would give the run, and the target and previous-result flag it starts on
  *  (TriggerDeps.start's, so a handed run gets its target's cap, effort and previous result as one started here does; the
  *  host may lower the cap, and its effort holds when the target sets none). The start writes its run with the firing's
- *  start in the same write (store.runs.create `firing`), so a release of the firing meanwhile, on any server, refuses
- *  it (FiringMoved) and leaves no run. */
+ *  start in the same write (store.runs.create `firing`), so a release of the firing meanwhile refuses it (FiringMoved)
+ *  and leaves no run. */
 export type HandedStart = { key: string; trigger: RunTrigger; from: MessageOrigin; title: string; target: Extract<Target, { kind: "start_run" }>; previous: boolean };
 /** The engine's clock and its one timer: Date.now and setTimeout, or a test's. */
 export type TriggerClock = { now(): number; arm(fire: () => void, ms: number): { clear(): void } };
@@ -1227,7 +1227,7 @@ export class Triggers {
       const keys = await this.store.triggers.activeKeys(trigger.id, now);
       const active = new Set([...keys, ...mid]).size;
       if (active < trigger.maxActiveRuns) return undefined;
-      // Never room at the cap: a firing started after the trigger's read (by another server) is waited on by its key.
+      // Never room at the cap: a firing started after the trigger's read is waited on by its key.
       const on = trigger.lastRunId ?? (await this.store.triggers.held(trigger.id, now)) ?? mid[0] ?? keys[0]!;
       return { waitsOn: on, reason: `${active} of this trigger's runs have not ended (max_active_runs ${trigger.maxActiveRuns}).` };
     }
@@ -1351,7 +1351,7 @@ export class Triggers {
           target: trigger.target, previous: carriesPrevious(this.adapter(trigger.source)),
         });
       } catch (error) {
-        // The run's write found the firing moved since its room was checked (its host released it, on any server):
+        // The run's write found the firing moved since its room was checked (its host released it):
         // nothing was written, and the start is refused in words that say what it is now.
         if (error instanceof FiringMoved) throw await this.movedRefusal(triggerId, key);
         throw error;
@@ -1504,7 +1504,7 @@ export class Triggers {
       }
       // Written out of the room checks, as drive writes what its check found (a check never waits on a hook, and a failed
       // firing's trigger.failed and auto-pause call out): only while the firing is still sent with no run and its start_by
-      // is the one read, so a start that moved it meanwhile (on any server) leaves it as it is, and it is read again.
+      // is the one read, so a start that moved it meanwhile leaves it as it is, and it is read again.
       const failed = await this.failed(triggerId, key, { code: HOST_RELEASED, message }, undefined, HOST_RELEASED_REASON, { from: "sent", startByWas: found.startBy });
       if (!failed) continue;
       this.deps.say({ condition: "trigger_firing_released", trigger: triggerId, firing: key });
