@@ -235,7 +235,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   meets("/capabilities", "get", catalog);
   assert.deepEqual(catalog.tools.filter((tool) => tool.providers && tool.name !== "browser").map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
     ["web_fetch", ["auto", "firecrawl-keyless", "kernel", "parallel"], "auto", "auto", { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }],
-    ["web_search", ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" }],
+    ["web_search", ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }],
   ]);
 
   for (const [body, fields] of [
