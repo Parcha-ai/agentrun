@@ -35,7 +35,7 @@ describe("ShareView over the golden bundle", () => {
     expect(text()).toContain("Golden agent");
     expect(text()).toContain("Completed");
     // The Report: the run's final answer, as the export cut it.
-    expect(text()).toContain("Done. Mail [redacted:email] about /home/[redacted:home-path]/work; key [redacted:sk-key].");
+    expect(text()).toContain("Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].");
     tab(host, /timeline/i);
     expect(text()).toContain("Connect with PGPASSWORD=[redacted:secret-assign] psql -h db");
     expect(text()).toContain("The host [redacted:private-ip] answered");
@@ -60,7 +60,8 @@ describe("ShareView over the golden bundle", () => {
     expect(chips).toContain("[redacted:secret-assign]");
     expect(chips).toContain("[redacted:env-dump 4 lines]");
     tab(host, /report/i);
-    expect(panelChips()).toEqual(["[redacted:email]", "[redacted:home-path]", "[redacted:sk-key]"]);
+    // A home's user is cut to `<user>`, which keeps the path's shape: plain text, not a chip (the cuts panel lists it).
+    expect(panelChips()).toEqual(["[redacted:email]", "[redacted:sk-key]"]);
   });
 
   it("lists the cuts by kind with their counts; a restore switch for each label or personal cut and for no other", () => {
