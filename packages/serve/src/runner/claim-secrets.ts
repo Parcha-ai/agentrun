@@ -48,7 +48,9 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
 /** The environment a claimed run's tools run under: the runner's base (its secrets stripped), with the keys the run's
  *  revision needs read from the store on top — the tool keys its tools unlock, the model keys its model needs, and its
  *  decision provider keys — and, for claim `runId`, the run's own tool keys its revision declares (run-keys.ts) over the
- *  server's by the same name. A fresh object per claim, so no run's keys reach another's. `redact`: the runner's one
+ *  server's by the same name. Its model keys are readable by name and never enumerable (MODEL_KEY_NAMES): its model
+ *  routes read them by name (claimModelEnv), and a spread or a spawn of the tools' environment carries none. A fresh
+ *  object per claim, so no run's keys reach another's. `redact`: the runner's one
  *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
  *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A held run
  *  its model kept from running at its create (hold.refused) is laid no model key and no plan sign-in: its model runs
@@ -69,9 +71,12 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
   const savedGateway = savedGatewayIn(deps.env ?? {});
-  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(modelRefused && MODEL_KEY_NAMES.includes(name))) env[name] = working[name];
+  // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
+  // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(modelRefused && MODEL_KEY_NAMES.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
-  for (const [name, value] of Object.entries(decision)) env[name] = value;
+  // A decision key is a plain value, as before, under a model key's name too (OpenRouter's, which Jev's nodes use).
+  for (const [name, value] of Object.entries(decision)) Object.defineProperty(env, name, { value, enumerable: true, writable: true, configurable: true });
   // The run's own tool keys, sealed with its launch: each one its revision declares, over the server's by the same name.
   // Opened by a runner, which holds the seal key; a run's own process is handed them with the rest of its claim's keys.
   if (runId !== undefined && deps.sealKey && deps.store.runs) {
@@ -370,4 +375,10 @@ const DECISION_KEY_NAMES: ReadonlySet<string> = new Set([JEV_KEY_ENV, JEV_OPENRO
 export function withoutModelKeys(toolEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   for (const name of MODEL_KEY_NAMES) if (!DECISION_KEY_NAMES.has(name)) delete toolEnv[name];
   return toolEnv;
+}
+
+/** `under` and `over` as one set of opened keys for claimModelEnv, `over`'s value winning by name: every property as it
+ *  is, so a claim's model keys (claimSecrets: never enumerable), which a spread would drop, reach the route. */
+export function keysOver(under: NodeJS.ProcessEnv, over: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.defineProperties({}, { ...Object.getOwnPropertyDescriptors(under), ...Object.getOwnPropertyDescriptors(over) }) as NodeJS.ProcessEnv;
 }
