@@ -34,7 +34,6 @@ import {
 	samePolicy,
 	tmpfsOf,
 } from "./docker/inspect.js";
-import { dockerEnv } from "./docker/env.js";
 import { DOCKER_RECIPE, type EnsureImageOptions, ensureImage, type ImageSource, imageSourceProblem } from "./docker/image.js";
 import {
 	ALLOW_PORTS,
@@ -162,12 +161,11 @@ export interface DockerCreateOptions extends Partial<DockerProviderOptions> {
 
 /**
  * Docker's architecture as `docker version` reports it (amd64, arm64), within timeoutMs, or an error in words. The docker
- * CLI runs with the names of this process's environment docker reads (dockerEnv), as every call of the provider does, so
- * it asks the Docker the provider uses.
+ * CLI runs with this process's environment, as every call of the provider does, so it asks the Docker the provider uses.
  */
 export function dockerArch({ docker = "docker", timeoutMs = 30_000 }: Pick<DockerCreateOptions, "docker" | "timeoutMs"> = {}): Promise<string> {
 	return new Promise((resolve, reject) => {
-		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { env: dockerEnv(), encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
+		execFile(docker, ["version", "--format", "{{.Server.Arch}}"], { encoding: "utf8", timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 			if (!error) return resolve(stdout.trim());
 			const killed = error.killed === true && error.signal === "SIGKILL";
 			const why = killed ? `${docker} version did not answer within ${timeoutMs / 1000} s, so it was killed` : (stderr.trim() || error.message).split("\n")[0];
@@ -1084,7 +1082,7 @@ export class DockerProvider implements ComputerProvider {
 
 	/** One connection to the computer's daemon, after hello, unchecked. */
 	async #open(ref: ComputerRef, signal?: AbortSignal): Promise<Result<ComputerConnection>> {
-		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { env: dockerEnv(), stdio: ["pipe", "pipe", "pipe"] });
+		const child = spawn(this.#docker, ["exec", "-i", ref.name, DAEMON_IN_COMPUTER, "stdio"], { stdio: ["pipe", "pipe", "pipe"] });
 		let stderr = "";
 		child.stderr.on("data", (chunk: Buffer) => {
 			stderr = (stderr + chunk.toString("utf8")).slice(-4096);
@@ -1444,7 +1442,7 @@ export class DockerProvider implements ComputerProvider {
 
 	#run(args: string[], signal?: AbortSignal): Promise<Result<Ran>> {
 		return new Promise((done) => {
-			execFile(this.#docker, args, { env: dockerEnv(), signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+			execFile(this.#docker, args, { signal, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
 				if (error === null) return done(ok({ exitCode: 0, stdout, stderr }));
 				if (error.name === "AbortError") return done(fail("aborted", `docker ${args[0]} was aborted`));
 				if (typeof error.code === "number") return done(ok({ exitCode: error.code, stdout, stderr }));

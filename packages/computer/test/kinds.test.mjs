@@ -9,9 +9,7 @@ import { DaytonaProvider } from "../dist/daytona.js";
 import { ModalProvider } from "../dist/modal.js";
 import {
 	CHROME_ENV,
-	CHROME_ENV_NAMES,
 	configurationOf,
-	DOCKER_ENV_NAMES,
 	DESCRIPTORS,
 	defineProvider,
 	descriptorProblems,
@@ -29,6 +27,7 @@ import {
 	serves,
 	servingRefusals,
 } from "../dist/index.js";
+import * as computer from "../dist/index.js";
 import { Agent37Provider } from "../dist/agent37.js";
 import { MorphProvider } from "../dist/morph.js";
 import { BoxdProvider } from "../dist/boxd.js";
@@ -131,6 +130,8 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual(extra.orgo.ledger, { option: "ledger" });
 	// Local Chrome reads where Chrome is from the server's own environment: the names its findChrome reads, then what
 	// Chrome itself reads (PATH first), which its supervisor and Chrome hold and nothing else.
+	// By the namespace, so a package without the lists fails here, in words, and not at the import.
+	const { CHROME_ENV_NAMES, DOCKER_ENV_NAMES } = computer;
 	assert.ok(Array.isArray(CHROME_ENV_NAMES) && Array.isArray(DOCKER_ENV_NAMES), "the package exports the names Chrome and docker read (CHROME_ENV_NAMES, DOCKER_ENV_NAMES)");
 	assert.deepEqual(extra["local-chrome"].hostEnv, [...CHROME_ENV, ...CHROME_ENV_NAMES]);
 	assert.equal(CHROME_ENV_NAMES[0], "PATH");
