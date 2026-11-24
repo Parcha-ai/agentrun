@@ -537,19 +537,12 @@ export class ChatGPTPlan implements PlanReader {
   }
 
   private async settleOnce(): Promise<Settled> {
-    const owed = (read: { row: Row } | undefined): read is { row: Row; bytes: Uint8Array } => Boolean(read && (read.row.unlisted || read.row.retired?.length));
-    let read = await this.readSealed();
-    if (!owed(read)) return {};
-    // The list is asked only with a token OpenAI takes: one that has ended (or ends within the margin) is renewed first,
-    // as any reader's is (token(), under the row's lease), and the row read again. Not while another holder's renewal is
-    // out (a live lease): the settle never waits on it, and its row stays unlisted for the next settle.
-    const leased = read.row.lease !== undefined && read.row.lease.until > (await this.storeNow());
-    if (read.row.unlisted && read.row.state === "signed_in" && !this.fresh(read.row) && !leased) {
-      await this.token().catch(() => undefined);
-      read = await this.readSealed();
-      if (!owed(read)) return {};
-    }
+    const read = await this.readSealed();
+    if (!read || (!read.row.unlisted && !read.row.retired?.length)) return {};
     const signedIn = read.row.credential.refresh;
+    // The list is asked only with a token OpenAI takes (fresh). One that has ended is never renewed here: a renewal can
+    // outlast the server's stop, which would spend the refresh token and lose the new pair with the store closed. The row
+    // stays unlisted, and the first settle after a reader renewed it (a run's token()) lists.
     const models = read.row.unlisted && read.row.state === "signed_in" && this.fresh(read.row) ? await this.listModels(read.row.credential.access) : undefined;
     const confirmed = new Set<string>();
     for (const old of read.row.retired ?? []) if (await this.revoke(old)) confirmed.add(old.refresh);
@@ -719,12 +712,22 @@ export class ChatGPTPlan implements PlanReader {
 
   /** A pair this holder got and could not save (a renewal whose write back lost: renewUnder), whose revocation OpenAI
    *  didn't confirm: carried in the row (`retired`), for the server's next settle to revoke, as a replaced sign-in's pair
-   *  is (keep). Never written over another holder's live lease (its write back would lose in turn); none with no row (a
-   *  sign-out says OpenAI's word is not the whole answer while a renewal is out). */
+   *  is (keep). Never written over another holder's live lease (its write back would lose in turn): it waits for that
+   *  write back, or for the lease to lapse, as a renewal waits on one (renew), and gives up only past that bound, said in
+   *  the log. None with no row (a sign-out says OpenAI's word is not the whole answer while a renewal is out). */
   private async carry(credential: Credential): Promise<void> {
+    const giveUp = this.now() + REFRESH_LEASE_MS + REFRESH_CALL_MS;
     for (;;) {
       const now = await this.readSealed();
-      if (!now || (now.row.lease && now.row.lease.until > (await this.storeNow()))) return;
+      if (!now) return;
+      if (now.row.lease && now.row.lease.until > (await this.storeNow())) {
+        if (this.now() > giveUp) {
+          this.#deps.log?.({ chatgpt: "renewed_pair_unsaved" });
+          return;
+        }
+        await sleep(LEASE_WAIT_MS);
+        continue;
+      }
       const next: Row = { ...now.row, retired: [...(now.row.retired ?? []), credential] };
       if (await this.swap(now.bytes, next)) {
         this.wrote(next);
