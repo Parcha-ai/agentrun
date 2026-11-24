@@ -4,7 +4,7 @@
 // table (fixtures/fake-network.mjs) and each provider's send a stub: no socket leaves the machine, no real key.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createWeb, firecrawlFetch, firecrawlScrape, parallelExtract, URL_MAX, webFetchText } from "../dist/index.js";
+import { createWeb, firecrawlFetch, firecrawlScrape, parallelExtract, readDirect as readDirectBy, URL_MAX, webFetchText } from "../dist/index.js";
 import { answers, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { fetchPage, guard, readDirect, webFetch } from "./support.mjs";
@@ -209,4 +209,37 @@ test("a provider's page url whose password runs past where a url is cut: Firecra
   }
   assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
   assert.deepEqual(urls, rows.flatMap(([provider, client]) => [[provider, `${PUBLIC}landed`], [client, `${PUBLIC}landed`]]), "the url of each page, without them");
+});
+
+// A client web_fetch is given is the caller's, and may hand back a page url it never cleared. Left uncut, web_fetch's
+// own scrub clears it.
+test("a client's page whose url holds a user name and password, uncut: the page web_fetch returns and the text the model reads name it without them", async () => {
+  const page = async () => ({ ok: true, url: credentialed(), status: 200, title: "", text: "x", beyond: false, length: 1, links: [] });
+  const rows = [
+    ["firecrawl-keyless", { firecrawl: { live: () => true, read: page } }],
+    ["parallel", { parallel: { live: () => true, read: page, post: async () => { throw new Error("not posted"); } } }],
+  ];
+  const urls = [];
+  const leaks = [];
+  for (const [provider, client] of rows) {
+    const read = await fetched({ ...client, order: [provider, "direct"] });
+    assert.deepEqual([read.page.ok, read.page.via, turns(read.tries)], [true, provider, [[provider, "ok"]]], `${provider} client: it read the page`);
+    urls.push([provider, read.page.url]);
+    leaks.push(...leaking({ [`${provider} client: the page`]: read.page, [`${provider} client: the text the model reads`]: webFetchText(read.page) }));
+  }
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(urls, rows.map(([provider]) => [provider, PUBLIC]), "the url of each page, without them");
+});
+
+// The guard readDirect is given is the caller's: the url its fetch says it ended at is cleared before it is cut, read
+// or failed. pi-browser's guard never ends at one (undici refuses the hop), so a stub stands in for it.
+test("the direct read's page url, where the guard's fetch ended at one holding a user name and password: readDirect names it without them, read or failed", async () => {
+  const ended = (status, body) => ({ fetch: async () => ({ url: credentialed(), status, body, contentType: "text/plain" }), check: async () => undefined });
+  const pages = {};
+  pages.read = await readDirectBy(PUBLIC, ended(200, "x"));
+  pages.failed = await readDirectBy(PUBLIC, ended(404, null));
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.ok, page.status]), [["read", true, 200], ["failed", false, 404]], "the guard's answers");
+  const leaks = Object.entries(pages).flatMap(([row, page]) => leaking({ [`readDirect, ${row}: the page`]: page }));
+  assert.deepEqual(leaks, [], `no part of them in: ${leaks.join("; ")}`);
+  assert.deepEqual(Object.entries(pages).map(([row, page]) => [row, page.url]), [["read", PUBLIC], ["failed", PUBLIC]], "the url of each page, without them");
 });
