@@ -495,6 +495,31 @@ const CASES = [
       },
     ];
   })(),
+  // A held key's last body line is mostly shorter than a part's line (40), so it is held with its END line, as written:
+  // the last two lines printed (`tail -n 2`) are cut. The END line alone is no part, and shows (control).
+  ...(() => {
+    const { lines } = fakePem(10);
+    const last = "ZmFrZS1ib2R5LW5vdC1hLXJlYWw=";
+    const end = `-----END ${"PRIVATE KEY"}-----`;
+    const pem = [`-----BEGIN ${"PRIVATE KEY"}-----`, ...lines, last, end].join("\n");
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    return [
+      {
+        name: "the last two lines of a held PEM-like value (tail -n 2), its last body line short, show neither",
+        text: `$ tail -n 2 key.pem\n${last}\n${end}\n`,
+        values: [pem],
+        hides: [last.slice(0, 12)],
+        exact: all("$ tail -n 2 key.pem\n[redacted]\n"),
+      },
+      {
+        name: "the END line of a held PEM-like value, printed alone, shows (control)",
+        text: `$ tail -n 1 key.pem\n${end}\n`,
+        values: [pem],
+        hides: [],
+        exact: all(`$ tail -n 1 key.pem\n${end}\n`),
+      },
+    ];
+  })(),
   // A held JSON value's own lines are no parts of it: a service account as Google serves it, pretty-printed, has its
   // public strings on lines of their own, and a text that names them, as written or minified, shows. Its private key's
   // lines are still parts (heldFields holds the key, and its lines are its parts).
