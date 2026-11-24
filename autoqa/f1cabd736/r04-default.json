@@ -1,0 +1,28 @@
+{
+  "url": "https://marketplace.agentrun.ai",
+  "state": "read",
+  "read_at": "2026-11-24T19:22:51.119Z",
+  "count": 90,
+  "here": [
+    {
+      "name": "code-review",
+      "here": "code-review"
+    },
+    {
+      "name": "inbound-lead",
+      "here": "inbound-lead"
+    },
+    {
+      "name": "kyb",
+      "here": "kyb"
+    },
+    {
+      "name": "market-monitor",
+      "here": "market-monitor"
+    },
+    {
+      "name": "release-notes",
+      "here": "release-notes"
+    }
+  ]
+}

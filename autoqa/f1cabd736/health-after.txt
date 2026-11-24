@@ -1,0 +1,2 @@
+port 7541: {"status":"ok","checks":{"store":"ok","disk":"ok"}} HTTP 200
+port 7542: {"status":"ok","checks":{"store":"ok","disk":"ok"}} HTTP 200

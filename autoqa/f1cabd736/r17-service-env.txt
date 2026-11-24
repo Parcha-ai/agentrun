@@ -1,0 +1,6 @@
+# node --test packages/agentrun/test/service.test.mjs at f1cabd736 (scripted systemd/launchd manager; no real service installed)
+✔ service install --env AGENTRUN_MARKETPLACE: off, or another site's address, goes into the unit, stays through a re-install, and KEY= removes it (1.656396ms)
+✔ service install --env refuses any other variable by name, and a pair with no =, before it writes anything (0.481317ms)
+ℹ tests 37
+ℹ pass 37
+ℹ fail 0

@@ -1,0 +1,9 @@
+# AGENTRUN_MARKETPLACE=http://127.0.0.1:7551/redirect
+{"url":"http://127.0.0.1:7551/redirect","state":"unreachable","read_at":null,"problem":"The marketplace (http://127.0.0.1:7551/redirect) sent its list elsewhere (302 to https://elsewhere.example/search.json): set AGENTRUN_MARKETPLACE to the address it names.","templates":[]}
+HTTP 200 in 0.007940s
+# AGENTRUN_MARKETPLACE=http://127.0.0.1:7551/500
+{"url":"http://127.0.0.1:7551/500","state":"unreachable","read_at":null,"problem":"The marketplace (http://127.0.0.1:7551/500) answered 500 for its list.","templates":[]}
+HTTP 200 in 0.006388s
+# AGENTRUN_MARKETPLACE=http://127.0.0.1:7551/notjson
+{"url":"http://127.0.0.1:7551/notjson","state":"unreachable","read_at":null,"problem":"The marketplace's list is not JSON.","templates":[]}
+HTTP 200 in 0.007778s

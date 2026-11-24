@@ -1,0 +1,6 @@
+# no token
+{"error":{"code":"unauthenticated","message":"this route needs Authorization: Bearer <the token in the data directory>","retryable":false,"request_id":"req_030bb2a73451a576"}}
+HTTP 401
+# wrong token
+{"error":{"code":"unauthenticated","message":"this route needs Authorization: Bearer <the token in the data directory>","retryable":false,"request_id":"req_fd6aef6deade5d29"}}
+HTTP 401
