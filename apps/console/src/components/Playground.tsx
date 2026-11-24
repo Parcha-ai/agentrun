@@ -2,6 +2,7 @@ import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
+import { RunnerOffer } from "@/components/RunnerOffer";
 import { ArrowRight, Copy, Eye, EyeOff, Play } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
@@ -51,11 +52,14 @@ export type PlaygroundProps = {
   limits?: UploadLimits;
   upload?: Upload;
   removeUpload?: (fileId: string) => Promise<unknown>;
+  /** Moves the agent to the runner (RunnerOffer), offered under a run refused in a box while Claude Code's login on this
+   *  machine, which runs agents on the runner only, is on. */
+  onMoveToRunner?: (agentId: string) => Promise<void>;
 };
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
+export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload, onMoveToRunner }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
   // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept. Another
   // agent runs its current revision: a revision picked for the last one is not its.
@@ -282,6 +286,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <p className="border-b px-5 py-2.5 font-mono text-small text-destructive-text md:px-6" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
                   <ToolBlockers agentId={agentId} details={refusal.details} />
+                  {/* A fresh offer for each answer: one taken before is not shown as taken for the next. */}
+                  <RunnerOffer key={`${agentId}:${result.ms}:${refusal.message}`} details={refusal.details} onMove={onMoveToRunner && (() => onMoveToRunner(agentId))} />
                   {refusal.more.length > 0 && <span className="mt-1 block">{refusal.more.map((f) => <span key={`${f.field}:${f.message}`} className="block">{f.field}: {f.message}</span>)}</span>}
                 </p>
               )}

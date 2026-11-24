@@ -49,7 +49,8 @@ import { ConnectExistingAgents, NativeConnections } from "@/components/NativeCon
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
-import { type Agent, decisionProvider, runsWhere, toolOffers } from "@/lib/agentForm";
+import { type Agent, decisionProvider, editBody, runsWhere, toolOffers } from "@/lib/agentForm";
+import { computerFields } from "@/lib/computers";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
 import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
@@ -715,6 +716,15 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
       setRunsStarted((n) => n + 1);
     }
   };
+  // The Playground's offer under a run refused in a box while Claude Code's login, which runs agents on the runner only, is
+  // on: the agent read now, saved with the edit its Computer step makes for a runner pick (computerFields), on the
+  // version read, and the agents read again so the bar and the next run see it there.
+  const moveToRunner = async (agentId: string) => {
+    const { agent, etag } = await v2.getAgent(agentId);
+    const { unchanged: _unchanged, ...body } = editBody(agent, computerFields({ kind: "none" }, agent.definition.tools ?? [], editorCaps.tools), "Moved to the runner, where Claude Code's login on this machine runs it");
+    await v2.updateDefinition(agentId, body, etag);
+    setRetry((n) => n + 1);
+  };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
@@ -866,7 +876,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
             {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!externalPlayground && caps?.models?.ready === false && !onClaudeLogin && <NoModelBanner needs={caps.models.needs} source={caps.models.source} model={caps.models.default} settings={caps.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"} chatgpt={plan?.state === "signed_out" || plan?.state === "expired"} />}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
-              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
+              {agents && <Playground agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}
                 live={(id) => <LiveRun key={id} v2={v2} runId={id} caps={caps} agentName={agentName} />} />}
             </>}
           </section>

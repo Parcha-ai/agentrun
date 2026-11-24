@@ -28,7 +28,7 @@ import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
-import { placeOfComputer } from "@/lib/computers";
+import { computerFields } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
@@ -409,10 +409,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? computerOfPlace(f.place ?? { mode: "runner" })}
                 onChange={(computer) => {
-                  const place = placeOfComputer(computer);
-                  const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
-                  set({ computer, place, ...(place.mode === "runner" ? { tools: (f.tools ?? []).filter((t) => !sandboxOnly.has(t)) } : {}) });
-                  leavePlace(place);
+                  const fields = computerFields(computer, f.tools ?? [], caps.tools);
+                  set(fields);
+                  leavePlace(fields.place);
                 }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}

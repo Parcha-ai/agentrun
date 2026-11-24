@@ -96,6 +96,15 @@ export function recorded(computer: Computer, on: boolean): Computer {
  *  leaves the run's folder on the runner. */
 export const placeOfComputer = (computer: Computer): Place => (computer.kind === "sandbox" && computer.provider ? { mode: "sandbox", box: computer.provider } : { mode: "runner" });
 
+/** What an edit sets to put an agent on `computer`: the computer, the place it is, and, on the runner, the agent's `tools`
+ *  without those that run only in a box (`sandbox_only` in the server's `offered` tools: bash and its background tools).
+ *  The agent's Computer step and the Playground's move to the runner both make this edit. */
+export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[]): { computer: Computer; place: Place; tools?: string[] } {
+  const place = placeOfComputer(computer);
+  const sandboxOnly = new Set(offered.filter((tool) => tool.sandbox_only).map((tool) => tool.name));
+  return { computer, place, ...(place.mode === "runner" ? { tools: tools.filter((tool) => !sandboxOnly.has(tool)) } : {}) };
+}
+
 /** Said on a metered provider of a kind that bills by the minute: its minutes are the vendor's, outside the run's cap. */
 export const METERED = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
 /** The kinds whose metered providers bill by the minute: never the browser. */
