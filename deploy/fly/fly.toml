@@ -8,7 +8,7 @@ kill_signal = "SIGTERM"
 kill_timeout = 40
 
 [build]
-  image = "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.56"
+  image = "ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.57"
 
 # A deploy updates the one Machine in place, on its volume. canary and bluegreen would boot a second Machine beside it
 # with a new, empty volume (Fly refuses both for a Machine with a volume).
