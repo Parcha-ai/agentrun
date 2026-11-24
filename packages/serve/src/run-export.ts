@@ -17,6 +17,7 @@ import { packageSha256 } from "./agent-package.js";
 import { ApiError } from "./errors.js";
 import { SHARE_RUN_FIELDS } from "./scrub-command.js";
 import { type Cut, SCRUB_RULES, scrub, type ScrubOptions, type ScrubResult } from "./secret-cut.js";
+import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { WITHHELD_SIGN_IN } from "./run-view.js";
 import { stable } from "./validate.js";
 
@@ -54,6 +55,9 @@ export interface ExportInput {
   readonly view: Readonly<Record<string, unknown>>;
   /** Its Timeline rows as served (run-timeline-served.ts servedTimelineRows). */
   readonly rows: readonly unknown[];
+  /** Each call's context by its tool_use_id (share-context.ts callContexts): a row's output of that call is cut with it
+   *  (ruling LVI). None: no row's output has any. */
+  readonly contexts?: ReadonlyMap<string, CallContext>;
   /** A workflow run's graph as GET /runs/{id}/graph serves it; null for an agentic run. */
   readonly graph: Readonly<Record<string, unknown>> | null;
   readonly files: readonly ExportFile[];
@@ -184,7 +188,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const cuts: CutRecord[] = [];
   const restored: RestoredRecord[] = [];
   const seen = new Map<string, boolean>(); // every cut's id: whether it is restorable
-  const cutString = async (text: string, at: string, path?: string): Promise<string> => {
+  const cutString = async (text: string, at: string, context?: CallContext): Promise<string> => {
     // keep() is asked of restorable cuts alone, in the order of the string's cuts; a rule's cuts are all of one kind, so
     // counting a rule's cuts here gives the ordinals the records below are named by.
     const asked = new Map<string, number>();
@@ -195,7 +199,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     };
     let result: ScrubResult;
     try {
-      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(path !== undefined ? { path } : {}) });
+      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
     } catch {
       throw new ExportFailed("a scrub threw");
     }
@@ -214,31 +218,50 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     }
     return result.text;
   };
-  // Every string, keys in sorted order (the canonical order the body is written in), each scrubbed once.
-  const walk = async (value: unknown, at: string, path?: string): Promise<unknown> => {
-    if (typeof value === "string") return cutString(value, at, path);
+  // Every string, keys in sorted order (the canonical order the body is written in), each scrubbed once. `context` is the
+  // call's whose output the value is (ruling LVI): every string inside it is cut with it.
+  const walk = async (value: unknown, at: string, context?: CallContext): Promise<unknown> =>
+    typeof value === "string" ? cutString(value, at, context) : each(value, at, (item, here) => walk(item, here, context));
+  // An array's items or an object's fields, each walked by `child` with its key; anything else as walk takes it.
+  const each = async (value: unknown, at: string, child: (item: unknown, at: string, key: string) => Promise<unknown>): Promise<unknown> => {
     if (Array.isArray(value)) {
       const out: unknown[] = [];
-      for (const [index, item] of value.entries()) out.push(await walk(item, `${at}/${index}`));
+      for (const [index, item] of value.entries()) out.push(await child(item, `${at}/${index}`, String(index)));
       return out;
     }
     if (value !== null && typeof value === "object") {
       const out: Record<string, unknown> = {};
-      for (const key of Object.keys(value).sort()) out[key] = await walk((value as Record<string, unknown>)[key], `${at}/${token(key)}`);
+      for (const key of Object.keys(value).sort()) out[key] = await child((value as Record<string, unknown>)[key], `${at}/${token(key)}`, key);
       return out;
     }
-    return value;
+    return typeof value === "string" ? walk(value, at) : value;
   };
+  // A row whose field holds a call's output (a result's preview, an approval outcome's text: share-context.ts rowOutput):
+  // that field cut with the call's context, its other fields without. The pointers are the same either way.
+  const contexts = input.contexts ?? new Map<string, CallContext>();
+  const walkRow = (row: unknown, at: string): Promise<unknown> => {
+    const output = rowOutput(row, contexts);
+    return output === undefined ? walk(row, at) : each(row, at, (item, here, key) => walk(item, here, key === output.field ? output.context : undefined));
+  };
+  // A workflow's call (graph `effects[i]`): its output cut with its own tool's and input's context, the rest without.
+  const walkEffect = (effect: unknown, at: string): Promise<unknown> => {
+    const context = effectContext(effect);
+    return context === undefined ? walk(effect, at) : each(effect, at, (item, here, key) => walk(item, here, key === "output" ? context : undefined));
+  };
+  const walkPart = (key: string, value: unknown, at: string): Promise<unknown> =>
+    key === "rows" ? each(value, at, walkRow)
+      : key === "graph" ? each(value, at, (item, here, field) => (field === "effects" ? each(item, here, walkEffect) : walk(item, here)))
+      : walk(value, at);
   const cutParts: Record<string, unknown> = {};
   for (const key of Object.keys(parts).sort()) {
-    if (key !== "files") cutParts[key] = await walk(parts[key], `/${key}`);
+    if (key !== "files") cutParts[key] = await walkPart(key, parts[key], `/${key}`);
   }
   // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest
   // are the carried text's.
   const files: Record<string, unknown>[] = [];
   for (const [index, file] of carried.entries()) {
     const path = await cutString(file.path, `/files/${index}/path`);
-    const content = await cutString(file.content, `/files/${index}/content`, file.path);
+    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path });
     files.push({ path, bytes: Buffer.byteLength(content), sha256: packageSha256([{ path, encoding: "utf8", content }]), encoding: "utf8", content });
   }
 
@@ -286,6 +309,9 @@ export interface ExportReads {
   withheld(): Promise<boolean>;
   /** Its Timeline rows as served. */
   rows(): Promise<readonly unknown[]>;
+  /** Its Timeline rows read with their calls' arguments (calls=true): read only for each call's context
+   *  (share-context.ts callContexts). Never carried: they hold a call's whole input and a longer head of its result. */
+  calls(): Promise<readonly unknown[]>;
   /** A workflow run's graph as served. */
   graph(): Promise<Readonly<Record<string, unknown>>>;
   /** Its files as listed, each readable, and whether the list was cut at its cap. */
@@ -306,10 +332,11 @@ export async function runExport(runId: string, reads: ExportReads, options: Pick
   if (view.poll_after_ms !== 0) throw new ApiError("run_not_final", `The run ${runId} has not ended: a run exports once it has.`);
   if (await reads.withheld()) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const rows = await reads.rows();
+  const contexts = callContexts(await reads.calls());
   const graph = view.kind === "workflow" ? await reads.graph() : null;
   const { files, truncated } = await reads.files();
   const name = (typeof view.agent_id === "string" ? await reads.agentName(view.agent_id) : undefined) ?? "";
   const cut = await reads.cut();
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
-  return exportBundle({ runId, agent: { name }, view, rows, graph, files, filesTruncated: truncated, held: cut.values, ...options });
+  return exportBundle({ runId, agent: { name }, view, rows, contexts, graph, files, filesTruncated: truncated, held: cut.values, ...options });
 }

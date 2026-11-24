@@ -5677,6 +5677,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
             withheld: () => withheldOverStore(store, id, viewDeps),
             // The rows as GET /runs/{id}/timeline serves them, under the run's one cut; a workflow's graph as its route.
             rows: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, false),
+            // The same rows with their calls' arguments, read for each call's context alone (ruling LVI): never carried.
+            calls: () => servedTimelineRows(servedTimelineDeps, store, id, ctx, true),
             graph: () => runGraphView(store, id, runReadsDeps),
             files: async () => {
               const listed = await listRunFilesOverStore(store, id, runReadsDeps);
