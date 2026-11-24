@@ -17,7 +17,7 @@ import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
-import { redactedOutput } from "../key-refusal.js";
+import { redactedOutput, withheldWhole } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { snapshotAt } from "../learn/folder.js";
 import { purgedRun, purgeGate, refusedIn, refusedOf } from "../purged-workflow.js";
@@ -220,6 +220,32 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
   }
 }
 
+/** Which of `parts` (what a run reported: a tool event's input and output, a completion's answer and error) are stored
+ *  withheld, as "[redacted]": each whose text (a string as it is, anything else as its JSON) holds a held value no cut in
+ *  place takes (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined: one split across two
+ *  of its strings), then, read together with those withheld, every one when a value is split across two of them. Only
+ *  these parts, never the event's or the completion's own facts; each part not withheld is cut in place after (clean).
+ *  A part JSON cannot write is withheld. */
+function withheldParts(parts: Record<string, unknown>, values: readonly string[]): Set<string> {
+  const given = Object.entries(parts).filter(([, part]) => part !== undefined);
+  const textOf = (part: unknown): string | undefined => {
+    if (typeof part === "string") return part;
+    try {
+      return JSON.stringify(part);
+    } catch {
+      return undefined;
+    }
+  };
+  const held = (part: unknown): boolean => {
+    const text = textOf(part);
+    return text === undefined || withheldWhole(text, values);
+  };
+  const withheld = new Set(given.filter(([, part]) => held(part)).map(([name]) => name));
+  if (given.length > 1 && held(given.map(([name, part]) => (withheld.has(name) ? "[redacted]" : part))))
+    for (const [name] of given) withheld.add(name);
+  return withheld;
+}
+
 /** The key a server signs its SDK runs' credentials with: derived from its seal key (seal-key.ts), which stays the
  *  store's for its life, so adding, reordering or removing an API token (api-token.ts) never changes a run's credential. */
 export const sdkRunSecret = (sealKey: Buffer): string => createHmac("sha256", sealKey).update("agentrun sdk-run credentials").digest("base64url");
@@ -249,11 +275,14 @@ export class SdkRuns {
     if (!ok) throw new ApiError("unauthenticated", "This credential is scoped to a different SDK run.");
     await sdkInbox(this.store, runId);
   }
+  /** The values a body is cut of: the server's secrets and, for a run, its credentials. */
+  private held(runId?: string): readonly string[] {
+    return secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]).heldValues?.() ?? [];
+  }
   private clean<T>(body: T, runId?: string): T {
-    const redact = secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]);
     // Redact values structurally: a long string or encoded credential can be withheld whole,
     // so treating serialized JSON as prose could remove its delimiters and corrupt the envelope.
-    return redactedOutput(body, redact.heldValues?.() ?? []) as T;
+    return redactedOutput(body, this.held(runId)) as T;
   }
   async start(
     entry: AgentEntry,
@@ -595,7 +624,23 @@ export class SdkRuns {
       }
       return refuse("Unsupported SDK event type.");
     });
-    const batch = this.clean({ sequence: body.sequence as number, events }, runId);
+    // A tool event's input and output (a web tool's answer among them), and a workflow check's answer and reason, are
+    // read whole first, alone and together (withheldParts): a held value split across two of their strings stores the
+    // part that holds it as "[redacted]", the event's own facts as they came.
+    const values = this.held(runId);
+    const REDACTED = "[redacted]";
+    const shown = events.map((event): SdkEvent => {
+      if (event.type === "tool") {
+        const withheld = withheldParts({ input: event.input, output: event.output }, values);
+        return { ...event, ...(withheld.has("input") ? { input: REDACTED } : {}), ...(withheld.has("output") ? { output: REDACTED } : {}) };
+      }
+      if (event.type === "workflow_check") {
+        const withheld = withheldParts({ answer: event.answer, reason: event.reason }, values);
+        return { ...event, ...(withheld.has("answer") ? { answer: REDACTED } : {}), ...(withheld.has("reason") ? { reason: REDACTED } : {}) };
+      }
+      return event;
+    });
+    const batch = this.clean({ sequence: body.sequence as number, events: shown }, runId);
     const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
     if (known) {
@@ -663,7 +708,10 @@ export class SdkRuns {
         ...(body.session_id !== undefined ? { session_id: text(body.session_id, "session_id", 256) } : {}),
         ...(body.usage !== undefined ? { usage: usageOf(body.usage) } : {}),
     };
-    const completion = this.clean(submitted, runId);
+    // Its answer and error read whole first, alone and together (withheldParts): a held value split across two strings
+    // of one, or across the two, stores what holds it as "[redacted]"; its status and the rest as they came.
+    const withheld = withheldParts({ answer: submitted.answer, error: submitted.error }, this.held(runId));
+    const completion = this.clean({ ...submitted, ...(withheld.has("answer") ? { answer: "[redacted]" } : {}), ...(withheld.has("error") ? { error: "[redacted]" } : {}) }, runId);
     // Source policy has its own completeness flag; redacted execution evidence cannot
     // be represented as complete even when the source explicitly claimed it was.
     const { source_policy: _submittedPolicy, ...submittedEvidence } = submitted;
