@@ -156,7 +156,7 @@ test("a page of more chunks than a part's passages is judged in requests of at m
   assert.deepEqual(asked.map(({ request }) => Object.keys(request.questions).length), [50, 50, 20]);
   const record = receipt.classifier;
   assert.deepEqual([record.ran, record.requests, record.items, record.questions_sha256.length, record.scored.length], [true, 3, { in: 120, kept: 8 }, 3, 120]);
-  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002, 0.0002], "one fee line per request");
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0001, 0.0001, 0.0001], "one fee line per request, each the cost it gave, under its hold");
 });
 
 test("a 120-chunk page makes 3 judge requests, and shows the same chunks as one call scoring the page alike", async () => {

@@ -18,6 +18,7 @@ import { paidBookings, toolLedger } from "./support.mjs";
 
 const { searchFor, webSearchTool } = await import("../dist/web-search.js");
 const { webFetchTool } = await import("../dist/web-fetch.js");
+const { webOf } = await import("../dist/web-run.js");
 const { handsJevWeb, explainsView, TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { decisionKeysFor } = await import("../dist/decisions.js");
 const { bookedIn } = await import("../dist/paid-calls.js");
@@ -120,6 +121,21 @@ test("Jev's requests are booked on the run's ledger at the cost Jev reported, un
   const none = jev(await onLedger(() => search(claimEnv({ TYPESAFE_API_KEY: JEV_KEY }))));
   assert.equal(none.charges.length, 1, "the request with no cost is charged");
   assert.equal(none.charges[0].usd, none.holds[0].holdUsd, "no cost reported: the row is the hold");
+});
+
+test("a Jev request's receipt line is its ledger row: the cost Jev reported below the hold, one figure in both", async (t) => {
+  jevCalls(t);
+  processEnv(t, "AGENTRUN_TEST_FAUX_JEV_COST", "0.000002");
+  const { got, rows, holds } = await onLedger(() => webOf(claimEnv({ TYPESAFE_API_KEY: JEV_KEY })).search("widgets delaware", { n: 4 }));
+  const lines = got.receipt.cost.lines.filter((line) => line.by === "jev");
+  const charges = rows.filter((row) => row.charged_by === "jev" && row.kind === "agentrun.tool_cost");
+  const held = holds.filter((hold) => hold.chargedBy === "jev");
+  assert.equal(lines.length, 1, `one Jev line on the receipt: ${JSON.stringify(got.receipt.cost.lines)}`);
+  assert.equal(charges.length, 1, `one Jev row on the ledger: ${JSON.stringify(rows)}`);
+  assert.ok(held[0].holdUsd > 0.000002, `the hold (${held[0].holdUsd}) is above the reported cost`);
+  assert.equal(charges[0].usd, 0.000002, "the ledger row is the cost Jev reported");
+  assert.equal(lines[0].usd, charges[0].usd, `the receipt says what the ledger booked, not the hold: ${JSON.stringify(lines[0])}`);
+  assert.equal(lines[0].basis, "the cost jev reported");
 });
 
 test("no decider without TypeSafe's key: an OpenRouter key alone, a key only in this process's environment, or AGENTRUN_WEB_JEV_OFF=1", async (t) => {

@@ -78,7 +78,7 @@
     "chars": 3326
    },
    "cost": {
-    "usd": 0.0012,
+    "usd": 0.0011,
     "lines": [
      {
       "name": "Parallel's search",
@@ -89,8 +89,8 @@
      {
       "name": "fake's decision",
       "by": "fake",
-      "usd": 0.0002,
-      "basis": "the most a request of 4825 bytes may cost at fake's price"
+      "usd": 0.0001,
+      "basis": "fake's cost as estimated (it reported none)"
      }
     ]
    }
@@ -165,7 +165,7 @@
     "chars": 3228
    },
    "cost": {
-    "usd": 0.0012,
+    "usd": 0.0011,
     "lines": [
      {
       "name": "Parallel's search",
@@ -176,8 +176,8 @@
      {
       "name": "fake's decision",
       "by": "fake",
-      "usd": 0.0002,
-      "basis": "the most a request of 3921 bytes may cost at fake's price"
+      "usd": 0.0001,
+      "basis": "fake's cost as estimated (it reported none)"
      }
     ]
    }
@@ -300,7 +300,7 @@
     "chars": 1386
    },
    "cost": {
-    "usd": 0.0012,
+    "usd": 0.0011,
     "lines": [
      {
       "name": "Parallel's extract",
@@ -311,8 +311,8 @@
      {
       "name": "fake's decision",
       "by": "fake",
-      "usd": 0.0002,
-      "basis": "the most a request of 2758 bytes may cost at fake's price"
+      "usd": 0.0001,
+      "basis": "fake's cost as estimated (it reported none)"
      }
     ]
    }
@@ -377,13 +377,13 @@
     "chars": 948
    },
    "cost": {
-    "usd": 0.0002,
+    "usd": 0.0001,
     "lines": [
      {
       "name": "fake's decision",
       "by": "fake",
-      "usd": 0.0002,
-      "basis": "the most a request of 1002 bytes may cost at fake's price"
+      "usd": 0.0001,
+      "basis": "fake's cost as estimated (it reported none)"
      }
     ]
    },
