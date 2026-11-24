@@ -66,6 +66,21 @@ const { answer, receipt } = await web.search("widgets delaware", { n: 5, task: "
 - The decider only asks: it gives one score per item, `p(needed)`, or null where the provider refused the question. The
   step decides what the model reads: an item is dropped when `1 - p(needed) >= THRESHOLD` (0.8). A refused question
   keeps its item.
+- `policy` (WebConfig) says how a search's results reach the model: `"drop"`, the default, as above; or
+  `"rerank+label"`, which keeps every result, the most relevant first (ties in the provider's order, a refused one last),
+  each labelled `"relevance": 0.82` (its score to two places; none where refused). Its `sift` reads `"jev ordered 10
+  results by relevance, how likely each holds what the search asks for (0 to 1)"`, and adds `; nothing here looks
+  relevant to "<query>"; consider rephrasing` when no result reaches `LOW_RELEVANCE` (0.3). A search is ranked before
+  it is fitted, so the fit leaves out the least relevant. The decider is asked the same request under either policy;
+  a fetched part is judged as drop judges it.
+- `fetch(url, { lookingFor })` (the tool's `looking_for`) says what the agent is looking for in the page. The decider
+  scores the chunks of the whole page (`passagesOf` again, at most `FIND_CHUNKS_MAX`, 200), asked its usual judge
+  request with `lookingFor` as the task (trimmed, cut at `QUERY_MAX`). The answer holds the `FOUND_CHUNKS` (8) likeliest
+  in page order, `found: [{ offset, text }]`, in place of `text` and the part's offsets, and its `sift` reads `"jev
+  showed the 8 of 31 chunks of the page most likely to hold what you are looking for, in page order; to read on from
+  one, call web_fetch with its offset and no looking_for"`. `offset` and `maxChars` are not used. With no decider, or
+  one that fails, the answer is the part asked for with `sift: "looking_for not applied (<why>); this part is in page
+  order"`. The page is read once a run either way; a blank `lookingFor` is none.
 - A fetched part is judged in passages (`passagesOf`: whole paragraphs packed to about 1,000 characters, at most 50).
   The kept ones stay in order, `LEFT_OUT` stands for each run left out, and the part's `chars`, `offset` and
   `next_offset` are unchanged. A fetch with no `task` is not judged.

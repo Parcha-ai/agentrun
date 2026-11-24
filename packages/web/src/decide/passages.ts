@@ -44,10 +44,11 @@ function packed(text: string, size: number): [number, number][] {
 }
 
 /** `text` as contiguous [start, end) spans that tile it: whole paragraphs packed to about PASSAGE_CHARS (more for a
- *  long text, so there are at most PASSAGES_MAX), a longer paragraph cut on whitespace, never a surrogate pair split. */
-export function passagesOf(text: string): [number, number][] {
-  let size = Math.max(PASSAGE_CHARS, Math.ceil(text.length / PASSAGES_MAX));
+ *  long text, so there are at most `most`, PASSAGES_MAX by default), a longer paragraph cut on whitespace, never a
+ *  surrogate pair split. */
+export function passagesOf(text: string, most: number = PASSAGES_MAX): [number, number][] {
+  let size = Math.max(PASSAGE_CHARS, Math.ceil(text.length / most));
   let spans = packed(text, size);
-  while (spans.length > PASSAGES_MAX) spans = packed(text, (size = Math.ceil(size * 1.25)));
+  while (spans.length > most) spans = packed(text, (size = Math.ceil(size * 1.25)));
   return spans;
 }

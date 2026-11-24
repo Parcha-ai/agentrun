@@ -1,5 +1,6 @@
 // web_fetch's core: a page read once a run by the providers named in order, the guarded direct fetch behind them, given
 // in parts. A URL goes to a provider only once the guard's check passes it, and a read that fails is not kept.
+import type { FoundPage } from "./decide/step.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
 import { readDirect } from "./providers/direct.js";
@@ -119,12 +120,12 @@ function untilStopped(url: unknown, reading: Promise<WebRead | WebUnread>, signa
  *  (`checkMs`) and the `log`. */
 export type WebFetchOptions = GuardOptions & Part & { parallel?: Extract | null; firecrawl?: KeylessFetch | null; keyed?: KeyedReaders; pages?: Pages; order?: readonly FetchProvider[]; guard?: Guard; checkMs?: number; log?: WebLog };
 
-/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: from `pages`, the run's, where it holds the URL
- *  (read, or being read), with no request of its own; else read once (readOnce), kept there from the read's start. A read
- *  that fails leaves `pages`, so a later call reads again. The read is the run's, not a caller's: no caller's signal
- *  reaches it (it keeps Parallel's and the fetch's own time limits), so one caller's stop never fails another's; each
- *  caller stops waiting at its own signal (untilStopped). */
-export async function webFetch(url: unknown, { parallel, firecrawl, keyed, pages, order = FETCH_ORDER, guard, checkMs = TIMEOUT_MS, offset, maxChars, signal, log, ...options }: WebFetchOptions = {}): Promise<WebPage> {
+/** The page at `url` as read once a run: from `pages`, the run's, where it holds the URL (read, or being read), with no
+ *  request of its own; else read once (readOnce), kept there from the read's start. A read that fails leaves `pages`, so
+ *  a later call reads again. The read is the run's, not a caller's: no caller's signal reaches it (it keeps Parallel's
+ *  and the fetch's own time limits), so one caller's stop never fails another's; each caller stops waiting at its own
+ *  signal (untilStopped). */
+export async function webRead(url: unknown, { parallel, firecrawl, keyed, pages, order = FETCH_ORDER, guard, checkMs = TIMEOUT_MS, signal, log, ...options }: Omit<WebFetchOptions, keyof Part> = {}): Promise<WebRead | WebUnread> {
   const named = typeof url === "string" ? url : undefined;
   let reading = named === undefined ? undefined : pages?.get(named);
   if (!reading) {
@@ -142,10 +143,19 @@ export async function webFetch(url: unknown, { parallel, firecrawl, keyed, pages
     pages.set(named, reading);
     trim(pages);
   }
-  const read = await untilStopped(url, reading, signal);
+  return untilStopped(url, reading, signal);
+}
+
+/** The part `part` names of a page read once (webRead), as a WebPage; a read that failed as it is. */
+export function webPart(read: WebRead | WebUnread, part: Part = {}): WebPage {
   if (!read.ok) return read;
   const { via, parallel: why, ...page } = read;
-  return { ...partOfRead(page, { offset, maxChars }), via, ...(why ? { parallel: why } : {}) };
+  return { ...partOfRead(page, part), via, ...(why ? { parallel: why } : {}) };
+}
+
+/** The part (`offset`, `maxChars`) of the page at `url` as a WebPage: webPart of webRead. */
+export async function webFetch(url: unknown, { offset, maxChars, ...options }: WebFetchOptions = {}): Promise<WebPage> {
+  return webPart(await webRead(url, options), { offset, maxChars });
 }
 
 /** What the part no part follows says of a page whose HTML readPage cut before it was read (html_chars). */
@@ -169,10 +179,10 @@ function partLine(page: Page, name: string): string | undefined {
 
 /** A page as the tool `name` answers the model: its JSON, then a line saying why Parallel gave none where it was picked,
  *  and one saying where this part is in the page when it is not all of it. */
-export function webFetchText(page: WebPage | Page, name: string = "web_fetch"): string {
+export function webFetchText(page: WebPage | Page | FoundPage, name: string = "web_fetch"): string {
   const lines = [JSON.stringify(page)];
   if ("parallel" in page && page.parallel) lines.push(`Parallel was picked for web_fetch and gave no page (${page.parallel}); this one was fetched directly.`);
-  const where = partLine(page, name);
+  const where = "found" in page ? undefined : partLine(page, name);
   if (where) lines.push(where);
   return lines.join("\n");
 }
