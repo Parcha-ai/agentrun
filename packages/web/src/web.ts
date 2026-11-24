@@ -151,8 +151,9 @@ export function createWeb(config: WebConfig): Web {
       );
       const answer: WebPage = page;
       const provider = answer.ok && answer.via !== "stopped" && answer.via !== "none" ? answer.via : null;
-      // A copy: a read this call stopped waiting for goes on, and its later turns are not on this receipt.
-      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
+      // Copies: a read this call stopped waiting for goes on, and its later turns and fees are not on this receipt.
+      const spent = [...lines];
+      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(spent), lines: spent }, ...(cached ? { cache: "hit" as const } : {}) };
       return { answer, receipt };
     },
   };

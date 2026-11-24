@@ -41,10 +41,12 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   server gives a call node fresh ones each call), and `search(query, { bounds })` holds that call to its own deadlines.
   `fetch(url, { lookup, fetchImpl })` dials through the given resolver and transport.
 
-Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists every
-provider asked, in the order asked, with its outcome. A fetch also lists Parallel where it was passed over (no key,
-refused earlier in the run, or a URL it may not be sent), with why; a part from the run's pages lists none. `cost` holds
-the fees of the requests sent. `classifier` is `"off"`; `wall` and `injection` are `"unjudged"`.
+Each call returns its `answer` and a `receipt`, `{ op, asked, provider, tries, out, cost, cache? }`. `tries` lists the
+providers that answered before the call returned, in the order asked, with each outcome. A fetch also lists Parallel
+where it was passed over (no key, refused earlier in the run, or a URL it may not be sent), with why; a part from the
+run's pages lists none. `cost` holds the fees of the requests sent before the call returned. A fetch stopped at its
+signal returns at once, but its read is the run's and goes on: a provider still reading then is not in `tries`, and its
+fee is not in `cost`. `classifier` is `"off"`; `wall` and `injection` are `"unjudged"`.
 
 The pieces `createWeb` is built from are exported too: `searchInTurn` and `breakers` for search, `webFetch` and
 `webFetchText` for fetch, `fetchPage` for one direct read, and `linksOf`, the links a page's text holds. So are the
