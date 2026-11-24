@@ -31,10 +31,10 @@ test("two thousand ports handed out in one process are all different, so no test
 test("a listen error other than the port being in use rejects with its own code, never read as in use and every port tried", async () => {
   // 192.0.2.1 (TEST-NET-1) is no address of this machine: a listen there fails EADDRNOTAVAIL.
   const host = "192.0.2.1";
-  // A host that binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1) lets that listen succeed: the test says so,
-  // with the setting as read.
+  // A host that binds addresses it doesn't own (net.ipv4.ip_nonlocal_bind=1) lets that listen succeed: the message carries
+  // the setting as read.
   const got = await freePort({ host }).then((port) => ({ port }), (error) => ({ error }));
-  assert.ok(got.error, `a listen on ${host} succeeded (port ${got.port}), with net.ipv4.ip_nonlocal_bind ${nonlocalBind()}: no listen error to test on this host`);
+  assert.ok(got.error, `freePort({ host: "${host}" }) handed out ${got.port} instead of rejecting, with net.ipv4.ip_nonlocal_bind ${nonlocalBind()}`);
   assert.equal(got.error.code, "EADDRNOTAVAIL", `the listen error was said as ${got.error.code ?? "no code"}: ${got.error.message}`);
 });
 
@@ -54,9 +54,20 @@ test("a port in use is passed over: under a range from 1025 the one candidate is
   }
 });
 
+test("every port in 14000-15999 that binds now is handed out here and stays claimed for the rest of this file: the two tests below each import their own copy of the helper, so no earlier pick reaches them", async () => {
+  for (const low of [15000, 16000]) {
+    let got;
+    do got = await freePort({ low }).then((port) => ({ port }), (error) => ({ error }));
+    while (!got.error);
+    assert.equal(String(got.error), `Error: no free port below the ephemeral range: none in ${low - 1000}-${low - 1} (it starts at ${low})`, `the claims ended with: ${got.error}`);
+  }
+});
+
 test("two freePort calls at once never get the same port, and a port found in use is released: with H held and H+1 free, the call that starts at H+1 is handed it, the one that starts at H another, and H once it is free", async (t) => {
-  // A free pair found now in a range no other test here asks for (from 15000: 14000-14999), not fixed ports, so a port
-  // something on this machine holds is never read as a helper bug.
+  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free pair found now in a range only
+  // the claiming test above also asks for (from 15000: 14000-14999), not fixed ports, so a port something on this
+  // machine holds is never read as a helper bug.
+  const { freePort } = await import("./fixtures/ports.mjs?fresh=15000");
   const low = 15000;
   const from = 14000;
   const holder = createServer();
@@ -75,7 +86,8 @@ test("two freePort calls at once never get the same port, and a port found in us
   // The first call starts at H, finds it in use and moves on to H+1; the second starts at H+1. The second claims H+1
   // before its first await, so the first finds it claimed whatever order the probes settle in, and moves on again. A
   // helper that claims a port only after probing it hands H+1 to both.
-  const [first, second] = await Promise.all([freePort({ low }), freePort({ low })]);
+  const calls = await Promise.allSettled([freePort({ low }), freePort({ low })]);
+  const [first, second] = calls.map((call) => call.value ?? call.reason.message);
   assert.ok(second === next && first !== next && first !== held, `the ports handed out: ${first} and ${second}, with ${held} held and ${next} free`);
   await closeServer(holder);
   starts.push(at(held));
@@ -83,7 +95,9 @@ test("two freePort calls at once never get the same port, and a port found in us
 });
 
 test("a port whose probe fails with another error is released: the call rejects with that error, and the next call is handed the port", async (t) => {
-  // A free port found now in a range no other test here asks for (from 16000: 15000-15999).
+  // Its own copy of the helper, so no earlier test's pick in this file reaches it. A free port found now in a range only
+  // the claiming test above also asks for (from 16000: 15000-15999).
+  const { freePort } = await import("./fixtures/ports.mjs?fresh=16000");
   const low = 16000;
   const from = 15000;
   let port = from;
@@ -122,12 +136,18 @@ function nonlocalBind() {
 /** Listens `server` on `port` at 127.0.0.1: true once it listens, false when the port is in use, any other error rejected. */
 function listenOn(server, port) {
   return new Promise((resolve, reject) => {
-    const failed = (error) => (error.code === "EADDRINUSE" ? resolve(false) : reject(error));
-    server.once("error", failed);
-    server.listen(port, "127.0.0.1", () => {
+    const listening = () => {
       server.off("error", failed);
       resolve(true);
-    });
+    };
+    const failed = (error) => {
+      server.off("listening", listening);
+      if (error.code === "EADDRINUSE") resolve(false);
+      else reject(error);
+    };
+    server.once("error", failed);
+    server.once("listening", listening);
+    server.listen(port, "127.0.0.1");
   });
 }
 
