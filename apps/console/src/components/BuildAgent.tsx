@@ -5,7 +5,7 @@ import { CodingAgentAction } from "./CodingAgentAction";
 import { TemplateHarnessIcon } from "./HarnessIcon";
 import { ProblemCard } from "./Problem";
 import { installHash, TemplateProvenance } from "./Templates";
-import { buttonVariants } from "./ui/button";
+import { Button, buttonVariants } from "./ui/button";
 import { agentDraftHref, briefAgentDraft } from "@/lib/agentDraft";
 import { applyTemplatePrompt, buildAgentPrompt } from "@/lib/codingAgentPrompts";
 import type { Client } from "@/lib/client";
@@ -82,7 +82,9 @@ export function BuildAgent({ origin, v2 }: { origin: string; v2: Pick<Client, "l
       {error && <ProblemCard problem={error} onRetry={() => setTries((value) => value + 1)} className="mb-5" />}
       {listed?.length === 0 && <p className="border border-border px-5 py-10 text-center text-lead text-muted-foreground">This server has no template packages yet. Describe the agent you want to build above.</p>}
       {listed && listed.length + elsewhere.length > 0 && !shown.length && !others.length && <p role="status" className="border border-border px-5 py-10 text-center text-muted-foreground">No templates match “{search}”.</p>}
-      {note && <p role="status" className="mb-5 text-small text-muted-foreground">{note}</p>}
+      {/* The marketplace's own failure, and a list it could not read now, each with Try again, as the Templates page says them. */}
+      {market.error && <ProblemCard problem={market.error} onRetry={market.retry} className="mb-5" />}
+      {note && <p role="status" className="mb-5 flex flex-wrap items-center gap-x-3 gap-y-1 text-small text-muted-foreground">{note}<Button size="sm" onClick={market.retry}>Try again</Button></p>}
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
         {shown.map((template) => {
           const detail = [template.skills.length ? `${template.skills.length} skill${template.skills.length === 1 ? "" : "s"}` : "Ready to configure", template.triggers.length ? `${template.triggers.length} trigger${template.triggers.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");

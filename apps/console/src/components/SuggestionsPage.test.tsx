@@ -177,7 +177,10 @@ describe("Suggested agents", () => {
       expect([step("Agent")!.dataset.tone, step("Pull request")!.dataset.tone, step("First call")!.dataset.tone]).toEqual(["done", "done", "waiting"]);
       expect(step("Agent")!.querySelector("a")!.getAttribute("href")).toBe("#/agents/agent_77");
       expect(step("Pull request")!.querySelector("a")!.getAttribute("href")).toBe(`https://github.com/${REPO}/pull/12`);
-      expect(step("First call")!.textContent).toContain("src/support/inbox.ts:42, once it is merged");
+      // The pull request adds the agent's files and a client and changes none of the app's code: merging it calls nothing.
+      expect(step("First call")!.textContent).toBe("First call: not yetWire its client in at src/support/inbox.ts:42, and set the variables #12 lists");
+      expect(document.body.textContent).toContain(`One agent from ${REPO}. A pull request changes none of your code: your app calls its agent once you wire in the client it adds.`);
+      expect(document.body.textContent).not.toMatch(/once it is merged|Merge a pull request and your app calls/);
       const primary = [...card().querySelectorAll("a, button")].filter((e) => e.className.includes("primary"));
       expect(primary.map((e) => [e.textContent, e.getAttribute("href")]), "one main action").toEqual([["Review #12", `https://github.com/${REPO}/pull/12`]]);
     });
@@ -206,7 +209,7 @@ describe("Suggested agents", () => {
       const { button } = await page(v2);
       expect(step("Pull request")!.dataset.tone).toBe("problem");
       expect(step("Pull request")!.textContent).toContain("GitHub refused the branch.");
-      expect(step("First call")!.textContent, "no merge to wait for").not.toContain("once it is merged");
+      expect(step("First call")!.textContent, "no pull request, so no client to wire in yet").toBe("First call: not yetFrom src/support/inbox.ts:42");
       expect(button(/^Open the pull request$/)!.className).toContain("primary");
     });
 

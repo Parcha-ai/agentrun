@@ -413,7 +413,7 @@ function CreatedSection({ v2, repo, created, onRetry, round }: { v2: Pick<Client
     <section aria-labelledby={headingId} className="space-y-3 pt-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h3 id={headingId} className="caps flex items-center gap-2 text-small font-semibold text-success-text"><Check className="size-4" aria-hidden />Created<span className="font-normal text-muted-foreground">{created.length}</span></h3>
-        <p className="text-small text-muted-foreground">{created.length === 1 ? "One agent" : `${created.length} agents`} from {repo}{runs ? `, ${runs} ${runs === 1 ? "run" : "runs"} so far` : ""}. Merge a pull request and your app calls its agent.</p>
+        <p className="text-small text-muted-foreground">{created.length === 1 ? "One agent" : `${created.length} agents`} from {repo}{runs ? `, ${runs} ${runs === 1 ? "run" : "runs"} so far` : ""}. A pull request changes none of your code: your app calls its agent once you wire in the client it adds.</p>
       </div>
       <ul aria-label={`Created from ${repo}`} className="grid gap-3 xl:grid-cols-2">
         {created.map((s) => <li key={s.id} className="min-w-0"><CreatedCard s={s} agent={s.created ? agents[s.created.agent_id] : undefined} onRetry={() => onRetry(s)} /></li>)}
@@ -475,7 +475,7 @@ function CreatedCard({ s, agent, onRetry }: { s: Suggestion; agent: CreatedAgent
             : <Step tone="problem" label="Pull request"><span className="text-warning-text">{made?.pull_error ?? "Not opened yet."}</span></Step>}
           {here && here.runs.count > 0
             ? <Step tone="done" label="Called">{here.runs.count} {here.runs.count === 1 ? "run" : "runs"}{here.runs.live ? <span className="text-primary-text"> · {here.runs.live} live</span> : null}</Step>
-            : <Step tone="waiting" label="First call"><span className="text-muted-foreground">{agent === "unread" ? "Its runs couldn't be read." : <>From {siteHref ? <a href={siteHref} target="_blank" rel="noopener noreferrer" className={cn("break-all font-mono", link)}>{site.path}:{site.line}</a> : <span className="break-all font-mono">{site.path}:{site.line}</span>}{pull ? ", once it is merged" : ""}</>}</span></Step>}
+            : <Step tone="waiting" label="First call"><span className="text-muted-foreground">{agent === "unread" ? "Its runs couldn't be read." : <>{pull ? "Wire its client in at " : "From "}{siteHref ? <a href={siteHref} target="_blank" rel="noopener noreferrer" className={cn("break-all font-mono", link)}>{site.path}:{site.line}</a> : <span className="break-all font-mono">{site.path}:{site.line}</span>}{pull ? `, and set the variables #${pull.number} lists` : ""}</>}</span></Step>}
         </ol>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-3">

@@ -153,6 +153,29 @@ describe("Build agent page", () => {
     expect(host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!.value).toBe("An agent that monitors my queue.");
   });
 
+  it("says a marketplace that failed, with Try again, and lists its templates once a try reads them; this server's own stay listed", async () => {
+    const READ: MarketplaceList = { url: "https://marketplace.example", state: "read", read_at: "2026-11-24T00:00:00.000Z", templates: [{ name: "vendor-outage-watch", title: "Vendor outage watch", tags: [], needs: [], page_url: "https://marketplace.example/templates/vendor-outage-watch/" }] };
+    listMarketplaceTemplates.mockRejectedValueOnce(new Error("The marketplace is offline.")).mockResolvedValue(READ);
+    await mount();
+    await act(async () => {});
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain("The marketplace is offline.");
+    expect(host.querySelectorAll("article")).toHaveLength(catalog.length);
+    await act(async () => button("Try again").click());
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+    expect([...host.querySelectorAll("article")].at(-1)!.getAttribute("aria-label")).toBe("Vendor outage watch from the marketplace");
+  });
+
+  it("a marketplace the server could not read now is said with Try again, which reads it again", async () => {
+    listMarketplaceTemplates.mockResolvedValue({ url: "https://marketplace.example", state: "unreachable", read_at: null, problem: "It answered 503.", templates: [] });
+    await mount();
+    await act(async () => {});
+    const note = [...host.querySelectorAll('[role="status"]')].find((s) => s.textContent?.startsWith("The marketplace couldn't be read"))!;
+    expect(note.textContent).toContain("It answered 503.");
+    expect(listMarketplaceTemplates).toHaveBeenCalledTimes(1);
+    await act(async () => cardButton(note, "Try again").click());
+    expect(listMarketplaceTemplates).toHaveBeenCalledTimes(2);
+  });
+
   it("lists what the marketplace lists: the Suggested page's scanner is left out, and a card it lists reads its title and one line as the marketplace's card does (GRE-4834)", async () => {
     const scout: TemplateView = { ...packageTemplate("agent-scout"), display_name: "Agent scout" };
     const kyb: TemplateView = { ...packageTemplate("kyb"), display_name: "KYB due diligence (${parameters.risk_appetite} risk appetite)", description: "Business due diligence on one company, at length." };
