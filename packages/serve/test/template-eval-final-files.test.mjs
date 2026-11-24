@@ -10,7 +10,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { apiOf, evalTemplate, finalFilesOf, fitFiles, GRADER_PROMPT_MAX, graderInput } from "../dist/template-eval.js";
+import { apiOf, evalTemplate, finalFilesOf, fitArgs, fitFiles, GRADER_PROMPT_MAX, graderInput } from "../dist/template-eval.js";
 import { scratch } from "./support.mjs";
 
 const PKG = new URL("./fixtures/templates-eval/evalpkg", import.meta.url).pathname;
@@ -134,6 +134,23 @@ test("a long argument stays whole when the calls fit", () => {
   const input = graderInput(GRADER, "File it.", record(calls, []));
   assert.ok(input.includes(`1. create_issue ${JSON.stringify(calls[0].arguments)} -> ok: created #12`));
   assert.doesNotMatch(input, /characters cut/);
+});
+
+test("fitArgs never makes an argument list longer: one within a marker's length of the cut stays whole", () => {
+  const short = JSON.stringify({ url: "https://example.test/400" });
+  const long = JSON.stringify({ body: `${"a".repeat(5_000)}END` });
+  // Room for none of them cut: every short list stays whole, the long one is cut to its marker and no further.
+  const tight = fitArgs([short, short, long, undefined], 10);
+  assert.equal(tight[0], short);
+  assert.equal(tight[1], short);
+  assert.equal(tight[3], undefined);
+  assert.match(tight[2], /^ \[\.\.\. \d+ characters cut \.\.\.\] $/);
+  // Room for some: the short ones whole, the long one cut and marked in place, in all within the room.
+  const some = fitArgs([short, long], 1_000);
+  assert.equal(some[0], short);
+  assert.match(some[1], /^\{"body":"a+ \[\.\.\. \d+ characters cut \.\.\.\] a+END"\}$/);
+  assert.ok(some[0].length + some[1].length <= 1_000, String(some[1].length));
+  assert.equal(fitArgs([short, long], 10_000), undefined);
 });
 
 /** A server for finalFilesOf's reads, answering each `?cut=run` path as `answers` says: `stall` sends its head and a
