@@ -139,6 +139,51 @@ test("the server's TO/CC/BCC search is a substring: Sent to data@example.com and
   assert.ok(commands.some((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)), `read the hits' To, Cc and Bcc: ${commands.join(" | ")}`);
 });
 
+/** The uids of every To/Cc/Bcc header FETCH the fake was sent (a range a:b read as each uid in it), in order. */
+function headerFetches(faux) {
+  return faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)).flatMap((c) => {
+    const set = /FETCH (\S+)/i.exec(c)?.[1] ?? "";
+    return set.split(",").flatMap((part) => {
+      const [from, to = from] = part.split(":").map(Number);
+      return Array.from({ length: Math.abs(to - from) + 1 }, (_, i) => Math.min(from, to) + i);
+    });
+  });
+}
+
+/** `n` Sent messages to lookalikes of `address` (`x1<address>`, ...): each a hit of the server's substring search, none
+ *  to the address itself. */
+function lookalikes(faux, address, n) {
+  for (let i = 1; i <= n; i++) faux.seed({ mailbox: "Sent", from: ADDRESS, to: [`x${i}${address}`], subject: `Look ${i}`, text: "Look.", flags: ["\\Seen"] });
+}
+
+test("an exact match past the first batch of candidates is found: Sent to the address once, then to 60 newer lookalikes, sends unasked", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  faux.seed({ mailbox: "Sent", from: ADDRESS, to: ["pat@example.com"], subject: "Pat", text: "Pat.", flags: ["\\Seen"] });
+  lookalikes(faux, "pat@example.com", 60);
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "later", [send(["pat@example.com"])]);
+  unasked(await settled(ctx.api, runId));
+  assert.deepEqual(faux.sent().map((m) => m.to), [["pat@example.com"]]);
+  // Newest first, 50 at a time: the oldest message, the exact match, is in the second batch.
+  const fetched = headerFetches(faux);
+  assert.equal(fetched.length, 61, `every candidate read: ${fetched.join(",")}`);
+  assert.ok(faux.commands().filter((c) => /FETCH .*HEADER\.FIELDS \(TO CC BCC\)/i.test(c)).length >= 2, "read in more than one batch");
+});
+
+test("past 200 lookalike candidates with no exact match the send asks, saying the recipients couldn't be checked, and no more than 200 are read", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  lookalikes(faux, "kim@example.com", 205);
+  await saved(ctx.api, faux);
+  const runId = await scheduled(ctx, "crowd", [send(["kim@example.com"])]);
+  asks(await settled(ctx.api, runId), /^its recipients couldn't be checked against this account's sent mail \(.* has 205 messages whose To, Cc or Bcc holds kim@example\.com; the newest 200 were read/);
+  assert.equal(faux.sent().length, 0);
+  const fetched = headerFetches(faux);
+  assert.equal(fetched.length, 200, `no more than 200 read: ${fetched.length}`);
+  assert.equal(Math.min(...fetched), 6, "the newest 200");
+});
+
 test("a send to an address this run already sent to goes unasked, though the account filed no copy in Sent: one approval covers the next", { timeout: 150_000 }, async (t) => {
   const ctx = await served(t);
   const faux = await mailbox(t);
@@ -156,6 +201,34 @@ test("a send to an address this run already sent to goes unasked, though the acc
   assert.equal(now?.status, "completed", `the second send asks nothing: ${JSON.stringify(now?.pending)}`);
   assert.equal(faux.sent().length, 2, "both sent");
   assert.equal(faux.messages("Sent").length, 0, "no copy of either in Sent");
+});
+
+test("two sends at once to one new address: once a person approves the first, the second goes unasked while the first is still out", { timeout: 150_000 }, async (t) => {
+  const ctx = await served(t);
+  const faux = await mailbox(t);
+  await saved(ctx.api, faux);
+  faux.refuseAppend(true);
+  const runId = await scheduled(ctx, "together", [[send(["someone3@example.com"]), send(["someone3@example.com"])]]);
+  const first = await settled(ctx.api, runId);
+  asks(first, `someone3@example.com${NEVER}`);
+  assert.equal(faux.sent().length, 0);
+  // The approved send's copy is held at the server's APPEND, after its SMTP: it has no result yet when the second is
+  // asked about, so only the approval itself can make the address known.
+  const release = faux.hold(/^APPEND/i);
+  t.after(release);
+  assert.equal(await ctx.decide(runId, first.pending.id, "allow"), 204);
+  const outcome = await until(async () => {
+    if (faux.sent().length === 2) return "both sent";
+    const view = (await ctx.api("GET", `/runs/${runId}`)).body;
+    return view.status === "input_required" && view.pending?.id !== first.pending.id ? `the second send asks: ${JSON.stringify(view.pending)}` : undefined;
+  }, 55_000);
+  assert.equal(outcome, "both sent", "the second send goes unasked while the first is out");
+  // A copy's APPEND is held, so the run can't have ended: a send is still out.
+  await until(() => faux.commands().some((c) => /^APPEND/i.test(c)), 55_000, "a send's copy reaches its APPEND");
+  assert.notEqual((await ctx.api("GET", `/runs/${runId}`)).body.status, "completed", "a send is still out while its APPEND is held");
+  release();
+  await follow(ctx.api, runId, ["completed"], { deadlineMs: 55_000 });
+  assert.equal(faux.sent().length, 2);
 });
 
 test("a Sent folder that can't be read asks, saying the recipients couldn't be checked and why", { timeout: 150_000 }, async (t) => {

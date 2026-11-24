@@ -423,10 +423,14 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // nothing between. A reserved call whose result is in the journal leaves it: counted there, or its slot freed (an
   // error, a deny). A new claim's gate starts with none: what finished is the journal's.
   // Each reserved call is kept with its arguments: a tool's own ask reads what the run's calls of it were made with
-  // (AskContext.made), those let through here among them.
+  // (AskContext.made), those let through here among them. A call its tool asks about that a person has approved
+  // (approved: its answer in the journal, or their approve waiting for it) is reserved the same way, in its turn, before
+  // it runs: a call of the tool asked about after it (two sends at once to one new address) reads it as made, never
+  // asking again for what the person just approved; its slot goes as any reserved call's does.
   const reserved = new Map<string, Map<string, unknown>>();
   const asking = new Map<string, Promise<unknown>>();
-  type Ran = NonNullable<NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>["ran"]>;
+  type GateOptions = NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>;
+  type Ran = NonNullable<GateOptions["ran"]>;
   /** The journal's calls of `tool`, the reserved ones that have a result there let go. */
   const read = async (ran: Ran, tool: string) => {
     const calls = await ran(tool);
@@ -442,10 +446,10 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     const { calls, held } = await read(ran, tool);
     return [...[...calls.ran].flatMap((id) => (calls.args.has(id) ? [calls.args.get(id)] : [])), ...(held?.values() ?? [])];
   };
-  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Ran): Promise<string | undefined> => {
+  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Ran, approved: GateOptions["approved"]): Promise<string | undefined> => {
     const turn = (asking.get(call.tool) ?? Promise.resolve()).then(async () => {
       const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran), made: madeWith(ran) });
-      if (because === undefined && call.callId) reserved.set(call.tool, (reserved.get(call.tool) ?? new Map()).set(call.callId, call.args));
+      if (call.callId && (because === undefined || (await approved?.(call.callId)))) reserved.set(call.tool, (reserved.get(call.tool) ?? new Map()).set(call.callId, call.args));
       return because;
     });
     asking.set(call.tool, turn.catch(() => undefined));
@@ -476,7 +480,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     // outside the run's thread): put to a person with the tool's reason on its card, whatever the setting; where no one
     // can approve, refused in those words. No tool's name is read here: the reason is the tool's.
     const asksOf = decision === "allow" && host && options.ran ? toolOf(call.tool)?.asks : undefined;
-    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!) : undefined;
+    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!, options.approved) : undefined;
     if (because !== undefined) return approvers ? { ask: {}, because } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
     // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the

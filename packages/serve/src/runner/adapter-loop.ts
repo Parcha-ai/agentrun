@@ -140,8 +140,10 @@ function cardOf<A extends Record<string, unknown> | undefined>(tool: string, sho
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
  *  call run again after an earlier attempt that may have been sent, so a refusal's words never say nothing was sent. */
 /** `ran`: the calls of a tool the run's journal shows (toolCalls: run to a good end, and every one with a result), read
- *  now (a tool's own ask counts by it, with the calls its gate let through that have no result yet). */
-export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean; readonly ran?: (tool: string) => Promise<ToolCalls> }) => GateAnswer | Promise<GateAnswer>) & {
+ *  now (a tool's own ask counts by it, with the calls its gate let through that have no result yet). `approved`: whether
+ *  a person has approved the call by its id (its answer in the journal an allow, or their approve for it waiting to be
+ *  taken), so a call its tool asks about that a person approved is counted with those let through before it runs. */
+export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean; readonly ran?: (tool: string) => Promise<ToolCalls>; readonly approved?: (callId: string) => Promise<boolean> }) => GateAnswer | Promise<GateAnswer>) & {
   readonly askedAs?: (tool: string, args?: unknown) => string;
   /** A tool's setting now, by any name a call reaches the gate by (a harness's own, Codex's `web_search`), read again at
    *  each ask: what the session reads (SessionIO.permission) for a tool no call of which reaches the gate before it runs. */
@@ -3339,7 +3341,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       if (wrapUpDeny !== undefined) return { deny: wrapUpDeny };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
-      const given = (await spec.gate?.(kernelCall, { ...(replayed ? { replayed } : {}), ran: ranOf })) ?? "allow";
+      const given = (await spec.gate?.(kernelCall, { ...(replayed ? { replayed } : {}), ran: ranOf, approved: approvedOf })) ?? "allow";
       // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape), or
       // with the reason a call its setting allows asks anyway (`because`).
       const shown = typeof given === "object" && "ask" in given ? given.ask : undefined;
@@ -3516,6 +3518,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  on the claim after a pause as on the one they ran in. */
   async function ranOf(tool: string): Promise<ToolCalls> {
     return toolCalls(await agentEntriesOf(gate!.journal, context), tool);
+  }
+
+  /** Whether a person approved the call `callId`, as answerOf reads it: its answer in the journal stands; else the
+   *  approve or deny for it among the claim's commands (read once they are all with the loop, deps.delivered), which
+   *  answerOf takes next. */
+  async function approvedOf(callId: string): Promise<boolean> {
+    const conversation = await harness!.root(context);
+    const known = findData<AnswerData>(await entriesOf(gate!.journal, conversation.id, context), KINDS.answer, (data) => data.callId === callId);
+    if (known) return known.approved;
+    await (deps.delivered ?? Promise.resolve());
+    return inbox.find((command) => (command.kind === "approve" || command.kind === "deny") && approvalOf(command) === callId)?.kind === "approve";
   }
 
   async function askStands(callId: string): Promise<boolean> {
