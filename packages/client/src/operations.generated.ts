@@ -548,6 +548,10 @@ export type Cost = {
   learning_usd?: number | null;
   tools_usd?: number | null;
   all_in_usd?: number | null;
+  compile_usd?: number | null;
+  followup_usd?: number | null;
+  shadow_usd?: number | null;
+  share_usd?: number | null;
   degraded?: true;
   plan?: {
     requests: number;
@@ -2735,6 +2739,11 @@ export type GetLearningCostResponse = {
     cost_upper_bound: boolean;
     learning_usd: number | null;
     total_usd: number | null;
+    compile_usd?: number | null;
+    followup_usd?: number | null;
+    shadow_usd?: number | null;
+    share_usd?: number | null;
+    not_served?: "cost_stop" | "cut" | null;
   }>;
   total_runs: number;
   unknown_cost_runs: number;
