@@ -1576,7 +1576,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
   // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
   // landed or were undone, never by a key taken out for a removal that then fails.
-  await dropRefusedLogin(store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
+  // setting changes, the drop here included.
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
+  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
+  // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
+  // checks are; a sweep that fails never stops the start.
+  if (loginOff === undefined) await import("@parcha/agentrun-harness-claude").then((claude) => claude.sweepClaudeStatusFolders()).catch(() => []);
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
   // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
@@ -1611,18 +1619,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
+  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
+  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
+  // when they are made from them, and a change with any other inputs probes again.
+  let probing: readonly (string | undefined)[] | undefined;
   const probe = async (why: string) => {
     const mine = ++probes;
+    probing = undefined;
     // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
     if (asksOllama(env)) await ollamaModels(env);
     const from = offersInputs(env);
+    if (mine === probes) probing = from;
     const started = performance.now();
     const next = await harnessOffers(offersEnvOf(env));
     log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
     if (mine !== probes) return;
-    [offers, offersFrom] = [next, from];
+    [offers, offersFrom, probing] = [next, from, undefined];
     recompose();
   };
+  /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
+  const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
   /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
@@ -1636,7 +1652,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
-  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i]);
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1646,7 +1662,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    if (offersMadeFrom(offersInputs(env))) recompose();
+    const inputs = offersInputs(env);
+    // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
+    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
+    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
+    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
+    if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
     else await probe("key");
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
@@ -1671,10 +1692,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
    *  failed to take (changed_failed), until it takes. */
   const planNow = () => plan.refresh();
-  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
-   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
-  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  /** What Claude Code's login routes use: a turn on or off hands over the login it saved, then env is read again, as a
+   *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
+   *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
   stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
     signIns: claudeSignIns,
@@ -1686,10 +1706,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...oneOwner,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
-    changed: async () => {
-      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-      await keysChanged();
+    saved: (login) => {
+      claudeLogin = login;
     },
+    changed: keysChanged,
   });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a

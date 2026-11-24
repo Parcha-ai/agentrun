@@ -545,6 +545,7 @@ const CLAUDE_LOGIN = {
       properties: {
         folder: { type: "string", description: "This machine's own Claude Code login folder, as the CLI finds it for this server's user." },
         source: { enum: ["CLAUDE_CONFIG_DIR", "default"], description: "`CLAUDE_CONFIG_DIR`: the server's environment names the folder (an absolute path). `default`: it does not, so the folder is the CLI's default, `~/.claude`; a Claude Code that keeps its login in another folder is found only when this server is started with `CLAUDE_CONFIG_DIR` set to it." },
+        credentials: { type: "string", description: "Where this server's environment sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` (an absolute path, or empty): its value. The CLI keeps the login's tokens there rather than in `folder` (empty: in `~/.claude`, and on macOS in the Keychain item with no suffix), and `place: machine` is asked, signed in and run with it, as the person's own Claude Code with that variable. Absent when the environment sets none (a relative one is not taken)." },
       },
       description: "This machine's own Claude Code login, the folder `place: machine` uses.",
     },
