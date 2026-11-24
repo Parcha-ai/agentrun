@@ -17,7 +17,8 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { call, clientOwnerSession, serve as serveOf, withEnv } from "./support.mjs";
+import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
+import { call, clientOwnerSession, cookieOf, serve as serveOf, withEnv } from "./support.mjs";
 
 const { openapiDocument } = await import("../dist/openapi.js");
 const { mcpSourceKey } = await import("../dist/mcp-sources.js");
@@ -173,6 +174,66 @@ test("an owner's save refused because the token changed its own server while the
   assert.equal(removed.status, 204, removed.text);
 });
 
+test("the token's refresh never undoes the owner's save made while it listed: the owner's address stands, and the refresh is refused in words, nothing written", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing (at `fake`) waits until released, once; the owner's lists at `owners`.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  const owners = await startFakeMcp({ name: "owners-mcp" });
+  t.after(() => (release(), fake.close(), owners.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists the address it read, the owner moves the server (no credential either way: the sealed column
+  // the refresh compares is the same after it).
+  const moved = await page("PUT", "/settings/mcp-servers/fake", { url: owners.url, auth: { type: "none" } });
+  assert.equal(moved.status, 200, moved.text);
+  const owned = await server.store.mcp.server("fake");
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 503, refreshed.text);
+  assert.match(refreshed.json?.error?.message ?? "", /changed while this refresh was made; nothing was saved/);
+  const row = await server.store.mcp.server("fake");
+  assert.equal(row?.url, owners.url, "the owner's address stands");
+  assert.deepEqual([row?.updatedAt, row?.listedAt, row?.serverInfo], [owned.updatedAt, owned.listedAt, owned.serverInfo], "nothing of the refresh was written");
+});
+
+test("the token's refresh never writes back what it read over the owner's save made while it listed, even one at the same address, auth type and credential: the owner's prices stand", async (t) => {
+  const server = await serve(t);
+  // Once `holding`, the refresh's listing waits until released, once.
+  let holding = false;
+  let reached;
+  const blocked = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const fake = await startFakeMcp({ hold: async () => { if (holding) (holding = false, reached(), await released); } });
+  t.after(() => (release(), fake.close()));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } })).status, 200);
+  holding = true;
+  const refresh = token("POST", "/settings/mcp-servers/fake/refresh");
+  await blocked;
+  // While the refresh lists, the owner prices a tool: the same address, auth type and (no) credential as the refresh read.
+  const priced = await page("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" }, prices: { add: 0.05 } });
+  assert.equal(priced.status, 200, priced.text);
+  const owned = await server.store.mcp.server("fake");
+  assert.deepEqual(owned.prices, { add: 0.05 });
+  release();
+  const refreshed = await refresh;
+  assert.equal(refreshed.status, 200, `the refresh re-lists onto the owner's save: ${refreshed.text}`);
+  const row = await server.store.mcp.server("fake");
+  assert.deepEqual(row?.prices, { add: 0.05 }, "the owner's prices stand");
+  assert.equal(row?.updatedAt, owned.updatedAt, "the owner's save is the last edit");
+});
+
 test("a secret write's path segment that is not valid percent-encoding is answered as any request is: the token's sign-in start on it is refused, never a crash", async (t) => {
   const server = await serve(t);
   const token = asToken(server);
@@ -228,6 +289,79 @@ test("the owner's save over a server the token saved makes it the owner's: the t
   const refused = await token("DELETE", "/settings/mcp-servers/fake");
   assert.equal(refused.status, 403, refused.text);
   assert.ok(await savedAuth(page), "still saved");
+});
+
+test("the owner's sign-in on a server the token saved makes it the owner's: its record loses the token's mark as the signed-in row is written, and the token's save over it and its delete are 403", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, "token");
+  // The owner signs in on it, at the OAuth server's address: start, approve, and the callback with the start's cookie.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+  const asked = await fetch(started.json.authorization_url, { redirect: "manual" });
+  assert.equal(asked.status, 302, await asked.text());
+  const { cookie } = await clientOwnerSession(server);
+  const back = await fetch(asked.headers.get("location"), { redirect: "manual", headers: { cookie: [cookie, cookieOf(started)].filter(Boolean).join("; ") } });
+  assert.match(back.headers.get("location") ?? "", /sign_in=ok/, back.headers.get("location") ?? String(back.status));
+  const row = await server.store.mcp.server("docs");
+  assert.deepEqual([row?.auth, row?.url], ["oauth", mcp.url], "the owner's signed-in row");
+  assert.equal((await server.store.settings.get(mcpSourceKey("docs")))?.by, undefined, "the record no longer says the token saved it");
+  const over = await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } });
+  assert.equal(over.status, 403, over.text);
+  const removed = await token("DELETE", "/settings/mcp-servers/docs");
+  assert.equal(removed.status, 403, removed.text);
+  assert.equal((await server.store.mcp.server("docs"))?.auth, "oauth", "it stays the owner's");
+});
+
+test("over a server the token saved, its address as reads show it (path hidden) is not taken for the saved one by the owner: a sign-in's start, a save and a preview are 422 on url, and nothing reaches it; the full address given, the owner's sign-in starts", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  const as = await startFakeOAuth();
+  const mcp = await startFakeMcp({ token: as.accepts, oauth: as.issuer });
+  t.after(() => Promise.all([plain.close(), as.close(), mcp.close()]));
+  const page = await asPage(server);
+  const token = asToken(server);
+  // The token saves it at an address whose path the token chose, and every read shows only its origin.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = (await page("GET", "/settings/mcp-servers/docs")).json?.url;
+  assert.equal(shown, `${new URL(plain.url).origin}/…`, "reads show its origin alone");
+  const sent = plain.log.length;
+  for (const [method, path, body] of [
+    ["POST", "/settings/mcp-servers/docs/oauth/start", { url: shown }],
+    ["PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "bearer", token: TOKEN } }],
+    ["POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "bearer", token: TOKEN } }],
+  ]) {
+    const refused = await page(method, path, body);
+    assert.equal(refused.status, 422, `${method} ${path}: ${refused.text}`);
+    assert.deepEqual(refused.json?.error?.fields?.map((issue) => [issue.field, issue.reason]), [["url", "not_an_option"]], refused.text);
+    assert.match(refused.json.error.fields[0].message, /API token.*full URL/, refused.text);
+  }
+  assert.equal(plain.log.length, sent, "the token's address got nothing");
+  assert.deepEqual([(await server.store.mcp.server("docs"))?.auth, (await server.store.settings.get(mcpSourceKey("docs")))?.by], ["none", "token"], "the server is as the token saved it");
+  // The token's own save keeps taking its shown address for its saved one: the token chose it.
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: shown, auth: { type: "none" } })).status, 200);
+  // The owner names the full address: the sign-in starts there.
+  const started = await page("POST", "/settings/mcp-servers/docs/oauth/start", { url: mcp.url });
+  assert.equal(started.status, 200, started.text);
+});
+
+test("over a server the token saved, the token's own preview sending back its address as reads show it lists the saved one's tools (200): the token chose that address", async (t) => {
+  const server = await serve(t);
+  const plain = await startFakeMcp();
+  t.after(() => plain.close());
+  const token = asToken(server);
+  assert.equal((await token("PUT", "/settings/mcp-servers/docs", { url: plain.url, auth: { type: "none" } })).status, 200);
+  const shown = `${new URL(plain.url).origin}/…`;
+  const sent = plain.log.length;
+  const previewed = await token("POST", "/settings/mcp-servers/preview", { name: "docs", url: shown, auth: { type: "none" } });
+  assert.equal(previewed.status, 200, previewed.text);
+  assert.ok(plain.log.length > sent, "the preview reached the saved address");
 });
 
 test("a sign-in's start is the owner's alone: the token is refused, and gets no state cookie to finish one with", async (t) => {
