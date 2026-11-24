@@ -1557,7 +1557,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the latest probe is made from, once it has read it, until it lands or fails: none while no probe is out. A
   // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
-  const probe = async (why: string) => {
+  // The latest probe started, settled or not: a change waits for it while the offers held are behind and that probe is
+  // made from the change's inputs (keysChanged).
+  let latest: Promise<void> = Promise.resolve();
+  const probe = (why: string): Promise<void> => (latest = probeOffers(why));
+  const probeOffers = async (why: string) => {
     const mine = ++probes;
     probing = undefined;
     try {
@@ -1603,9 +1607,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const inputs = offersInputs(env);
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
     // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
-    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
-    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
-    if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
+    // leaves the inputs as they are (a tool key's) starts none while the probe out has read these inputs: with the offers
+    // held made from them too it recomposes at once; with them behind (a turn-on's probe out) it waits until that probe
+    // lands, or a later one overtakes it, and fails if it fails. With no probe out, it recomposes when the offers held
+    // are made from these inputs and probes when they are not.
+    const out = probing !== undefined && sameInputs(probing, inputs);
+    if (out && !offersMadeFrom(inputs)) {
+      log?.(logLine("harness_offers_wait", { why: "key" }));
+      await latest;
+    } else if (offersMadeFrom(inputs) && (probing === undefined || out)) recompose();
     else await probe("key");
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and

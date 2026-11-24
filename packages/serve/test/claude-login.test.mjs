@@ -898,12 +898,12 @@ async function planRecipeFile(t) {
 
 // A tool key is none of the offers' inputs (offersEnvOf). While the offers held are current and no probe made from other
 // inputs is out, its save or delete starts no probe, and a probe it finds out made from the inputs read now (a harness
-// key's, which may find newer facts) is left to land. Otherwise (the offers held behind the inputs, as while a turn-on's
-// probe is out, or a probe from other inputs out) a tool key's change probes, and a probe out is dropped as it lands;
-// the offers still end made from the inputs read now. This test holds the first case only. It runs on a faux server, as
-// the two late-probe tests do: a server that asks Ollama reads the host's Ollama listing at each capabilities read
-// (ollamaNow), so a model pulled or Ollama started during the test would start a probe this test did not cause. The
-// facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
+// key's, which may find newer facts) is left to land. This test holds that case; the next holds the offers behind the
+// inputs with the probe out made from them. With a probe from other inputs out, or none out and the offers behind, a
+// tool key's change probes, and a probe out is dropped as it lands. It runs on a faux server, as the two late-probe
+// tests do: a server that asks Ollama reads the host's Ollama listing at each capabilities read (ollamaNow), so a model
+// pulled or Ollama started during the test would start a probe this test did not cause. The facts here are the held
+// table's: claude-agent's check answers FACT from the harness key's save on.
 const FACT = "the probe after the harness key's save found this";
 const TOOL_KEY_PROBED = "a tool key's change, which changes none of the offers' inputs, started a probe of the offers";
 const FACT_WHY = "a tool key's change while a probe made from the inputs read now was out dropped that probe: the facts it found never landed";
