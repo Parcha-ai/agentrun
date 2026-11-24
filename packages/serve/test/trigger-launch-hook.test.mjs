@@ -444,6 +444,30 @@ test("AGENTRUN_RUN_KEYS=1: the host's trigger_firing start without the declared 
   assert.deepEqual(await claimedKeys(keyed.store, keyed.sealKey, carried.body.run_id), { PARALLEL_API_KEY: key });
 });
 
+test("AGENTRUN_RUN_KEYS=1: a key the host's trigger_firing start hands, typed into its input too, is cut from what the server writes of the start (its input and labels: the run, its view and its launch body), and the run's claim still gets it", { timeout: 120_000 }, async (t) => {
+  const keyed = await keyedHook(t, (res) => answerJson(res, 202, {}));
+  const { api, store } = keyed;
+  keyed.clock.to("2026-06-01T00:10:00Z");
+  const [handed] = await firings(api, keyed.triggerId, 1);
+  assert.equal(handed.status, "sent");
+  const key = runKey();
+  const started = await api("POST", `/agents/${keyed.agentId}/runs`, { input: { content: `Search with ${key} for this.` }, max_cost_usd: 0.5, labels: { source: key }, keys: { PARALLEL_API_KEY: key }, trigger_firing: { trigger_id: keyed.triggerId, firing_id: handed.key } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  const [now] = (await api("GET", `/triggers/${keyed.triggerId}/firings`)).body.firings;
+  assert.deepEqual([now.status, now.run_id], ["started", runId], "the firing is started with the run");
+  // The start's input is kept in its launch body (the run's row holds none); the firing's title is its trigger's.
+  const launch = (await store.runs.launch(runId)).body;
+  assert.equal(JSON.stringify(launch).includes(key), false, "not in the stored launch body");
+  assert.deepEqual(launch.input, { content: "Search with [redacted] for this." }, "its input cut in place");
+  assert.equal(JSON.stringify(await store.runs.get(runId)).includes(key), false, "not in the run's row");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(JSON.stringify(view).includes(key), false, "not in the run's view");
+  // The rest of the start's body is cut the same: a label holding the key is kept cut.
+  assert.deepEqual(view.labels, { source: "[redacted]" }, "its labels cut in place");
+  assert.deepEqual(await claimedKeys(store, keyed.sealKey, runId), { PARALLEL_API_KEY: key }, "the claim lays the key it handed, from its seal");
+});
+
 test("AGENTRUN_RUN_KEYS=1: a key the agent does not declare in the host's trigger_firing start gets the answer an ordinary start gives, and the firing stays sent", { timeout: 120_000 }, async (t) => {
   const keyed = await keyedHook(t, (res) => answerJson(res, 202, {}));
   const { api } = keyed;
