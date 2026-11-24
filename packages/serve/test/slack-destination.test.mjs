@@ -29,11 +29,13 @@ const canaryUrl = () => {
 const BASE = "https://agentrun.example.test";
 
 /** A fake Slack on 127.0.0.1: each post, with its path and its body, answered `answer(n)` as [status, text] (n from 1;
- *  Slack's own 200 "ok" by default). `when(n)`: once it holds n posts. */
+ *  Slack's own 200 "ok" by default). `when(n)`: once it holds n posts. Any request but a POST (a local tool probing
+ *  new ports sends a GET) is answered 404 and is not a post. */
 async function fakeSlack(t, answer = () => [200, "ok"]) {
   const got = [];
   const waiting = [];
   const server = createServer((req, res) => {
+    if (req.method !== "POST") return void (req.resume(), res.writeHead(404).end());
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
@@ -82,6 +84,18 @@ const arrived = async (check, what, ms = 20_000) => {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 };
+
+describe("the fake Slack", () => {
+  test("a GET of its port, as a local port prober sends, is answered 404 and is not taken for a post", async (t) => {
+    const slack = await fakeSlack(t);
+    assert.equal((await fetch(slack.origin)).status, 404);
+    const answer = await fetch(`${slack.origin}/services/T/B/x`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) });
+    assert.equal(answer.status, 200);
+    const got = await slack.when(1);
+    assert.equal(got.length, 1);
+    assert.deepEqual([got[0].method, got[0].path, got[0].body], ["POST", "/services/T/B/x", { text: "hi" }]);
+  });
+});
 
 describe("Slack's messages", () => {
   test("each event is the Slack JSON a channel shows: the agent's name, the status in a word, the title, the run's link; a wait says what it waits on; a trigger's failure its name and error", async (t) => {

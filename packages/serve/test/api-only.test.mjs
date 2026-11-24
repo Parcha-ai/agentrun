@@ -1,14 +1,14 @@
 // The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
 // (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
 // read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, the trigger routes
-// but their reads and turn on or off (api-only-deploy.test.mjs), their webhook hooks, the agents list and their writes,
-// and a live view's WebSocket. It has no owner. Its token saves a
+// but their reads and turn on or off (api-only-deploy.test.mjs) and a firing's release, their webhook hooks, the agents
+// list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
 // Composio server by api_key_env and deletes a server, and lists the servers' names (GET /settings/mcp-server-names);
 // their list, read, generic save, previews, refreshes and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
 // writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
 // run's learning) and its reset (DELETE learning), its learning's other writes and its own texts refused. A run's purge
-// (DELETE /runs/{id}) is served for a run of an agent its backend made (an inline run's, external), and refused with the
-// profile's 404 for a run of an agent made here. Off by default: the same server without it serves those routes as before.
+// (DELETE /runs/{id}) is served wherever the agent's delete is: for a run of an agent its backend made (an inline run's,
+// external) and of an agent made here. Off by default: the same server without it serves those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
@@ -18,6 +18,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { follow, serve, startRun, WINDOW, withEnv } from "./support.mjs";
 
 const { API_ONLY_ROUTES, servedApiOnly } = await import("../dist/api-only.js");
+const { mintSecret } = await import("../dist/standard-webhooks.js");
 const { API_ONLY_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
@@ -80,6 +81,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // A trigger's reads and its turn on or off (PATCH takes `enabled` alone here), for one auto-paused to be seen and
     // turned on again: an API-only server has no console to do it in.
     ["GET", "/v2/triggers"], ["HEAD", "/v2/triggers"], ["GET", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"], ["PATCH", "/v2/triggers/trg_1"],
+    // The launch hook's host releases a firing it took and will start no run for.
+    ["POST", "/v2/triggers/trg_1/firings/fir_1/release"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -97,6 +100,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],
     ["DELETE", "/v2/triggers/trg_1"], ["PUT", "/v2/triggers/trg_1"],
     ["POST", "/v2/triggers/trg_1/fire"], ["POST", "/v2/triggers/trg_1/secret"], ["POST", "/v2/hooks/composio/p1"],
+    ["GET", "/v2/triggers/trg_1/firings/fir_1/release"], ["POST", "/v2/triggers/trg_1/firings/fir_1"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
@@ -163,6 +167,18 @@ test("an API-only server serves a run's usage lines with the token, and still re
   assert.deepEqual([settings.status, settings.body.error?.message], [404, "this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/settings/tools is not served here"], "a settings route is the profile's 404");
 });
 
+test("an API-only server with the launch hook serves a firing's release with the token: an unknown trigger is the route's own 404, and with no launch hook the route's own 422 not_allowed", async (t) => {
+  const path = `/v2/triggers/trg_0123456789abcdef01234567/firings/fir_${"0".repeat(32)}/release`;
+  const hooked = await serve(t, { apiOnly: true, runner: false, launchHook: { url: "http://127.0.0.1:9/agentrun/firings", secret: mintSecret() } });
+  const unknown = await send(hooked, "POST", path, { body: { error: "The job failed at launch." } });
+  assert.deepEqual([unknown.status, unknown.body.error?.code], [404, "not_found"], JSON.stringify(unknown.body));
+  assert.ok(!unknown.body.error.message.includes("AGENTRUN_API_ONLY"), `the route's own 404, not the profile's: ${unknown.body.error.message}`);
+  assert.equal((await send(hooked, "POST", path, { token: false, body: { error: "The job failed at launch." } })).status, 401, "and it takes the token");
+  const plain = await serve(t, { apiOnly: true, runner: false });
+  const refused = await send(plain, "POST", path, { body: { error: "The job failed at launch." } });
+  assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.reason], [422, "not_allowed"], JSON.stringify(refused.body));
+});
+
 test("an API-only server serves an agent's Archil disk, read and removed, with the token", async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "grep", kind: "expert", id: "9", version: 1 }, definition: { name: "Expert 9", instructions: "Answer.", skills: [], tools: [] }, input: { content: "Hi" } } });
@@ -200,18 +216,47 @@ test("an API-only server purges a run of an agent its backend made (an inline ru
   assert.deepEqual([missing.status, missing.body.error?.message], [404, "no run run_missing"], "a run it does not have is the route's own 404");
 });
 
-test("an API-only server refuses DELETE of a run of an agent made here with the profile's 404, as before: nothing purged", { timeout: 120_000 }, async (t) => {
+test("an API-only server purges a run of an agent made here, as it may purge the whole agent: 204, every read of it 410 purged, the agent and its other run kept; it takes the token", { timeout: 120_000 }, async (t) => {
   // The agent made on the whole server, then the same data served API-only (its agents' routes are refused there).
   const whole = await serve(t);
   const { run_id: run } = await startRun(whole.api, "here", "What is six times seven.");
   await follow(whole.api, run, ["completed"]);
+  const other = await whole.api("POST", "/agents/here/runs", { input: { content: "What is six times eight." } });
+  assert.equal(other.status, 202, JSON.stringify(other.body));
+  await follow(whole.api, other.body.run_id, ["completed"]);
+  await whole.stop();
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+  const usage = (await send(server, "GET", `/v2/usage?${WINDOW}`)).body;
+
+  const none = await send(server, "DELETE", `/v2/runs/${run}`, { token: false });
+  assert.deepEqual([none.status, none.body.error?.code], [401, "unauthenticated"], JSON.stringify(none.body));
+  assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged without the token");
+
+  const deleted = await send(server, "DELETE", `/v2/runs/${run}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.notEqual((await server.store.runs.get(run)).purgedAt, null, "the run is purged");
+  purged(await send(server, "GET", `/v2/runs/${run}`), run, "its read");
+  purged(await send(server, "GET", `/v2/runs/${run}/timeline`), run, "its timeline");
+  assert.equal((await send(server, "DELETE", `/v2/runs/${run}`)).status, 204, "a second DELETE: purged before");
+  assert.deepEqual((await send(server, "GET", `/v2/usage?${WINDOW}`)).body, usage, "what it cost stays in /usage");
+
+  const kept = await send(server, "GET", `/v2/runs/${other.body.run_id}`);
+  assert.deepEqual([kept.status, kept.body.status], [200, "completed"], `its other run: ${JSON.stringify(kept.body)}`);
+  const agent = await server.store.agents.get("here");
+  assert.deepEqual([agent.purgedAt, agent.archivedAt], [null, null], "the agent is neither purged nor archived");
+});
+
+test("an API-only server answers 409 run_not_final to DELETE of a live run of an agent made here, nothing purged", { timeout: 120_000 }, async (t) => {
+  // A run started on the whole server with no runner stays queued; the same data served API-only, no runner either.
+  const whole = await serve(t, { runner: false });
+  const { run_id: run } = await startRun(whole.api, "here-live", "Take your time.");
   await whole.stop();
   const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
 
   const refused = await send(server, "DELETE", `/v2/runs/${run}`);
-  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.message], [404, "not_found", `this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/runs/${run} is not served here`], JSON.stringify(refused.body));
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.runs], [409, "run_not_final", [run]], JSON.stringify(refused.body));
   assert.equal((await server.store.runs.get(run)).purgedAt, null, "nothing purged");
-  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run reads as before");
+  assert.equal((await send(server, "GET", `/v2/runs/${run}`)).status, 200, "the run is kept");
 });
 
 test("an API-only server's purge of a run of a learning agent (its expert's id `<workspace>:<expert>`) leaves the agent and its other runs alone", { timeout: 180_000 }, async (t) => {

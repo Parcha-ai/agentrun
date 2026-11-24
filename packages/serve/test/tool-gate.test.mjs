@@ -245,7 +245,13 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
   const answer = await owner(server);
   assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
   const doc = (await api("GET", "/openapi.json")).body;
-  const runs = await Promise.all(harnesses.flatMap((harness) => ["allow", "deny"].map(async (decision) => ({ harness, decision, runId: await fetching(api, `${decision}-${harness}`, harness) }))));
+  const runs = await Promise.all(harnesses.flatMap((harness) => ["allow", "deny"].map(async (decision) => {
+    // Each run fetches its own page, so a dial names the run that made it.
+    const url = `${PAGE}?run=${decision}-${harness}`;
+    // What the run's message row shows of it: the server cuts a URL's query values there (the model reads it whole).
+    const shown = `${PAGE}?run=…`;
+    return { harness, decision, url, shown, runId: await fetching(api, `${decision}-${harness}`, harness, url) };
+  })));
   for (const run of runs) {
     const { view, rows } = await parked(api, run.runId);
     const at = `${run.decision} on ${run.harness}`;
@@ -254,7 +260,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     const call = rows.find((r) => r.kind === "tool_use" && r.tool_name === "web_fetch");
     assert.ok(call, `${at}: its call row`);
     assert.equal(view.pending.id, call.tool_use_id, `${at}: named by its call`);
-    assert.deepEqual(JSON.parse(view.pending.args_preview), { url: PAGE });
+    assert.deepEqual(JSON.parse(view.pending.args_preview), { url: run.url });
     assert.ok(Date.parse(view.pending.requested_at) > 0);
     assert.deepEqual(schemaProblems(doc, doc.components.schemas.Run.properties.pending, view.pending), [], at);
     // The turn ends at the park: the model is handed no waiting answer, so the call has no result yet.
@@ -312,7 +318,7 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     // What a person reads on the row is the outcome and the result or refusal, with no call id and no "[tool approval]"
     // head.
     assert.ok(!message.includes(run.callId) && !message.includes("[tool approval]"), `${at}: the row's text is a person's, no call id: ${message}`);
-    if (run.decision === "allow") assert.match(message, /^web_fetch ran once you allowed it\. Its result:\n\{"ok":true,"url":"http:\/\/public\.example\/","status":200/, at);
+    if (run.decision === "allow") assert.match(message, new RegExp(`^web_fetch ran once you allowed it\\. Its result:\n\\{"ok":true,"url":"${quoted(run.shown)}","status":200`), at);
     else assert.equal(message, "You declined web_fetch.\nThe user denied this web_fetch call. It was not run: nothing was sent and nothing was charged. Reason: That host is off limits.", at);
     assert.equal(rows.filter((r) => r.kind === "user_message").length, 1, `${at}: the person's one message; the resume is the server's`);
     // Never the person's, on every harness (claude-agent included): no "[tool approval]" user_message, and no row's summary
@@ -325,14 +331,51 @@ async function askedOn(t, harnesses, { resumes = true } = {}) {
     assert.equal(view.pending, null);
     // The model read the answer as the call's own result: the runner runs an allowed call in place and hands a denied one
     // the refusal, so pi's faux model echoes the page or the refusal, never a message about the call.
-    const took = run.harness === "pi" ? final.startsWith(`Saw: ${run.decision === "allow" ? '{"ok":true,"url":"http://public.example/"' : "The user denied this web_fetch call."}`) : final === "Fetched once.";
+    const took = run.harness === "pi" ? final.startsWith(`Saw: ${run.decision === "allow" ? `{"ok":true,"url":"${run.url}"` : "The user denied this web_fetch call."}`) : final === "Fetched once.";
     assert.ok(took, `${at}: the model took it as the call's answer: ${final}`);
+    if (run.decision === "allow") assert.equal(webFetchResults(rows), 1, `${at}: one result recorded`);
   }
   // Each pi run asked its model twice: the person's message (whose call parked and ended the turn, asking nothing more),
   // then the call's answer. A run on the in-process runner notes its requests as the runner's process, so they are
   // counted over this test's runs, all of them pi's.
   if (harnesses.every((harness) => harness === "pi")) assert.equal(notedRequests(requests).length, 2 * runs.length, `two requests a run: ${rolesOf(notedRequests(requests))}`);
-  assert.deepEqual(await dialled(), harnesses.map(() => PAGE), "each allowed call ran once, no denied one ran");
+  await dialledAtLeastOnce(server, await dialled(), runs.filter((run) => run.decision === "allow"), runs.filter((run) => run.decision !== "allow"), "each allowed call ran, no denied one ran");
+}
+
+/** How many results a run's Timeline `rows` record for its web_fetch calls (by each call's tool_use_id). */
+const webFetchResults = (rows) => {
+  const calls = new Set(rows.filter((row) => row.kind === "tool_use" && row.tool_name === "web_fetch").map((row) => row.tool_use_id));
+  return rows.filter((row) => row.kind === "tool_result" && calls.has(row.tool_use_id)).length;
+};
+
+/** `dials` (each URL the fake network dialled) against runs that each fetch their own page (`url`): every run in `ran`
+ *  dialled its page at least once, every run in `notRun` (denied, cancelled) never, and nothing else was dialled. An
+ *  allowed read is at least once (tool-gate.ts): a read the runner lost mid-call (its claim lapsed on a starved machine)
+ *  runs again on its next claim, so a dial past one must be a lapse in that same run's attempts (run_attempts cut
+ *  lease_lapse); another run's lapse never covers it. The attempts (epoch, from, cause, cut) are shown when a count is off. */
+async function dialledAtLeastOnce(server, dials, ran, notRun, what) {
+  const attempts = await attemptsOf(server, ran);
+  const shown = `dialled ${JSON.stringify(dials)}; the allowed runs' attempts: ${JSON.stringify(attempts)}`;
+  const count = (url) => dials.filter((dial) => dial === url).length;
+  const pages = new Set([...ran, ...notRun].map((run) => run.url));
+  assert.equal(pages.size, ran.length + notRun.length, `${what}: each run fetches its own page`);
+  assert.deepEqual(dials.filter((dial) => !pages.has(dial)), [], `${what}: every dial is one of these runs' pages: ${shown}`);
+  for (const run of notRun) assert.equal(count(run.url), 0, `${what}: ${run.runId} never ran its call: ${shown}`);
+  for (const run of ran) {
+    const lapses = attempts[run.runId].filter((attempt) => attempt.cut === "lease_lapse").length;
+    assert.ok(count(run.url) >= 1, `${what}: ${run.runId} ran its call: ${shown}`);
+    assert.ok(count(run.url) - 1 <= lapses, `${what}: a dial past one in ${run.runId} is its own lost claim's read run again: ${shown}`);
+  }
+}
+
+/** Each run's claims as run_attempts keeps them (epoch, from, cause, cut), by run id. */
+async function attemptsOf(server, runs) {
+  const store = await openSqliteStore({ dataDir: server.data, role: "runner" });
+  try {
+    return Object.fromEntries(await Promise.all(runs.map(async (run) => [run.runId, (await store.runAttempts.forRun(run.runId)).map(({ epoch, from, cause, cut }) => ({ epoch, from, cause, cut }))])));
+  } finally {
+    await store.close();
+  }
 }
 
 test("web_fetch set to ask on pi: the run parks with its pending approval, its claim let go, and is answered by the owner's session; a token is 403; a second, conflicting answer is 409", { timeout: 240_000 }, (t) => askedOn(t, ["pi"], { resumes: false }));
@@ -373,7 +416,7 @@ test("an ask answered after the server restarted while the run was parked still 
   const first = await serve(t, GATE);
   const answerFirst = await owner(first);
   assert.equal((await first.api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
-  const runs = await Promise.all(["pi", "codex", "claude-agent"].map(async (harness) => ({ harness, runId: await fetching(first.api, `again-${harness}`, harness) })));
+  const runs = await Promise.all(["pi", "codex", "claude-agent"].map(async (harness) => ({ harness, url: `${PAGE}?run=again-${harness}`, runId: await fetching(first.api, `again-${harness}`, harness, `${PAGE}?run=again-${harness}`) })));
   for (const run of runs) run.approval = (await parked(first.api, run.runId)).view.pending.id;
   const cancelled = runs.pop();
   assert.equal((await first.api("POST", `/runs/${cancelled.runId}/cancel`)).status, 202);
@@ -391,10 +434,11 @@ test("an ask answered after the server restarted while the run was parked still 
   }
   for (const run of runs) assert.equal((await answerAgain(run.runId, run.approval, { decision: "allow" })).status, 204);
   for (const run of runs) {
-    const { message } = await resumed(again.api, run.runId);
+    const { message, rows } = await resumed(again.api, run.runId);
     assert.match(message, /^web_fetch ran once you allowed it\. Its result:\n\{"ok":true/, run.harness);
+    assert.equal(webFetchResults(rows), 1, `${run.harness}: one result recorded`);
   }
-  assert.deepEqual(await dialled(), [PAGE, PAGE], "each ran once, the cancelled one never");
+  await dialledAtLeastOnce(again, await dialled(), runs, [cancelled], "each ran, the cancelled one never");
 });
 
 // SKIP (follow-up #2371): written for the per-run process #2244 removed. Its codex run parks now, but nothing kills the
@@ -911,7 +955,8 @@ test("an allow written before a person's message stands: the call runs once, the
   const { rows } = await follow(api, runId, ["completed"], { deadlineMs: 55_000 });
   const row = rows.find((r) => r.kind === "tool_approval_requested");
   assert.doesNotMatch(row.summary, /^Declined by your message/, "the allow stands: first answer wins");
-  assert.deepEqual((await dialled()).filter((dial) => dial === PAGE), [PAGE], "and its call ran once");
+  assert.equal(webFetchResults(rows), 1, "its call's result recorded once");
+  await dialledAtLeastOnce(server, (await dialled()).filter((dial) => dial === PAGE), [{ runId, url: PAGE }], [], "and its call ran");
   assert.ok(rows.some((r) => r.kind === "user_message" && r.text === "Never mind."), "the message is the run's, as a message");
   const late = await answer(runId, id, { decision: "deny" });
   assert.deepEqual([late.status, late.body.error.details], [409, { reason: "already_answered", decision: "allow" }]);
