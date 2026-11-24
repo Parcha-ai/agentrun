@@ -1,0 +1,216 @@
+### ts-env-ref
+const apiKey = process.env.OPENAI_API_KEY;
+if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
+### ts-env-ref-bracket
+const token = process.env["GITHUB_TOKEN"] ?? process.env.GH_TOKEN ?? "";
+### ts-token-variable
+async function fetchRepos(token: string) {
+  const res = await fetch("https://api.github.com/user/repos", {
+    headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new Error("token expired");
+  return res.json();
+}
+### ts-header-env-template
+const headers = { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, "User-Agent": "widgets-cli" };
+### ts-header-set
+request.headers.set("Authorization", `Bearer ${await getAccessToken()}`);
+### ts-types
+interface TokenResponse {
+  access_token: string;
+  refresh_token?: string;
+  token_type: "Bearer";
+  expires_in: number;
+}
+type ApiKey = { id: string; prefix: string; createdAt: Date; lastUsedAt?: Date };
+### ts-password-field
+export const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(12, "Password must be at least 12 characters"),
+});
+### ts-secret-name-check
+const SECRET_NAMES = ["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASS", "PAT", "CREDENTIAL", "DSN"];
+export const keyShaped = (name: string) => name.split("_").some((part) => SECRET_NAMES.includes(part.toUpperCase()));
+### ts-regex-literals
+const SK_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/;
+const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
+const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
+const AWS = /(?:AKIA|ASIA)[0-9A-Z]{16}/;
+### ts-regex-pem
+const PEM = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+### ts-redact-call
+const shown = redactSecrets(line, [process.env.AGENTRUN_SEAL_KEY ?? ""]);
+log.info({ secretCount: secrets.length, tokenPresent: Boolean(token) }, "loaded credentials");
+### ts-test-assertion
+test("a placeholder is not a key", () => {
+  assert.equal(scrub("export OPENAI_API_KEY=<your-api-key>", { mode: "count" }).cuts.length, 0);
+});
+### tsx-password-input
+<label htmlFor="password">Password</label>
+<input id="password" type="password" name="password" autoComplete="current-password" required />
+<a href="/reset-password">Forgot your password?</a>
+### ts-url-template-refs
+const url = `${base}/oauth/token?grant_type=client_credentials&client_id=${clientId}&client_secret=${secret}`;
+### py-environ
+import os
+from anthropic import Anthropic
+
+api_key = os.environ["ANTHROPIC_API_KEY"]
+client = Anthropic(api_key=api_key)
+### py-getenv-default
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dev.db")
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if SECRET_KEY is None:
+    raise RuntimeError("SECRET_KEY must be set")
+### py-getpass
+import getpass
+password = getpass.getpass("Password: ")
+token = input("Paste your token: ").strip()
+### py-pydantic
+class Settings(BaseSettings):
+    api_key: SecretStr
+    db_password: SecretStr = Field(alias="DB_PASSWORD")
+    model_config = SettingsConfigDict(env_file=".env")
+### py-bcrypt
+password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+if not bcrypt.checkpw(candidate.encode(), password_hash):
+    raise InvalidPassword()
+### py-regex
+AWS_KEY_RE = re.compile(r"AKIA[0-9A-Z]{16}")
+SLACK_RE = re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,48}")
+### go-getenv
+token := os.Getenv("GITHUB_TOKEN")
+if token == "" {
+	log.Fatal("GITHUB_TOKEN must be set")
+}
+req.Header.Set("Authorization", "Bearer "+token)
+### go-struct-tags
+type Config struct {
+	Password string `json:"password" env:"DB_PASSWORD"`
+	APIKey   string `json:"api_key" env:"API_KEY,required"`
+}
+### rust-env
+let token = std::env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN not set");
+let client = Client::builder().bearer_auth(&token).build()?;
+### sh-export-placeholder
+export OPENAI_API_KEY=<your-api-key>
+export ANTHROPIC_API_KEY=sk-ant-...
+### sh-curl-bearer-var
+curl -sS -H "Authorization: Bearer $OPENAI_API_KEY" https://api.openai.com/v1/models
+### sh-curl-bearer-braced
+curl -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/user
+### sh-curl-bearer-angle
+curl -H 'Authorization: Bearer <token>' https://api.example.com/v1/me
+### sh-curl-url-param-var
+curl "https://serpapi.com/search.json?engine=google&q=coffee&api_key=${SERPAPI_API_KEY}"
+### sh-docker-login-stdin
+echo "$CR_PAT" | docker login ghcr.io -u USERNAME --password-stdin
+### sh-pgpassword-var
+PGPASSWORD=$PGPASSWORD psql -h localhost -U postgres -d app -c 'select 1'
+### sh-mysql-prompt
+mysql -u root -p
+Enter password:
+### sh-sshpass-var
+sshpass -p "$SSHPASS" ssh -p 2222 -o StrictHostKeyChecking=no 127.0.0.1 uptime
+### sh-kubectl-from-literal-var
+kubectl create secret generic db-credentials --from-literal=password=$DB_PASSWORD --dry-run=client -o yaml
+### sh-docker-env-passthrough
+docker run --rm -e POSTGRES_PASSWORD -e API_KEY -p 5432:5432 postgres:17
+### sh-required-var
+: "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+### sh-read-secret
+read -rsp "Password: " password; echo
+### sh-gh-auth
+gh auth login --with-token < token.txt
+gh auth status
+### sh-ssh-keygen
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -N ""
+### npmrc-placeholder
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}
+always-auth=true
+### npmrc-always-auth-leads
+    12→//registry.npmjs.org/:always-auth=true
+notes/setup.txt:41://npm.corp-sample.io/:always-auth=true
++//npm.corp-sample.io/:always-auth=true
+### gha-secrets
+env:
+  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+### k8s-secret-ref
+env:
+  - name: DATABASE_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: app-secrets
+        key: database-password
+### compose-secrets-file
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+### terraform-var
+variable "api_key" {
+  type      = string
+  sensitive = true
+}
+resource "aws_db_instance" "app" {
+  password = var.db_password
+}
+### helm-existing-secret
+auth:
+  existingSecret: app-credentials
+  secretKeys:
+    adminPasswordKey: admin-password
+### sql-reset-token
+UPDATE users SET password_hash = $1, reset_token = NULL, reset_token_expires_at = NULL WHERE id = $2;
+### sql-api-keys-table
+CREATE TABLE api_keys (id uuid PRIMARY KEY, prefix text NOT NULL, hashed_key bytea NOT NULL, revoked_at timestamptz);
+### docs-sk-placeholders
+Set OPENAI_API_KEY to your key (it starts with sk-...). Project keys look like sk-proj-... and Anthropic keys like sk-ant-api03-...; never paste one here. In the examples below we write sk-xxxx.
+### docs-angle-placeholders
+Replace <your-api-key> with the key from the dashboard, and <YOUR_ORG_ID> with your organization id.
+### docs-upper-placeholders
+API_KEY=YOUR_API_KEY
+WEBHOOK_SECRET=REPLACE_ME
+### docs-bearer-placeholder
+Every request carries an `Authorization: Bearer <access-token>` header; a missing one gets a 401.
+### docs-slack-placeholder
+Slack bot tokens start with xoxb-..., app tokens with xapp-...
+### basic-auth-template
+const auth = `Basic ${Buffer.from(`${user}:${pass}`).toString("base64")}`;
+### mask-function
+const mask = (value: string) => `${value.slice(0, 4)}…${"*".repeat(8)}`;
+// mask("sk-...") === "sk-.…********"
+### env-name-list
+Missing variables: OPENAI_API_KEY, ANTHROPIC_API_KEY, GITHUB_TOKEN, DATABASE_PASSWORD
+### yaml-cloudformation-tags
+Resources:
+  WidgetsDb:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      MasterUsername: !Ref DbUser
+      MasterUserPassword: !Ref DbPassword
+      AuthToken: !GetAtt WidgetsSecret.SecretString
+      ApiToken: !ImportValue widgets-api-token
+      ClientSecret: !Sub
+### yaml-ansible-vault
+widgets_db_password: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          3162353164346539383766316566643063343935633036363466
+          6438623361663934386130623039386631396266646631360a
+### yaml-blocks-anchors-aliases
+defaults: &widgets_defaults
+  password: &widgets_pw
+  api_token: >-
+    {{ lookup('env', 'WIDGETS_API_TOKEN') }}
+  client_secret: |
+    {{ vault_client_secret }}
+staging:
+  <<: *widgets_defaults
+  password: *widgets_pw
+  smtp_password: ~
+  auth_token: null
