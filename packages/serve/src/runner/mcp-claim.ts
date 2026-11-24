@@ -53,6 +53,7 @@
 // the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
 // end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
+import { offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
@@ -548,6 +549,9 @@ async function pinOf({ store, claim, grants, githubMcpOrigin = GITHUB_MCP_ORIGIN
     const keyEnv = row ? await keyEnvOf(store, server, row) : undefined;
     const got = row && keyEnv ? composioEnvKey(server, row.url, keyEnv, composioMcpOrigin) : undefined;
     if (got && "refused" in got) throw new McpClaimRefused(`${got.refused} Nothing was sent.`);
+    // A per_run server the API token saved at an origin no longer on the API-only list: the run never starts, nothing sent.
+    const off = row ? await offApiOnlyMcpOrigins(store, server, row) : undefined;
+    if (off) throw new McpClaimRefused(off);
   }
   // As plain JSON, as the stored pin reads (the harnesses and the run's directory take it as such).
   return JSON.parse(JSON.stringify(pinned)) as McpPin;

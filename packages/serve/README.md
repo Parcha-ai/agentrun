@@ -3485,14 +3485,17 @@ serves these routes alone:
   way;
 - a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
   credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
-  origins (`http://127.0.0.1:4001`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
+  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
   `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
   credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
   headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
   credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
   saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
   `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
-  an entry that is not an http or https origin alone stops the start, in words;
+  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
+  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start and at
+  an agent's save, and nothing is sent to it. A server saved any other way (by the owner, before the profile was on)
+  is the owner's, and the list does not govern it;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on

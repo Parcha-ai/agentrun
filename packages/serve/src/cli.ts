@@ -120,7 +120,7 @@ AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
-as http://127.0.0.1:4001) lets the token save a per_run MCP server at one of those origins (PUT
+as https://mcp.example.com) lets the token save a per_run MCP server at one of those origins (PUT
 /v2/settings/mcp-servers/NAME); unset, that save is a 404. A loopback origin also needs AGENTRUN_MCP_ALLOW_LOOPBACK=1.
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run

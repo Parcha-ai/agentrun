@@ -35,7 +35,8 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { RUN_KEYS_ENV } from "./env-switch.js";
+import { apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { holdApiOnlyMcpOrigins } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -362,8 +363,8 @@ export type ServeOptions = {
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
   /** The MCP origins an API-only server's token may save a per_run MCP server at through the generic save
-   *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave). None, that save is refused as any route outside the
-   *  profile's. Read only with apiOnly. */
+   *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave), normalized as the environment's are (a bad entry
+   *  stops the start). None, that save is refused as any route outside the profile's. Read only with apiOnly. */
   apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
    *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
@@ -1468,6 +1469,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  // The API-only profile's MCP origins, normalized as the environment's are (a list passed in code included), and held in
+  // the store for every reader of a saved server there (mcp-api-only-origins.ts); removed when the profile is off.
+  const apiOnlyMcpOrigins = options.apiOnly ? apiOnlyMcpOriginsFrom((options.apiOnlyMcpOrigins ?? []).join(",")) : [];
+  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins);
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
@@ -5739,7 +5744,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
         // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
         // server the token did not save or one that seals a credential (403).
-        if (options.apiOnly && !apiOnlyMcpSave(body, preset, options.apiOnlyMcpOrigins ?? [])) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
         if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
@@ -6360,7 +6365,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const raw = (req.url ?? "/").split("?")[0]!;
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, options.apiOnlyMcpOrigins)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);

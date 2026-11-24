@@ -30,11 +30,14 @@ export const API_ONLY_MCP_ORIGINS_ENV = "AGENTRUN_API_ONLY_MCP_ORIGINS";
 
 /** The origins `value` (API_ONLY_MCP_ORIGINS_ENV) names, each once, in its order: none when unset or blank. An entry
  *  that is not an http or https origin alone (a path, query, fragment, user or password, or no URL at all) is refused
- *  (a TypeError naming the entry by its place, never its text, which could hold a password). Empty entries are skipped. */
+ *  (a TypeError naming the entry by its place, never its text, which could hold a password), and so is a wildcard
+ *  (`https://*.example.com`), which would otherwise be taken as a literal host and match nothing. Empty entries are
+ *  skipped. */
 export function apiOnlyMcpOriginsFrom(value: string | undefined): string[] {
   const origins: string[] = [];
   (value ?? "").split(",").map((entry) => entry.trim()).forEach((entry, at) => {
     if (entry === "") return;
+    if (entry.includes("*")) throw new TypeError(`${API_ONLY_MCP_ORIGINS_ENV} names each origin whole: entry ${at + 1} is a wildcard, and wildcards are not supported`);
     let url: URL | undefined;
     try {
       url = new URL(entry);
