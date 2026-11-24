@@ -1,13 +1,26 @@
 import { type Fee, type Pay, PaidRefused } from "../fees.js";
 import type { WebPage } from "../fetch.js";
 import type { Page } from "../page.js";
-import type { Search } from "../search.js";
+import { QUERY_MAX, type Search } from "../search.js";
+import { clip } from "../page.js";
 import type { Cost, DecisionPay, Temperature, Tokens, Trimmed, Verdicts, WebDecider } from "./decider.js";
 import { codeOf, costOf, unbilled } from "./failure.js";
 import { passagesOf } from "./passages.js";
 
 /** How sure a decider must be that an item is not needed before drop leaves it out: when 1 - p(needed) >= it. */
 export const THRESHOLD = 0.8;
+/** Under rerank+label, the score at least one result must reach for the search not to be called a miss. */
+export const LOW_RELEVANCE = 0.3;
+
+/** How a search's results reach the model. "drop": those scored below THRESHOLD are left out, the rest in the
+ *  provider's order. "rerank+label": every one is kept, the most relevant first, each with its `relevance`. */
+export type DecidePolicy = "drop" | "rerank+label";
+const POLICIES: readonly DecidePolicy[] = ["drop", "rerank+label"];
+/** `policy`, "drop" when none is given; any other value throws. */
+export function policyOf(policy: unknown = "drop"): DecidePolicy {
+  if (!POLICIES.includes(policy as DecidePolicy)) throw new RangeError(`the classifier's policy must be "drop" or "rerank+label" (it was ${JSON.stringify(policy)})`);
+  return policy as DecidePolicy;
+}
 
 /** One item's score as the decider gave it (null: refused): a result by its URL, a passage by its id and its place in
  *  the page. */
@@ -42,7 +55,7 @@ export type DecisionRecord = {
 export const DECIDE_MS = 30_000;
 /** What stands in the text of a fetched part for each run of passages left out. */
 export const LEFT_OUT = "\n…\n";
-export type StepOptions = { task?: string | undefined; signal?: AbortSignal | undefined; ms?: number | undefined; pay?: DecisionPay | undefined };
+export type StepOptions = { task?: string | undefined; signal?: AbortSignal | undefined; ms?: number | undefined; pay?: DecisionPay | undefined; policy?: DecidePolicy | undefined };
 
 type Sifted<A> = { answer: A; classifier: DecisionRecord };
 type Failure = { code: string; message: string; cost: Cost };
@@ -117,16 +130,32 @@ const drops = (score: number | null) => score !== null && 1 - score >= THRESHOLD
 const droppedOf = (scored: Scored[]): DecisionRecord["dropped"] =>
   scored.flatMap((item) => (drops(item.score) ? [{ id: item.id, score: item.score, reason: `needed p=${shown(item.score!)} <= ${shown(1 - THRESHOLD)}`, ...(item.at ? { at: item.at } : {}) }] : []));
 
-/** A search's results sifted by `decider`: the kept ones in order, and `sift` telling the model what was done. */
+/** A search's results sifted by `decider` under `options.policy` (DecidePolicy), and `sift` telling the model what was
+ *  done. The need judged is the task when one is given, else the query (siftRequest). */
 export async function siftSearch(decider: WebDecider, answer: Search, options: StepOptions): Promise<Sifted<Search & { sift?: string }>> {
+  const policy = policyOf(options.policy);
   if ("error" in answer || !answer.results.length) return { answer, classifier: skipped(decider, "search", "no results") };
   const start = performance.now();
   const { got, requests } = await bounded((ctx) => decider.sift(answer.query, answer.results, options.task, ctx), options);
   const n = answer.results.length;
   if ("code" in got) return { answer: { ...answer, sift: `not run (${got.code}); these results are unsifted` }, classifier: failed(decider, "search", n, since(start), requests, got) };
   const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i]!.score }));
+  if (policy === "rerank+label") return { answer: ranked(decider.id, answer, scored, options.task), classifier: ran(decider, "search", got, since(start), requests, scored, []) };
   const results = answer.results.filter((_, i) => !drops(scored[i]!.score));
   return { answer: { ...answer, results, sift: `${decider.id} kept ${results.length} of ${n} results` }, classifier: ran(decider, "search", got, since(start), requests, scored, droppedOf(scored)) };
+}
+
+/** `answer`'s results, every one, the most relevant first (a stable sort: ties in the provider's order, a refused one
+ *  last), each scored one with `relevance`, its score to two places; the sift line says so, and that nothing looks
+ *  relevant to the need when no result reaches LOW_RELEVANCE. */
+function ranked(id: string, answer: Extract<Search, { results: unknown }>, scored: Scored[], task: string | undefined): Search & { sift: string } {
+  const results = answer.results
+    .map((hit, i) => ({ hit, score: scored[i]!.score }))
+    .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+    .map(({ hit, score }) => (score === null ? hit : { ...hit, relevance: Math.round(score * 100) / 100 }));
+  const best = Math.max(...scored.map((item) => item.score ?? 0));
+  const miss = best < LOW_RELEVANCE ? `; nothing here looks relevant to ${JSON.stringify(clip(task ?? answer.query, QUERY_MAX))}; consider rephrasing` : "";
+  return { ...answer, results, sift: `${id} ordered ${results.length} results by relevance, how likely each holds what the search asks for (0 to 1)${miss}` };
 }
 
 /** A fetched part judged by `decider` in passages: the kept ones in order, LEFT_OUT for each run left out, the part's

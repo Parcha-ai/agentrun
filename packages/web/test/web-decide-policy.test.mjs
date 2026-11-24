@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
 import { createWeb, deciderFrom, searchText, siftSearch } from "../dist/index.js";
-import { A, B, decideSteps, decideWeb, LONG, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
+import { A, B, decideSteps, decideWeb, LONG, pagesOf, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
 
 const golden = JSON.parse(readFileSync(new URL("./fixtures/decide-runs.golden.json", import.meta.url), "utf8"));
 const URLS = ["https://registry.example/widgets", "https://result.example/2", "https://result.example/3", "https://result.example/4"];
@@ -126,4 +126,19 @@ test("a policy that is not drop or rerank+label is refused when the web is made,
   assert.throws(() => createWeb({ order: { search: [], fetch: [] }, policy: "annotate" }), /policy/);
   const search = { provider: "parallel", query: "widgets", results: URLS.map((url) => ({ url, title: "", snippet: "" })) };
   await assert.rejects(siftSearch(priced(scoringProvider().provider), search, { policy: "keep" }), /policy/);
+});
+
+test("a search too wide to fit is ranked before it is fitted: the fit leaves out the least relevant results", async () => {
+  const quoted = '"'.repeat(3_000);
+  const wide = async (url, init) => {
+    if (new URL(String(url)).pathname !== "/v1/search") return pagesOf("")(url, init);
+    const results = Array.from({ length: 25 }, (_, i) => ({ url: `https://wide.example/${i + 1}`, title: `Result ${i + 1}`, publish_date: null, excerpts: [quoted] }));
+    return new Response(JSON.stringify({ search_id: "s", results, warnings: null, usage: [], session_id: "s" }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  // The last result scores highest, the first lowest.
+  const scores = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`r${i + 1}`, (i + 1) / 25]));
+  const { answer } = await decideWeb({ ...RANKED, send: { parallel: wide } }, scores).search("widgets", { n: 25 });
+  assert.ok(answer.omitted > 0);
+  assert.equal(answer.results[0].url, "https://wide.example/25");
+  assert.ok(!answer.results.some((hit) => hit.url === "https://wide.example/1"), "the least relevant is the one left out");
 });

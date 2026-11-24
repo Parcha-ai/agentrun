@@ -24,7 +24,9 @@ const DEFAULT_WAIT_MS = 60_000;
  *  reset (keyless Exa's daily count answers a 429 naming the hours to midnight): the provider is off until then. */
 const MAX_WAIT_MS = 15 * 60_000;
 
-export type Hit = { url: string; title: string; snippet: string; published?: string };
+/** `relevance`, under the classifier's rerank+label policy only: how likely the result holds what the search asks
+ *  for, 0 to 1. */
+export type Hit = { url: string; title: string; snippet: string; published?: string; relevance?: number };
 export type Search = { provider: "native" | "firecrawl-keyless" | "exa-keyless" | "parallel"; query: string; results: Hit[]; text?: string; omitted?: number } | { error: string };
 /** What a provider's failure said of the run's search: out of quota (until the reset `retryAfter` names, if it names
  *  one), or rate-limited, with the wait it named as it handed it back (a Retry-After header's value, delta-seconds or an

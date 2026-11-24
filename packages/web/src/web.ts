@@ -10,7 +10,7 @@ import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFet
 import type { Words } from "./providers/mcp.js";
 import { type Extract, parallelExtract, parallelSearched } from "./providers/parallel.js";
 import type { WebDecider } from "./decide/decider.js";
-import { decisionPay, type DecisionRecord, judgePart, siftSearch } from "./decide/step.js";
+import { type DecidePolicy, decisionPay, type DecisionRecord, judgePart, policyOf, siftSearch } from "./decide/step.js";
 import { type Backend, type Breaker, breakers, fitSearch, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "native" | "direct";
@@ -49,6 +49,9 @@ export type WebConfig = {
   log?: WebLog;
   /** Sifts each search's results and judges each fetched part; none: nothing is sifted, as before the step. */
   decider?: WebDecider;
+  /** How a search's results reach the model once the decider has scored them ("drop" by default); checked when the
+   *  web is made. */
+  policy?: DecidePolicy;
 };
 /** `breakers`: the search breakers this call reads and trips (default the Web's own). `task`: what the caller needs,
  *  which a decider judges against (a search without one is judged on its query). */
@@ -72,6 +75,7 @@ const failedWith = (error: string, limit: Searched["limit"]): Searched => ({ ans
 
 export function createWeb(config: WebConfig): Web {
   const now = config.now ?? Date.now;
+  const policy = policyOf(config.policy);
   const runBreakers = breakers(now);
   const pages: Pages = new Map();
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
@@ -119,7 +123,7 @@ export function createWeb(config: WebConfig): Web {
         : !order.length ? { error: "web_search has no provider to ask" }
         : await feesOfCall.run(lines, () => searchInTurn(order.map((name) => backendOf(name, args, signal)), breakerOf, signal, config.bounds?.searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
-      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) }) : { answer: found, classifier: "off" as const };
+      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
       const receipt: Receipt = { op: "search", asked: query, provider: "error" in answer ? null : answer.provider, tries, classifier, ...unjudged, out: outOf(searchText(answer)), cost: { usd: usd(lines), lines } };
