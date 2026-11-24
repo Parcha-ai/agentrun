@@ -1554,7 +1554,10 @@ The sign-in is the owner's alone, over the owner's signed-in session (the API to
   sign-in tab ends on a page that won't load: copy its whole address into the console, which sends it as
   `POST /v2/settings/chatgpt/sign-in/finish` `{"redirect_url": "..."}`.
 - `GET /v2/settings/chatgpt` says `state`: `signed_out`, `pending` (with `authorize_url` and `expires_at`), `signed_in`
-  (with `email`, `plan` and the plan's `models`) or `expired`.
+  (with `email`, `plan` and the plan's `models`) or `expired`. A `pending` sign-in with no code back after its first
+  minute also carries a `hint`. It names the likely cause first: the ChatGPT workspace's admin has turned off open-source
+  apps (External access → OSS → Use ChatGPT plan). OpenAI shows that refusal on its own page and never sends the browser
+  back.
 - `DELETE /v2/settings/chatgpt` signs out: it removes the sign-in here and revokes it at OpenAI, and answers
   `{"revoked": true}` when OpenAI confirmed it (or nothing was signed in, as when it only cancels a waiting sign-in).
   When OpenAI didn't confirm it, the answer is `{"revoked": false, "message": "Signed out here. OpenAI didn't confirm
@@ -1868,14 +1871,15 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) the native tool, the harness's own or its model provider's hosted one (on claude-agent
-only where it is picked: `auto` there skips Claude's own search, an explicit `native` pick); (3) for
+(`PUT /settings/tools`); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
-keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (4) the keyless
-fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider. On codex, `auto` is
-Codex's own search, except behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
-counts no searches to price) or under a spend cap (its request has no input bound, which a cap cannot
-admit), where it is Parallel on the server's key, else keyless Firecrawl. `off` turns `web_search` off: nothing is
+keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
+fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
+`auto` is agentrun's own search on every harness. The native search, the harness's own (Claude's WebSearch, Codex's
+live search) or on pi one request to the run's own model provider with its hosted search, runs only where `native` is
+picked; it is unavailable behind a gateway, on OpenRouter (which runs neither Codex's nor Claude's own search, and
+counts no searches to price) or under a spend cap (Codex's request has no input bound, and Claude's searches have
+per-use fees, which a cap cannot reserve yet). `off` turns `web_search` off: nothing is
 searched, and an agent naming it is refused (`409`) until it is turned on again. A pick of `firecrawl-keyless` is keyless
 Firecrawl with keyless Exa behind it, and a pick of `exa-keyless` is keyless Exa alone, the key held or not.
 A workflow's model nodes may each run on another tier's model, so a workflow's `web_search` never searches natively:
@@ -1884,8 +1888,8 @@ unavailable for a workflow.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |
-| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl: Claude's own WebSearch is the `native` pick | Codex's own search, each search booked; behind a gateway, on OpenRouter or under a spend cap, Parallel on the server's key, else keyless Firecrawl, a host tool | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider, Parallel on the server's key, else keyless Firecrawl |
-| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | the same, unavailable behind a gateway, on OpenRouter or under a spend cap | the same, unavailable where there is none: never a keyless search |
+| `web_search`, `auto` (the default) | Parallel on the server's key, else keyless Firecrawl, a host tool: Claude's own WebSearch is the `native` pick | the same: Codex's own search is the `native` pick | the same: the model provider's hosted search is the `native` pick |
+| `web_search`, `native` | Claude's own WebSearch, unavailable on OpenRouter or under a spend cap | Codex's own search, each search booked; unavailable behind a gateway, on OpenRouter or under a spend cap | one request to the run's own model provider with its hosted search (Anthropic, OpenAI direct); unavailable behind a gateway (`AGENT_MODEL_BASE_URL`) or on another provider: never a keyless search |
 | `web_search`, `off` | unavailable (`web_search is turned off in settings`): nothing is searched | the same | the same |
 | `web_search`, `firecrawl-keyless` | Firecrawl's public MCP search, keyless Exa's behind it, a host tool | the same | the same |
 | `web_search`, `exa-keyless` | Exa's public MCP search alone, a host tool | the same | the same |
@@ -3289,6 +3293,16 @@ warning, as a github trigger is with GitHub not connected. The first package is 
 rules of an apply are in [templates/README.md](https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/templates/README.md);
 `agentrun template validate DIR` checks a folder as the server does.
 
+`GET /v2/marketplace/templates` lists the templates on [marketplace.agentrun.ai](https://marketplace.agentrun.ai), the
+list the marketplace publishes (`/search.json`), each with `here`, the id of the package on this server that it is
+(`x-agentrun-serve: "marketplace/1"`). The server reads the list only when asked, never at its start, keeps it 5
+minutes, and keeps the last good one through a failed read (`state: "stale"`); with none it answers `unreachable` and an
+empty list, always with a 200. Nothing on the list is imported or run: an entry that names its `source` installs with
+`POST /v2/templates/import`, its publisher trusted once, and one that names none from its marketplace page. The
+console's Templates and Build pages list this server's packages, then the marketplace's others.
+`AGENTRUN_MARKETPLACE=off` reads none, as does `--faux` unless it names an address; `AGENTRUN_MARKETPLACE=<https
+address>` reads that site's list.
+
 `agentrun template eval DIR` (`agentrun-serve eval-template DIR`) runs a package's eval cases as real runs of its agent
 and grades each run with the case's graders: by default on a server of its own over a temp data directory, so it never
 touches yours, with each case's fake MCP servers on loopback and its corrections seeded through the learning API. Real
@@ -3348,6 +3362,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
+| `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
 | `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
@@ -3763,7 +3778,9 @@ back.
 `GET /v2/capabilities` lists each in `harnesses`, with `available` and, when not, the `reason`, and `default_model`: the
 model the harness runs when a definition names none (`provider/model-id`, as a save and a run resolve it), or null where
 it runs none (the harness does not run here, or no default model here runs on it: claude-agent never takes a gateway's
-model). A definition naming a
+model). Its `models` are those a save takes; `ready_models`, those of them a run takes now, their provider connected here
+(its key set, or the ChatGPT sign-in where that is how the harness runs them). One that lacks only its key is in `models`
+and not in `ready_models`: a save of it warns, and the console's Model picker lists it only when asked. A definition naming a
 harness this server does not run yet saves with a warning on `definition.harness`, and a run of it is
 `409 agent_not_runnable` with `details.harness`; it never runs on pi instead. This server runs pi always, and
 `claude-agent`, `codex` and `opencode` when each adapter's package, pins and provider endpoint check out; the harness's

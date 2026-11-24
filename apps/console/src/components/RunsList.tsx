@@ -42,7 +42,7 @@ export function RunsList({ runs, agentName, onOpen, error, onRetry, onMore, load
           </>
         )}
         <a href="#/races/new" className={buttonVariants({ variant: "outline", size: "sm" })}><Flag aria-hidden />New race</a>
-        <CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
+        <CodingAgentAction label="Ask about runs" prompt={`${queryRunsPrompt(location.origin, agentId)}\nCurrent view: ${filter.status ? `status ${filter.status}` : "all statuses"}; ${archived ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agentId, filter)} />
       </header>
       <div className="min-h-0 flex-1 overflow-auto">
       {error && !runs ? <ProblemCard problem={error} onRetry={onRetry} className="" />

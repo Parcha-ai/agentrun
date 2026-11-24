@@ -193,6 +193,7 @@ export interface components {
         billing: "proxy" | "plan";
       };
       available: boolean;
+      ready_models: string[];
       free_models: {
         id: string;
         context_window: number;
@@ -2563,6 +2564,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   fireTrigger: {
@@ -2772,6 +2774,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   getClaudeLogin: {
@@ -4946,6 +4949,28 @@ export interface operations {
           } | null;
         } | null;
       }[];
+    };
+  };
+  listMarketplaceTemplates: {
+    body: never;
+    answer: {
+      url: string | null;
+      state: "read" | "stale" | "unreachable" | "off";
+      read_at: string | null;
+      templates: {
+        name: string;
+        title: string;
+        tags: string[];
+        needs: string[];
+        page_url: string;
+        summary?: string;
+        description?: string;
+        category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+        harness?: string[];
+        source?: string;
+        here?: string;
+      }[];
+      problem?: string;
     };
   };
   listMcpServerNames: {

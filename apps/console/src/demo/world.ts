@@ -236,7 +236,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
 
   // ---- Agents ----
 
-  const BLURB: Record<string, string> = { read: "Read files in the run's folder", write: "Write files in the run's folder", web_fetch: "Read a public web page", web_search: "Search the web", email_send: "Send an email", email_draft: "Save an email draft", ask_person: "Ask you a question mid-run", bash: "Run shell commands in the sandbox" };
+  const BLURB: Record<string, string> = { read: "Read files in the run's folder", write: "Write files in the run's folder", web_fetch: "Read a public web page", web_search: "Search the web", email_send: "Send an email", email_draft: "Save an email draft", ask_person: "Lets the agent stop and ask you a question", bash: "Run shell commands in the sandbox" };
   const nativeOf = (a: DemoAgent) => (a.native ? {
     runtime: a.native.runtime, project: a.native.project, selector: a.native.selector, machine_id: "mch_demo_laptop", version: a.native.version, model: a.model, fingerprint: hex(`${a.id}:setup`, 64),
     configuration: [{ path: a.native.runtime === "codex" ? "AGENTS.md" : "CLAUDE.md", sha256: hex(`${a.id}:config`, 64) }], skills: a.native.skills, mcp_servers: a.native.mcp,

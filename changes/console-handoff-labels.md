@@ -1,0 +1,16 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+Console: labels and layouts say what a control does, and like things look alike.
+- Buttons that hand a prompt to your coding agent say what they are for and show when they leave the console: "Query" reads "Ask about runs", or "Ask about this session" when Mission Control is scoped to a connected session; "Connect agent" reads "Connect your agents"; and a trailing arrow marks the main action when it opens another app (Claude Code, Codex or Cursor).
+- Mission Control's getting-started card: its toggle reads "See templates" in place of "Run an agent here", since it shows the templates rather than starting a run, and each starter card says what it does once (the line that repeated its description is gone).
+- Templates page: every card's buttons look the same (Configure in outline, Run the main action); a template whose setup is only parameters no longer swaps them. A card's MCP servers are an "Apps" row of the apps they reach, as icons (HubSpot, Slack, Gmail, GitHub and others), named on hover and for a screen reader with where their tools come from, in place of "MCP hubspot (Composio, optional)"; a toolkit with no icon to be had is its name in words.
+- Build page: the composer, its coding-agent prompt and the templates share one column, and every template card shows "Use this template" without being clicked open first (its version, which choosing a template never needs, is left to the Templates page).
+- Learning tab: each of the four figures at the top says one short line under it, with its whole basis (interval, bar, audits) on hover and to a screen reader; under them the loop's five stages show their values alone, since the figures say their numbers, and each stage's state is its icon (its word on hover and to a screen reader), so a narrow stage's title stays on one line. "Since it learned" is a row of the same figure cells, lined up with the four above. The learned workflow takes a full-width row of its own under the cost of a run, its words beside its graph where there is room, and its name never breaks mid-word; it was a 17.5rem column beside the chart at some widths.
+- Back arrows: an agent's page, its editor and a connected agent's page go back to the console page you came from, as a run's page already did, and to their parent page when opened from a link. An editor opened from its agent's page went to the agents list.
+- A connected agent's panel says its facts a line each (the whole value on hover), keeps verification and capabilities in one closed disclosure of short rows, and says what Verify and Disconnect do on their buttons, and what Disconnect kept once it has.
+- A list filter's count ("3 of 5 shown") stands inside its box, so picking a filter never changes the box's width.
+- Mission Control: a failed group's square, time and Run all again stay on its first line when its list of runs opens.
+- An agent's page shows the same icon in its top bar as its card on the agents list (its runtime's: pi, Codex, Claude Code, a workflow), where it showed a generic robot.
+- Connect agent page: This server's hand-off heads its Discover section, at the right of its title as Another machine's does, where it stood touching the tabs on their line.

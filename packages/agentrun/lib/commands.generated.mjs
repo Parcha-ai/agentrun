@@ -2416,6 +2416,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-marketplace-templates"
+    ],
+    "operationId": "listMarketplaceTemplates",
+    "method": "GET",
+    "path": "/marketplace/templates",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is"
+  },
+  {
+    "command": [
+      "local",
       "list-mcp-server-names"
     ],
     "operationId": "listMcpServerNames",
