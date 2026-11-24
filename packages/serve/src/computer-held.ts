@@ -14,9 +14,9 @@
 // and its start and every message are refused in them (heldRefused), so its agent never runs; its computer still takes
 // calls until the release or the lapse. On pi and on every CLI harness, its model's route chooses no model and reads no
 // key: its provider is a stand-in that refuses every model request in those words, sending none (provider.ts
-// heldRefusedProvider), so a host with no key for it holds the computer all the same. Its claim opens only the keys any
-// claim of the run opens (its tools', a key handed with it), routes no subagent tier and takes no learning step. Every
-// other blocker still refuses the create.
+// heldRefusedProvider), so a host with no key for it holds the computer all the same. Its claim lays only the keys any
+// claim of the run lays (its tools', a key handed with it), in a run's own process too (run-child-host.ts: no model key,
+// no saved gateway key), routes no subagent tier and takes no learning step. Every other blocker still refuses the create.
 //
 // Like the take-over (computer-commands.ts), it runs over the one store: the server writes command rows, the run's
 // runner applies them to the computer it holds (runner/held-run.ts), and commits what came of each to the run's journal.

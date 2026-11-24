@@ -62,7 +62,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, heldSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -522,8 +522,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   }
   // A held run its model kept from running at its create (hold.refused) chooses no model here, and no plan or login is
   // asked before it: its model's route chooses no model and reads no key, its adapter's provider being the stand-in that
-  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login. Its claim opens
-  // only the keys any claim of the run opens (its tools', a key handed with it: claimSecrets lays it no model key) and
+  // refuses every request in the create's words (adapters.ts providerOf), never a key or the Claude login. Its claim lays
+  // only the keys any claim of the run lays (its tools', a key handed with it: claimSecrets lays it no model key) and
   // takes no learning step (below), so it holds the computer on a host with no key for its model, and a key saved since
   // runs a new run, never this one.
   const heldRefusal = launch.hold?.refused?.message;
@@ -670,8 +670,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none.
-  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
+  // are skipped, in words, where the run brought its own key or the server holds none. A held run its model kept from
+  // running reads no saved key for it (serverKeyless): any such spend is skipped (heldSpendOff), and it starts none.
+  const spendOff = heldRefusal === undefined ? await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey) : heldSpendOff;
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's

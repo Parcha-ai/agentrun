@@ -52,8 +52,10 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
  *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A held run
  *  its model kept from running at its create (hold.refused) is laid no model key and no plan sign-in: its model runs
- *  nowhere. Its tools' keys are laid as any run's (no tool's key row names a model key: tool-keys.ts TOOL_FIELDS), and so
- *  are its decision keys and its own tool keys. */
+ *  nowhere. Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
+ *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
+ *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
+ *  apart, as it lays OpenRouter's for a decision node that runs on it. */
 export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const working = await workingEnv(deps);
@@ -343,6 +345,11 @@ export async function claimSpendOff(deps: ClaimSecretsDeps, runKey: ClaimModelKe
   const keyless = at ? await at.serverKeyless() : await serverKeyless(deps);
   return (what) => (runKey?.everHeld() ? runKeyEndedFor(what) : keyless ? noServerKeyWords(what) : undefined);
 }
+
+/** claimSpendOff's answer for a held run its model kept from running at its create (hold.refused), given with no key read:
+ *  any spend beside it is skipped, in these words. Its claim starts none (it takes no learning step), so they are never
+ *  said unless a new step forgets the hold. */
+export const heldSpendOff = (what: string): string => `${what} is skipped: this run is held, its model kept from running at its create, so nothing is spent on a model for it.`;
 
 /** The env a claimed run's model routes read: the run's own key alone where the claim opened one (withRunModelKey); else
  *  the runner's environment with the keys `opened` for it (withModelKeys), whose gateway variables read the run's key

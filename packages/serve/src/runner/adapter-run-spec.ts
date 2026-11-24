@@ -60,7 +60,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, heldSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -648,8 +648,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
   const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
   // A held run its model kept from running at its create is never routed (heldRefusedRoute): its model's route chooses no
-  // model and reads no key, so a key saved since runs a new run, never this one. Its claim opens only the keys any claim
-  // of the run opens (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
+  // model and reads no key, so a key saved since runs a new run, never this one. Its claim lays only the keys any claim
+  // of the run lays (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
   // takes no learning step (below).
   const heldRefusal = launch.hold?.refused?.message;
   const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
@@ -789,8 +789,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none.
-  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
+  // are skipped, in words, where the run brought its own key or the server holds none. A held run its model kept from
+  // running reads no saved key for it (serverKeyless): any such spend is skipped (heldSpendOff), and it starts none.
+  const spendOff = heldRefusal === undefined ? await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey) : heldSpendOff;
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
