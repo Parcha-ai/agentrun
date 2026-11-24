@@ -500,6 +500,32 @@ test("runner-b's full janitor pass, after runner-b ended runner-a's parked run, 
   assert.ok(said.some((line) => line.startsWith("the computer janitor could not sweep docker's computers: the computers kept at a park could not be read")), JSON.stringify(said));
 });
 
+// One meaning of "still there" for a kept machine's runner (store.ts KEPT_PREFIX): its runners row seen within the
+// staleness under the row's incarnation, refusing claims or not. A refusal frees the run for any runner's claim; it never
+// frees the machine for another runner's janitor, since the refusing runner is still there to end it.
+test("a kept machine's runner that is still there but refusing claims still holds it: another runner's janitor, kept pass and full pass alike, leaves its row and its machine, and its own pass ends it", async () => {
+  const refusing = { live: async () => [{ ...RUNNER_A, refused: "draining" }] };
+  const key = keptKeyOf("run-1");
+  const due = await server(SANDBOX);
+  await (await due.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  const row = await due.store.settings.get(key);
+  due.clock.now = T0 + KEEP_MS + 60_000;
+  assert.deepEqual(await due.janitor({ self: RUNNER_B, runners: refusing }), { ended: [], failed: [] }, "runner-b's kept pass leaves the refusing runner-a's row past its time");
+  assert.deepEqual(await due.store.settings.get(key), row, "its row as runner-a's park left it");
+  assert.deepEqual(deletes(due.account), [], "nothing deleted from runner-b");
+  assert.deepEqual(await due.janitor({ self: RUNNER_A, runners: refusing }), { ended: ["c1"], failed: [] }, "runner-a's own kept pass ends it at its time, refusing or not");
+
+  const stopped = await server(SANDBOX);
+  await (await stopped.claim(3, {}, { holder: RUNNER_A })).park("approval");
+  stopped.store.runs.set("run-1", "stopped");
+  stopped.clock.now = T0 + 60_000;
+  const logged = await stopped.pass({ self: RUNNER_B, runners: refusing });
+  assert.deepEqual(deletes(stopped.account), [], `runner-b's full pass leaves the refusing runner-a's machine from both sweeps: ${JSON.stringify(logged)}`);
+  assert.ok(stopped.account.computers.has("c1"), "still running for runner-a");
+  await stopped.pass({ self: RUNNER_A, runners: refusing });
+  assert.deepEqual(deletes(stopped.account), ["c1"], "runner-a's own pass ends it, once");
+});
+
 test("a Docker sandbox's park names the runner that claimed it and its incarnation; a resume by another runner that cannot reach it makes a new one, said lost with that runner and naming none", async () => {
   const one = await server(SANDBOX);
   await (await one.claim(3, {}, { holder: RUNNER_A })).park("approval");
