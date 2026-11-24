@@ -153,8 +153,8 @@ test("a word's value keeps where each character is written, and an expansion sta
 
 /** Each command named by `name` in `text` read as the scrubber reads it (secret-rules.ts commandsOf): from its name,
  *  at most `max` on, one Misses for the text, the next search after where the read stopped. The read count per
- *  character of the text. */
-function readsPerChar(text, name, max = 4096, ends = curlEnds) {
+ *  character of the text, the reading stopped once it passes `bound` (so a super-linear reader fails fast). */
+function readsPerChar(text, name, bound, max = 4096, ends = curlEnds) {
   const misses = new Map();
   const re = new RegExp(name, "g");
   lexCount.read = 0;
@@ -163,6 +163,7 @@ function readsPerChar(text, name, max = 4096, ends = curlEnds) {
     const lexed = lex(text, named, Math.min(text.length, named + max), ends, misses);
     for (const [start, end] of lexed.subs) lex(text, start, end, never, misses);
     re.lastIndex = Math.max(lexed.end, m.index + 1);
+    if (lexCount.read > bound * text.length) break;
   }
   return lexCount.read / text.length;
 }
@@ -194,12 +195,12 @@ test("reading is linear by count: 1 MB of nested, unclosed and repeated construc
   ];
   for (const unit of units) {
     const text = unit.repeat(Math.ceil(1_000_000 / unit.length));
-    const perChar = readsPerChar(text, String.raw`\b(?:curl|redis-cli|mysql|login)\b`);
+    const perChar = readsPerChar(text, String.raw`\b(?:curl|redis-cli|mysql|login)\b`, 8);
     assert.ok(perChar <= 8, `${JSON.stringify(unit.slice(0, 24))}: ${perChar.toFixed(2)} reads a character`);
   }
   // A group that fails inside a group fails the groups around it at once (groupFail), instead of each reading on again.
   for (const unit of ["curl $( $( ", "curl <(", "curl $( -u a:b ", "curl >( $("]) {
-    const perChar = readsPerChar(unit.repeat(Math.ceil(1_000_000 / unit.length)), String.raw`\bcurl\b`);
+    const perChar = readsPerChar(unit.repeat(Math.ceil(1_000_000 / unit.length)), String.raw`\bcurl\b`, 3);
     assert.ok(perChar <= 3, `${JSON.stringify(unit)}: ${perChar.toFixed(2)} reads a character`);
   }
 });
