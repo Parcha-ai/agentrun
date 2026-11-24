@@ -617,6 +617,39 @@ const CASES = [
       { name: "a held value whole in one string of a JSON text is cut in place, and the JSON still parses (control)", text: whole(`see ${P24.join("")}`), values: [P24.join("")], hides: [H], exact: all(whole("see [redacted]")) },
     ];
   })(),
+  // Two encodings mixed (P2-A): each view decoded one family, so a split by an encoded space in one family and an
+  // escaped one in the other, or a head in one and a tail in the other, read whole in none. The decoders stack in one
+  // view, so each withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const u = (text) => [...text].map((char) => `${B}u${char.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+    const pct = (text) => [...text].map((char) => `%${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`).join("");
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["a percent-encoded space and an escaped one (%20\\u0020)", `x ${H}%20${B}u0020${R} y`],
+      ["a plus and an escaped space (+\\u0020)", `x ${H}+${B}u0020${R} y`],
+      ["its head written as \\u escapes, its rest percent-encoded", `x ${u(H)}${pct(R)} y`],
+    ].map(([what, text]) => ({ name: `two encodings: a held value split by ${what} withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // The #3626 review's texts with no false positive, each kept so: a held value cut in place next to "é" and "—", as they
+  // are and as JSON's escapes; a Windows path with "\usersሴ" in it, with and without a held value; a held value
+  // that itself holds a literal "A", as it is and JSON-escaped. Each is cut in place, or shown as it came.
+  ...(() => {
+    const B = String.fromCharCode(92);
+    const KEY = P24.join("");
+    const literal = `${P24[0]}${B}u0041${P24[1]}`;
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    const path = `dir C:${B}users${B}u1234${B}notes.txt`;
+    return [
+      ["a held value next to é and —", `see ${KEY}é— ok`, [KEY], "see [redacted]é— ok"],
+      ["a held value next to escaped é and —", `{"note":"${KEY}${B}u00e9 ${B}u2014 end"}`, [KEY], `{"note":"[redacted]${B}u00e9 ${B}u2014 end"}`],
+      ["a Windows path with \\users\\u1234 in it", path, [KEY], path],
+      ["a held value in a Windows path with \\users\\u1234 in it", `dir C:${B}users${B}u1234${B}${KEY}.txt`, [KEY], `dir C:${B}users${B}u1234${B}[redacted].txt`],
+      ["a held value holding a literal \\u0041", `see ${literal} ok`, [literal], "see [redacted] ok"],
+      ["a held value holding a literal \\u0041, JSON-escaped", JSON.stringify({ v: literal }), [literal], `{"v":"[redacted]"}`],
+    ].map(([what, text, values, shown]) => ({ name: `no false positive: ${what} is cut in place or shown as it came (control)`, text, values, hides: [P24[0]], exact: all(shown) }));
+  })(),
   // Adversarial texts of the cut read's cap: each is read once, so each comes back as its shape says.
   { name: "adversarial: eyJ x n, no dot", text: fill("eyJ"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ") } },
   { name: "adversarial: eyJ- x n, no dot", text: fill("eyJ-"), values: [CUT_KEY], hides: [], exact: { runFile: fill("eyJ-") } },
