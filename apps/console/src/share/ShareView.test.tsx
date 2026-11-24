@@ -35,7 +35,6 @@ describe("ShareView over the golden bundle", () => {
     expect(text()).toContain("Golden agent");
     expect(text()).toContain("Completed");
     // The Report: the run's final answer, as the export cut it.
-    // A home's user is cut to `<user>`, the scrubber's replacement, so the path keeps its shape (no marker, no chip).
     expect(text()).toContain("Done. Mail [redacted:email] about /home/<user>/work; key [redacted:sk-key].");
     tab(host, /timeline/i);
     expect(text()).toContain("Connect with PGPASSWORD=[redacted:secret-assign] psql -h db");
@@ -61,6 +60,7 @@ describe("ShareView over the golden bundle", () => {
     expect(chips).toContain("[redacted:secret-assign]");
     expect(chips).toContain("[redacted:env-dump 4 lines]");
     tab(host, /report/i);
+    // A home's user is cut to `<user>`, which keeps the path's shape: plain text, not a chip (the cuts panel lists it).
     expect(panelChips()).toEqual(["[redacted:email]", "[redacted:sk-key]"]);
   });
 
