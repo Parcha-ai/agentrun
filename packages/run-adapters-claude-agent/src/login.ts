@@ -141,6 +141,8 @@ const STATUS_KILL_MS = 1_000;
 /** Once a status check's CLI has exited, or was killed, how long the check still waits for its output's pipe to close
  *  before it leaves it: a process the CLI started can hold that pipe open with no end. */
 const STATUS_DRAIN_MS = 1_000;
+/** The longest delay setTimeout keeps (2^31 - 1 ms): past it, the timer fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /** A status check the CLI outlasted: ended at its limit (`limitMs`) with no answer, which says nothing of the login (a
  *  loaded host can take that long), apart from a CLI that answered, in time, what reads as no status. `code` is
@@ -174,17 +176,15 @@ const STATUS_ENDS_FILE = "ends";
 const STATUS_SWEEP_MARGIN_MS = LOGIN_STATUS_MS;
 
 /** When the status check that owns `folder` ends at the latest (its STATUS_ENDS_FILE), or undefined when that can't be
- *  read as a time. */
+ *  read as a time. A check writes its end at its start, so an end before the file's own mtime is none a check wrote:
+ *  empty or blank (a check between its create, wx, and its write: Number("") is 0), a partial write, a negative. */
 async function checkEnds(folder: string): Promise<number | undefined> {
   try {
     const file = join(folder, STATUS_ENDS_FILE);
     const stat = await lstat(file);
     if (!stat.isFile() || stat.size > 32) return undefined;
-    // Empty or blank is a check between its create (wx) and its write, not an end: Number("") is 0, long past.
-    const text = (await readFile(file, "utf8")).trim();
-    if (text === "") return undefined;
-    const ends = Number(text);
-    return Number.isSafeInteger(ends) ? ends : undefined;
+    const ends = Number((await readFile(file, "utf8")).trim());
+    return Number.isSafeInteger(ends) && ends >= stat.mtimeMs ? ends : undefined;
   } catch {
     return undefined;
   }
@@ -195,11 +195,12 @@ async function checkEnds(folder: string): Promise<number | undefined> {
  *  each folder there named as a check's (the prefix and mkdtemp's six characters, nothing longer) that is this user's
  *  (`uid`, `process.getuid()` by default) and whose check has ended: more than STATUS_SWEEP_MARGIN_MS (15 s) before
  *  `now` by the end the check wrote in it (STATUS_ENDS_FILE), whatever limit its caller gave it, so a check another
- *  server on this host is running is never taken. A folder with no such end (its check was killed before writing it) is
- *  taken once it was last changed more than twice a check's limit (LOGIN_STATUS_MS) before `now`. Another user's
- *  folder, a link or a file is never taken. `dir`: the temporary folder (`os.tmpdir()` by default). Nothing on Windows,
- *  which has no uid to tell whose a folder is. Never throws: a folder that can't be read or removed stays. Resolves to
- *  the folders it removed. The server runs it as it starts. */
+ *  server on this host is running is never taken. A folder with no such end (its check was killed before writing it,
+ *  or what the file holds is no time, or one before the file was written: checkEnds) is taken once it was last changed
+ *  more than twice a check's limit (LOGIN_STATUS_MS) before `now`. Exactly at its margin, a folder stays by either
+ *  rule. Another user's folder, a link or a file is never taken. `dir`: the temporary folder (`os.tmpdir()` by
+ *  default). Nothing on Windows, which has no uid to tell whose a folder is. Never throws: a folder that can't be read or
+ *  removed stays. Resolves to the folders it removed. The server runs it as it starts. */
 export async function sweepClaudeStatusFolders(options: { dir?: string; uid?: number; now?: number } = {}): Promise<string[]> {
   const uid = options.uid ?? process.getuid?.();
   if (uid === undefined) return [];
@@ -218,7 +219,8 @@ export async function sweepClaudeStatusFolders(options: { dir?: string; uid?: nu
       const stat = await lstat(path);
       if (!stat.isDirectory() || stat.uid !== uid) continue;
       const ends = await checkEnds(path);
-      if (ends === undefined ? stat.mtimeMs > now - 2 * LOGIN_STATUS_MS : now <= ends + STATUS_SWEEP_MARGIN_MS) continue;
+      // Kept while at most its margin past, by either rule.
+      if (ends === undefined ? stat.mtimeMs >= now - 2 * LOGIN_STATUS_MS : now <= ends + STATUS_SWEEP_MARGIN_MS) continue;
       await rm(path, { recursive: true, force: true });
       removed.push(path);
     } catch {
@@ -334,10 +336,15 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
  *  the limit (`timeoutMs`, LOGIN_STATUS_MS by default) and was ended there, else ClaudeLoginNoStatus. A CLI that never
  *  started throws the spawn's own error. At the limit the CLI is asked to go (SIGTERM) and killed STATUS_KILL_MS later;
  *  once it has exited or was killed, the check waits at most STATUS_DRAIN_MS more for its output, which a process it
- *  started may hold open. So a check settles within its limit and 2 s, whatever the CLI does. */
+ *  started may hold open. So a check settles within its limit and 2 s, whatever the CLI does. A `timeoutMs` that is no
+ *  whole number of ms from 1 to 2^31 - 1 throws a RangeError before anything starts. */
 export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
-  const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
+  // The limit is the check's timer and, with 2 s more, the end it writes for the sweep, which reads only a whole number
+  // of ms: a fractional one would leave a live check's folder to the sweep's mtime rule. setTimeout fires at once past
+  // 2^31 - 1.
+  if (!Number.isSafeInteger(limitMs) || limitMs < 1 || limitMs > MAX_TIMER_MS) throw new RangeError(`timeoutMs must be a whole number of ms from 1 to ${MAX_TIMER_MS}, not ${limitMs}`);
+  const scratch = mkdtempSync(join(tmpdir(), STATUS_FOLDER));
   try {
     // When this check ends at the latest, so another server's sweep leaves its folder until then, whatever its limit.
     await writeFile(join(scratch, STATUS_ENDS_FILE), String(Date.now() + limitMs + STATUS_KILL_MS + STATUS_DRAIN_MS), { mode: 0o600, flag: "wx" });
