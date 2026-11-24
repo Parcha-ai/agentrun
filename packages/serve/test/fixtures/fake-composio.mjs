@@ -9,7 +9,8 @@
 // it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit
 // (`anyCase`: that read finds one by its id in any letter case, answering the id as it keeps it). `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
-// config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
+// config, say); as the real one, `auth_config_ids` narrows the list to those under it, and the list is paged by `cursor` and
+// `next_cursor`, at most `limit` a page (`accountsPage`: at most that many, whatever `limit` asks). `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
 // fails each. With `times`, only that many such calls fail (the rest are answered as usual); with `wait`, a promise, the
 // failure is answered only once it settles (a slow refusal, for two calls at once); with `body`, the failure answers that body
@@ -93,7 +94,7 @@ const mcpGate = (mcpAccounts, toolkits) => (url, message) => {
   return undefined;
 };
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, anyCase = false, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, anyCase = false, active = [], accounts = {}, accountsPage, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -202,7 +203,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const under = url.searchParams.get("auth_config_ids");
       const listed = [...(accounts[kit] ?? []), active.includes(kit) ? { status: "ACTIVE", auth_config: under ?? "ac_unnamed" } : { status: "INITIATED", auth_config: under ?? "ac_unnamed" }];
       const user = url.searchParams.get("user_ids") ?? "agentrun";
-      return reply(200, { items: listed.filter((a) => !under || a.auth_config === under).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE })) });
+      const all = listed.filter((a) => !under || a.auth_config === under);
+      const from = Number(url.searchParams.get("cursor") ?? 0);
+      const size = Math.min(Number(url.searchParams.get("limit") ?? all.length) || all.length, accountsPage ?? all.length);
+      const items = all.slice(from, from + size).map((a) => ({ id: a.id ?? `ca_fake_${kit}${a.status === "ACTIVE" ? "" : `_${a.status.toLowerCase()}`}`, user_id: user, status: a.status, toolkit: { slug: kit }, auth_config: { id: a.auth_config }, created_at: a.created_at ?? ACCOUNT_MADE }));
+      return reply(200, { items, next_cursor: from + size < all.length ? String(from + size) : null });
     }
     if (req.method === "POST" && url.pathname === "/api/v3/connected_accounts/link") {
       const started = `ca_link_${++links}`;
