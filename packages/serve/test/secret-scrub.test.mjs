@@ -2651,6 +2651,27 @@ test("XCVII: the command readers cut every password the text scan before the lex
   }
 });
 
+test("XCVIII: the lexer read cuts where the span scan beside it does not: a name quoted, with .exe or a Windows path, continued or followed by a wide blank, and a descriptor redirection before the flag", async () => {
+  const pw = "Copper9lumen9";
+  for (const text of [
+    `"mysql" -h db -p${pw} app`,
+    `'docker' login -u bot -p ${pw} r.io`,
+    `$'npm' config set //r/:_authToken ${pw}`,
+    `mysql.exe -h db -p${pw} app`,
+    `C:\\tools\\docker.exe login -u bot -p ${pw} r.io`,
+    `npm.exe config set //r/:_authToken ${pw}`,
+    `redis-cli \\\n  -h db -a ${pw} ping`,
+    `mysql \\\n  -h db -p${pw} app`,
+    `mysql\u00a0-h db -p${pw} app`,
+    `mysql\u3000-h db -p${pw} app`,
+    `redis-cli &>all -h db -a ${pw} ping`,
+    `mysql >&2 -h db -p${pw} app`,
+    `redis-cli 2>&1 -h db -a ${pw} ping`,
+  ]) {
+    for (const wrap of FOUR_WRAPS) await gone(wrap(text), [pw]);
+  }
+});
+
 test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
   const long = "Tq7Wm2Rk9Zx".repeat(137);
   const [head, tail] = [long.slice(0, 200), long.slice(-200)];
