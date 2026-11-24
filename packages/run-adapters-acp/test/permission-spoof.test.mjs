@@ -38,6 +38,16 @@ for (const [style, kind, title] of [['cursor', 'execute', 'agentrun: lookup'], [
   });
 }
 
+test("the host gate's question about a permission request carries the agent's toolCallId in its args, beside its title, kind and input", async (t) => {
+  // Before: only a log line of the adapter's tied the gate's id to the request's toolCallId, by its words.
+  const recipe = fakeRecipe(scratch(), { script: [{ native: 'execute', title: 'ls', input: { command: 'ls' } }, { sayLastResult: true }], style: 'cursor' });
+  const asked = [];
+  const { session } = await openSession(t, recipe, { tools: [tool('look_up', () => 'found')], gate: async (call) => (asked.push(call), { deny: 'not now' }) });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.toolCallId, c.args.title, c.args.kind]), [['acp_execute', 'native_0', 'ls', 'execute']]);
+});
+
 test("our real tool's permission request, on a recipe that declares the title tie (Cursor), is answered allow_once, its gate asked at the MCP call", async (t) => {
   // A guard: the same before and after Goose's title forms left ourTool.
   const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], style: 'cursor', askMcp: true });
