@@ -20,6 +20,11 @@ describe("model labels", () => {
     expect(modelLabel("chatgpt/gpt-6.1-sol", "agent-model")).toEqual({ text: "gpt-6.1-sol · on your ChatGPT plan", title: "chatgpt/gpt-6.1-sol" });
     expect(modelLabel("chatgpt/", null)).toEqual({ text: "chatgpt/" });
   });
+  it("a model on this machine's Ollama (ollama/<tag>) reads its tag and \"local (Ollama)\", the full id its title, whatever the route prefix", () => {
+    expect(modelLabel("ollama/synth-tools:2b", null)).toEqual({ text: "synth-tools:2b · local (Ollama)", title: "ollama/synth-tools:2b" });
+    expect(modelLabel("ollama/synth-tools:2b", "agent-model")).toEqual({ text: "synth-tools:2b · local (Ollama)", title: "ollama/synth-tools:2b" });
+    expect(modelLabel("ollama/", null)).toEqual({ text: "ollama/" });
+  });
   it("takes each harness's default from the server (harnesses[].default_model), none where it says null", () => {
     const harnesses = [{ id: "pi", default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", default_model: null }, { id: "codex", default_model: "agent-model/gpt-6-luna" }];
     expect(harnessDefault("codex", harnesses)).toBe("agent-model/gpt-6-luna");
@@ -47,5 +52,9 @@ describe("free models", () => {
     expect(freeRequestsNote("openrouter/x/y:free", "codex", harnesses, 60)).toBeNull();
     expect(freeRequestsNote("openrouter/x/y:free", "pi", harnesses, undefined)).toBeNull();
     expect(freeRequestsNote(null, "pi", harnesses, 60)).toBeNull();
+  });
+  it("nothing beside the cap for a local Ollama model: it is free, and its requests have no limit", () => {
+    const harnesses = [{ id: "pi", free_models: [{ id: "ollama/synth-tools:2b", context_window: 65_536 }] }];
+    expect(freeRequestsNote("ollama/synth-tools:2b", "pi", harnesses, 60)).toBeNull();
   });
 });

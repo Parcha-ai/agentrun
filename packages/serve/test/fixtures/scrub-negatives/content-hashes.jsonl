@@ -1,0 +1,52 @@
+{"id":"sha256sum-0","text":"5b8a2bf7dd9bcc78a7151cd9bea165b1454b0cd78e1cf08c43f70f58eda28d5b  node-v24.22.3-linux-x64.tar.xz\n940638f92cc73962494ebe2e4938f057964d462744416a3c097f0e0fec65c7e4  dist/index.js\n1dae9be2fb9be8e49788d6a6b90c9e0fa1e2b7f95d108acdb30c5afdaa005105  dist/index.js\naf1a4e202e4ce2e351ca8fca518e326059dfb534c93ba7d618aedb72ba763598  dist/index.js"}
+{"id":"sha256sum-1","text":"adf4b21421af495c65909b732e5cf7c4d724a441586fc16b3e8a35d7d9f1b80a  checksums.txt\n8f5bd90378348be129be3f1334299de00b9deb49398367778c8ca91bdae20fca  agentrun-serve-0.1.0.tgz\n4747ae34bfb6ef89b401c332790dec0d7d10b717979bd39e68a84b313301ec6e  dist/index.js"}
+{"id":"sha256sum-2","text":"be30d3211bbb6793d77d7b96c327909796d073cbe379043ea0431efd1439e4d9  dist/index.js\n1ce2e5fb7a7ce779268d32a7c1e17e9c699950aa85ea3cbaa058f920e77fbe61  node-v24.22.3-linux-x64.tar.xz\nb769d010ae7c4d4acbc6de8dcd2f2df12384b3aea9ca3b17eff26acfc8208cc7  node-v24.22.3-linux-x64.tar.xz\naed56899d0a50090e62ed4a651f1c08d8851ba7bd86a39ac411c4c5898934559  checksums.txt"}
+{"id":"sha256sum-3","text":"f8e7ccb4a23bc4eb5c1c4944eac96923905a1c93b3890d54b14d3287a56b8c06  node-v24.22.3-linux-x64.tar.xz\nc08df9a9dd2c7972cef1944694bbdec1fdad88f4d42d2b42ec02b1faf6f2ffee  pi-browser_1.5.2_amd64.deb\n766f0b5493da8b1c829e3a77d9d1b88282db85f138035b589b5606be291280f9  pi-browser_1.5.2_amd64.deb\n4b98e395dc0e6ff7bdeacd2f7d3ca18ae53778cdac625b301da7fa6acb4e020c  checksums.txt"}
+{"id":"sha1sum-0","text":"be02d339a6281176f44238bfc62aa0ef24af72da  checksums.txt"}
+{"id":"sha1sum-1","text":"c3b66d11b2d2aac7f71160119ade2001371a8fa7  dist/index.js"}
+{"id":"sha1sum-2","text":"f286576e7b6a9e34fb80b46a1eca8d1624ca4209  checksums.txt"}
+{"id":"sha512sum-0","text":"ad8d0480c286c294db9186a44cd3bbe2fea8f3644affdec7a556091a4453ce28e49164e928887435e2636b072576db8e28d9da20c8b8db3f15675bcbedfa0237  agentrun-serve-0.1.0.tgz"}
+{"id":"sha512sum-1","text":"77bc896938ab5b22323bc0a5a21478cfe5c01c6d2fca9dbd62e83398e28416f3d862d8d804e5c445768e7f0e496715ed35255b2f6af3fe97dc86c9ecbb84d008  checksums.txt"}
+{"id":"sha512sum-2","text":"274e82027b3afdd253d359593d3e5d37e1706503b2c74553e19e776e9e81021bbe438bf76886db082dfb7b13f049ff1ab3d46b5ecd4d815b4c59371dd48cd7b6  checksums.txt"}
+{"id":"md5sum-0","text":"527731a16f3d0023cd99a041284f1eef  checksums.txt"}
+{"id":"md5sum-1","text":"7cc067e556ab7af071622f95ca5775d4  agentrun-serve-0.1.0.tgz"}
+{"id":"bsd-sum-0","text":"SHA256 (pi-browser_1.5.2_amd64.deb) = b935a5b048906bd2e6588b55a78c53b02410f97ad8bf91e9fb666fd15caee13d"}
+{"id":"bsd-sum-1","text":"SHA256 (node-v24.22.3-linux-x64.tar.xz) = 801da485d4c639f64271dc7fa964846ee8c821c9780b437b990b5e88e62ad69b"}
+{"id":"shasums-file-0","text":"# SHASUMS256.txt\n1bbd163235af112296b5b19392b0f893f21be07f7bc96bb7593fbcefaaa6f2ef  node-v24.22.3-darwin-arm64.tar.gz\n4b1595af2ab00e7a3b840f63325c20b3b7b0a4c650236c7283d7c3cb3806c487  node-v24.22.3-linux-x64.tar.xz\n372b10344677ee24a03430a8c762d050ae46bc7726c438f156e4ce2d951ab7f6  node-v24.22.3-win-x64.zip"}
+{"id":"shasums-file-1","text":"# SHASUMS256.txt\nc861015636af6aa1459216ba9b34fb1ac033091ade72718aa24553c3fb7e9a95  node-v24.22.3-darwin-arm64.tar.gz\n85bd3453a9896938bd8abab7713f504a32750263fd4c19d42fac219df2e5d36c  node-v24.22.3-linux-x64.tar.xz\n61fa52cb97a380124237eefd772aec8a236a745450ff4d8565cb9e88c26d8d4c  node-v24.22.3-win-x64.zip"}
+{"id":"docker-digest-0","text":"image: postgres:17@sha256:17952084e818c72c7dd06e06da8a919890ad84cd3f973b9ce6d5326a06cc0793"}
+{"id":"docker-digest-1","text":"docker pull ghcr.io/octo-labs/parser@sha256:723038a7211a2350dcec12127f271976e6a33abd588e86896da6a034eeeaa51a"}
+{"id":"docker-digest-2","text":"Digest: sha256:5a3cf6b5db51c67ec803608b4d7c20d96814ca0fc65317afec2c3e068857f0b2\nStatus: Downloaded newer image for node:24"}
+{"id":"docker-digest-3","text":"docker pull ghcr.io/acme/rocket-sled@sha256:0a9cc8585c59a5917f15ed405ff0054c7ee02c7dbf20ad92a27d5cbac61743a1"}
+{"id":"docker-digest-4","text":"Digest: sha256:1cc252ae5e7cb9208299490b9704c49944404ec5a15874dbabe13c9f547f02e9\nStatus: Downloaded newer image for node:24"}
+{"id":"docker-build-0","text":"#5 [2/6] WORKDIR /app\n#5 sha256:3684fabafe83e11f285ca8617c6d1c7ca7686b08da5a2fab8c25702cbda26163\n#9 exporting layers done\n#9 writing image sha256:a7b701c3160fc1aa488d140d7670c09ea8b870fa88047d6a45620defed44a169 done\n#9 naming to docker.io/library/widgets:latest done"}
+{"id":"docker-build-1","text":"#5 [2/6] WORKDIR /app\n#5 sha256:0b1509aa4620adf88614fbf10d80a7ca55977e2c117d9f0029081de856ca749c\n#9 exporting layers done\n#9 writing image sha256:6d5bfa3831e95d90f945768bebc1ded9cd0633fdaf4357e7017beb796cac3107 done\n#9 naming to docker.io/library/widgets:latest done"}
+{"id":"docker-images-0","text":"REPOSITORY   TAG       IMAGE ID       CREATED        SIZE\nwidgets      latest    a4c9d53424d0   2 hours ago    412MB\nnode         24        e51c2f912aab   3 days ago     1.1GB"}
+{"id":"docker-images-1","text":"REPOSITORY   TAG       IMAGE ID       CREATED        SIZE\nwidgets      latest    257297d59c01   2 hours ago    412MB\nnode         24        3861a7dfcc60   3 days ago     1.1GB"}
+{"id":"oci-manifest-0","text":"{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"digest\":\"sha256:0acce84ddb9154b49a855f9d5262ff426fce0f142562383ad5c645ed74210f34\",\"size\":4521},\"layers\":[{\"digest\":\"sha256:7cb1612ce68eaf622678bc9ef16cb64dabde0a3539fbe7dfb116fde5008dab56\",\"size\":1939489}]}"}
+{"id":"oci-manifest-1","text":"{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"digest\":\"sha256:2c32fdf5b3090ad21a2c313afb3fa5354059fc7e6246be384749c3a5821d7a9a\",\"size\":5068},\"layers\":[{\"digest\":\"sha256:8bde8718a20175a190fc28233de2854cb9956b992b5fce2b91945cda26afb3f1\",\"size\":8873893}]}"}
+{"id":"etag-0","text":"If-None-Match: \"507e2e60e62744c2ddecc42b077456cc\""}
+{"id":"etag-1","text":"etag: W/\"7cd6d764804-c55b118ed466adf1281c79cd2e0\""}
+{"id":"etag-2","text":"ETag: \"8ac59d8bbf913a9b68f954dee15a5811-30\""}
+{"id":"etag-3","text":"ETag: \"96d63668e17e80138a3cc445d1af530893f0c5a6\""}
+{"id":"s3-head-0","text":"{\"AcceptRanges\":\"bytes\",\"ContentLength\":33047,\"ETag\":\"\\\"50d74c1bd91dd06c4c58b330751d781b\\\"\",\"VersionId\":\"xtSQ2swhzVzwpjWFZDRSy9zjhhYpoqiW\",\"ChecksumSHA256\":\"6NXG6dKcxYRHrHUgrZzb0CslkxmntKN5ED7bQsgsC2E=\"}"}
+{"id":"s3-head-1","text":"{\"AcceptRanges\":\"bytes\",\"ContentLength\":4844,\"ETag\":\"\\\"c6f7117ce075328a40d41d94cb44f99c\\\"\",\"VersionId\":\"T38kGhvX0OymgotFlftJ_3hkkxIBtK5Q\",\"ChecksumSHA256\":\"YTNTLOFtwzuZdCn0PG22qPUClWgc7AIdb53xfF0PPmw=\"}"}
+{"id":"webpack-chunk-0","text":"assets/index-1IUfES3Q.js   602.55 kB │ gzip: 149.93 kB\nmain.692fc08abb824299a6f3.js\nstyles.4d75a684.css"}
+{"id":"webpack-chunk-1","text":"assets/index-RPZxIpU_.js   181.92 kB │ gzip: 290.22 kB\nmain.e7cdc69e6dc0e6d63640.js\nstyles.ad5224b1.css"}
+{"id":"ipfs-cid-0","text":"ipfs://bafybeiq4olurshrb76xdqmy4jeeqompqtj445mllavcatj"}
+{"id":"ipfs-cid-1","text":"ipfs://bafybeikj6e62nppi25dhb7zwv5cayvn2sru4caz5o5jgh4"}
+{"id":"content-addressed-path-0","text":"/nix/store/00a8lddf8hqiigdd9s37nwdn6zlvqljk-nodejs-24.22.3/bin/node"}
+{"id":"content-addressed-path-1","text":"/nix/store/dkabyhwpxbsm1zl8ximrn793l8bdqd87-nodejs-24.22.3/bin/node"}
+{"id":"json-hash-fields-0","text":"{\"path\":\"src/index.ts\",\"contentHash\":\"e676124184658852e8a2b1567094bebcf799813f575cf9fb7c4cddc0c89713b7\",\"backupFileName\":\"9badc3cf5a1182b6@v5\",\"hashes\":[\"f1eae9cbdb4b9ffe6e726deef6973e9000fb1182ced169dd3ca622fc00c9d198\",\"a57290f3a324893d3b7ba95671a49dc9e3df3f0eae031a5c9842afc52ecbef80\"]}"}
+{"id":"json-hash-fields-1","text":"{\"path\":\"src/index.ts\",\"contentHash\":\"247a350fabe2a4f909ff59906bc1ad2594d484a331fd901f656704e90e58a3d6\",\"backupFileName\":\"cd83ba0238350ae8@v7\",\"hashes\":[\"0c7587cd72477e9119adbaab87deea764e557b1eb63fd064a9a4070c9d3c8d55\",\"ad069f0f605e678ae19527360bccc8b00df021344a7f4f764d46ca4043e41250\"]}"}
+{"id":"json-hash-fields-2","text":"{\"path\":\"src/index.ts\",\"contentHash\":\"b654145cb852673bee50cc02bed16b0f9b1c1463d346739e1396db38be0494e9\",\"backupFileName\":\"b6ed3f42bf5858d9@v9\",\"hashes\":[\"710192f67cda7258c4551b85ac7f5b72929156aa2b586d0367cec14b912f3af8\",\"7b6c9eab1467dd972be84536f7991ac26ed2d0573d9656c881b9d70b68ce6340\"]}"}
+{"id":"short-file-hash-0","text":".cache/build/024515e4a068230a.json\n.turbo/cache/e0902d52d696f6f9.tar.zst\nnode_modules/.vite/deps/chunk-4D9EF5F9.js"}
+{"id":"short-file-hash-1","text":".cache/build/c094821c8e26a342.json\n.turbo/cache/80f6fa0bcc5380c3.tar.zst\nnode_modules/.vite/deps/chunk-8EA54570.js"}
+{"id":"cache-key-0","text":"Cache restored from key: node-cache-Linux-x64-npm-e2f08d925944e4cee9df1409c968f2180b806690974ffbffb2166e5161fc206d"}
+{"id":"cache-key-1","text":"Cache restored from key: node-cache-Linux-x64-npm-eb15b9fdf8681810b0c3dc908a7106a80e1a1d70e4807986a5c59d2c2c209682"}
+{"id":"sri-script-0","text":"<script src=\"https://cdn.example.com/lib.min.js\" integrity=\"sha384-SPff8cW5A5mbUIyl+1cQ/9BDQwhMXREj/aix36BarmZICigG8FBNqbndZsMjaXuL\" crossorigin=\"anonymous\"></script>"}
+{"id":"sri-script-1","text":"<script src=\"https://cdn.example.com/lib.min.js\" integrity=\"sha384-D4SRbJNZs51Pir+953PTHrh4xRaCS/buolB8YHZhzlb7LHBCUOTMy2n1sOqP1Uua\" crossorigin=\"anonymous\"></script>"}
+{"id":"ssh-fingerprint-0","text":"ED25519 key fingerprint is SHA256:2CWEKU7gyH/FFg5VWl3uUjLVA9wJ/hOLG9ZP4lPmEhI.\nThis key is not known by any other names."}
+{"id":"ssh-fingerprint-1","text":"ED25519 key fingerprint is SHA256:uQeCRaaggcRGsxPnXICFBXYP4grmA5kj/fYTwSc5ECA.\nThis key is not known by any other names."}
+{"id":"gpg-fingerprint-0","text":"gpg: Signature made Mon Nov 23 14:02:11 2026 UTC\ngpg:                using RSA key 2A47229412AD599416E23D728F1659337427F39C\ngpg: Good signature from \"Release Bot (release signing) <noreply@github.com>\""}
+{"id":"gpg-fingerprint-1","text":"gpg: Signature made Mon Nov 23 14:02:11 2026 UTC\ngpg:                using RSA key 03CFEAF559A6454317E5B6E361C37D7FC83ABCD7\ngpg: Good signature from \"Release Bot (release signing) <noreply@github.com>\""}

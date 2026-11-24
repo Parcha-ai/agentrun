@@ -737,6 +737,26 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "api-keys",
+      "list"
+    ],
+    "operationId": "listApiKeys",
+    "method": "GET",
+    "path": "/settings/api-keys",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The API keys made for this server's apps; never a key"
+  },
+  {
+    "command": [
       "capabilities",
       "get-capacity"
     ],
@@ -2396,6 +2416,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "list-marketplace-templates"
+    ],
+    "operationId": "listMarketplaceTemplates",
+    "method": "GET",
+    "path": "/marketplace/templates",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is"
+  },
+  {
+    "command": [
+      "local",
       "list-mcp-server-names"
     ],
     "operationId": "listMcpServerNames",
@@ -3148,7 +3188,17 @@ export const COMMANDS = [
       "run_id"
     ],
     "multiSegment": [],
-    "query": [],
+    "query": [
+      {
+        "name": "cut",
+        "type": "string",
+        "enum": [
+          "run"
+        ],
+        "required": false,
+        "description": "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose end erased what its caller handed it lists no `name`. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`."
+      }
+    ],
     "headers": [],
     "bodyFlags": [],
     "hasBody": false,
@@ -3542,6 +3592,15 @@ export const COMMANDS = [
         "type": "integer",
         "required": false,
         "description": "`1` forces a download."
+      },
+      {
+        "name": "cut",
+        "type": "string",
+        "enum": [
+          "run"
+        ],
+        "required": false,
+        "description": "`run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed, and what its caller handed it: its own model key, tool keys and MCP servers' credentials), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The run's end erases what its caller handed it and counts where those values sat in each of its text files, never the values; from then a file is cut where that count says, while its bytes are the ones counted. A file the count cut in more than 256 places reads `[redacted]` whole. A file not counted as it is now (written or changed since the end, past the count's limits of 2,000 files, 64 MiB read and 512 KiB of count, or a run whose end made no count) is `403 forbidden`. That holds for good: once a run handed secrets has ended a turn, a file a later turn writes or changes is withheld from cut reads, whether or not that turn was handed secrets of its own (read it raw). A secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed, or what its caller handed it, doesn't open here) is `403 forbidden`. Without `cut`, the file's bytes as written."
       }
     ],
     "headers": [
@@ -3781,7 +3840,7 @@ export const COMMANDS = [
         "name": "limit",
         "type": "integer",
         "required": false,
-        "description": "At most this many rows in a page (1 to 500, default 500); has_more says when another waits."
+        "description": "At most this many rows in a page (1 to 500, default 500; with `calls=whole`, 1 to 100, default 100); has_more says when another waits."
       },
       {
         "name": "calls",
@@ -3790,7 +3849,7 @@ export const COMMANDS = [
           "whole"
         ],
         "required": false,
-        "description": "`whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`."
+        "description": "`whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row its output whole to 120000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`."
       }
     ],
     "headers": [
@@ -4711,6 +4770,38 @@ export const COMMANDS = [
   {
     "command": [
       "triggers",
+      "release-firing"
+    ],
+    "operationId": "releaseTriggerFiring",
+    "method": "POST",
+    "path": "/triggers/{trigger_id}/firings/{firing_id}/release",
+    "pathParams": [
+      "trigger_id",
+      "firing_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [
+      {
+        "name": "error",
+        "type": "string",
+        "required": true,
+        "description": "Why the host starts no run for the firing, in plain words: a failure's code or reason, never a person's data or a key."
+      }
+    ],
+    "hasBody": true,
+    "bodyRequired": true,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The launch hook's host releases a firing it took and will start no run for"
+  },
+  {
+    "command": [
+      "triggers",
       "update"
     ],
     "operationId": "updateTrigger",
@@ -4954,12 +5045,44 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Check a workflow definition without saving it"
+  },
+  {
+    "command": [
+      "wrapped"
+    ],
+    "operationId": "getWrapped",
+    "method": "GET",
+    "path": "/wrapped",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [
+      {
+        "name": "year",
+        "type": "integer",
+        "required": false,
+        "description": "A four-digit year, in the server's local zone. Default the current year."
+      }
+    ],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A year of the work under this machine's session files"
   }
 ];
 
 // Every route whose body carries a secret, a command's or one with no command (omitted): a raw `api` call to one never
 // takes its body from the command line, and what it prints has the body's values cut, its public fields kept.
 export const SECRET_ROUTES = [
+  {
+    "operationId": "listComposioToolkits",
+    "method": "POST",
+    "path": "/settings/mcp-servers/composio/toolkits",
+    "publicFields": []
+  },
   {
     "operationId": "listComposioTools",
     "method": "POST",
