@@ -1015,7 +1015,8 @@ export class DockerProvider implements ComputerProvider {
 		const proxy = await this.#proxyOf(report, signal);
 		if (!proxy.ok) return proxy;
 		const network = networkOf(report, proxy.value, this.#code, this.#hostLocal());
-		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}, which this provider never makes`);
+		// Its own words say what is wrong: an old proxy's say what made it and what to do.
+		if (typeof network !== "string" && "other" in network) found.push(`network: ${network.other}`);
 		const deadline = config.Labels?.[DEADLINE_LABEL] ?? "";
 		const at = Date.parse(deadline);
 		if (Number.isNaN(at) || new Date(at).toISOString() !== deadline) {

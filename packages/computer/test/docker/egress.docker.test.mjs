@@ -8,8 +8,8 @@
 // image. Every name resolves there as the fake says, and every connection the proxy makes reaches the fake's origin on
 // the proxy container's own loopback. The proxy's code is this package's own build, bound read-only as in production.
 // Needs `npm run build` and `npm run build:daemon` first. Every container and volume this file makes carries this run's
-// label and is removed in the after hook; the egress bridge its first create makes is removed by npm run test:docker's
-// global teardown (egress-network.mjs).
+// label and is removed in the after hook. The egress bridge its first create makes stays, as the provider leaves it: it
+// is shared by every proxy on the host, another run's included.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";

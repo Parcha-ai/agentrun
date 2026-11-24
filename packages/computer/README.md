@@ -628,7 +628,9 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
-  `screen.read` of another id is `not_found`.
+  `screen.read` of another id is `not_found`. A cancelled shot stops waiting for the server's replies at once and
+  gives the display back. Known limit: a shot cancelled while its request is still being written, to an X server that
+  has stopped reading its socket, waits out that write's 30 s bound first.
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other

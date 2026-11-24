@@ -296,6 +296,10 @@ export function egressOf(proxy: DockerInspect | null | undefined, owner: EgressO
 	// The network by name: create checked it is the provider's bridge (egressNetworkProblem) before the proxy joined it,
 	// and Docker removes no network a running container is on, nor changes a network's options.
 	if (host.NetworkMode !== EGRESS_NETWORK || networks.length !== 1 || networks[0] !== EGRESS_NETWORK) {
+		// Docker's default bridge alone: where this provider put every proxy before the egress bridge.
+		if (host.NetworkMode === "bridge" && networks.length === 1 && networks[0] === "bridge") {
+			return other(`is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge ${EGRESS_NETWORK}; delete the computer and create it again`);
+		}
 		return other(`is on network mode ${String(host.NetworkMode)} and networks ${networks.join(", ") || "none"}, not the provider's bridge ${EGRESS_NETWORK} alone`);
 	}
 	if (host.Privileged !== false) return other("is privileged");

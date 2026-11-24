@@ -572,7 +572,7 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		[{ HostConfig: { Privileged: true } }, /privileged/],
 		[{ HostConfig: { NetworkMode: "host" } }, /network mode host/],
 		// Docker's default bridge, where every container on the host may reach the proxy: what this provider made before.
-		[{ HostConfig: { NetworkMode: "bridge" }, NetworkSettings: { Networks: { bridge: {} } } }, /network mode bridge and networks bridge, not the provider's bridge agentrun-egress alone/],
+		[{ HostConfig: { NetworkMode: "bridge" }, NetworkSettings: { Networks: { bridge: {} } } }, /is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again$/],
 		[{ NetworkSettings: { Networks: { "agentrun-egress": {}, bridge: {} } } }, /networks agentrun-egress, bridge, not the provider's bridge/],
 		[{ HostConfig: { CapDrop: [] } }, /capabilities/],
 		[{ HostConfig: { SecurityOpt: [] } }, /no-new-privileges/],
@@ -613,6 +613,24 @@ test("a proxy that is gone, or that is not as create makes one, reads back other
 		assert.equal(typeof read.value.other, "string", `${JSON.stringify(proxy)}: ${JSON.stringify(read.value)}`);
 		assert.match(read.value.other, words, JSON.stringify(proxy));
 	}
+});
+
+test("attach() refuses an allowlist computer whose proxy an earlier release put on Docker's default bridge, saying so and what to do; release(delete) still removes it all", async () => {
+	const seeded = allowed({ name: A, allow: ALLOW, proxy: {} });
+	const [, made] = seeded.containers;
+	made.HostConfig = { ...made.HostConfig, NetworkMode: "bridge" };
+	made.NetworkSettings = { ...made.NetworkSettings, Networks: { bridge: {} } };
+	const { provider, names, volumeNames } = fakeDocker(seeded);
+	const attached = await provider.attach({ id: A });
+	assert.equal(attached.ok, false);
+	assert.equal(attached.error.code, "refused");
+	assert.equal(
+		attached.error.message,
+		`the computer ${A} does not match this provider, so attach refuses it and it is left as it is: network: network allow, but its egress proxy ${A}-egress is on Docker's default bridge: an earlier release of this provider made it there, before the egress bridge agentrun-egress; delete the computer and create it again`,
+	);
+	const released = await provider.release(ref(A), "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.deepEqual([names(), volumeNames()], [[], []]);
 });
 
 /** A regular expression's source that matches `text` as it is. */
