@@ -100,6 +100,10 @@ export interface Recipe {
   /** A file in the private HOME the adapter writes at each start from that start's tools, in the form the agent reads
    *  (Goose's `.config/goose/permission.yaml`, `goose-permission`): the agent runs our tools without asking. */
   readonly allowFile?: { readonly path: string; readonly form: string };
+  /** Where the agent's tool_call names which tool it calls, each a dotted path into it: `tool` (with `server`, our
+   *  tool's own name; without, `agentrun__<tool>`), `server` (must be `agentrun`), `args` (default rawInput). A call it
+   *  names as another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone. */
+  readonly announces?: { readonly tool: string; readonly server?: string; readonly args?: string };
   readonly state: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
   /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls
@@ -117,7 +121,7 @@ export class RecipeRefused extends Error {
 }
 
 /** The fields a recipe has. */
-const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "state", "declares", "quirks", "signIn", "description", "$schema"]);
+const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "declares", "quirks", "signIn", "description", "$schema"]);
 /** Fields that would run something of the recipe's own at install or start (rule 4). */
 const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "preinstall", "setup", "script", "scripts", "run", "hooks", "update"]);
 /** Fields that would name a binary other than the release's archive (rule 2). */
@@ -329,6 +333,12 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
+  if (r.announces !== undefined) {
+    // The same rule as the ACP package's recipeProblems (ANNOUNCES_PATH): field names joined by dots.
+    const path = (value: unknown) => typeof value === "string" && /^[A-Za-z_$][\w$-]*(\.[A-Za-z_$][\w$-]*)*$/.test(value);
+    const said = r.announces;
+    if (!isPlain(said) || Object.keys(said).some((k) => k !== "tool" && k !== "server" && k !== "args") || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) say(RECIPE_CODES.invalid, 'announces is { "tool": a dotted path in the agent\'s tool_call (`_meta.goose.toolCall.toolName`), "server"?: one, "args"?: one }');
+  }
   if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "permissionTie") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.permissionTie !== undefined && r.quirks.permissionTie !== "title"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "permissionTie": "title" }');
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
@@ -358,6 +368,7 @@ export function parseRecipe(text: string): Recipe {
     model: r.model,
     files: Object.fromEntries(Object.entries(r.files ?? {}).map(([path, content]) => [insideHome(path)!, content])),
     ...(r.allowFile ? { allowFile: Object.freeze({ path: insideHome(r.allowFile.path)!, form: r.allowFile.form }) } : {}),
+    ...(r.announces ? { announces: Object.freeze({ tool: r.announces.tool, ...(r.announces.server !== undefined ? { server: r.announces.server } : {}), ...(r.announces.args !== undefined ? { args: r.announces.args } : {}) }) } : {}),
     state: (r.state ?? []).map((path) => insideHome(path)!),
     declares: r.declares,
     quirks: r.quirks ?? {},

@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { CallIds, MCP_SERVER, NATIVE_EFFECT_KINDS, ourTool, permissionCallId, rawInputTool } from "./calls.js";
+import { announceCall, CallIds, MCP_SERVER, nameCall, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -139,7 +139,7 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
-  /** The kind each tool_call was announced with: an update that names the call later is held to it (ourTool). */
+  /** The kind each tool_call was announced with: an update that names the call later is held to it (nameCall). */
   kinds: Map<string, string>;
   mirror: StateMirror;
   /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
@@ -335,25 +335,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
         if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
-        // Only a call whose kind has no effects of its own can be ours: a shell titled as our tool never takes an MCP
-        // call's id, and never passes the permission shortcut below. Its title names the tool where ourTool reads it; one
-        // it does not read is still matched to an MCP call by its arguments (CallIds).
-        if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return;
-        rt.calls.add(update.toolCallId, ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names), update.rawInput);
+        // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
+        announceCall(rt.calls, update, recipe.announces, names);
         return;
       }
       case "tool_call_update": {
         if (!cur) return;
-        // A call the agent named only after announcing it (Cursor's MCP calls: a tool_call titled "MCP: tool" with no
-        // input, then this update with rawInput {providerIdentifier, toolName, args}): taken as ours here, under the id its
-        // tool_call already counted, by that field (rawInputTool), never by the update's title. Held to both kinds, the
-        // tool_call's and the update's: a shell renamed by a later update is never ours.
-        if (rt.calls.announced(update.toolCallId) === undefined) {
-          const named = rawInputTool({ rawInput: update.rawInput, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
-          if (named && rawInputTool({ rawInput: update.rawInput, kind: update.kind ?? null }, names)) {
-            rt.calls.add(update.toolCallId, named.tool, typeof named.args === "object" && named.args !== null && !Array.isArray(named.args) ? named.args : undefined);
-          }
-        }
+        // A call the agent named only after announcing it (Cursor's): by the recipe's field, held to both kinds (nameCall).
+        nameCall(rt.calls, update, rt.kinds.get(update.toolCallId), recipe.announces, names);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
@@ -434,7 +423,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     // bridge's, asked at the MCP call itself, so the request is allowed once, never always. Cursor needs it: its
     // allowlist with allow: [] (which keeps it from writing files unasked) asks for every MCP call, ours included. The
     // title is the agent's text, so the tie takes both: a request whose kind has no effects of its own and whose title
-    // names our tool, for the tool_call the agent announced as that same tool under the request's own id. Without the
+    // names our tool, for a call the recipe's announces field named as that same tool under the request's own id (a
+    // title never sets that: CallIds.announced comes from the field alone). Without the
     // quirk (Goose, which asks nothing for our tools: its allowFile) every request is the host gate's, journaled.
     if (recipe.quirks?.permissionTie === "title") {
       const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);

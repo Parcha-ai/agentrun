@@ -57,8 +57,9 @@ async function release(t, extra = "", pack = "bz2", { sidecar } = {}) {
 /** The allowFile in Goose's form, which the stand-in reads where Goose does: it runs the tools named there unasked. */
 const ALLOW_FILE = { path: ".config/goose/permission.yaml", form: "goose-permission" };
 /** A recipe that declares the title tie instead of an allowFile, as Cursor's does: its agent asks for each of our calls,
- *  and the adapter answers allow_once for one it announced (`allowFile: undefined` drops the default, as JSON does). */
-const TIED = { allowFile: undefined, quirks: { permissionTie: "title" } };
+ *  and the adapter answers allow_once for one its announces field named (`allowFile: undefined` drops the default, as
+ *  JSON does). The stand-in names its calls where Goose does. */
+const TIED = { allowFile: undefined, announces: { tool: "_meta.goose.toolCall.toolName" }, quirks: { permissionTie: "title" } };
 
 /** A recipe for the stand-in agent, `over` merged over it. */
 const recipeOf = (archiveSha = "0".repeat(64), over = {}) => ({

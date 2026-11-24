@@ -16,6 +16,9 @@ entries.
   nothing: a recipe's `allowFile` (Goose's `.config/goose/permission.yaml`) lists them for the agent at each start, and
   the gate asks at the MCP call. A recipe that declares `quirks.permissionTie: "title"` (Cursor's, whose allowlist asks
   for every MCP call) has its request for one of the host's announced calls answered `allow_once` without the gate.
+- An agent's `tool_call` is matched to the MCP call it makes by the tool and the arguments. Which tool it names is read
+  from the field its recipe's `announces` declares (Goose's `_meta.goose.toolCall.toolName`, Cursor's `rawInput`),
+  never from its title; a call that field names as another tool is the agent's own.
 - `session/load` resumes a session when the recipe declares it and the agent advertises it; the history it replays stays
   off the timeline. With no load, a crash mid-turn restarts the turn on a new agent session with the kernel's recovery
   note, and the conversation so far as a context note.

@@ -3,7 +3,7 @@
 // these are the checks the adapter itself needs before it starts anything. Written for AgentRun.
 import { isAbsolute, normalize, sep } from "node:path";
 import { KEY_NAME, launchEnv } from "@parcha/agentrun-kernel";
-import { MCP_SERVER } from "./calls.js";
+import { type AcpAnnounces, ANNOUNCES_PATH, MCP_SERVER } from "./calls.js";
 
 /** Who pays for the agent's model requests. `plan`: the vendor bills the owner's plan (Cursor), no request reaches us, so
  *  the adapter itself stops the run at these limits. `proxy`: the agent's model goes through the host's proxy, which the
@@ -95,6 +95,12 @@ export interface AcpRecipe {
    *  them without asking permission (Goose's `.config/goose/permission.yaml`, form `goose-permission`): our tools'
    *  gate is the host's, at the MCP call. Nothing else is in it, so the agent's own tools still ask. */
   readonly allowFile?: AcpAllowFile;
+  /** Where the agent's tool_call names which tool it calls (AcpAnnounces): Goose 1.59.2's
+   *  `{ tool: "_meta.goose.toolCall.toolName" }`, Cursor 2026.11.13's
+   *  `{ tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" }`. A call it names as
+   *  another tool is the agent's own; one it names as ours is matched to the MCP call by that tool and its arguments.
+   *  Absent: every call is matched by its arguments alone. A title is never read for this. */
+  readonly announces?: AcpAnnounces;
   /** Where in HOME the agent keeps its own sessions: mirrored into the session's records, so another runner's agent
    *  loads them (session/load). Credential files under them are never mirrored. */
   readonly state?: readonly string[];
@@ -142,6 +148,13 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
     if (!path) problems.push(`the allowFile ${JSON.stringify(allow?.path ?? null)} must be a path inside the private HOME`);
     if (typeof allow?.form !== "string" || !Object.hasOwn(ALLOW_FORMS, allow.form)) problems.push(`the allowFile form ${JSON.stringify(allow?.form ?? null)} is none of ${Object.keys(ALLOW_FORMS).join(", ")}`);
     if (path && Object.keys(recipe.files ?? {}).some((file) => homePath(file) === path)) problems.push(`the allowFile ${JSON.stringify(allow!.path)} is also one of the recipe's files`);
+  }
+  if (recipe.announces !== undefined) {
+    const given: unknown = recipe.announces;
+    const said = typeof given === "object" && given !== null && !Array.isArray(given) ? (given as Record<string, unknown>) : undefined;
+    const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
+    const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path in the agent\'s tool_call, "server"?: one, "args"?: one }');
   }
   const quirks = recipe.quirks as { mcpCall?: unknown; permissionTie?: unknown } | undefined;
   if (quirks?.permissionTie !== undefined && quirks.permissionTie !== "title") problems.push(`the quirk permissionTie ${JSON.stringify(quirks.permissionTie)} is not "title"`);

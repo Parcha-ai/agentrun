@@ -2,8 +2,10 @@
 //  - A call of one of our tools reaches the adapter twice: as the agent's `tool_call` update (its own id, a title, the
 //    input it reports) over ACP, and as the MCP call itself over HTTP or stdio, which names no id. The two are matched by
 //    the arguments' canonical JSON, first in first out, as OpenCode's calls are matched to the model's: the call runs
-//    under the agent's own id, which is the memo key a resumed session asks under again. The title is the agent's text
-//    in a form each release may change, so it only breaks a tie between announcements with the same arguments.
+//    under the agent's own id, which is the memo key a resumed session asks under again. Which tool an announcement
+//    names is read from the field its recipe declares (AcpAnnounces: Goose's `_meta.goose.toolCall.toolName`, Cursor's
+//    rawInput), never from its title: a call that field names as another tool is the agent's own and never takes an id.
+//    One the field names nothing for is matched by its arguments alone.
 //  - A permission request for one of the agent's own tools (a shell, an edit) is the host gate's call. Its id is made from
 //    what a second request for the same call after a resume says the same: the open turn, the tool's title, kind and input,
 //    and how many such requests came before it in the drive. Never from the agent's tool call id, which a new agent
@@ -26,13 +28,11 @@ export function canonical(value: unknown): string {
  *  our tools, whatever its title says. */
 export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edit", "delete", "move", "fetch"]);
 
-/** The host tool an ACP tool call names, by a name for our MCP server's tools (`agentrun__<tool>`, as Goose names them)
- *  or by Cursor's own title for one (`agentrun-<tool>: <tool>`), when it is one of `tools` and its kind is not one with
- *  effects of its own. No other title form is read: Goose 1.59.2's (`agentrun: <tool>`, with ` · <summary>` after it)
- *  ties nothing, since Goose asks nothing for our tools (its recipe's allowFile) and its calls are matched by their
- *  arguments (CallIds). Cursor's form stays for Cursor's tie alone (quirks.permissionTie). The title is the agent's text,
- *  so this alone is never evidence that a call is ours: a permission request also needs the tool_call that announced it
- *  (CallIds.announced) and a recipe that declares the tie. */
+/** The host tool a permission request's title names, by a name for our MCP server's tools (`agentrun__<tool>`) or by
+ *  Cursor's own title for one (`agentrun-<tool>: <tool>`), when it is one of `tools` and its kind is not one with effects
+ *  of its own. Read for Cursor's tie alone (quirks.permissionTie), and only beside the call's announcement: the title is
+ *  the agent's text, so a request is tied only when it is for a call the recipe's announces field named as the same tool
+ *  (CallIds.announced). Nothing else reads a title. */
 export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>): string | undefined {
   if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   const candidates: string[] = [];
@@ -46,14 +46,83 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
   return candidates.find((name) => tools.has(name));
 }
 
-/** The tool of ours an agent's update names in its rawInput, as Cursor 2026.11.13 names an MCP call it announced
- *  untitled: `{providerIdentifier: "agentrun", toolName, args}`. A field, read as it is; undefined when it names another
- *  server, no tool of `tools`, or the update's kind has effects of its own. */
-export function rawInputTool(update: { rawInput?: unknown; kind?: string | null }, tools: ReadonlySet<string>): { tool: string; args: unknown } | undefined {
-  if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
-  const raw = update.rawInput;
-  if (!isPlain(raw) || raw.providerIdentifier !== MCP_SERVER || typeof raw.toolName !== "string" || !tools.has(raw.toolName)) return undefined;
-  return { tool: raw.toolName, args: raw.args };
+/** Where in an agent's tool_call (or the update that names it later) a recipe finds which tool it calls, each a dotted
+ *  path of field names into the update (`_meta.goose.toolCall.toolName`, `rawInput.toolName`).
+ *  - `tool`: the tool's name. With `server`, our tool's own name; without, the name as the model calls it,
+ *    `agentrun__<tool>` (our server's prefix, stripped).
+ *  - `server`: the MCP server's name, which must be ours (`agentrun`).
+ *  - `args`: the call's arguments (default `rawInput`). */
+export interface AcpAnnounces {
+  readonly tool: string;
+  readonly server?: string;
+  readonly args?: string;
+}
+
+/** A path an AcpAnnounces field may hold: field names joined by dots. */
+export const ANNOUNCES_PATH = /^[A-Za-z_$][\w$-]*(\.[A-Za-z_$][\w$-]*)*$/;
+
+/** The value at a dotted `path` in `value`, own fields only; undefined where any step is missing. */
+function at(value: unknown, path: string): unknown {
+  let here = value;
+  for (const key of path.split(".")) {
+    if (!isPlain(here) || !Object.hasOwn(here, key)) return undefined;
+    here = here[key];
+  }
+  return here;
+}
+
+/** The tool of ours an agent's update names in the field its recipe declares (`announces`): its name; null when the
+ *  field names a tool that is not ours (another server's, one without our prefix, or one of our server's that `tools`
+ *  does not list); undefined when the recipe declares no field or the update does not carry it. A title is never read. */
+export function announcedTool(update: unknown, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): string | null | undefined {
+  if (!announces) return undefined;
+  const said = at(update, announces.tool);
+  if (typeof said !== "string" || said === "") return undefined;
+  let tool = said;
+  if (announces.server !== undefined) {
+    if (at(update, announces.server) !== MCP_SERVER) return null;
+  } else {
+    if (!said.startsWith(`${MCP_SERVER}__`)) return null;
+    tool = said.slice(`${MCP_SERVER}__`.length);
+  }
+  return tools.has(tool) ? tool : null;
+}
+
+/** The arguments an update reports for its call: at the recipe's `announces.args`, or its rawInput. */
+function announcedArgs(update: { rawInput?: unknown }, announces: AcpAnnounces | undefined): unknown {
+  return announces?.args !== undefined ? at(update, announces.args) : update.rawInput;
+}
+
+/** An agent's update about one of its calls, as the adapter reads it. */
+export interface AcpCallUpdate {
+  readonly toolCallId: string;
+  readonly kind?: string | null;
+  readonly rawInput?: unknown;
+}
+
+const hasEffects = (kind: unknown): boolean => typeof kind === "string" && NATIVE_EFFECT_KINDS.has(kind);
+
+/** The agent's tool_call `update`, kept for the MCP call it may be: a call whose kind has effects of its own never is
+ *  (a shell named as our tool never takes an MCP call's id); one the recipe's field names as another tool is the agent's
+ *  own; one it names as ours is kept as that tool; one it names nothing for is matched by its arguments alone. */
+export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): void {
+  if (hasEffects(update.kind)) return;
+  const tool = announcedTool(update, announces, tools);
+  if (tool === null) return;
+  calls.add(update.toolCallId, tool, tool === undefined ? update.rawInput : announcedArgs(update, announces));
+}
+
+/** A tool_call_update naming a call its tool_call left unnamed (Cursor's MCP calls: a tool_call titled "MCP: tool" with
+ *  no input, then this update with rawInput {providerIdentifier, toolName, args}): kept as that tool, under the id its
+ *  tool_call already counted, by the recipe's field. Held to both kinds, the tool_call's (`kindAtCall`) and the
+ *  update's: a shell renamed by a later update is never ours. */
+export function nameCall(calls: CallIds, update: AcpCallUpdate, kindAtCall: string | undefined, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): void {
+  if (calls.announced(update.toolCallId) !== undefined) return;
+  if (hasEffects(kindAtCall) || hasEffects(update.kind)) return;
+  const tool = announcedTool(update, announces, tools);
+  if (typeof tool !== "string") return;
+  const args = announcedArgs(update, announces);
+  calls.add(update.toolCallId, tool, isPlain(args) ? args : undefined);
 }
 
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
@@ -65,8 +134,8 @@ export class CallIds {
   /** The key each announcement still waiting for its MCP call is kept under. */
   private readonly keyOf = new Map<string, string>();
 
-  /** The agent announced call `id` with `input` (undefined: it reported none), its title naming `tool` of ours, or none
-   *  (undefined: a title in no form ourTool reads). One with no tool is matched by its input alone, an object; one with
+  /** The agent announced call `id` with `input` (undefined: it reported none), its recipe's field naming `tool` of
+   *  ours, or none (undefined). One with no tool is matched by its input alone, an object; one with
    *  no input by its tool alone; one with neither is never matched. A tool named for an id already announced without one (a
    *  call the agent named in a later update) keys it again. */
   add(id: string, tool: string | undefined, input: unknown): void {
@@ -74,7 +143,7 @@ export class CallIds {
     const reported = input !== undefined && input !== null;
     if (tool === undefined && !isPlain(input)) return;
     if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
-    // An announced call with input is matched only by that input (and its tool, where the title named one), so it never
+    // An announced call with input is matched only by that input (and its tool, where the field named one), so it never
     // takes an MCP call with other arguments that is waiting for its own announcement.
     const key = reported ? `${tool ?? ""}\0${canonical(isPlain(input) ? input : {})}` : `${tool}\0*`;
     const before = this.keyOf.get(id);
@@ -108,8 +177,8 @@ export class CallIds {
   }
 
   /** The id of an MCP call of `tool` with `args`: the agent's announced one, waited for at most `ms`; undefined when none
-   *  came by then. Of the announcements with the same arguments, the oldest whose title named `tool` first, then the
-   *  oldest whose title named none; then the oldest of `tool` that reported no input. */
+   *  came by then. Of the announcements with the same arguments, the oldest named `tool` first, then the oldest named
+   *  none; then the oldest of `tool` that reported no input. */
   async take(tool: string, args: Record<string, unknown>, signal: AbortSignal, ms: number): Promise<string | undefined> {
     const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
     const ready = (from: readonly string[]) => {
@@ -123,8 +192,8 @@ export class CallIds {
       }
       return undefined;
     };
-    // Once the wait is over, the oldest announced call the title named `tool` whose reported input differs from what
-    // reached MCP. Never one the title named no tool for: its arguments are all that ties it, and they differ.
+    // Once the wait is over, the oldest announced call named `tool` whose reported input differs from what reached MCP.
+    // Never one named no tool: its arguments are all that ties it, and they differ.
     const loose = () => ready([...this.seen.keys()].filter((key) => key.startsWith(`${tool}\0`)));
     const now = ready(keys);
     if (now) return now;

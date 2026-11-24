@@ -20,10 +20,14 @@
 //   systemPrompt: advertise sessionCapabilities.systemPrompt;
 //   ignoreCancel: log session/cancel and go on as if it never came (an agent that keeps spending);
 //   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open;
-//   announce: "late" (with style "cursor"): an MCP call as Cursor 2026.11.13 announces it, a tool_call titled
-//             "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
-//             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`;
+//   announce: with style "cursor", "late" (the default): an MCP call as Cursor 2026.11.13 announces it, a tool_call
+//             titled "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
+//             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`.
+//             "early": one tool_call titled `agentrun-<tool>: <tool>` with the arguments as its rawInput, naming the
+//             tool in no field (no Cursor release measured sends this);
 //   lateTitle: with announce "late", that update's title instead (a release that words it otherwise);
+//   (styles "goose" and "goose-1.59": each tool_call names its tool in _meta.goose.toolCall.toolName, as Goose 1.59.2
+//   does: `agentrun__<tool>` for ours, a native step's `toolName` or `developer__<kind>` for the agent's own;)
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
@@ -116,7 +120,9 @@ const pgid = (() => {
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
 const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
-const late = style === "cursor" && config.announce === "late";
+const late = style === "cursor" && config.announce !== "early";
+/** Goose's field naming a tool_call's tool (goose-acp conversion.rs, goose_tool_call_meta); Cursor sends none. */
+const gooseMeta = (toolName) => (style === "cursor" ? {} : { _meta: { goose: { toolCall: { toolName, extensionName: toolName.split("__")[0] } } } });
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
 function writeAuth() {
@@ -283,7 +289,7 @@ async function takeTurn(client, session, prompt, signal) {
         await notify({ sessionUpdate: "tool_call", toolCallId: id, title: "MCP: tool", kind: "other", status: "pending", rawInput: {} });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: config.lateTitle ?? `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
-      } else await notify({ sessionUpdate: "tool_call", ...update });
+      } else await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(`agentrun__${s.call}`) });
       if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
@@ -331,7 +337,7 @@ async function takeTurn(client, session, prompt, signal) {
       session.history.push(entry);
       save(session);
       // {announce: false}: a permission request for a call no tool_call announced.
-      if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update });
+      if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(s.toolName ?? `developer__${s.native}`) });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);

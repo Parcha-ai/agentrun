@@ -19,6 +19,7 @@
   },
   "allowFile": { "path": ".config/goose/permission.yaml", "form": "goose-permission" },
   "state": [".local/share/goose/sessions"],
+  "announces": { "tool": "_meta.goose.toolCall.toolName" },
   "declares": { "load": true, "mcp": "http" },
   "billing": { "kind": "proxy" }
 }

@@ -235,14 +235,15 @@ async function takeTurn(client, session, prompt) {
       if (mode === "own-ask" && use.name.startsWith("agentrun__")) {
         // own-ask: a call of its own first, asked about under its own id, whatever the answer.
         const own = { toolCallId: `own-${use.id}`, title: "Read notes.txt", kind: "read", status: "pending", rawInput: { path: "notes.txt" } };
-        await notify({ sessionUpdate: "tool_call", ...own });
+        await notify({ sessionUpdate: "tool_call", ...own, _meta: { goose: { toolCall: { toolName: "developer__read" } } } });
         const ownAnswer = await client.request("session/request_permission", { sessionId: session.id, toolCall: own, options });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: own.toolCallId, status: allowedBy(ownAnswer) ? "completed" : "failed" });
       }
       // untied: the call titled under another server's name, `github: check echo`.
       const title = mode === "untied" && use.name.startsWith("agentrun__") ? `github: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
       const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
-      await notify({ sessionUpdate: "tool_call", ...update });
+      // Each tool_call names its tool where Goose 1.59.2 does (_meta.goose.toolCall.toolName), the name the model called.
+      await notify({ sessionUpdate: "tool_call", ...update, _meta: { goose: { toolCall: { toolName: use.name } } } });
       const answer = alwaysAllowed?.includes(use.name) ? undefined : await client.request("session/request_permission", { sessionId: session.id, toolCall: update, options });
       const allowed = answer === undefined || allowedBy(answer) || mode === "ask-anyway";
       let result = "the client refused the call";

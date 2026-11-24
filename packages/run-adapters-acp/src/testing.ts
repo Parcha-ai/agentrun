@@ -24,7 +24,8 @@ export interface FakeAgentPlay {
 /** The fake agent as the recipe of harness `id`, its config written into `dir`, driven by `script` (the conformance
  *  suite's ScriptStep list). Billed `plan`: the fake calls no model, so no proxy is started. Our tools' permission
  *  requests are answered as each style's shipped recipe answers them: "goose" writes Goose's permission file
- *  (allowFile), so the fake asks nothing for our tools; "cursor" declares the title tie (quirks.permissionTie). */
+ *  (allowFile), so the fake asks nothing for our tools; "cursor" declares the title tie (quirks.permissionTie). Each
+ *  names its calls by the field its shipped recipe declares (announces). */
 export function fakeAgentRecipe(id: string, dir: string, script: readonly unknown[], play: FakeAgentPlay = {}): AcpRecipe {
   const load = play.load ?? true;
   const http = play.http ?? true;
@@ -38,6 +39,8 @@ export function fakeAgentRecipe(id: string, dir: string, script: readonly unknow
     state: [".fake-acp"],
     declares: { load, mcp: http ? "http" : "stdio" },
     billing: { kind: "plan", maxTurns: 100, maxToolCalls: 100 },
-    ...((play.style ?? "goose") === "cursor" ? { quirks: { permissionTie: "title" } } : { allowFile: { path: ".config/goose/permission.yaml", form: "goose-permission" } }),
+    ...((play.style ?? "goose") === "cursor"
+      ? { announces: { tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" }, quirks: { permissionTie: "title" } }
+      : { announces: { tool: "_meta.goose.toolCall.toolName" }, allowFile: { path: ".config/goose/permission.yaml", form: "goose-permission" } }),
   };
 }
