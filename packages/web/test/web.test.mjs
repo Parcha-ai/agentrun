@@ -318,6 +318,35 @@ test("a URL short as asked but longer than 4,096 characters as sent (its href) i
   await run(f, direct, [{ url, asks: [], tries: [["direct", "error"]], by: null, check: (answer) => assert.equal(answer.error, "url is longer than 4,096 characters") }], "direct");
 });
 
+// A call stops waiting at its signal; the read it started is the run's and goes on. Here the read waits on the guard's
+// name lookup for Parallel (released by hand) when the call is stopped, then Parallel reads the page and is paid.
+test("a fetch stopped while the guard checks its URL for Parallel: the receipt it returned stays as it was, though the read goes on and pays", async (t) => {
+  const f = await fakes(t);
+  process.env.AGENTRUN_TEST_FAUX_PARALLEL_EXTRACT = "";
+  let reached;
+  const atLookup = new Promise((resolve) => (reached = resolve));
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const lookup = async (host) => (reached(), await released, f.net.lookup(host));
+  const w = web.createWeb({ ...f.config, keys: { parallel: CANARY }, order: { search: [], fetch: ["parallel", "direct"] } });
+  const stop = new AbortController();
+  const calling = w.fetch(PUBLIC, { lookup, signal: stop.signal });
+  await atLookup;
+  stop.abort();
+  const { answer, receipt } = await calling;
+  assert.equal(answer.via, "stopped");
+  assert.deepEqual([receipt.provider, receipt.tries, receipt.cost], [null, [], { usd: 0, lines: [] }], "nothing answered or was paid before the call returned");
+  const atReturn = structuredClone(receipt);
+  release();
+  const later = await w.fetch(PUBLIC);
+  assert.equal(later.answer.via, "parallel", "the read went on, and Parallel read the page");
+  assert.equal(f.cap.fees.length, 1, "Parallel's read was paid, after the stopped call returned");
+  assert.deepEqual(receipt.cost.lines, atReturn.cost.lines, "the stopped call's receipt: cost.lines as at its return");
+  assert.equal(receipt.cost.usd, atReturn.cost.usd, "the stopped call's receipt: cost.usd as at its return");
+  assert.deepEqual(receipt.tries, atReturn.tries, "the stopped call's receipt: tries as at its return");
+  assert.deepEqual(receipt, atReturn, "the stopped call's receipt, as at its return");
+});
+
 test("the package's root entry is its named API: none of the internals it is built from", async () => {
   const names = Object.keys(await import("../dist/index.js"));
   const internal = ["sleep", "callTool", "textBlocks", "MAX_BYTES", "PROTOCOL", "TIMEOUT_MS", "retryAfterMs", "waitOf", "searchBusy", "partOfRead", "markdownRead", "isRefused"];
