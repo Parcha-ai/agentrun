@@ -848,6 +848,31 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(p.button(/^Load actions$/)?.disabled).toBe(true);
   });
 
+  it("drops a toolkit list asked with a key since edited, and an edit of the key clears the list and the toolkit picked from it", async () => {
+    const NEW_KEY = "not-a-real-composio-key-4567";
+    let late: (r: Response) => void = () => undefined;
+    const s = server([[]], (c) => {
+      if (c.path === TOOLKITS_PATH && (c.body as { api_key?: string } | undefined)?.api_key === KEY) return new Promise<Response>((done) => { late = done; });
+      if (c.path === TOOLKITS_PATH) return json(200, { toolkits: [{ slug: "linear", name: "Linear" }] });
+      return answer(c);
+    });
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    await p.type("composio-key", NEW_KEY);
+    await act(async () => { late(await json(200, { toolkits: TOOLKITS })); });
+    await p.settle();
+    expect(p.host.querySelector("[data-toolkits-loaded]"), "the list asked with the earlier key never shows").toBeNull();
+    await p.click(/^Load toolkits$/);
+    expect(s.writes()[1]).toEqual({ method: "POST", path: TOOLKITS_PATH, body: { api_key: NEW_KEY } });
+    expect((await optionsOf(picker(p.host, "Toolkit")!)).map((o) => o.value), "the new key's list").toEqual(["linear"]);
+    await pick(picker(p.host, "Toolkit")!, "linear");
+    await p.type("composio-key", KEY);
+    expect(p.host.querySelector("[data-toolkits-loaded]"), "a key edit clears the list loaded with the key before").toBeNull();
+    expect(valueOf(picker(p.host, "Toolkit")!), "and the toolkit picked from it").toBe("");
+  });
+
   it("loads a toolkit's actions, saves the ones picked, and shows the link to connect the account; the key is gone from the page", async () => {
     const s = server([[], [saved({ name: "gh" })]], answer);
     const p = await open(s.v2);
