@@ -576,11 +576,60 @@ function placesOf(text: string, form: string): Hit[] {
   return out;
 }
 
-/** The hits `pattern` finds inside each match of `command` (a command line read whole first), mapped to the text. */
-function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpExecArray) => Hit | undefined): Hit[] {
+/** How far a command is read past its name: SHELL_LINE_MAX, and CURL_MAX for curl's continuation lines. */
+const SHELL_LINE_MAX = 1024;
+const CURL_MAX = 4096;
+/** Where the quoted part opened at `at` closes, before its line's end and `limit`, or -1 (a quote left open is a
+ *  character). A double-quoted part's backslash escapes the next character. */
+function quoteClose(text: string, at: number, limit: number): number {
+  const quote = text.charAt(at);
+  for (let i = at + 1; i < limit; i++) {
+    const c = text.charAt(i);
+    if (c === quote) return i;
+    if (c === "\n") return -1;
+    if (c === "\\" && quote === '"' && text.charAt(i + 1) !== "\n") i++;
+  }
+  return -1;
+}
+/** Where a shell command whose name ends at `from` ends (Greptile P1 on 683391d4fd: `redis-cli -a 'Copper&lumen9'`
+ *  stopped at its quoted `&`, and its password stayed): its line's end, or a shell operator outside quotes (`;`, `|`,
+ *  `&`). A quoted part is read whole to its closing quote on its line. curl (ruling XXIV) runs on over a backslash's
+ *  line break and a lone `&`, and ends at `&&`, `$(` and a backtick too. At most SHELL_LINE_MAX characters (CURL_MAX) are
+ *  read, a quote's search included. Once a quote of a kind fails to close, every later one of that kind would too (its
+ *  search reads the same characters, paired the same), so each kind is searched for until one fails: linear. */
+function commandEnd(text: string, from: number, curl: boolean): number {
+  const limit = Math.min(text.length, from + (curl ? CURL_MAX : SHELL_LINE_MAX));
+  let open = "'\"";
+  let at = from;
+  while (at < limit) {
+    const c = text.charAt(at);
+    if (c === "\n" || c === ";" || c === "|") return at;
+    if (c === "&") {
+      if (!curl || text.charAt(at + 1) === "&") return at;
+    } else if (curl && (c === "\x60" || (c === "$" && text.charAt(at + 1) === "("))) return at;
+    else if (curl && c === "\\") {
+      const e = text.charAt(at + 1);
+      at += e === "\r" && text.charAt(at + 2) === "\n" ? 3 : e === "" ? 1 : 2;
+      continue;
+    } else if ((c === "'" || c === '"') && open.includes(c)) {
+      const close = quoteClose(text, at, limit);
+      if (close >= 0) at = close;
+      else open = open.replace(c, "");
+    }
+    at++;
+  }
+  return Math.min(at, limit);
+}
+
+/** The hits `pattern` finds inside each command `command` names (read whole first, to commandEnd), mapped to the text.
+ *  The next command is looked for past this one's end. */
+function inside(text: string, command: RegExp, pattern: RegExp, hit: (m: RegExpExecArray) => Hit | undefined, curl = false): Hit[] {
   const out: Hit[] = [];
-  for (const m of text.matchAll(command)) {
-    for (const found of each(m[0], pattern, hit)) out.push({ ...found, start: m.index + found.start, end: m.index + found.end });
+  const re = new RegExp(command.source, command.flags);
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const end = commandEnd(text, m.index + m[0].length, curl);
+    for (const found of each(text.slice(m.index, end), pattern, hit)) out.push({ ...found, start: m.index + found.start, end: m.index + found.end });
+    re.lastIndex = Math.max(end, m.index + 1);
   }
   return out;
 }
@@ -1261,9 +1310,9 @@ function iniSection(text: string, from: number): boolean {
  *  quoted key's `:` (`"//registry/:_authToken": "tok"`, a JSON or YAML map of npm's config). npm config list's own
  *  mask, `= (protected)`, is no value VALUE reads. */
 const NPMRC_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)(?:[ \t]{0,3}=(?!=)|["'][ \t]{0,3}:)[ \t]{0,3}${VALUE}`, "gd");
-/** npm's (pnpm's, yarn's) `config set` or `set`, to its line's end or the next shell operator: there a key and its
- *  value are two words (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
-const NPM_SET_COMMAND = /\b(?:npm|pnpm|yarn)[ \t]{1,3}(?:config[ \t]{1,3})?set(?=[ \t])[^\n;|&]{0,1024}/g;
+/** npm's (pnpm's, yarn's) `config set` or `set`, read to its end (commandEnd): there a key and its value are two words
+ *  (`npm config set //registry/:_authToken tok`), ruling LXXVI. */
+const NPM_SET_COMMAND = /\b(?:npm|pnpm|yarn)[ \t]{1,3}(?:config[ \t]{1,3})?set(?=[ \t])/g;
 const NPM_SET_AUTH = new RegExp(String.raw`(?<![\w$.])(_authToken|_password|_auth)[ \t]{1,3}${VALUE}`, "gd");
 /** An npm key's value: a slot code does not fill (ruling XII). */
 const npmAuth = (m: RegExpExecArray): Hit | undefined => flagValue(valueHit(m, 2, 3, m[1]!));
@@ -1685,9 +1734,11 @@ const connectionPassword = (text: string, lines: LineBounds, source = text) => {
  *  segments maybe (`new_password`, `current_password`) or before `_confirmation` (Rails'); a form's nested key holds it
  *  bracketed, as typed or percent-encoded (`user[password]`, `user%5Bpassword%5D`), and opens anywhere a word does (the
  *  text's start, a blank, a quote: `curl -d "user[password]=..."`). The value (group 2) runs to a blank or the next `&`;
- *  queryPassword ends it where its argument ends. */
+ *  queryPassword ends it where its argument ends, and reads one QUERY_VALUE_MAX stopped on to its run's end. */
+const QUERY_VALUE_MAX = 1024;
+const QUERY_VALUE_STOP = /[\s&]/;
 const QUERY_PASSWORD = new RegExp(
-  String.raw`(?:(?<=[?&])|(?<![^\s"'])(?=[A-Za-z0-9_-]{1,64}(?:\[|%5B)))(?:[A-Za-z0-9_-]{1,64}(?:\[|%5B)(?:[A-Za-z0-9_-]{1,64}(?:\]|%5D)(?:\[|%5B)){0,4})?((?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd)(?:[_-]confirmation)?)(?:\]|%5D)?=([^\s&]{1,1024})`,
+  String.raw`(?:(?<=[?&])|(?<![^\s"'])(?=[A-Za-z0-9_-]{1,64}(?:\[|%5B)))(?:[A-Za-z0-9_-]{1,64}(?:\[|%5B)(?:[A-Za-z0-9_-]{1,64}(?:\]|%5D)(?:\[|%5B)){0,4})?((?:[A-Za-z0-9]{1,32}[_-]){0,4}(?:password|passwd|pwd)(?:[_-]confirmation)?)(?:\]|%5D)?=([^\s&]{1,${QUERY_VALUE_MAX}})`,
   "dgi",
 );
 /** The characters that open an argument's part, each with the one that closes it. */
@@ -1743,9 +1794,18 @@ function argumentEnd(value: string, open: readonly string[]): number {
  *  reads code's shapes as code's (`form[password]=newPassword`). */
 const queryPassword = (text: string) => {
   const closers = argumentClosers(text);
+  // The end of the run a value stopped at QUERY_VALUE_MAX was last read on to (Greptile P1 on 683391d4fd: a 1500-character
+  // `new_password` kept its last 476). A value starting inside that run (a `?password=` the run itself holds) is read to
+  // the bound only, as before, so each run is read on once: linear in the text.
+  let read = -1;
   return (m: RegExpExecArray): Hit | undefined => {
-    const [start, valueEnd] = m.indices![2]!;
-    const cut = argumentEnd(m[2]!, closers(m.index));
+    const start = m.indices![2]![0];
+    let valueEnd = m.indices![2]![1];
+    if (m[2]!.length === QUERY_VALUE_MAX && m.index >= read) {
+      while (valueEnd < text.length && !QUERY_VALUE_STOP.test(text.charAt(valueEnd))) valueEnd++;
+      read = valueEnd;
+    }
+    const cut = argumentEnd(text.slice(start, valueEnd), closers(m.index));
     const end = cut < 0 ? valueEnd : start + cut;
     if (end <= start) return undefined;
     if (m[1]!.toLowerCase().endsWith("pwd") && PWD_PATH.test(text.slice(start, end))) return undefined;
@@ -1867,18 +1927,18 @@ const dockerAuth = (text: string, ctx: ScrubContext): ((m: RegExpExecArray) => H
 
 const SSHPASS = new RegExp(String.raw`\bsshpass[ \t]{1,3}-p[ \t]{0,3}${VALUE}`, "gd");
 
-/** A mysql-family command to the end of its line or the next shell operator; its `-p<pw>` read inside (no blank after
+/** A mysql-family command, read to its end (commandEnd); its `-p<pw>` read inside (no blank after
  *  `-p`: `-p word` prompts for the password and names a database, ruling D). */
-const MYSQL_COMMAND = /\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|mariadb-dump|mariadb-admin)(?=[ \t])[^\n;|&]{0,1024}/g;
+const MYSQL_COMMAND = /\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlsh|mariadb|mariadb-dump|mariadb-admin)(?=[ \t])/g;
 const MYSQL_P = new RegExp(String.raw`(?<=[ \t])-p${VALUE}`, "gd");
 
 /** --password=<pw> or --password <pw>, and the same of --*-password, --passwd, --token, --api-key and kin. */
 const PASSWORD_FLAG = new RegExp(String.raw`(?<![A-Za-z0-9-])(--(?:[a-z0-9]{1,20}-){0,3}(?:password|passwd|pass|token|api-key|apikey|auth-token|secret-key|access-key))(?:=|[ \t]{1,3}(?!-))${VALUE}`, "gdi");
-/** A registry login (`docker login -p <pw>`), redis-cli's `-a <pw>`: each command read to its line's end, its short
- *  password flag inside. */
-const LOGIN_COMMAND = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login\b[^\n;|&]{0,1024}/g;
+/** A registry login (`docker login -p <pw>`), redis-cli's `-a <pw>`: each command read to its end (commandEnd), its
+ *  short password flag inside. */
+const LOGIN_COMMAND = /\b(?:docker|podman|nerdctl|buildah|skopeo)[ \t]{1,3}login\b/g;
 const LOGIN_P = new RegExp(String.raw`(?<=[ \t])(-p)(?:=|[ \t]{1,3})${VALUE}`, "gd");
-const REDIS_COMMAND = /\bredis-cli\b[^\n;|&]{0,1024}/g;
+const REDIS_COMMAND = /\bredis-cli\b/g;
 const REDIS_A = new RegExp(String.raw`(?<=[ \t])(-a)[ \t]{1,3}${VALUE}`, "gd");
 /** openssl's `-passin pass:<pw>` (and -passout, -pass, -k pass:): the password after `pass:`. */
 const OPENSSL_PASS = /(?<![A-Za-z0-9-])(-(?:passin|passout|pass|k))[ \t]{1,3}(["']?)pass:([^\s"']{1,1024})\2/dg;
@@ -1943,9 +2003,10 @@ const cookieHeader = (text: string) => (m: RegExpExecArray): Hit | undefined => 
   return { start, end: start + value.length, name: m[1]! };
 };
 
-/** A curl command, its continuation lines included, to the shell's end of it (`;`, `|`, `&&`, `||`, `$(`, a backtick,
- *  a line's end; ruling XXIV); its `-u user:pass` / `--user user:pass` password read inside. */
-const CURL_COMMAND = /\bcurl\b(?:[^\n\\;|&$\x60]|\\[^\n]|\\\r?\n|&(?!&)|\$(?!\()){0,4096}/g;
+/** A curl command, its continuation lines included, to the shell's end of it (commandEnd with curl: `;`, `|`, `&&`,
+ *  `||`, `$(`, a backtick, a line's end, none of them quoted; ruling XXIV); its `-u user:pass` / `--user user:pass`
+ *  password read inside. */
+const CURL_COMMAND = /\bcurl\b/g;
 const CURL_USER = /(?<=\s)(?:-u[ \t]{0,3}|--user(?:=|[ \t]{1,3}))(?:(["'])[^\s:"']{0,256}:([^"'\n]{1,512})\1|[^\s:"']{0,256}:([^\s"']{1,512}))/gd;
 const curlUser = (m: RegExpExecArray): Hit => {
   const [start, end] = m.indices![m[2] !== undefined ? 2 : 3]!;
@@ -2311,7 +2372,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   rule("mysql-password", "label", (text) => inside(text, MYSQL_COMMAND, MYSQL_P, (m) => flagValue(valueHit(m, 1, 1, "-p")))),
   rule("password-flag", "label", passwordFlags),
   rule("auth-header", "label", (text) => [...each(text, AUTH_HEADER, authHeader(text)), ...each(text, COOKIE_HEADER, cookieHeader(text))]),
-  rule("curl-user", "label", (text) => inside(text, CURL_COMMAND, CURL_USER, curlUser)),
+  rule("curl-user", "label", (text) => inside(text, CURL_COMMAND, CURL_USER, curlUser, true)),
   // The generic label comes after the labels a command or a header names, so where both read one value (a header
   // in a string, ruling XXXIX), the cut is named for the narrower label.
   rule("secret-assign", "label", (text, ctx) => {
@@ -2352,7 +2413,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
-  BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,
+  BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,
   BASE64_PEM, BASE64_STD_BEFORE, BASE64_STD_AFTER, BASE64_WRAP_BREAK, BASE64_WRAP_INDENT, BASE64_WRAP_RUN, BASE64_PEM_SPAN, BASE64_BREAK_BEFORE, K8S_SECRET_KIND, YAML_DOC_START, K8S_DATA, K8S_ENTRY, BLOCK_SCALAR, QUOTED_WHOLE, K8S_SECRET_JSON, K8S_DATA_JSON, K8S_ENTRY_JSON, DIFF_EVIDENCE, DIFF_MARKER, DIFF_FILE_HEADER,
   KUBE_KEY_DATA, DOCKER_AUTH, DOCKER_CONFIG, COMMAND_WORD_SPLIT, OPTION_NAME, WORD_QUOTES,
 });

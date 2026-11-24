@@ -2483,6 +2483,60 @@ test("XCI: pemBlocks reads a BEGIN line's end itself: a private-key span that is
   assert.deepEqual(pemBlocks(long, [[0, long.indexOf("\n")]], lineBounds(long)).map(({ start, end }) => [start, end]), [[0, long.length]]);
 });
 
+test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 683391d4fd): a quoted `&`, `;` or `|` no longer ends redis-cli, docker login, mysql, npm set or curl before its password", async () => {
+  for (const [text, after] of [
+    ["redis-cli -a 'Copper&lumen9' ping", " ping"],
+    ['redis-cli -h cache -a "Copper;lumen9" ping', " ping"],
+    ["docker login -u bot -p 'Copper|lumen9' registry.io", " registry.io"],
+    ["mysql -u root -p'Copper&lumen9' app", " app"],
+    ['mysql -h "db;1" -u root -pCopperXlumen9 app', " app"],
+    ['npm config set //registry.npmjs.org/:_authToken "Copper&lumen9"', ""],
+    ["curl -H 'X-A: a;b' -u admin:Copper9lumen9 https://x.io", " https://x.io"],
+    ['curl -u "admin:Copper&&lumen9" https://x.io', " https://x.io"],
+  ]) {
+    const secret = text.includes("CopperX") ? ["CopperXlumen9"] : text.includes("Copper9") ? ["Copper9lumen9"] : ["Copper", "lumen9"];
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), secret);
+      if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.endsWith(after), out.text);
+    }
+  }
+  // An operator outside quotes still ends the command: the next command's `-p…`, `-a…` is no password.
+  for (const text of ["mysql -u root -pTq7Wm2Rk9 app; grep -pattern file", "mysql -u root -p'Tq7&Wm2Rk9' app | grep -pattern", "redis-cli -a Tq7Wm2Rk9 ping && redis-cli2 -a notapassword"]) {
+    const out = await gone(text, ["Tq7"]);
+    assert.ok(out.text.endsWith(text.slice(text.search(/; |\| |&& /))), out.text);
+  }
+  // A quote left open on its line is a character, as before: the command still ends at the next operator.
+  assert.ok((await gone("mysql -u root -pTq7Wm2Rk9 'app; grep -pattern file", ["Tq7Wm2Rk9"])).text.endsWith("; grep -pattern file"));
+  // Each rule alone reads 2 MB of commands, quotes closed, open and escaped, in CPU time linear in it (as LXXXIII).
+  for (const unit of [`mysql -u r -p'${"a&".repeat(300)}' db `, `redis-cli -a "${'\\"'.repeat(400)} `, `curl -u "u:${"p;".repeat(300)}" -H 'a`, "redis-cli '\"".repeat(40), `docker login -p "${"\\".repeat(500)}`]) {
+    for (const [id, ms] of Object.entries(await rulesAlone(["mysql-password", "password-flag", "curl-user"], repeatTo(unit, 2_000_000)))) {
+      assert.ok(ms < 1_000, `${id} on ${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+    }
+  }
+});
+
+test("XCIII: a query or form password past 1024 characters is cut to its end (Greptile P1 on 683391d4fd): QUERY_PASSWORD's bound no longer leaves its tail", async () => {
+  const long = "Tq7Wm2Rk9Zx".repeat(137);
+  const [head, tail] = [long.slice(0, 200), long.slice(-200)];
+  for (const [text, after] of [
+    [`https://x.io/reset?new_password=${long}`, ""],
+    [`https://x.io/reset?new_password=${long}&next=/home`, "&next=/home"],
+    [`curl "https://x.io/?password=${long}" -o out`, '" -o out'],
+    [`curl -d "user[password]=${long}&remember=1" https://x.io`, "&remember=1\" https://x.io"],
+  ]) {
+    for (const wrap of FOUR_WRAPS) {
+      const out = await gone(wrap(text), [head, tail]);
+      if (wrap === FOUR_WRAPS[0]) assert.ok(out.text.endsWith(after), out.text.slice(-80));
+    }
+  }
+  // The rule alone reads 2 MB of long values in CPU time linear in it: values apart, and values one run holds.
+  for (const unit of [`?password=${long}& `, `?password=${"a".repeat(1100)}`, `"?password=${"a".repeat(1100)}"`, `'?password=${"a".repeat(1100)}'`]) {
+    const { hits, ms } = await ruleAlone("query-password", `x${repeatTo(unit, 2_000_000)}`);
+    assert.ok(hits.length >= 1, unit.slice(0, 20));
+    assert.ok(ms < 1_000, `${unit.slice(0, 20)}: ${Math.round(ms)} ms`);
+  }
+});
+
 test("LXXII: a camelCase credential name's unquoted value (YAML, Helm, a config line) is cut; code's camelCase identifiers, types and references stay", async () => {
   const pw = "Tq7Wm2Rk9Zx";
   await labelCutIn([
@@ -2532,6 +2586,20 @@ const ruleAlone = async (id, text, extra = {}) => {
   return { hits, ms: (used.user + used.system) / 1000 };
 };
 const repeatTo = (piece, size) => piece.repeat(Math.ceil(size / piece.length));
+/** ruleAlone for several rules on one text, its views read once: each rule's CPU time, by id. */
+const rulesAlone = async (ids, text) => {
+  const { lineBounds } = await import("../dist/secret-rules.js");
+  const [view] = secretCut.viewsOf(text);
+  const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  const out = {};
+  for (const id of ids) {
+    const before = process.cpuUsage();
+    await SCRUB_RULES.find((each) => each.id === id).find(view.text, ctx);
+    const used = process.cpuUsage(before);
+    out[id] = (used.user + used.system) / 1000;
+  }
+  return out;
+};
 
 test("LXXIII a: docker-auth reads many \"auth\" keys in linear time: \"auths\" and the call's paths are found once a text, never once a match", async () => {
   const command = `cat notes.txt ${"x ".repeat(500)}`;
