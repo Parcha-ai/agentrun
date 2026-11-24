@@ -128,10 +128,6 @@ export function createWeb(config: WebConfig): Web {
         return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, ...judged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines } } };
       }
       const cached = typeof url === "string" && pages.has(url);
-      const log: WebLog = (event, fields) => {
-        if (event === "web_fetch_firecrawl_failed") tries.push({ provider: "firecrawl-keyless", outcome: "error", ...(fields.said ? { error: fields.said } : {}) });
-        config.log?.(event, fields);
-      };
       const order = config.order.fetch;
       const extract = order.includes("parallel") ? parallelOf() : null;
       const page = await feesOfCall.run(lines, () =>
@@ -147,16 +143,16 @@ export function createWeb(config: WebConfig): Web {
           ...(config.bounds?.checkMs === undefined ? {} : { checkMs: config.bounds.checkMs }),
           ...(offset === undefined ? {} : { offset }),
           ...(maxChars === undefined ? {} : { maxChars }),
-          log,
+          ...(config.log ? { log: config.log } : {}),
+          // Each provider the read asks, told as it answers: Firecrawl failing ahead of Parallel's page, or with nothing behind it, too.
+          tried: (one) => void tries.push(one),
+          ...(order.includes("parallel") && !extract ? { noParallel: "not tried: this run holds no Parallel key" } : {}),
         }),
       );
-      const answer: WebPage = order.includes("parallel") && !extract ? { ...page, parallel: "not tried: this run holds no Parallel key" } : page;
-      if (!cached) {
-        if (answer.parallel) tries.push({ provider: "parallel", outcome: "error", error: answer.parallel });
-        if (answer.via !== "stopped" && answer.via !== "none") tries.push({ provider: answer.via, outcome: answer.ok ? "ok" : "error", ...(answer.ok ? {} : { error: answer.refused ?? answer.error ?? "" }) });
-      }
+      const answer: WebPage = page;
       const provider = answer.ok && answer.via !== "stopped" && answer.via !== "none" ? answer.via : null;
-      const receipt: Receipt = { op: "fetch", asked, provider, tries, ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
+      // A copy: a read this call stopped waiting for goes on, and its later turns are not on this receipt.
+      const receipt: Receipt = { op: "fetch", asked, provider, tries: [...tries], ...judged, out: outOf(webFetchText(answer)), cost: { usd: usd(lines), lines }, ...(cached ? { cache: "hit" as const } : {}) };
       return { answer, receipt };
     },
   };
