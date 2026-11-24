@@ -5,7 +5,10 @@
 // matcher makes on purpose: its whole-text check reads the text as it came, so a held value only part of which a cut
 // covers (P2-4: a credential parameter's value cut in place, the rest of the held value past a line break) withholds the
 // text whole, where the old check read the text after its cut and showed the rest. Each such text holds a held value
-// as the old matcher itself reads it.
+// as the old matcher itself reads it. A second difference, also on purpose: the routing number's word must end at a word
+// end, so "aba" glued to nine digits (an id's hex) is no longer cut. The first test's texts could make one only by
+// chance (a pointer's last group, or a key's first half, reading "aba" and nine digits), and the seeded ones hold none;
+// the second test's pieces never can ("aba" in them is only "a" or "AIza" before "bank ").
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { learnedSecretShapes, redactLearned, redactSecrets, secretShapes, valueMatcher } from "../dist/learn/secrets.js";

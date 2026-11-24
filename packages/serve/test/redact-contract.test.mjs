@@ -810,6 +810,7 @@ const adversarial = (size) => {
     f("sk-"), f("github_pat_"), f("ghp_"), f("xoxb-"), f("whsec_"), f("Bearer "), `Bearer ${fill("a", size - 7)}`, f("?token="),
     `?token=${fill("a", size - 7)}`, f(`${"a".repeat(1021)}eyJ`), f("eyJaaaaaaaa."), `account ${fill("1 ", size - 8)}`, f("routing number "), f("sort code "),
     `IBAN GB00${fill("A ", size - 9)}`, f("AKIA"), f("AIza"), f("-----BEGIN "), f("a-sk-"), f("Bearer a-Bearer "),
+    f("xapp-"), `eyJaaaaaaaa.${fill("eyJ", size - 12)}`, f(`${"a".repeat(1020)}eyJ `),
   ];
   const B = BACKSLASH;
   const views = [
@@ -887,6 +888,9 @@ const ADVERSARIAL = [
   fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
   `?token=${fill("a", SIZE - 7)}`, fill(`${"a".repeat(1021)}eyJ`), fill("eyJaaaaaaaa."), `account ${fill("1 ", SIZE - 8)}`, fill("routing number "), fill("sort code "),
   `IBAN GB00${fill("A ", SIZE - 9)}`, fill("AKIA"), fill("AIza"), fill("-----BEGIN "), fill("a-sk-"), fill("Bearer a-Bearer "),
+  // From secrets-linear.test.mjs's timed list, which this count replaces: a Slack app token's prefix, a JWT's first part
+  // then "eyJ" with no dot, and "eyJ" first in each run of 1,024 that a space ends.
+  fill("xapp-"), `eyJaaaaaaaa.${fill("eyJ", SIZE - 12)}`, fill(`${"a".repeat(1020)}eyJ `),
 ];
 
 test("adversarial texts: the characters the shape scanners visit are at most a fixed multiple of the text's length", async (t) => {

@@ -540,8 +540,10 @@ const besideWord = (kind: string, words: readonly string[], pattern: RegExp, hea
 const ACCOUNT_NUMBER = /\b(?:bank\s{1,3})?(?:account|acct|a\/c)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}(?!\d{4}-\d{2}-\d{2}\b)\d(?:[ -]?\d){5,}/;
 /** An IBAN beside its word: two letters, two check digits, then ten to thirty letters or digits, spaces between. */
 const IBAN = /\bIBAN\s{0,3}(?:#|:|\bis\b)?\s{0,3}[A-Z]{2}\d{2}(?:\s?[A-Z0-9]){10,30}/;
-/** A US routing (ABA) number beside its word: nine digits. */
-const ROUTING_NUMBER = /\b(?:routing|ABA)(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
+/** A US routing (ABA) number beside its word: nine digits. The word ends at a word end, so an id or hash whose hex
+ *  holds "aba" glued to nine digits (a UUID's last group, a sha cut to twelve) is none. The other words hold a letter
+ *  no hex does, so no id spells them. */
+const ROUTING_NUMBER = /\b(?:routing|ABA)\b(?:\s{1,3}(?:number|no\.?|num))?\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{9}\b/;
 /** A UK sort code beside its word: three pairs of digits. */
 const SORT_CODE = /\bsort\s{1,3}code\s{0,3}(?:#|:|\bis\b)?\s{0,3}\d{2}[- ]?\d{2}[- ]?\d{2}\b/;
 
