@@ -80,17 +80,50 @@ test("a calls read's tool_input withholds a number that shows a held all-digit k
 
 test("a calls read's tool_input carries each string argument whole to calls.result, as its output is, through the same redaction: a grader reads a long write's tail", async () => {
   const { CAPS } = await import("../dist/timeline/index.js");
-  // A body past CAPS.text (2,000) with a held key in its tail, and one past calls.result. The description is the
-  // argument a tool_use row previews (labels.ts inputPreview): whole in tool_input, cut at CAPS.preview in the preview.
+  // A body past CAPS.text (2,000) with a held key in its tail. The description is the argument a tool_use row previews
+  // (labels.ts inputPreview): whole in tool_input, cut at CAPS.preview in the preview.
   const body = `${"## Fixed\n".repeat(400)}tail ${KEY} end`;
-  const huge = "x".repeat(9000);
   assert.ok(body.length > CAPS.text);
   const calls = { result: 8000, redact };
-  const rows = timelineOf([user("Draft it."), assistant([call("w1", "issue_write", { description: body, body, huge })]), result("w1", "issue_write", "drafted")], { redact, calls });
+  const rows = timelineOf([user("Draft it."), assistant([call("w1", "issue_write", { description: body, body })]), result("w1", "issue_write", "drafted")], { redact, calls });
   const row = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "w1");
   assert.equal(row.tool_input.body, `${"## Fixed\n".repeat(400)}tail [redacted] end`, "whole, the held key redacted");
-  assert.deepEqual([row.tool_input.huge.length, row.tool_input.huge.endsWith("...")], [calls.result, true], "cut at calls.result");
   assert.equal(row.tool_input.description, row.tool_input.body, "the previewed argument whole in tool_input too");
   assert.deepEqual([row.tool_input_preview.length, row.tool_input_preview.endsWith("...")], [CAPS.preview, true], "the preview keeps its own bound");
+  assert.deepEqual(leaks(rows), []);
+});
+
+test("with serve's own redactors, as the served route passes them, a calls read's tool_input carries a long argument whole: the rows' redactor cuts at CAPS.text, the arguments' reads them raw to calls.result", async () => {
+  const { CALL_RESULT_CHARS, CAPS } = await import("../dist/timeline/index.js");
+  const { heldNumber, redacted, redactedCall } = await import("../dist/key-refusal.js");
+  const held = [KEY];
+  // 5,000 characters, the held key near character 4,000, so the rows' own redactor (redacted, CAPS.text) cuts before it.
+  const body = `${"line ".repeat(800)}${KEY} ${"tail ".repeat(190)}end`;
+  assert.ok(body.length > 4900 && body.indexOf(KEY) > 3900);
+  const calls = { result: CALL_RESULT_CHARS, redact: (text) => redactedCall(text, held, CALL_RESULT_CHARS), input: (text, shown) => redactedCall(text, held, shown), held: (value) => heldNumber(value, held) };
+  const rows = timelineOf([user("Draft it."), assistant([call("w1", "issue_write", { description: body, body })]), result("w1", "issue_write", "drafted")], { redact: (text) => redacted(text, held), calls });
+  const row = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "w1");
+  assert.equal(row.tool_input.body, body.replace(KEY, "[redacted]"), "whole, the held key redacted");
+  assert.equal(row.tool_input.description, row.tool_input.body);
+  assert.ok(row.tool_input_preview.length <= CAPS.preview && row.summary.length <= CAPS.preview, "the preview and the summary keep their bounds");
+  assert.deepEqual(leaks(rows), []);
+});
+
+test("a calls read's tool_input has one budget of calls.result characters a row, over its strings in order: the string that reaches it is cut there, each one after shows as ...", async () => {
+  const { redactedCall } = await import("../dist/key-refusal.js");
+  const held = [KEY];
+  const [a, b, c] = ["a", "b", "c"].map((letter) => letter.repeat(5000));
+  const args = { a, b, nested: { c, list: ["p".repeat(100), ""] }, count: 7, tail: `${KEY}` };
+  const calls = { result: 12000, redact, input: (text, shown) => redactedCall(text, held, shown) };
+  const rows = timelineOf([user("Go."), assistant([call("b1", "bulk_write", args)]), result("b1", "bulk_write", "done")], { redact, calls });
+  const input = rows.find((r) => r.kind === "tool_use" && r.tool_use_id === "b1").tool_input;
+  assert.equal(input.a, a, "first, whole");
+  assert.equal(input.b, b, "second, whole");
+  assert.deepEqual([input.nested.c.length, input.nested.c.endsWith("..."), input.nested.c.startsWith("ccc")], [2000, true, true], "third, cut where the budget ends");
+  assert.deepEqual(input.nested.list, ["...", ""], "past the budget: ..., an empty string as it is");
+  assert.equal(input.count, 7, "a number is no string");
+  assert.equal(input.tail, "...", "past the budget, never read");
+  const strings = (value) => (typeof value === "string" ? value.length : Array.isArray(value) ? value.reduce((n, v) => n + strings(v), 0) : value && typeof value === "object" ? Object.values(value).reduce((n, v) => n + strings(v), 0) : 0);
+  assert.ok(strings(input) <= calls.result + 3 * 2, `${strings(input)} characters`);
   assert.deepEqual(leaks(rows), []);
 });
