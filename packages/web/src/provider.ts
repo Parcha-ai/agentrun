@@ -90,7 +90,7 @@ export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
     },
     async read(url, options) {
       const got = await read(url, options);
-      if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit });
+      if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit, ...(got.failure ? { failure: got.failure } : {}) });
       return got;
     },
   };

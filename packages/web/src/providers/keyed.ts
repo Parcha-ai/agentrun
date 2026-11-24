@@ -3,7 +3,7 @@
 // spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
 import { type Fee, PaidRefused, type Pay, unmetered } from "../fees.js";
-import { type Failed, failed, type Limit } from "../search.js";
+import { type Failed, failed, keyWide, type Limit } from "../search.js";
 
 /** The most bytes of one answer read: past it the answer is not read. */
 export const KEYED_MAX_BYTES = 8 * 1024 * 1024;
@@ -93,7 +93,9 @@ export async function keyedCall(client: Keyed | null, who: string, keyEnv: strin
     if (!client.live()) return failed("refused", code ?? "KEY_REFUSED", `${who} refused this run's key (${response.status}): it is not asked again in this run`);
     const limit = statusLimit(response);
     const kind = limit ? limit.kind : response.status >= 500 ? "infra" : "error";
-    return failed(kind, code ?? `HTTP_${response.status}`, `${who}'s ${what} answered ${response.status}${code ? ` (${code})` : ""}`, limit);
+    const failure = failed(kind, code ?? `HTTP_${response.status}`, `${who}'s ${what} answered ${response.status}${code ? ` (${code})` : ""}`, limit);
+    // A 402 is the key's credit spent, for both tools.
+    return response.status === 402 ? keyWide(failure) : failure;
   }
   const json = await jsonOf(response);
   if (typeof json !== "object" || json === null || Array.isArray(json)) return failed("error", "UNREADABLE", `${who}'s ${what} answered nothing this server reads`);

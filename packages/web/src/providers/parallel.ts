@@ -2,7 +2,7 @@
 // Pay at its endpoint's price, and a 401 or 403 stops both for the client's life. Nothing is retried; each ends at 60 s.
 import { type ParallelSearchMode, PARALLEL_SEARCH_MODE_USD, type Pay, PaidRefused, parallelFeeOf, unmetered } from "../fees.js";
 import { clip, linksWithin, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX } from "../page.js";
-import { type Failed, failed, failure, type Hit, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
+import { type Failed, failed, failure, type Hit, keyWide, type Limit, type Search, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
 import { linksOf } from "../text-urls.js";
 import { type Check, domains, matching, oneOf, settingsProblems, wholeIn } from "./keyed.js";
@@ -75,8 +75,9 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
         if (response.status === 401 || response.status === 403) return failed("refused", "KEY_REFUSED", `refused the key (${response.status})`);
-        const kind = response.status === 402 ? "quota" : response.status === 429 ? "rate" : response.status >= 500 ? "infra" : "error";
-        return failed(kind, `HTTP_${response.status}`, `answered ${response.status}`);
+        // The key's credit spent holds both tools; a rate limit on an extract holds nothing.
+        if (response.status === 402) return keyWide(failed("quota", "HTTP_402", "answered 402", { kind: "quota" }));
+        return failed(response.status === 429 ? "rate" : response.status >= 500 ? "infra" : "error", `HTTP_${response.status}`, `answered ${response.status}`);
       }
       const { results, errors } = (await response.json()) as { results?: Array<{ url?: unknown; title?: unknown; full_content?: unknown } | null>; errors?: unknown[] };
       const row = results?.find((r) => typeof r?.url === "string" && typeof r.full_content === "string" && r.full_content.trim() !== "");
@@ -138,7 +139,8 @@ export async function parallelSearched(args: Record<string, unknown>, parallel: 
       await response.body?.cancel().catch(() => undefined);
       const limit = parallelLimit(response);
       if (!parallel.live()) return searchFailed(failed("refused", "KEY_REFUSED", REFUSED));
-      return searchFailed(failed(limit ? limit.kind : response.status >= 500 ? "infra" : "error", `HTTP_${response.status}`, `Parallel's search answered ${response.status}`, limit));
+      const said = failed(limit ? limit.kind : response.status >= 500 ? "infra" : "error", `HTTP_${response.status}`, `Parallel's search answered ${response.status}`, limit);
+      return searchFailed(response.status === 402 ? keyWide(said) : said);
     }
     const { results } = (await response.json()) as { results?: unknown };
     const hits = (Array.isArray(results) ? results : []).flatMap((row: { url?: unknown; title?: unknown; publish_date?: unknown; excerpts?: unknown } | null): Hit[] => {

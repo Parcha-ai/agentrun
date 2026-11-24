@@ -22,13 +22,13 @@ export async function searchFor(env: NodeJS.ProcessEnv, args: Record<string, unk
   return searched(env, args, breakers(), signal, models);
 }
 
-async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn): Promise<Search> {
+async function searched(env: NodeJS.ProcessEnv, args: Record<string, unknown>, breakerOf: (name: string) => Breaker, signal?: AbortSignal, models?: SearchOn, keyLimits: "web" | "call" = "call"): Promise<Search> {
   const resolved = planeOf(env).web_search;
   if (!serves(resolved, "search")) return { error: `web_search does not run here: ${resolved === undefined ? "no provider was resolved for it" : whyUnavailable(resolved)}` };
   const { query, n } = searchArgs(args);
   // Under --faux, an order with every keyless provider left out (web-run.ts ordersOf) asks none.
   if (query && !ordersOf(env).search.length) return { error: "web_search: under --faux, the keyless search endpoints are fakes', and this server names none" };
-  const { answer } = await searchingOn.run(models, () => webOf(env).search(query, { n, breakers: breakerOf, ...(signal ? { signal } : {}) }));
+  const { answer } = await searchingOn.run(models, () => webOf(env).search(query, { n, breakers: breakerOf, keyLimits, ...(signal ? { signal } : {}) }));
   return answer;
 }
 
@@ -56,7 +56,7 @@ export function webSearchTool(env: NodeJS.ProcessEnv, models?: SearchOn, fake?: 
     } as unknown as TSchema,
     replay: "safe",
     execute: async (args, _api, context) => {
-      const answer = fake ? fitSearch(fake(args as Record<string, unknown>, named)) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models);
+      const answer = fake ? fitSearch(fake(args as Record<string, unknown>, named)) : await searched(env, args as Record<string, unknown>, breakerOf, context?.abortSignal, models, "web");
       return forModel(searchText(answer), { details: answer });
     },
   });

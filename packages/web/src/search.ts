@@ -41,14 +41,17 @@ export type Limit = { kind: "quota"; retryAfter?: string | number } | { kind: "r
  *  `error` (any other answer it gave that is no result). */
 export type FailureClass = "infra" | "quota" | "rate" | "error" | "refused" | "not_text";
 /** A failure typed: its class, a machine code (the provider's own where it names one, else ours: upper-case words joined
- *  by underscores) and the message in our words. */
-export type Failure = { class: FailureClass; code: string; message: string };
+ *  by underscores) and the message in our words. `covers: "key"` marks a quota spent for the whole key (keyless: the
+ *  host's allowance), which holds both of the provider's tools; with none, a limit holds the tool that met it alone. */
+export type Failure = { class: FailureClass; code: string; message: string; covers?: "key" };
 /** A failure as a provider answers one: the message as `error`, the failure typed, and the limit it met, if any. */
 export type Failed = { error: string; failure: Failure; limit?: Limit };
 /** `message` typed as `kind` with `code`. */
 export const failure = (kind: FailureClass, code: string, message: string): Failure => ({ class: kind, code, message });
 /** `message` failed as `kind` with `code`, and `limit` where one was met. */
 export const failed = (kind: FailureClass, code: string, message: string, limit?: Limit): Failed => ({ error: message, failure: failure(kind, code, message), ...(limit ? { limit } : {}) });
+/** `failed` marked as a quota of the whole key (Failure.covers). */
+export const keyWide = (one: Failed): Failed => ({ ...one, failure: { ...one.failure, covers: "key" } });
 /** `value` without its typed failure: what an exported call answers, as it did before failures were typed. */
 export function bare<T>(value: T): T {
   if (typeof value !== "object" || value === null || !("failure" in value)) return value;
@@ -221,6 +224,21 @@ export async function searchInTurn(backends: readonly Backend[], breakerOf: (nam
   // A backend that turned off in this call while another only waits: the run's search is not off, so it waits.
   if (last && !("error" in last && last.error === SEARCH_UNAVAILABLE)) return last;
   return busyFor(Math.min(...breakers.filter((breaker) => !breaker.off()).map((breaker) => breaker.left())));
+}
+
+/** `own`, one tool's breaker on a provider, joined with `key`, the provider's breaker across both tools: held while
+ *  either holds; a limit whose failure covers the key (Failure.covers) trips both, any other `own` alone. */
+export function withKeyBreaker(own: Breaker, key: Breaker): Breaker {
+  return {
+    held: () => own.held() ?? key.held(),
+    read(searched) {
+      if (searched.limit && searched.failure?.covers === "key") key.read(searched);
+      return own.read(searched);
+    },
+    off: () => own.off() || key.off(),
+    left: () => Math.max(own.left(), key.left()),
+    holding: () => own.holding() ?? key.holding(),
+  };
 }
 
 /** Breakers by backend name, made at first use: one run's (serve's webSearchTool), or one call's (its searchFor). */

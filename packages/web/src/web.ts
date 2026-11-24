@@ -10,7 +10,7 @@ import { clip, type Page, type Part, partProblem, URL_MAX } from "./page.js";
 import { type NativeSearch, type ProviderRun, readerOf } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, serves, settingsProblemsOf } from "./providers/registry.js";
-import { type Breaker, breakers, fitSearch, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
+import { type Breaker, breakers, fitSearch, withKeyBreaker, QUERY_MAX, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 /** What an answer took and cost. `out` is the answer as the model reads it; `cache` is "hit" when a fetch came from the
  *  run's pages. */
@@ -52,9 +52,11 @@ export type WebConfig = {
    *  web is made. */
   policy?: DecidePolicy;
 };
-/** `breakers`: the search breakers this call reads and trips (default the Web's own). `task`: what the caller needs,
- *  which a decider judges against (a search without one is judged on its query). */
-export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; task?: string };
+/** `breakers`: the search breakers this call reads and trips (default the Web's own). `keyLimits`: where a quota of a
+ *  provider's whole key goes (search.ts Failure.covers): the Web's key breakers, shared with web_fetch ("web", the
+ *  default without `breakers`), or the call's own breakers ("call", the default with them). `task`: what the caller
+ *  needs, which a decider judges against (a search without one is judged on its query). */
+export type SearchOptions = { n?: number; signal?: AbortSignal; breakers?: (name: string) => Breaker; keyLimits?: "web" | "call"; task?: string };
 /** `lookup` and `fetchImpl`: the resolver and transport this call's guard dials through. `lookingFor`: what the caller
  *  is looking for on the page (the tool's looking_for). With a decider, the answer is the chunks of the whole page most
  *  likely to hold it (findInPage), `offset` and `maxChars` aside; without one, or when the step fails, the part asked
@@ -81,6 +83,8 @@ export function createWeb(config: WebConfig): Web {
   const policy = policyOf(config.policy);
   const runBreakers = breakers(now);
   const fetchBreakers = breakers(now);
+  // Each provider's own across both tools: a quota of the whole key holds web_search and web_fetch alike.
+  const keyBreakers = breakers(now);
   const pages: Pages = new Map();
   // A fee goes on the call's receipt once its request is sent, whatever the cap then books.
   const pay: Pay = (fee, send) => (config.pay ?? unmetered)(fee, () => (feesOfCall.getStore()?.push(fee), send()));
@@ -112,10 +116,12 @@ export function createWeb(config: WebConfig): Web {
     return run;
   };
   let readers: Readers | undefined;
-  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.map((id) => [id, readerOf(runOf(id), fetchBreakers(id))])));
+  const readersOf = (): Readers => (readers ??= Object.fromEntries(config.order.fetch.map((id) => [id, readerOf(runOf(id), withKeyBreaker(fetchBreakers(id), keyBreakers(id)))])));
 
   return {
-    async search(query, { n, signal, breakers: breakerOf = runBreakers, task } = {}) {
+    async search(query, { n, signal, breakers: given, keyLimits = given ? "call" : "web", task } = {}) {
+      const ownOf = given ?? runBreakers;
+      const breakerOf = (name: string) => withKeyBreaker(ownOf(name), keyLimits === "web" ? keyBreakers(name) : ownOf(`${name} key`));
       const lines: Fee[] = [];
       const tries: Try[] = [];
       const ask = searchArgs({ query, ...(n === undefined ? {} : { n }) });

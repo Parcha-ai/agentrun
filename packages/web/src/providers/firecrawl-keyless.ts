@@ -4,7 +4,7 @@
 // retried and ends at FIRECRAWL_MS. A URL the public-host guard refuses is never sent (fetch.ts).
 import { clip, markdownRead, PAGE_MAX_BYTES, type Read, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun, type Reader, readerOf } from "../provider.js";
-import { bare, type Failed, failed, type Hit, type Limit, type Search, searchBreaker, searchFailed, snippetOf } from "../search.js";
+import { bare, type Failed, failed, type Hit, keyWide, type Limit, type Search, searchBreaker, searchFailed, snippetOf } from "../search.js";
 import { type Bounded, callTool, MAX_BYTES, RATE_LIMITED, textBlocks, type Words } from "./mcp.js";
 
 export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
@@ -12,8 +12,10 @@ export const FIRECRAWL_SEARCH_TOOL = "firecrawl_search";
 export const FIRECRAWL_SCRAPE_TOOL = "firecrawl_scrape";
 /** The most one call to Firecrawl takes: half a search's one deadline (search.ts KEYLESS_SEARCH_MS). */
 export const FIRECRAWL_MS = 30_000;
-/** Firecrawl's keyless refusal codes, by what the run's breaker makes of each. */
+/** Firecrawl's keyless refusal codes, by what the run's breaker makes of each; of the quotas, those of the host's whole
+ *  keyless allowance (KEY_QUOTA_CODES) hold both tools, the one tool's (KEYLESS_TOOL_NOT_AVAILABLE) its tool alone. */
 const QUOTA_CODES: ReadonlySet<string> = new Set(["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE", "KEYLESS_TOOL_NOT_AVAILABLE"]);
+const KEY_QUOTA_CODES: ReadonlySet<string> = new Set(["KEYLESS_QUOTA_EXHAUSTED", "KEYLESS_ACCESS_NOT_AVAILABLE"]);
 const RATE_CODES: ReadonlySet<string> = new Set(["KEYLESS_LIMIT_REACHED"]);
 /** Firecrawl's answer once its keyless daily limit is spent: plain text, with no code, as a tool result marked isError
  *  or a JSON-RPC error. */
@@ -72,7 +74,8 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
   const spent = (said: string): Typed | undefined => {
     if (!DAILY_LIMIT.test(said)) return undefined;
     const limit = dailyLimitAt(now());
-    return failed("quota", "DAILY_LIMIT", limitWords(limit, what, words), limit);
+    // The host's daily allowance, for both tools.
+    return keyWide(failed("quota", "DAILY_LIMIT", limitWords(limit, what, words), limit));
   };
   if ("status" in called) {
     if (called.status === 429) {
@@ -88,7 +91,10 @@ function readCalled<T>(called: Bounded, what: "search" | "fetch", read: (json: R
     const payload = payloadOf(result);
     const code = typeof payload?.code === "string" ? clip(payload.code, 60) : undefined;
     const limit = firecrawlLimitOf(payload);
-    if (limit) return failed(limit.kind, code!, limitWords(limit, what, words), limit);
+    if (limit) {
+      const said = failed(limit.kind, code!, limitWords(limit, what, words), limit);
+      return KEY_QUOTA_CODES.has(code!) ? keyWide(said) : said;
+    }
     const daily = payload ? undefined : spent(textBlocks(result));
     if (daily) return daily;
     return failed("error", code ?? "FAILED", code ? `Firecrawl's ${what} failed (${code})` : `Firecrawl's ${what} failed`);
