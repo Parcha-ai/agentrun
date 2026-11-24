@@ -550,8 +550,9 @@ test("a holder whose locks are taken over before its post (paused past the 60 s 
       takenOver = true;
       await until(() => heartbeats >= 1, "the old holder's heartbeat after the takeover");
     },
+    // A removal of either lock counts; anything else the holder removes beside them is no lock.
     rm: (path, options) => {
-      if (takenOver) after.push(["remove", path]);
+      if (takenOver && (path === current || path === legacy)) after.push(["remove", path]);
       return fsp.rm(path, options);
     },
   };
@@ -669,15 +670,21 @@ test("two runners that take one stale lock over at once never both hold it: the 
   const dead = new Date(wall - 61_000);
   utimesSync(current, dead, dead);
   const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
-  // Both runners read the dead lock before either removes it. Runner A removes it only once runner B is at its own
-  // removal; B's removal waits until A has made its lock, set its mtime and gone on to the older lock, then removes A's
-  // new lock, and B makes its own 200 ms later on the clock: within the second the old check took for one holder's
-  // mtime. A reads its lock again (its check before the post) only once B holds its own.
+  // Runner A reads the dead lock first, and B starts once A is at its removal. B reads the dead lock too, unless it is
+  // kept out of the lock while A takes it over: then each step below that waits for B goes on once B is kept out.
+  // Otherwise A removes the dead lock only once B is at its own removal; B's removal waits until A has made its lock,
+  // set its mtime and gone on to the older lock, then removes A's new lock, and B makes its own 200 ms later on the
+  // clock: within the second the old check took for one holder's mtime. A reads its lock again (its check before the
+  // post) only once B holds its own.
+  const aAtRemoval = point();
   const bAtRemoval = point();
   const aHolds = point();
   const bHolds = point();
+  const bKeptOut = point();
   let aRemoved = false;
   let bRemoved = false;
+  let bStarted = false;
+  let keptOut = false;
   let aHeld = false;
   const lockFsA = {
     mkdir: (path) => {
@@ -688,23 +695,39 @@ test("two runners that take one stale lock over at once never both hold it: the 
       return notWritable(path);
     },
     stat: async (path) => {
-      if (aHeld && path === current) await bHolds.reached;
+      if (aHeld && path === current) await Promise.race([bHolds.reached, bKeptOut.reached]);
       return fsp.stat(path);
     },
     utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
     rm: async (path, options) => {
       if (path === current && !aRemoved) {
         aRemoved = true;
-        await bAtRemoval.reached;
+        aAtRemoval.reach();
+        await Promise.race([bAtRemoval.reached, bKeptOut.reached]);
       }
       return fsp.rm(path, options);
     },
   };
   const lockFsB = {
-    mkdir: (path) => {
-      if (path !== legacy) return fsp.mkdir(path);
-      bHolds.reach();
-      return notWritable(path);
+    mkdir: async (path) => {
+      if (!bStarted) {
+        bStarted = true;
+        await aAtRemoval.reached;
+      }
+      if (path === legacy) {
+        bHolds.reach();
+        return notWritable(path);
+      }
+      try {
+        return await fsp.mkdir(path);
+      } catch (error) {
+        // Refused anything but the lock itself, as it is there: kept out while another runner takes the lock over.
+        if (path !== current && error.code === "EEXIST") {
+          keptOut = true;
+          bKeptOut.reach();
+        }
+        throw error;
+      }
     },
     stat: (path) => fsp.stat(path),
     utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
@@ -723,7 +746,8 @@ test("two runners that take one stale lock over at once never both hold it: the 
   };
   const [a, b] = await Promise.all([ask(tokens, lockFsA), ask(second, lockFsB)]);
   assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "the login's refresh token is posted once: two runners that took one stale lock over at once never both hold it");
-  assert.deepEqual([aRemoved, bRemoved], [true, true], "both runners found the lock dead and removed one, B after A had made its own");
+  assert.equal(aRemoved, true, "A found the lock dead and removed it");
+  assert.ok(bRemoved || keptOut, "B found it dead too: it removed one after A had made its own, or it was kept out of the lock while A took it over");
   assert.deepEqual([a.token, b.token], [next.access, next.access], "both hand the one renewal");
   assert.ok(!existsSync(current), "the lock is released, none left for the 60 s stale time");
 });
@@ -792,6 +816,195 @@ test("a runner takes a stale lock over only while it is the lock it inspected: o
   assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "the login's refresh token is posted once, by the CLI that took the lock over after the runner read it: the runner never removes that lock nor posts under one made in its place");
   assert.equal(kept, true, "the CLI's lock, made after the runner read the dead one, is left as it is");
   assert.equal(outcome.token, next.access, "the runner waits for the CLI's write and hands its token");
+});
+
+test("two runners never interleave a stale lock's takeover: while one runner that read the dead lock has yet to remove it, another runner never makes the lock its own, so the late removal never lands in a lock that runner posts under and the login's refresh token is posted once", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  // Runner U as another process: the module loaded again, with its own renewals in flight and its own memory.
+  const other = await import("../dist/claude-login-token.js?takeover-runner").catch(() => ({}));
+  assert.equal(typeof other.renewLogin, "function", "a second runner's renewal");
+  const { data, login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  mkdirSync(current);
+  const dead = new Date(Date.now() - 61_000);
+  utimesSync(current, dead, dead);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // Runner T reads the dead lock (twice: the read and the read right before its removal) and is held at its removal.
+  // U starts then. T goes on once U's post is out (U took the lock and passed its check before the post), or once U was
+  // kept out of the lock twice (its first ask and the next one, after its poll). U's post is held until T has posted, so
+  // U's answer is not written back before T reads the file.
+  const tAtRemoval = point();
+  const uGoes = point();
+  const tPosted = point();
+  let tHeld = false;
+  let uStarted = false;
+  let uKeptOut = 0;
+  const lockFsT = {
+    mkdir: (path) => (path === legacy ? notWritable(path) : fsp.mkdir(path)),
+    stat: (path) => fsp.stat(path),
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: async (path, options) => {
+      if (path === current && !tHeld) {
+        tHeld = true;
+        tAtRemoval.reach();
+        await uGoes.reached;
+      }
+      return fsp.rm(path, options);
+    },
+  };
+  const lockFsU = {
+    mkdir: async (path) => {
+      if (!uStarted) {
+        uStarted = true;
+        await tAtRemoval.reached;
+      }
+      if (path === legacy) return notWritable(path);
+      try {
+        return await fsp.mkdir(path);
+      } catch (error) {
+        // Refused anything but the lock itself, as it is there: kept out while another runner takes the lock over.
+        if (path !== current && error.code === "EEXIST" && ++uKeptOut === 2) uGoes.reach();
+        throw error;
+      }
+    },
+    stat: (path) => fsp.stat(path),
+    utimes: (path, atime, mtime) => fsp.utimes(path, atime, mtime),
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  const fetchT = (url, init) => {
+    tPosted.reach();
+    return endpoint.fetch(url, init);
+  };
+  const fetchU = async (url, init) => {
+    uGoes.reach();
+    await tPosted.reached;
+    return endpoint.fetch(url, init);
+  };
+  const ask = (module, lockFs, fetch) => {
+    const renew = module.renewLogin({ fetch, now: () => now, lockFs, lockUpdateMs: 60_000 });
+    return new module.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  };
+  const [tOutcome, uOutcome] = await Promise.all([ask(tokens, lockFsT, fetchT), ask(other, lockFsU, fetchU)]);
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "posted once: a takeover held before its removal while another runner posts never removes that runner's lock, for that runner never takes the lock meanwhile");
+  assert.equal(tHeld, true, "T read the dead lock and was held at its removal");
+  assert.deepEqual([tOutcome.token, uOutcome.token], [next.access, next.access], "both hand the one renewal");
+  assert.deepEqual(listing(login.dir), [".credentials.json"], "no lock or takeover mark is left in the login folder");
+  assert.deepEqual(listing(data), ["claude-login"], "and none beside it");
+});
+
+test("a runner takes a lock as its own only by the mtime it set: a lock another holder (the CLI) made in its place between the runner's touch and its read of it back, its mtime a fraction of a second off, is never taken as the runner's, and nothing is posted under it", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  mkdirSync(current);
+  const dead = new Date(Date.now() - 61_000);
+  utimesSync(current, dead, dead);
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  /** The mtime the runner set on the lock it made, and the CLI's, 300 ms after it. */
+  let set;
+  let theirs;
+  let decide;
+  /** What the runner did once its new lock was replaced: "waits" (it found the CLI's and left it) or "posted". */
+  const decided = new Promise((resolve) => (decide = resolve));
+  const lockFs = {
+    mkdir: async (path) => {
+      if (path === legacy) return notWritable(path);
+      try {
+        return await fsp.mkdir(path);
+      } catch (error) {
+        if (theirs && path === current && error.code === "EEXIST") decide("waits");
+        throw error;
+      }
+    },
+    utimes: async (path, atime, mtime) => {
+      await fsp.utimes(path, atime, mtime);
+      if (path === current && set === undefined) set = mtime.getTime();
+    },
+    // The runner's read of its new lock back, once it set its mtime. Before that read, the CLI, which read the dead lock
+    // too, removes the runner's lock late, makes its own with its own mtime, and posts the login's refresh token.
+    stat: async (path) => {
+      if (path === current && set !== undefined && !theirs) {
+        theirs = new Date(set + 300);
+        takeOver(current, theirs);
+        const response = await endpoint.fetch(loginRefresh.tokenUrl ?? "https://token.invalid/v1/oauth/token", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: "refresh_token", refresh_token: old.refresh }) });
+        await response.json();
+      }
+      return fsp.stat(path);
+    },
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  const fetch = (url, init) => {
+    decide("posted");
+    return endpoint.fetch(url, init);
+  };
+  /** The CLI writes its renewal back, then releases its lock while it is still its own. */
+  const theyWrite = () => {
+    write(oauthOf(next.access, now + 8 * HOUR, next.refresh));
+    if (existsSync(current) && statSync(current).mtimeMs === theirs.getTime()) rmSync(current, { recursive: true });
+  };
+  const renew = tokens.renewLogin({ fetch, now: () => now, lockFs, lockUpdateMs: 60_000 });
+  const asked = new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  const how = await decided;
+  if (how === "waits") theyWrite();
+  const outcome = await asked;
+  if (how !== "waits") theyWrite();
+  assert.equal(endpoint.posts.filter((post) => post.body.refresh_token === old.refresh).length, 1, "posted once, by the holder that made its lock between the runner's touch and its read back: the runner never takes a mtime it did not set as its own");
+  assert.equal(outcome.token, next.access, "the runner waits for the CLI's write and hands its token");
+});
+
+test("a holder's heartbeat keeps the lock only by the mtime it set: one another holder sets on the same directory between the heartbeat's touch and its next read marks the lock lost, and nothing is posted under it", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  write(oauthOf(fake("access-old"), now + 60_000));
+  const [current, legacy] = [join(login.dir, ".oauth_refresh.lock"), `${realpathSync(login.dir)}.lock`];
+  const endpoint = await tokenEndpoint(t, () => ({ json: { access_token: fake("access-new"), expires_in: 3600 } }));
+  // The holder makes the lock in the folder and is held at the older lock beside it (before its check before the post)
+  // until its heartbeat has touched the lock and read it again. Right after the heartbeat's touch, another holder sets
+  // its own mtime, 300 ms on, on the same directory.
+  let made = false;
+  let touched = false;
+  const readAgain = point();
+  const lockFs = {
+    mkdir: async (path) => {
+      if (path !== legacy) return fsp.mkdir(path);
+      await readAgain.reached;
+      return notWritable(path);
+    },
+    stat: async (path) => {
+      const read = await fsp.stat(path);
+      if (touched && path === current) readAgain.reach();
+      return read;
+    },
+    utimes: async (path, atime, mtime) => {
+      await fsp.utimes(path, atime, mtime);
+      if (path !== current) return;
+      if (!made) {
+        made = true;
+        return;
+      }
+      if (touched) return;
+      const theirs = new Date(mtime.getTime() + 300);
+      await fsp.utimes(path, theirs, theirs);
+      touched = true;
+    },
+    rm: (path, options) => fsp.rm(path, options),
+  };
+  const lines = [];
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, log: (fields) => lines.push(fields), lockFs, lockUpdateMs: 20, lockWaitMs: 300 });
+  const outcome = await new tokens.LoginTokens({ login, now: () => now, renew }).token().then((token) => ({ token }), (error) => ({ error }));
+  assert.equal(touched, true, "another holder set its mtime on the lock right after the heartbeat's touch");
+  assert.equal(endpoint.posts.length, 0, "nothing posted: another holder set the lock's mtime between the heartbeat's touch and its next read, so the lock is not the holder's");
+  assert.deepEqual(lines.filter((fields) => fields.claude_login === "lock_lost"), [{ claude_login: "lock_lost", at: "before_post" }], "the check before the post finds the lock another's");
+  assert.equal(outcome.error?.message, tokens.LOGIN_RUNNING_OUT, "the other holder kept the lock past the wait and wrote nothing: the ask is refused in words, having posted nothing");
 });
 
 test("a renewal Anthropic refuses (400 invalid_grant) or that fails (a 5xx) refuses the ask in LOGIN_RUNNING_OUT's words, posts once for that ask and never again on its own as the clock goes on, and leaves the file byte for byte as it was; a refresh token refused as invalid_grant is never posted again", async (t) => {
