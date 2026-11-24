@@ -887,16 +887,19 @@ async function planRecipeFile(t) {
   return file;
 }
 
-// A tool key is none of the offers' inputs (offersEnvOf), so while the offers held are current its save or delete starts
-// no probe. A probe it finds out, made from the inputs read now (a harness key's, which may find newer facts), must land:
-// a tool key's change then never drops it. While the offers held are behind the inputs (a turn-on's probe still out), a
-// tool key's change probes too and drops that probe; the offers still end made from the inputs read now. This test holds
-// the first case only. The facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
+// A tool key is none of the offers' inputs (offersEnvOf). While the offers held are current and no probe made from other
+// inputs is out, its save or delete starts no probe, and a probe it finds out made from the inputs read now (a harness
+// key's, which may find newer facts) is left to land. Otherwise (the offers held behind the inputs, as while a turn-on's
+// probe is out, or a probe from other inputs out) a tool key's change probes, and a probe out is dropped as it lands;
+// the offers still end made from the inputs read now. This test holds the first case only. It runs on a faux server, as
+// the two late-probe tests do: a server that asks Ollama reads the host's Ollama listing at each capabilities read
+// (ollamaNow), so a model pulled or Ollama started during the test would start a probe this test did not cause. The
+// facts here are the held table's: claude-agent's check answers FACT from the harness key's save on.
 const FACT = "the probe after the harness key's save found this";
 const TOOL_KEY_PROBED = "a tool key's change, which changes none of the offers' inputs, started a probe of the offers";
 const FACT_WHY = "a tool key's change while a probe made from the inputs read now was out dropped that probe: the facts it found never landed";
-test("while the offers held are current, a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
-  const { api, harnesses, probes } = await heldServer(t, { harnessRecipes: [await planRecipeFile(t)] });
+test("while the offers held are current and no probe from other inputs is out, a tool key's change starts no probe of the offers, and one made while a probe from the inputs read now is out leaves that probe's facts standing once it lands", { timeout: 60_000 }, async (t) => {
+  const { api, harnesses, probes } = await heldServer(t, { faux: FAUX, harnessRecipes: [await planRecipeFile(t)] });
   assert.equal((await api("DELETE", "/settings/tool-keys/typesafe")).status, 204);
   assert.equal(probes("key"), 0, `${TOOL_KEY_PROBED} with no probe out`);
   assert.notEqual(claudeAgentIn(await harnesses()).reason, FACT);
