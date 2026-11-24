@@ -5,7 +5,7 @@
 export const COLOR_TOKENS = {
   surface: ["background", "card", "muted", "accent", "overlay", "run-error-surface"],
   text: ["foreground", "card-foreground", "muted-foreground", "accent-foreground"],
-  brand: ["primary", "primary-foreground", "primary-text", "primary-action-text", "brand-surface"],
+  brand: ["primary", "primary-foreground", "primary-text", "primary-action-text"],
   tone: ["success", "success-text", "warning", "warning-text", "destructive", "destructive-text", "info", "info-text"],
   line: ["border", "border-strong", "input", "ring"],
   run: ["run-active"],

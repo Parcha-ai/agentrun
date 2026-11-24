@@ -1,6 +1,6 @@
-import logo from "@/assets/branding/agentrun-logo.png";
+import logo from "@/assets/branding/agentrun-logo.svg?raw";
 
-/** The supplied artwork has light lettering and transparency; its backing keeps it legible in either theme. */
+/** Trusted, bundled vector artwork. Its lettering inherits the theme's foreground; no backing is needed. */
 export function Wordmark() {
-  return <span className="inline-flex bg-brand-surface align-middle"><img src={logo} alt="AgentRun" width={648} height={146} className="h-8 w-auto" /></span>;
+  return <span role="img" aria-label="AgentRun" className="inline-flex h-8 align-middle text-foreground [&>svg]:h-full [&>svg]:w-auto" dangerouslySetInnerHTML={{ __html: logo }} />;
 }

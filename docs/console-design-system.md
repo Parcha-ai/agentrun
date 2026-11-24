@@ -54,7 +54,6 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `primary`, `primary-foreground` | `bg-primary text-primary-foreground` | The brand fill and the text on it. |
 | `primary-text` | `text-primary-text` | Orange words and icons on a page surface. |
 | `primary-action-text` | `text-primary-action-text` | Primary action labels, readable on the 10% fill and 20% hover/open fill. |
-| `brand-surface` | `bg-brand-surface` | Fixed dark backing for the supplied light-lettered logo in both themes. |
 | `success`, `warning`, `destructive`, `info` | `bg-success/10`, `border-warning/50` | A tone's fill, border or dot. |
 | `success-text`, `warning-text`, `destructive-text`, `info-text` | `text-success-text` | Words in a tone. |
 | `border`, `border-strong` | `border`, `border-border-strong` | A dividing line; the edge of a hovered or floating thing. |
@@ -157,6 +156,8 @@ Never write a number (`z-50`, `z-[60]`).
 - Motion says that something changed. It is never decoration, and nothing loops except "work in progress".
 - The stylesheet turns every animation and transition off for someone whose OS asks for reduced motion. Do not
   work around it. A spinner then stands still, so the words beside it must say what is happening.
+
+The AgentRun wordmark is a transparent SVG. Its lettering uses the foreground token, and its orange mark stays fixed.
 
 ## Themes
 
