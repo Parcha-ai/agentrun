@@ -4,7 +4,7 @@ import type { FoundPage } from "./decide/step.js";
 import { unmetered } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import { clip, HTML_READ_CHARS, PAGE_READ_MAX_CHARS, type Page, type Part, partOfRead, type Read, TIMEOUT_MS, type Unread, URL_MAX } from "./page.js";
-import { holdingWords, type Reader } from "./provider.js";
+import { HELD_CODE, holdingWords, type Reader } from "./provider.js";
 import { AHEAD, type AheadProvider, type FetchProvider, providerName, providerOf } from "./providers/registry.js";
 import { type Failure, failure, type Limit, type Try } from "./search.js";
 
@@ -72,8 +72,10 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     const held = reader.held();
     const why = held ?? (typeof url === "string" && (await passes(url, guard, options, checkMs)) ? undefined : failure("refused", "GUARD", "not tried: the URL did not pass the public-host guard"));
     if (why !== undefined) {
-      if (shape.miss === "said") (said[id as AheadProvider] = why.message), tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
-      else if (held) said[id as AheadProvider] = held.message;
+      if (shape.miss === "said" || held) said[id as AheadProvider] = why.message;
+      // A turn its breaker holds is on the receipt as search's is; a said provider's other unasked turns are failed ones.
+      if (held?.code === HELD_CODE) tries.push({ provider: id, outcome: "held", failure: held, ms: 0 });
+      else if (shape.miss === "said") tries.push({ provider: id, outcome: "error", error: why.message, failure: why });
       continue;
     }
     const read = await reader.read(url, options);

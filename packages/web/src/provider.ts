@@ -49,8 +49,9 @@ export type ProviderRun = {
  *  page, and a turn it was not asked for being unready or held. `miss` says what more becomes of it:
  *  - "said": a turn the guard's check refused is told too, and every turn not asked is on the receipt;
  *  - `{log, when}`: a failed read is logged as `log`, at once with the provider and the limit it met (`when` "failed"),
- *    or once a provider that ends the order has answered, with what it did (`when` "ends"; never where none follows). A
- *    turn it was not asked is not on the receipt. */
+ *    or once a provider that ends the order has answered, with what it did (`when` "ends"; never where none follows). Of
+ *    the turns it was not asked, only one its breaker held is on the receipt.
+ *  A turn its breaker held is on the receipt as search's is: outcome "held", its failure the hold. */
 export type FetchShape = { ends: true } | { ends?: false; miss: "said" } | { ends?: false; miss: { log: string; when: "failed" | "ends" } };
 
 /** A provider's settings, typed `S`: `problems` says what is wrong with a value, one line each (none: it is S). */
@@ -75,6 +76,9 @@ export type WebProvider<Id extends string = string> = {
  *  unions) and `make`. Two arguments, so the unions are read from `meta` alone, never from what `make` answers. */
 export const defineProvider = <const M extends Omit<WebProvider, "make">>(meta: M, make: WebProvider["make"]): M & Pick<WebProvider, "make"> => ({ ...meta, make });
 
+/** The code of a turn not asked because its breaker holds the provider (Reader.held). */
+export const HELD_CODE = "HELD";
+
 /** When a breaker holding a provider lets it be asked again, in words: until the minute it names (UTC), or for the rest
  *  of the run. */
 export function holdingWords({ kind, until }: Holding): string {
@@ -94,7 +98,7 @@ export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
       const unready = run.unready?.();
       if (unready) return unready;
       const holding = breaker.holding();
-      return holding ? failure(holding.kind, "HELD", `not tried: ${holdingWords(holding)}`) : undefined;
+      return holding ? failure(holding.kind, HELD_CODE, `not tried: ${holdingWords(holding)}`) : undefined;
     },
     holding: () => breaker.holding(),
     async read(url, options) {
