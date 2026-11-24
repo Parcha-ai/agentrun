@@ -3,10 +3,11 @@
 // have made itself; any other it makes again, so the totals are the same whatever the pool does.
 //
 // A read made ahead of the import's order waits, whole, until parseHome takes it, so what the pool reads ahead is what it
-// holds. The read parseHome waits for is always made next. Past it, while the reads waiting stay under READ_AHEAD_BYTES,
-// the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then the rest in the
-// import's order; at the budget it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
+// holds. The read parseHome waits for is always made next. Past it, while the reads waiting stay under the read-ahead
+// (readAheadBytes()), the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then
+// the rest in the import's order; at the read-ahead it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
 // runs out gives up its file, which parseHome reads itself, and another worker takes its place.
+import { totalmem } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
 import type { RecordIndex } from "./record-index.js";
@@ -31,25 +32,32 @@ const LINE_SHARE = 8;
 /** A file this large or larger is read ahead of the import's order, the largest first: such files set the time. */
 export const BIG_FILE = 64 * 2 ** 20;
 
-/** The bytes of reads that may wait to be taken; at this, the pool reads only the one parseHome waits for. */
+/** The most bytes of finished reads that may wait to be taken by default; at the read-ahead, the pool reads only the one
+ *  parseHome waits for. A cap on the reads held, not on the process's memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
+
+/** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of this machine's memory when that is less (512 MiB at 8 GiB). */
+export const readAheadBytes = (memory = totalmem()): number => Math.min(READ_AHEAD_BYTES, Math.floor(memory / 16));
 
 /** Workers lost (out of memory, or ended) past this many times the threads: the pool stops, and parseHome reads the rest. */
 const LOSSES_PER_THREAD = 2;
 
-/** A session's objects beyond its typed arrays, as the budget counts them. */
+/** A session's objects beyond its typed arrays and its strings, as the budget counts them. */
 const SESSION_BYTES = 1024;
+
+/** A session's strings (its first prompt and title can run to megabytes), a byte a character as V8 holds ASCII. */
+const stringBytes = (session: object): number => Object.values(session).reduce((sum: number, value) => sum + (typeof value === "string" ? value.length : 0), 0);
 
 type Job = { id: number; source: string; locator: Locator; size: number; state: "queued" | "running" | "waiting" | "taken"; read?: PoolRead; bytes: number };
 
 const indexBytes = (index: RecordIndex): number =>
   [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].reduce((sum, a) => sum + a.byteLength, 0);
 
-/** What a read holds while it waits: its indexes' and counts' arrays, and its sessions. */
+/** What a read holds while it waits: its indexes' and counts' arrays, and its sessions with their strings. */
 function heldBytes(read: PoolRead): number {
   if (!read.ok) return 0;
   let bytes = indexBytes(read.mine) + indexBytes(read.missed);
-  for (const { counts } of read.sessions) bytes += SESSION_BYTES + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
+  for (const { session, counts } of read.sessions) bytes += SESSION_BYTES + stringBytes(session) + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
   return bytes;
 }
 
@@ -69,12 +77,23 @@ export class ReadPool {
   private waiting = 0;
   private losses = 0;
   private broken = false;
-  /** The most bytes of reads waiting at once, and the workers lost (for measuring). */
+  /** The most bytes of reads waiting at once, and the workers lost (for measuring). The read-ahead is checked before a
+   *  read is sent, so the reads in flight then (at most `threads`) may land past it. */
   peakWaiting = 0;
   lost = 0;
 
-  constructor(private readonly threads: number, private readonly aheadBytes = READ_AHEAD_BYTES, private readonly oldMb = OLD_MB) {
-    for (let i = 0; i < threads; i += 1) this.spawn();
+  constructor(private readonly threads: number, private readonly aheadBytes = readAheadBytes(), private readonly oldMb = OLD_MB) {
+    // A worker that cannot start (no file descriptors, no memory) stops the pool: parseHome reads every file itself.
+    try {
+      for (let i = 0; i < threads; i += 1) this.spawn();
+    } catch {
+      this.fail();
+    }
+  }
+
+  /** The bytes of reads waiting to be taken now. */
+  get held(): number {
+    return this.waiting;
   }
 
   /** Queues each locator; a job's id is its place in the import's order, so `items` come in that order. The ids, for take. */
@@ -107,6 +126,18 @@ export class ReadPool {
       this.wanted = { job, done };
       this.dispatch();
     });
+  }
+
+  /** Gives up jobs parseHome will not take (a source it reads again whole): their reads waiting are let go, those queued
+   *  are not read, those running are let go when they end. */
+  drop(ids: readonly number[]): void {
+    for (const id of ids) {
+      const job = this.jobs[id]!;
+      if (job.state === "waiting") this.waiting -= job.bytes;
+      job.state = "taken";
+      job.read = undefined;
+    }
+    this.dispatch();
   }
 
   close(): void {
@@ -157,6 +188,7 @@ export class ReadPool {
       done(read);
       return;
     }
+    if (job.state === "taken") return; // dropped while it ran
     job.state = "waiting";
     job.read = read;
     job.bytes = heldBytes(read);
@@ -183,7 +215,11 @@ export class ReadPool {
     this.running.delete(worker);
     if (job) this.made(job, { ok: false });
     if ((this.losses += 1) > LOSSES_PER_THREAD * this.threads) return this.fail();
-    this.spawn();
+    try {
+      this.spawn();
+    } catch {
+      return this.fail();
+    }
     this.dispatch();
   }
 

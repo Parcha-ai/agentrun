@@ -4,7 +4,9 @@
 import assert from "node:assert/strict";
 import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
-import { parseHome } from "../dist/index.js";
+import { relative } from "node:path";
+import { parseHome, READERS } from "../dist/index.js";
+import { ReadPool, readAheadBytes } from "../dist/pool.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const THREADS = [2, 3, 4];
@@ -38,14 +40,170 @@ test("a copy read on a worker counts once, where the import's order first read i
   for (const opts of THREADS.flatMap(each)) assert.deepEqual(await parseHome(home, { catalog: false, ...opts }), one, JSON.stringify(opts));
 });
 
-test("a state kept across passes comes out the same with threads as without", async (t) => {
+/** The workers made while `run` goes (process "worker" events). */
+async function workersOf(run) {
+  const made = [];
+  const on = (worker) => made.push(worker);
+  process.on("worker", on);
+  try {
+    return { result: await run(), workers: made.length };
+  } finally {
+    process.off("worker", on);
+  }
+}
+
+test("a call with a state reads on its own thread, threads or none: no worker is made, and the state comes out the same", async (t) => {
   const home = await copiedHome(t);
+  assert.equal((await workersOf(() => parseHome(home, { catalog: false, threads: 2 }))).workers, 2, "without a state, two threads make two workers");
   const plain = {};
   const threaded = {};
-  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2, state: threaded }), await parseHome(home, { catalog: false, threads: 1, state: plain }));
-  assert.equal(threaded.read, plain.read);
-  assert.deepEqual(await parseHome(home, { catalog: false, threads: 2, state: threaded }), await parseHome(home, { catalog: false, threads: 1, state: plain }));
+  for (let pass = 0; pass < 2; pass += 1) {
+    const { result, workers } = await workersOf(() => parseHome(home, { catalog: false, threads: 2, state: threaded }));
+    assert.equal(workers, 0, `pass ${pass}: no worker with a state`);
+    assert.deepEqual(result, await parseHome(home, { catalog: false, threads: 1, state: plain }));
+    assert.equal(threaded.read, plain.read);
+  }
   assert.equal(threaded.read, 0);
+});
+
+/** The files read on this thread while `run` goes, relative to `home`. The pool's workers load the readers as modules of
+ *  their own, so a read counted here is one parseHome made itself, not one it took from the pool. */
+async function readsHere(home, run) {
+  const files = [];
+  const own = Object.fromEntries(Object.entries(READERS).map(([source, reader]) => [source, reader.read]));
+  for (const [source, reader] of Object.entries(READERS)) {
+    reader.read = function (locator, ...rest) {
+      files.push(relative(home, locator.file));
+      return own[source].call(this, locator, ...rest);
+    };
+  }
+  try {
+    return { result: await run(), files: files.sort() };
+  } finally {
+    for (const [source, reader] of Object.entries(READERS)) reader.read = own[source];
+  }
+}
+
+/** Sessions with no record in common: no read of one is changed by another. */
+async function plainHome(t) {
+  const home = await tempHome(t);
+  for (let k = 0; k < 6; k += 1) {
+    const session = `00000000-0000-4000-8000-0000000000b${k}`;
+    await utimes(await writeJsonl(claudeFile(home, session), [claudeUser({ uuid: `b${k}-u`, text: "Plain question.", i: 0, session }), claudeAnswer({ uuid: `b${k}-a`, msg: `msg_b${k}`, req: `req_b${k}`, usage: anthropicUsage(k + 1, 2), i: 1, session })]), 1_000 + k, 1_000 + k);
+    if (k < 2) await writeJsonl(subagentFile(home, session, `agent-b${k}`), [claudeAnswer({ uuid: `b${k}-s`, msg: `msg_b${k}s`, req: `req_b${k}s`, usage: anthropicUsage(5, 6), i: 2, session, sidechain: true })]);
+  }
+  await writeJsonl(codexFile(home), [codexMeta("thread-b"), codexContext(1), codexUser("Plain question.", 2), codexAnswer("Plain answer.", 3), codexTokens(openaiUsage(100, 60, 7, 3), openaiUsage(100, 60, 7, 3), 4)]);
+  return home;
+}
+
+test("with no copies, every read is the pool's: parseHome makes none again on its own thread", async (t) => {
+  const home = await plainHome(t);
+  const one = await readsHere(home, () => parseHome(home, { catalog: false, threads: 1 }));
+  assert.equal(one.files.length, 6 + 2 + 1, "threads: 1 reads every file on this thread");
+  for (const opts of THREADS.flatMap(each)) {
+    const pooled = await readsHere(home, () => parseHome(home, { catalog: false, ...opts }));
+    assert.deepEqual(pooled.result, one.result, JSON.stringify(opts));
+    assert.deepEqual(pooled.files, [], `${JSON.stringify(opts)}: each read taken from the pool, none made again`);
+  }
+});
+
+test("with copies, only the files that hold a copy are read again on parseHome's own thread", async (t) => {
+  const home = await copiedHome(t);
+  // The resumed file opens with the old one's records; its subagent repeats the old file's request.
+  const again = [claudeFile(home, NEW), subagentFile(home, NEW, "agent-a1")].map((file) => relative(home, file)).sort();
+  for (const opts of THREADS.flatMap(each)) assert.deepEqual((await readsHere(home, () => parseHome(home, { catalog: false, ...opts }))).files, again, JSON.stringify(opts));
+});
+
+test("a source read again whole (tokens past a safe sum) gives up its reads in the pool: the totals of one thread", async (t) => {
+  const home = await tempHome(t);
+  for (let k = 0; k < 4; k += 1) {
+    const session = `00000000-0000-4000-8000-0000000000d${k}`;
+    await utimes(await writeJsonl(claudeFile(home, session), [claudeUser({ uuid: `d${k}-u`, text: "Big.", i: 0, session }), claudeAnswer({ uuid: `d${k}-a`, msg: `msg_d${k}`, req: `req_d${k}`, usage: anthropicUsage(2 ** 52, 1), i: 1, session })]), 1_000 + k, 1_000 + k);
+  }
+  const one = await parseHome(home, { catalog: false, threads: 1 });
+  for (const opts of THREADS.flatMap(each)) assert.deepEqual(await parseHome(home, { catalog: false, ...opts }), one, JSON.stringify(opts));
+});
+
+test("threads, readAhead and workerOldMb out of range are refused", async (t) => {
+  const home = await plainHome(t);
+  for (const opts of [{ threads: 0 }, { threads: 2.5 }, { threads: Number.NaN }, { readAhead: -1 }, { readAhead: Number.NaN }, { workerOldMb: 0 }, { workerOldMb: 1.5 }]) {
+    await assert.rejects(parseHome(home, { catalog: false, ...opts }), RangeError, JSON.stringify(opts));
+  }
+});
+
+test("the default read-ahead is 1 GiB, or a sixteenth of the machine's memory when that is less", () => {
+  assert.equal(readAheadBytes(8 * 2 ** 30), 512 * 2 ** 20);
+  assert.equal(readAheadBytes(16 * 2 ** 30), 2 ** 30);
+  assert.equal(readAheadBytes(512 * 2 ** 30), 2 ** 30);
+});
+
+// The pool on its own: N files of the same shape, so each read waiting holds the same bytes, and nothing taken.
+const SAME = 12;
+
+async function sameShape(t) {
+  const home = await tempHome(t);
+  const items = [];
+  for (let k = 0; k < SAME; k += 1) {
+    const session = `00000000-0000-4000-8000-0000000000e${k.toString(16)}`;
+    const file = await writeJsonl(claudeFile(home, session), [claudeUser({ uuid: `e${k.toString(16)}-u`, text: "Same question.", i: 0, session }), claudeAnswer({ uuid: `e${k.toString(16)}-a`, msg: `msg_e${k.toString(16)}`, req: `req_e${k.toString(16)}`, usage: anthropicUsage(1, 2), i: 1, session })]);
+    items.push({ source: "claude-code", locator: { file }, size: 1_000 });
+  }
+  return items;
+}
+
+/** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. */
+async function settled(pool) {
+  for (let i = 0; i < 2_000 && pool.running.size; i += 1) await new Promise((done) => setTimeout(done, 5));
+  assert.equal(pool.running.size, 0, "the pool settles");
+}
+
+async function aheadOf(items, threads, ahead) {
+  const pool = new ReadPool(threads, ahead);
+  try {
+    pool.readAll(items);
+    await settled(pool);
+    return { peak: pool.peakWaiting, held: pool.held, waiting: pool.jobs.filter((job) => job.state === "waiting").length };
+  } finally {
+    pool.close();
+  }
+}
+
+test("the read-ahead caps the reads waiting: none at 0, else at most the reads in flight when it was reached", async (t) => {
+  const items = await sameShape(t);
+  const all = await aheadOf(items, 2, Number.POSITIVE_INFINITY);
+  assert.equal(all.waiting, SAME, "no cap: every file read ahead");
+  const one = all.held / SAME;
+  assert.ok(one > 0 && Number.isInteger(one), `each read waiting holds the same bytes (${all.held} / ${SAME})`);
+  assert.equal(all.peak, all.held);
+  assert.deepEqual(await aheadOf(items, 2, 0), { peak: 0, held: 0, waiting: 0 }, "readAhead 0: nothing read ahead");
+  // One thread: reads are sent at 0, 1 and 2 reads waiting (under 2.5), none at 3.
+  assert.deepEqual(await aheadOf(items, 1, 2.5 * one), { peak: 3 * one, held: 3 * one, waiting: 3 });
+  // More threads: past the read-ahead by at most the reads in flight when it was reached.
+  for (const [threads, ahead] of [[2, 1], [3, 2.5 * one], [4, 4 * one]]) {
+    const { peak, waiting } = await aheadOf(items, threads, ahead);
+    assert.ok(peak >= Math.min(ahead, SAME * one) && peak <= ahead + threads * one, `threads ${threads}, read-ahead ${ahead}: peak ${peak}`);
+    assert.ok(waiting < SAME, `threads ${threads}, read-ahead ${ahead}: ${waiting} of ${SAME} read ahead`);
+  }
+});
+
+test("reads dropped let the read-ahead go: the pool reads on past them, and a dropped read is not taken", async (t) => {
+  const items = await sameShape(t);
+  const pool = new ReadPool(1, 2.5 * 4096);
+  try {
+    pool.readAll(items);
+    await settled(pool);
+    const first = pool.jobs.filter((job) => job.state === "waiting").map((job) => job.id);
+    assert.ok(first.length > 0 && first.length < SAME, `${first.length} read ahead`);
+    pool.drop(first);
+    assert.equal(pool.held, 0);
+    await settled(pool);
+    const next = pool.jobs.filter((job) => job.state === "waiting").map((job) => job.id);
+    assert.deepEqual(next, first.map((id) => id + first.length), "the next files are read ahead");
+    assert.deepEqual(await pool.take(first[0]), { ok: false });
+    assert.equal((await pool.take(next[0])).ok, true);
+  } finally {
+    pool.close();
+  }
 });
 
 // The records a read asks about but never adds count too: a copy in a file's last line, still being written (asked

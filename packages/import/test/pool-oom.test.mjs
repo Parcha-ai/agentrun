@@ -99,8 +99,8 @@ test("workers out of memory, in a process with nothing else to wait on: the impo
   // A process of its own whose only work is the import shows it: Node exits 13 on a top-level await that never settles.
   // Whether it does depends on timing (the main thread must run out of its own work while a worker still reads), so three
   // shapes, each in its own process:
-  // - 6 files of 1.5 MB at an 8 MB heap: the acceptance probe that exited 13 on ade7052acd (twice). At an eighth of the
-  //   heap, 1 MB, they now stop at the line limit and the main thread reads them.
+  // - 6 files of 1.5 MB at an 8 MB heap: over the line limit (an eighth of the heap, 1 MB), so the main thread reads
+  //   them while the workers stop at the limit.
   // - 6 files of 1.8 MB at a 16 MB heap: under the line limit (2 MB), so each runs a worker out, and longer than 0.9 MB.
   // - 6 files of 0.9 MB at an 8 MB heap: the shape of the test above.
   const cases = [
@@ -144,8 +144,7 @@ test("workers out of memory, in a process with nothing else to wait on: the impo
 test("an empty-object line at the default heap, just under the line limit and just over, each in a process of its own: the totals of one thread", { timeout: TIMEOUT }, async (t) => {
   // OLD_MB 64: the line limit is 8 MB. 7.9 MB of empty objects parses to about 100 MB: the worker may read it or run out
   // (either hands nothing wrong to parseHome). 9 MB stops at the limit. At a quarter of the heap (16 MB) it would go to a
-  // worker, whose heap a line this size can run out inside one parse; V8 then ends the whole process (15.9 MB did, in
-  // acceptance). Each case runs in a process of its own, so that such an end fails here in words, and spares the rest of
+  // worker, whose heap a line this size can run out inside one parse; V8 then ends the whole process. Each case runs in a process of its own, so that such an end fails here in words, and spares the rest of
   // this file's tests.
   const cases = [
     [7.9, ["worker", "out of memory"]],

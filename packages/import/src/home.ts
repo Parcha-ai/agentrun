@@ -11,7 +11,7 @@ import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
 import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
-import { OLD_MB, type PoolRead, READ_AHEAD_BYTES, ReadPool } from "./pool.js";
+import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addAll, addRecord, dropOwner, locatorNumber, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
 import type { Usage } from "./types.js";
@@ -86,9 +86,10 @@ export type ParseOptions = {
    *  heap). Each read is kept only when it is the one parseHome would make in order; 1 reads every file in order on this
    *  thread. */
   threads?: number;
-  /** With threads, the bytes of reads made ahead of the one being taken that may wait (default READ_AHEAD_BYTES,
-   *  1 GiB); at it, the threads read only the file being taken. Large files (BIG_FILE, 64 MiB, and over) are read
-   *  first, the rest in the import's order. More holds more memory and waits less behind a large file. */
+  /** With threads, a cap on the bytes of finished reads made ahead of the one being taken that may wait (default
+   *  readAheadBytes(): 1 GiB, or a sixteenth of the machine's memory when less); at it, the threads read only the file
+   *  being taken. Large files (BIG_FILE, 64 MiB, and over) are read first, the rest in the import's order. More holds
+   *  more memory and waits less behind a large file. It caps the reads held, not the process's memory. */
   readAhead?: number;
   /** With threads, each worker's old generation in MB (default OLD_MB, 64). A worker that runs out of it gives its file
    *  back, which is read on this thread, and another takes its place; past 2 x threads such losses the rest is read here. */
@@ -275,7 +276,10 @@ function counted(read: Unpriced, models: Models, pricer: Pricer, sums: Float64Ar
 type Part = { locator: Locator; read: Compact };
 
 /** Every session of `sources` under `home`, as totals, sorted by key. */
-export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = READ_AHEAD_BYTES, workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
+export async function parseHome(home: string, { sources = SOURCES, readers = READERS, state, catalog, calculateCost, env, failures, requests, threads = Math.min(availableParallelism(), MAX_THREADS), readAhead = readAheadBytes(), workerOldMb = OLD_MB }: ParseOptions = {}): Promise<SessionTotals[]> {
+  if (!Number.isSafeInteger(threads) || threads < 1) throw new RangeError(`threads: a whole number of at least 1, not ${threads}`);
+  if (!(readAhead >= 0)) throw new RangeError(`readAhead: a number of bytes, 0 or more, not ${readAhead}`);
+  if (!Number.isSafeInteger(workerOldMb) || workerOldMb < 1) throw new RangeError(`workerOldMb: a whole number of MB, at least 1, not ${workerOldMb}`);
   const pool = !state && readers === READERS && threads > 1 ? new ReadPool(threads, readAhead, workerOldMb) : undefined;
   try {
   let prices: Promise<Catalog | undefined> | undefined;
@@ -312,7 +316,10 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
     const items = [...ahead].flatMap(([source, { listed, childList }]) => [...listed.map(({ locator, stats }) => ({ source, locator, size: stats.size })), ...childList.map(({ locator, size }) => ({ source, locator, size }))]);
     const ids = pool.readAll(items);
     let at = 0;
-    for (const listing of ahead.values()) listing.reads = ids.slice(at, (at += listing.listed.length + listing.childList.length)).map((id) => () => pool.take(id));
+    for (const listing of ahead.values()) {
+      listing.ids = ids.slice(at, (at += listing.listed.length + listing.childList.length));
+      listing.reads = listing.ids.map((id) => () => pool.take(id));
+    }
   }
   for (const source of sources) {
     const models: Models = { names: [], index: new Map() };
@@ -323,6 +330,8 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
       if (!(error instanceof Inexact)) throw error;
       // Tokens that cannot be summed as read: the source again, each request's tokens kept to the totals.
       if (state) (state.sources ??= {})[source] = undefined;
+      // The pool's reads of this source left untaken would hold the read-ahead for nothing.
+      pool?.drop(ahead.get(source)?.ids ?? []);
       read = await readSource(home, source, readers, env, state, models, pricer, true);
     }
     const { tops, children, unread } = read;
@@ -344,7 +353,7 @@ export async function parseHome(home: string, { sources = SOURCES, readers = REA
  *  copy now comes before the one its record counts in (an append moved an older file after its resumed copy, a new file
  *  sorts before one it shares records with). A change of order among locators that share no record reads nothing again. */
 /** A source's locators in the import's order, its subagents' with their sizes, and (with a pool) how to take each one's read. */
-type Listing = { listed: { locator: Locator; stats: Stats }[]; childList: { locator: Locator; of: Locator; size: number }[]; reads?: (() => Promise<PoolRead>)[] };
+type Listing = { listed: { locator: Locator; stats: Stats }[]; childList: { locator: Locator; of: Locator; size: number }[]; reads?: (() => Promise<PoolRead>)[]; ids?: number[] };
 
 async function listSource(home: string, source: string, readers: Readers, env: Env | undefined, sized = false): Promise<Listing> {
   const listed = await inOrder(await sessionLocators(home, source, { ...(env ? { env } : {}), readers }), source, readers);
