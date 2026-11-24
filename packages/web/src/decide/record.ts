@@ -44,6 +44,8 @@ type Failure = { code: string; message: string; cost: Cost };
 /** The line a request answered at `cost` (its provider's figure, reported or estimated) is charged on under `fee`: that
  *  cost, never above the hold, the line saying which; `fee`'s own line (the hold) when it gave none. */
 const chargedLine = (fee: Fee, cost: Cost | undefined): Fee => {
+  // An estimate is charged as a reported cost is, on purpose: it is nearer the real charge than the worst-case hold, and
+  // it is never booked above the hold (the cap below).
   if (!cost || (cost.basis !== "reported" && cost.basis !== "estimate") || typeof cost.usd !== "number" || !Number.isFinite(cost.usd) || cost.usd < 0) return fee;
   const said = cost.basis === "reported" ? `the cost ${fee.by} reported` : `${fee.by}'s cost as estimated (it reported none)`;
   return cost.usd <= fee.usd ? { ...fee, usd: cost.usd, basis: said } : { ...fee, basis: `the hold; ${said} was $${cost.usd}` };

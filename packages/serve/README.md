@@ -1906,16 +1906,18 @@ A workflow's model nodes may each run on another tier's model, so a workflow's `
 it is Parallel on the server's key, else keyless Firecrawl, or the provider picked, and a pick of `native` alone is
 unavailable for a workflow.
 
-Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev ranks `web_search`'s results: each search's
-results are scored by Jev (`jev-1.14.0`) against the query and reordered by that score, every one kept, each with its
-`relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them as the
-provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa, pi's hosted
-search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at Jev's
-published price and booked at the cost Jev reported, never above that hold. `web_fetch` is never judged: a fetch asks
-Jev nothing and its page is whole. A server with only an OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the
-server turns it off for every run it launches, on whatever runner host claims it (the run's plane carries the switch);
-set on a runner host, it turns Jev off for the runs that host claims too, and never back on. `GET /capabilities`' `why` for `web_search` says which: `…; Jev (jev-1.14.0) ranks results …`,
-`…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
+Where the server holds a TypeSafe key (`TYPESAFE_API_KEY`, set or saved), Jev ranks `web_search`'s results: each
+search's results are scored by Jev (`jev-1.14.0`) against its objective and reordered by that score, every one kept,
+each with its `relevance` (0 to 1), and a `sift` line saying how they were ranked, or why not (a Jev failure leaves them
+as the provider gave them). It applies wherever the run's own `web_search` runs (Parallel, keyless Firecrawl or Exa,
+pi's hosted search), never to a harness's own search inside its CLI. Each Jev request is held on the run's spend cap at
+Jev's published price and booked at the cost Jev reported, never above that hold. A `web_fetch` given an objective has
+Jev pick the chunks of the page most likely to hold it, in page order (`found`, each with its `relevance`), its requests
+held and booked the same way; a fetch with no objective asks Jev nothing and its page is whole. A server with only an
+OpenRouter key runs no ranking; `AGENTRUN_WEB_JEV_OFF=1` on the server turns it off for every run it launches, on
+whatever runner host claims it (the run's plane carries the switch); set on a runner host, it turns Jev off for the runs
+that host claims too, and never back on. `GET /capabilities`' `why` for `web_search` says which:
+`…; Jev (jev-1.14.0) ranks results …`, `…; Jev off: no TypeSafe key`, or `…; Jev off (AGENTRUN_WEB_JEV_OFF)`.
 
 | | `claude-agent` | `codex` | pi |
 | --- | --- | --- | --- |

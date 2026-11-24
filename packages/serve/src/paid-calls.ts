@@ -96,6 +96,8 @@ export async function paidRequest(fee: Fee, send: () => Promise<Response>, charg
   const ledger = ledgers.getStore();
   if (!ledger?.paid) throw new PaidRefused(unbookedRefusal(fee.name));
   const said = (): number => {
+    // `charged` may be the provider's estimate (Jev's, where it reports no cost): booked on purpose, as nearer the real
+    // charge than the hold, and never above the hold (Math.min below).
     const usd = charged?.();
     return typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? Math.min(usd, fee.usd) : fee.usd;
   };
