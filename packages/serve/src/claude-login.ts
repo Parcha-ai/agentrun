@@ -48,6 +48,12 @@ const LOGIN_HARNESSES: readonly string[] = Object.freeze([LOGIN_HARNESS]);
 export const CLAUDE_LOGIN_PROVIDER = "claude-login";
 /** The model a run on the login gets when it names none. */
 export const LOGIN_DEFAULT_MODEL = "anthropic/claude-sonnet-5-5";
+/** Whether a run of the login's harness that names `model` goes on the login: one naming none (it gets
+ *  LOGIN_DEFAULT_MODEL, Anthropic's) or one of Anthropic's own (`anthropic/<id>`). Any other, Anthropic's through
+ *  OpenRouter (`openrouter/anthropic/<id>`) included, goes on its provider's key whatever the login says. providerFor
+ *  puts a run on the login by this rule, and loginOnRunnerOnly offers the move to the runner by it. The console reads no
+ *  server code: its lib/claudeLogin.ts loginServes copies this, and both tests name the same cases. */
+export const loginServes = (model: string | undefined): boolean => !model || model.startsWith("anthropic/");
 
 /** Where the login is: AgentRun's own directory in its data (`agentrun`, the default), or this machine's own Claude Code
  *  login (`machine`, which the owner opts into by name). */
@@ -181,11 +187,12 @@ export function claudeLoginOf(env: NodeJS.ProcessEnv): ClaudeAgentLogin | undefi
 export const onClaudeLogin = (env: NodeJS.ProcessEnv, harness: string): boolean => LOGIN_HARNESSES.includes(harness) && claudeLoginOf(env) !== undefined;
 
 /** For a run refused for its model: the words that say why the login `env` carries does not run it, when its harness
- *  runs on that login and its place is a box (the login is a model only on the runner, loginForRun), naming the box and
- *  the move that runs it there; else undefined. The login's state is not asked: a signed-out one fails a run on the
- *  runner in its own words. */
-export function loginOnRunnerOnly(env: NodeJS.ProcessEnv, harness: string | undefined, place: { readonly mode: string; readonly box?: string } | undefined): string | undefined {
-  if (harness === undefined || !onClaudeLogin(env, harness) || place === undefined || place.mode === "runner") return undefined;
+ *  runs on that login, the login would run its `model` (loginServes: Anthropic's own, or none), and its place is a box
+ *  (the login is a model only on the runner, loginForRun), naming the box and the move that runs it there; else
+ *  undefined. A model the login never runs (an OpenRouter one) still needs its key after a move, so none is offered. The
+ *  login's state is not asked: a signed-out one fails a run on the runner in its own words. */
+export function loginOnRunnerOnly(env: NodeJS.ProcessEnv, harness: string | undefined, model: string | undefined, place: { readonly mode: string; readonly box?: string } | undefined): string | undefined {
+  if (harness === undefined || !onClaudeLogin(env, harness) || !loginServes(model) || place === undefined || place.mode === "runner") return undefined;
   return `Claude Code's login on this machine runs agents on the runner only, and this agent runs in the ${place.box ?? place.mode} box: move it to the runner to run it on the login, or add a key.`;
 }
 

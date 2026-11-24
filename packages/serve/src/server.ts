@@ -3291,9 +3291,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
     const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
-    // Refused for its model in a box while its harness runs on the login at the runner: the words say so, and how to run
-    // it there (details.login_on_runner, the console's offer to move it).
-    const runnerOnly = blockers.some((b) => b.field === "definition.model" && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.place) : undefined;
+    // Refused for its model in a box while its harness runs on the login at the runner, on a model the login runs: the
+    // words say so, and how to run it there (details.login_on_runner, the console's offer to move it).
+    const runnerOnly = blockers.some((b) => b.field === "definition.model" && b.reason === NOT_SET_UP && !b.unpriced) ? loginOnRunnerOnly(env, shape.harness, shape.kind === "agentic" ? shape.model : undefined, shape.place) : undefined;
     const message = [...blockers.map((b) => b.message), ...(runnerOnly ? [runnerOnly] : [])].join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
     const fields = blockers.map(issueOf);

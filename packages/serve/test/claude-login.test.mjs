@@ -13,7 +13,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join, relative } from "node:path";
 import { test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginSwitchedOff, claudeLoginView, envAtPlace, LOGIN_ANSWERS_DIR, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
@@ -268,6 +268,17 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
+// The login's model rule, which providerFor and the refusal's move offer (loginOnRunnerOnly) both ask. The console copies
+// it (its lib/claudeLogin.ts loginServes: it reads no server code), and its claudeLogin.test.ts names these same cases.
+test("loginServes: the login runs no model and Anthropic's own; an OpenRouter model, Anthropic's included, and any other vendor's go on their key", () => {
+  const cases = [[undefined, true], ["", true], ["anthropic/claude-sonnet-5-5", true], ["openrouter/anthropic/claude-sonnet-5.5", false], ["openai/gpt-6.1-sol", false]];
+  for (const [model, served] of cases) assert.equal(loginServes(model), served, String(model));
+  // The offer follows it: a box agent on an OpenRouter model is offered no move, one on Anthropic's or none is.
+  const env = withClaudeLogin({}, { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" });
+  const box = { mode: "sandbox", box: "docker" };
+  for (const [model, served] of cases) assert.equal(loginOnRunnerOnly(env, "claude-agent", model, box) !== undefined, served, String(model));
+});
+
 test("Claude Code's login on this machine on: claude-agent's Anthropic models go on it with no key and no port; other harnesses and named gateway or OpenRouter models keep their keys", () => {
   const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
   const env = withClaudeLogin({ ANTHROPIC_API_KEY: "not-a-secret", OPENROUTER_API_KEY: "not-a-secret" }, at);
@@ -276,8 +287,7 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.equal(onLogin.billing, "plan");
   assert.equal(onLogin.priceModel.provider, "claude-login");
   // Anthropic's own models go on the login, an OpenRouter one (Anthropic's included) on its key, and a revision naming
-  // none gets Anthropic's: the console's No model bar copies this rule (its lib/claudeLogin.ts loginServes), so a change
-  // here changes it there.
+  // none gets Anthropic's (loginServes, case by case below).
   assert.equal(providerFor("anthropic-messages", env, { provider: "openrouter", modelId: "anthropic/claude-haiku-5.5" }, "claude-agent").login, undefined);
   assert.equal(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "opencode").login, undefined);
   assert.equal(hostModel(env, "default", "claude-agent"), "anthropic/claude-sonnet-5-5");
