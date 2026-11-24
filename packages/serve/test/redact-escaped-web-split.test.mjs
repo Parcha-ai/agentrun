@@ -8,6 +8,7 @@ import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/k
 import { answersCut } from "../dist/runner/adapter-run-spec.js";
 import { secretRedactor } from "../dist/runner/redact.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webShownOf, webWithin } from "../dist/timeline/index.js";
+import { webHeld } from "../dist/timeline/web-calls.js";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
 
 // A held value of 32 characters in no secret's shape, made at runtime, and its two halves.
@@ -65,9 +66,9 @@ test("a held value split across two strings of a web call's JSON withholds the c
   // Whole in one string, cut in place: the result is still its JSON, every url whole.
   const whole = resultTextOf(search(`see ${KEY}`, `${REST} more`), [KEY], "web_search");
   assert.deepEqual(JSON.parse(whole).results, [{ url: "https://h.example/a", title: "see [redacted]", snippet: `${REST} more` }]);
-  // webShownOf without `holds` reads each string alone, as before.
+  // webShownOf reads each string alone; webHeld reads them joined.
   assert.ok(webWithin(webShownOf("web_search", split), 1000).includes(HEAD));
-  assert.equal(webWithin(webShownOf("web_search", split, (part) => part, (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", split, (joined) => withheldWhole(joined, [KEY])), true);
 });
 
 test("a held value split where a call's read stops, its rest past \\uXXXX escapes of whitespace, shows none of it; other escapes count as one character each", () => {
@@ -121,15 +122,16 @@ test("a web call's join is read as it came: one string's cut taking the value's 
   // The url's cut (its query value elided, the head redacted in place) takes the head; read as shown, the join no longer
   // holds it and the title's rest would show.
   const text = search(`${REST} more`, "s", `https://h.example/a?token=${HEAD}`);
-  assert.equal(webWithin(webShownOf("web_search", text, callEach([KEY]), (joined) => withheldWhole(joined, [KEY])), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", text, (joined) => withheldWhole(joined, [KEY])), true);
   assert.equal(resultTextOf(text, [KEY], "web_search"), "[redacted]");
 });
 
 test("a web call's property names are read: a held value in one is cut (two cut to one name both kept, the later numbered), one split across a name and its value withholds the result", () => {
   const holds = (joined) => withheldWhole(joined, [KEY]);
   const named = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", title: "t", [KEY]: "x", [Buffer.from(KEY).toString("hex")]: "y" }] });
-  const shown = JSON.parse(webWithin(webShownOf("web_search", named, callEach([KEY]), holds), 1000));
+  assert.equal(webHeld("web_search", named, holds), false);
+  const shown = JSON.parse(webWithin(webShownOf("web_search", named, callEach([KEY])), 1000));
   assert.deepEqual(shown.results[0], { url: "https://h.example/a", title: "t", "[redacted]": "x", "[redacted] (2)": "y" });
   const split = JSON.stringify({ query: "q", results: [{ url: "https://h.example/a", [`n ${HEAD}`]: `${REST} v` }] });
-  assert.equal(webWithin(webShownOf("web_search", split, callEach([KEY]), holds), 1000), "[redacted]");
+  assert.equal(webHeld("web_search", split, holds), true);
 });
