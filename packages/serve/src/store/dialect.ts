@@ -16,6 +16,9 @@ export interface Dialect {
   jsonValue(column: string, path: readonly string[]): string;
   /** True unless the JSON TEXT column's value at `path` is false or 0 (absent or null count as true). */
   jsonNotFalse(column: string, path: readonly string[]): string;
+  /** The JSON TEXT column's value at `path` as a number to compare with one, or SQL NULL when it is absent or not a JSON
+   *  number (never a cast that fails on a row's text). */
+  jsonNumber(column: string, path: readonly string[]): string;
   /** True when the JSON array in TEXT column `column` holds the string parameter that follows (one `?`). */
   jsonArrayHas(column: string): string;
   /** True when the JSON object of strings in TEXT column `column` holds the key and the value of the two string parameters
@@ -83,6 +86,7 @@ export const SQLITE: Dialect = {
   jsonText: (column, path) => `json_extract(${column}, ${jsonPath(path)})`,
   jsonValue: (column, path) => `${column} -> ${jsonPath(path)}`,
   jsonNotFalse: (column, path) => `json_extract(${column}, ${jsonPath(path)}) IS NOT 0`,
+  jsonNumber: (column, path) => `(CASE WHEN json_type(${column}, ${jsonPath(path)}) IN ('integer', 'real') THEN json_extract(${column}, ${jsonPath(path)}) END)`,
   jsonArrayHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ?)`,
   jsonObjectHas: (column) => `EXISTS (SELECT 1 FROM json_each(${column}) AS entry WHERE entry.key = ? AND entry.value = ?)`,
   jsonArrayLength: (column) => `json_array_length(${column})`,

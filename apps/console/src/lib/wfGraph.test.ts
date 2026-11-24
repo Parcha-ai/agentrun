@@ -1,7 +1,7 @@
 import { workflowGraph } from "@dsl/graph";
 import { describe, expect, it } from "vitest";
-import { BATCH_MID, batchRunAt } from "@/fixtures/dwf/runs";
-import { kybWorkflow } from "@/fixtures/dwf/workflows";
+import { BATCH_MID, batchRunAt } from "@/demo/dwf/runs";
+import { kybWorkflow } from "@/demo/dwf/workflows";
 import { runMarks } from "./runGraph";
 import { drawWorkflowGraph, hitOf } from "./wfGraph";
 import { nodeMeta } from "./workflowDoc";

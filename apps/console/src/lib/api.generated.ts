@@ -304,6 +304,7 @@ export interface components {
     learning_usd?: number | null;
     tools_usd?: number | null;
     all_in_usd?: number | null;
+    degraded?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -412,11 +413,11 @@ export interface components {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -485,10 +486,10 @@ export interface components {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         permission?: "allow" | "ask" | "deny";
@@ -1110,6 +1111,7 @@ export interface components {
     modified_at: components["Timestamp"];
     content_type?: string | null;
     unreadable?: true;
+    name?: string;
   };
   RunFileList: {
     run_id: components["Id"];
@@ -2534,6 +2536,7 @@ export interface operations {
       authorize_url?: string;
       expires_at?: string;
       models?: string[];
+      problem?: string;
     };
   };
   fireTrigger: {
@@ -2742,6 +2745,7 @@ export interface operations {
       authorize_url?: string;
       expires_at?: string;
       models?: string[];
+      problem?: string;
     };
   };
   getClaudeLogin: {
@@ -2757,6 +2761,20 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
       };
     };
   };
@@ -3862,11 +3880,11 @@ export interface operations {
     body: never;
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -3881,10 +3899,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
@@ -4110,6 +4128,53 @@ export interface operations {
       region?: string;
       s3Url?: string;
       image?: string;
+    };
+  };
+  getWrapped: {
+    body: never;
+    answer: {
+      year: number;
+      sessions: number;
+      turns: number;
+      requests: number;
+      tokens: {
+        input: number;
+        output: number;
+        cache_read: number;
+        cache_write: number;
+      };
+      cost_usd: number;
+      unpriced_requests: number;
+      days: {
+        day: string;
+        requests: number;
+        tokens: number;
+      }[];
+      hours: number[];
+      weekdays: number[];
+      active_ms: number;
+      harnesses: {
+        harness: string;
+        sessions: number;
+        requests: number;
+        tokens: number;
+      }[];
+      models: {
+        model: string;
+        requests: number;
+        tokens: number;
+        cost_usd: number;
+      }[];
+      sources: {
+        source: string;
+        sessions: number;
+        requests: number;
+      }[];
+      imported: {
+        source: string;
+        runs: number;
+      }[];
+      unread_files: number;
     };
   };
   gitHubCallback: {
@@ -4947,6 +5012,12 @@ export interface operations {
     body: never;
     answer: components["RunFileList"];
   };
+  listRunningComputers: {
+    body: never;
+    answer: {
+      runs: components["Run"][];
+    };
+  };
   listRuns: {
     body: never;
     answer: components["RunList"];
@@ -5586,11 +5657,11 @@ export interface operations {
         permission?: "allow" | "deny";
       };
       web_fetch?: {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       web_search?: {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_save?: {
@@ -5654,10 +5725,10 @@ export interface operations {
       } | {
         permission?: "allow" | "deny";
       } | {
-        provider?: "kernel" | "parallel";
+        provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider?: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5666,11 +5737,11 @@ export interface operations {
     };
     answer: {
       web_search: {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
       web_fetch: {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       };
       browser: {
@@ -5685,10 +5756,10 @@ export interface operations {
         pin_broken?: true;
         allow_reads?: true;
       } | {
-        provider: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        provider: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       } | {
-        provider: "kernel" | "parallel";
+        provider: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
       } | {
         provider: "auto" | "browserbase" | "kernel" | "chrome";
@@ -5998,6 +6069,29 @@ export interface operations {
       held: {
         state: "released";
       };
+    };
+  };
+  releaseTriggerFiring: {
+    body: {
+      error: string;
+    };
+    answer: {
+      key: string;
+      by: "schedule" | "email" | "feed" | "manual" | "webhook" | "github" | "composio";
+      nominal_at: string;
+      status: "due" | "started" | "sent" | "skipped" | "failed" | "missed";
+      at: string;
+      run_id: string | null;
+      reason: string | null;
+      error: {
+        code: string;
+        message: string;
+      } | null;
+      count?: number;
+      attempts?: number;
+      retry_at?: string;
+      start_by?: string;
+      catch_up?: true;
     };
   };
   remoteCommandEvents: {
@@ -6707,6 +6801,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   startCliLearningRun: {
@@ -6949,6 +7057,20 @@ export interface operations {
         organization?: string;
         plan?: string;
       };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
+      };
     };
   };
   turnOnClaudeLogin: {
@@ -6967,6 +7089,20 @@ export interface operations {
         email?: string;
         organization?: string;
         plan?: string;
+      };
+      folder: string;
+      machine: {
+        folder: string;
+        source: "CLAUDE_CONFIG_DIR" | "default";
+      };
+      sign_in?: {
+        state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+        started_at: string;
+        ended_at?: string;
+        limit_ms: number;
+        exit_code?: number;
+        signal?: string;
+        error?: string;
       };
     };
   };

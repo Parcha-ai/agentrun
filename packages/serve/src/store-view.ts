@@ -54,7 +54,7 @@ import {
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./store-reads/decisions.js";
-import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
+import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
@@ -263,8 +263,6 @@ interface StoreRun {
   /** What the run's decisions booked (their own session, metrics.ts bookedSpend), undefined when it booked none: the run's cost
    *  adds it to its usage row's, as the timeline adds their receipts. */
   readonly decisions: BookedSpend | undefined;
-  /** Its model requests billed to a ChatGPT plan (metrics.ts planSpend), undefined when it made none. */
-  readonly plan: { readonly requests: number; readonly tokens: number } | undefined;
   /** What its model requests booked (metrics.ts bookedSpend "model": every session but its paid tools' and its
    *  decisions'): their tokens and how they were priced, for its cost's `tokens` and `basis`. */
   readonly model: BookedSpend;
@@ -395,7 +393,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const terminal = row.state !== "running";
   // Its structured answer, from the final answer as the journal keeps it: never the served text, which a held value
   // (a number among them) or a long answer's cut would have changed, so a block that meets the schema reads as written.
-  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } })) : null;
+  const rawAnswer = outputSchema !== undefined && terminal ? answerOf(await runTimeline(store, runId, context, { settled: true, caps: { text: Number.POSITIVE_INFINITY } }, records)) : null;
   const structured = outputSchema !== undefined && terminal ? (rawAnswer !== null ? structuredAnswer(rawAnswer, outputSchema) : { why: "the run gave no final answer" }) : undefined;
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
@@ -403,7 +401,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
   const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
-  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values), since));
+  // Rendered from the records read above, so its usage row and the cost's `plan` (bookedSpend over the same entries) are
+  // of one read.
+  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions, records), timelineOptions, wholeAnswerFor(values), since));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -548,8 +548,6 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // What its decisions booked (their own session, never on the usage row, which counts its model requests and paid tools).
   const booked = bookedSpend(records.entries as never, "decisions");
   const decisions = booked.requests ? booked : undefined;
-  const onPlan = planSpend(records.entries as never);
-  const plan = onPlan.requests ? onPlan : undefined;
   const model = bookedSpend(records.entries as never, "model");
   // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
@@ -563,7 +561,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
   const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
   const heal = lookingBack ? undefined : healOf(endCost, runRow);
-  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  return { ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -625,8 +623,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
   // A request billed to a person's plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
   // $0, so it is in no unpriced count; what it used on the plan is said beside the figure, and which plan: a run on the
-  // login's harness was on Claude Code's login (claude-login.ts), any other on the ChatGPT sign-in.
-  const plan = run.plan;
+  // login's harness was on Claude Code's login (claude-login.ts), any other on the ChatGPT sign-in. Read with its model
+  // requests (bookedSpend "model"): a request booked twice is one, as it is one request.
+  const plan = run.model.plan.requests ? run.model.plan : undefined;
   const on = run.harness === LOGIN_HARNESS ? "claude_code" : "chatgpt";
   // Beside its figure: while it is unknown, what is known so far; at $0 with every model request on a free model (and no
   // decision of its own), that it is free.
@@ -743,7 +742,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
-  // an output schema and the answer's last fenced json block meets it (storeRunOf's `structured`), else none. Served as
+  // an output schema and the answer's json block (answer-json.ts jsonBlockOf) meets it (storeRunOf's `structured`), else none. Served as
   // runs.ts serves it (servedOutput): each string in it cut of the values the run holds, its shape kept; none while the
   // run's sign-in can't be read back.
   const ownOutput = row.kind === "workflow" ? output : status === "completed" && structured && "value" in structured ? structured.value : null;

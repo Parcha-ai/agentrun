@@ -8,13 +8,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { main as cli, NOUNS, words } from "./cli.mjs";
+import { OWN_VERSION } from "./own.mjs";
 import { chosenPublicUrl } from "./public-url.mjs";
 import { tailnetHint, tailnetNameOf } from "./tailscale.mjs";
 
 export const SERVE_PACKAGE = "@parcha/agentrun-serve";
 /** This command's package at its version, handed to the server it starts (AGENTRUN_NPX_PACKAGE), so the server's hints
  *  name this command. */
-export const OWN_SPEC = `@parcha/agentrun@${JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version}`;
+export const OWN_SPEC = `@parcha/agentrun@${OWN_VERSION}`;
 /** Where the server listens and the console is opened: this machine only. */
 export const HOST = "127.0.0.1"; // key-gate: loopback-rule the server this starts listens on this machine only
 
@@ -265,7 +266,7 @@ const inCi = (env) => Boolean(env.CI) && env.CI !== "false" && env.CI !== "0";
 
 /** The server's own commands (its CLI's first word), which this command runs on its store: every other first word is
  *  the CLI's, which names a command it has or says it has none. */
-export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "sign-in-harness", "store-schema", "validate-template"];
+export const SERVER_COMMANDS = ["check-harness", "eval-template", "import", "install-harness", "learning", "native", "remote-bridge", "reset-password", "runner", "scrub", "sign-in-harness", "store-schema", "validate-template"];
 
 /** How many of the server's refusals and ignored deliveries a start says, each route and reason once, before one line
  *  that says the rest are not: under this command the server's log goes nowhere else (its stdout is read here and dropped). */
@@ -287,15 +288,44 @@ function fieldsOf(line) {
   return fields;
 }
 
+/** The error codes the authorize step can send: OAuth's (RFC 6749 4.1.2.1), OpenID Connect's (Core 3.1.2.6), and OpenAI's
+ *  own for a workspace whose admin turned the plan off. */
+const AUTHORIZE_CODES = new Set([
+  "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type", "invalid_scope", "server_error", "temporarily_unavailable",
+  "interaction_required", "login_required", "account_selection_required", "consent_required", "invalid_request_uri", "invalid_request_object",
+  "request_not_supported", "request_uri_not_supported", "registration_not_supported",
+  "3p_delegated_access_policy_denied",
+]);
+
+/** A failed sign-in's reason as the terminal says it. An `authorize_<code>` reason comes from the loopback callback's
+ *  `?error=`, which any process on the machine can send while a sign-in waits: a code that is not one the authorize step
+ *  sends is said as `authorize_other`. The server's line, its tagged code whole, is kept in the start log (signInFailed);
+ *  `agentrun-serve` run on its own logs it. */
+function signInReason(reason) {
+  if (reason === undefined) return "no reason given";
+  const authorize = /^authorize_(.+)$/.exec(reason);
+  return authorize && !AUTHORIZE_CODES.has(authorize[1]) ? "authorize_other" : reason;
+}
+
+/** Whether `line` is the server's log line of a ChatGPT sign-in that did not finish. */
+const signInFailed = (line) => {
+  const fields = fieldsOf(line);
+  return fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed";
+};
+
 /** A teller for one start: given a line of the server's output, what to say of it to the person, or undefined. A refused
  *  request (auth_failed) and a verified webhook delivery its trigger does not take (hook_ignored) are said in words, with
- *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. With AGENTRUN_LOG=quiet,
- *  as this command starts the server, those lines are all an operator would otherwise miss. */
+ *  their route and reason and never what was sent, each route and reason once, at most TOLD_MAX. A ChatGPT sign-in that
+ *  did not finish (chatgpt=sign_in_failed: OpenAI's tab already said it completed) is said each time, with its reason,
+ *  and so is one saved whose change the server failed to take (chatgpt=changed_failed).
+ *  With AGENTRUN_LOG=quiet, as this command starts the server, those lines are all an operator would otherwise miss. */
 export function tellerOf() {
   const said = new Set();
   let full = false;
   return (line) => {
     const fields = fieldsOf(line);
+    if (fields.event === "chatgpt" && fields.chatgpt === "sign_in_failed") return `AgentRun's ChatGPT sign-in did not finish (${signInReason(fields.reason)}): Settings → API Keys says why; start it again there.`;
+    if (fields.event === "chatgpt" && fields.chatgpt === "changed_failed") return `AgentRun saved the ChatGPT sign-in but has not taken it into what it offers yet (${fields.reason ?? "no reason given"}): it tries again as Settings reads it; if codex and pi still ask for a key, restart AgentRun.`;
     let words;
     let key;
     if (fields.event === "auth_failed" && fields.route) {
@@ -404,7 +434,8 @@ export async function main(argv, env = process.env) {
   // server's own "Open " line; the lines SAID names go to stderr after it, for the person, so stdout stays that one line.
   // What it prints on stderr comes through as it is, as it prints it, at the pace this command's stderr is read (forward).
   // Until the server prints the address, all it writes on either goes to the start log too, and the last lines of each are
-  // kept: a start that fails says them, with the step, how the server ended and the log (failureText).
+  // kept: a start that fails says them, with the step, how the server ended and the log (failureText). After it, the log
+  // keeps only a ChatGPT sign-in's failure (tell).
   const log = openStartLog(dataDir);
   const logPath = log.fd === undefined ? undefined : join(dataDir, START_LOG);
   // The first write to the log that failed (a full disk, a quota): the start goes on, the log keeps what it holds, and a
@@ -481,6 +512,10 @@ export async function main(argv, env = process.env) {
   const tell = (line) => {
     const said = SAID.test(line) ? line : teller(line);
     if (said !== undefined) told ? console.error(said) : held.push(said);
+    // Started, the start log keeps the server's line of a ChatGPT sign-in that did not finish: its reason whole, a code
+    // the terminal says only as authorize_other included, which nothing else under this command keeps. (Before the start,
+    // every line goes there already.)
+    if (started && signInFailed(line)) toLog(`${line}\n`);
   };
   // A SAID line can come before the "Open " line too (the setup link is printed as the server attaches its owner, before
   // its banner): it is held and said first, in order.
@@ -534,7 +569,9 @@ export async function main(argv, env = process.env) {
     return ended?.code || 1;
   }
   started = true;
-  closeLog();
+  // Kept open for a sign-in's failure (tell) until the server's output has all been read: its exit can come before the
+  // last lines in the pipe.
+  void closed.then(closeLog);
   console.log(`AgentRun is running at ${url}`);
   // For the person at the terminal (stderr, so stdout stays the one line a script reads): how to stop it, and where its
   // data is kept, which the next start opens again.

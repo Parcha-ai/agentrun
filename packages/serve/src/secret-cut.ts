@@ -11,6 +11,11 @@ secretLintProfiler.setEnabled(false);
 
 import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
+import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+import { userInfo } from "node:os";
+import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
+
+export { type Cut, type CutKind, isPlaceholder, RESTORABLE, RULE_PATTERNS, SCRUB_RULES, type ScrubRule, viewsOf } from "./secret-rules.js";
 
 /** Whether a name is a secret's, whatever list names it or none does: one of its `_`-separated segments, in any case, is
  *  KEY, TOKEN, SECRET, PASSWORD, PASSWD, PASS, PAT, CREDENTIAL, CREDENTIALS or DSN, or its last is PWD after another.
@@ -98,6 +103,12 @@ export const secretlintCalls = { count: 0 };
  *  itself where the rule gives it, else what it matched), and as a JSON string holding it would read it, decoded up to
  *  three times, so the cut finds it in a record's parsed text and in a shell's output kept in one as JSON. */
 export async function secretsIn(content: string): Promise<string[]> {
+  return [...new Set((await lintFinds(content)).map((find) => find.value))];
+}
+
+/** secretsIn's finds, each with the message secretlint reported it under (what anchors it: the scrubber's rules read a
+ *  label-anchored message apart from a format's). */
+export async function lintFinds(content: string): Promise<LintFind[]> {
   if (!content) return [];
   secretlintCalls.count += 1;
   const { messages } = await lintSource({ source: { content, filePath: "/import.txt", ext: ".txt", contentType: "text" }, options: { config: SECRETLINT, maskSecrets: false } });
@@ -109,13 +120,314 @@ export async function secretsIn(content: string): Promise<string[]> {
       return undefined;
     }
   };
-  const found = new Set<string>();
+  const found = new Map<string, LintFind>();
   for (const message of messages) {
+    const id = message.messageId ?? message.ruleId;
     const named = Object.values(message.data ?? {}).filter((value): value is string => typeof value === "string" && value.length >= 8 && content.includes(value));
     for (const each of named.length ? named : [content.slice(message.range[0], message.range[1])]) {
       let value: string | undefined = each;
-      for (let level = 0; value !== undefined && level < 3; level++) (found.add(value), (value = decoded(value)));
+      for (let level = 0; value !== undefined && level < 3; level++) {
+        if (!found.has(`${id}\u0000${value}`)) found.set(`${id}\u0000${value}`, { id, value });
+        value = decoded(value);
+      }
     }
   }
-  return [...found];
+  return [...found.values()];
+}
+
+// ---------- the scrubber (Scrubber beta 1; the interface: tl-share's CONTRACT-scrub-beta1.md)
+
+export type ScrubOptions = {
+  readonly mode: "count" | "cut";
+  /** Values the server holds (serverSecrets, handed refs, env key-shaped values): each cut in every form it stands in. */
+  readonly held?: readonly string[];
+  /** The path of the file `text` is the content of, when the caller knows it: a .env* file, one under ~/.ssh or a
+   *  credentials file is dropped whole. */
+  readonly path?: string;
+  /** The shell command whose output `text` is, when the caller knows it (a tool call's, ruling LVI): a command that reads
+   *  one file alone (`cat ~/.pgpass`) gives `path` when none is given, and an env command's output is a dump. */
+  readonly command?: string;
+  /** The homes the caller holds (rulings E, VII): a bare `/home/<user>` with no segment after it, or a Claude project
+   *  folder's `-home-<user>-` outside `.claude/projects/`, is cut only for one of these. When not given, this process's
+   *  user's home and $HOME. */
+  readonly homes?: readonly string[];
+  /** Cut mode: asked of each restorable cut alone (label, personal, jev); true leaves its text in place, the cut still
+   *  reported, `kept: true`. Never asked of a format, held or dump cut: those are always cut. */
+  readonly keep?: (cut: Readonly<Cut>) => boolean;
+};
+/** Count mode's answer: the cuts, and `blocked`, whether cut mode would fail closed on the same text (its final check
+ *  finds a held value or a format left in the cut text): a share of it would be refused. */
+export type ScrubCount = { counts: Record<string, number>; cuts: Cut[]; blocked: boolean };
+export type ScrubResult = { ok: true; text: string; cuts: Cut[]; counts: Record<string, number> } | { ok: false; counts: Record<string, never> };
+/** The engine's limits, for a test: the chunk length and the overlap between chunks, the time budget and its clock. */
+export type ScrubLimits = { readonly maxChars?: number; readonly overlap?: number; readonly budgetMs?: number; readonly now?: () => number };
+
+/** The longest piece of a text one pass reads: a longer text is read in pieces this long, each overlapping the next by
+ *  SCRUB_OVERLAP (more than any rule's longest match), so a value across a piece's end is read whole in the next one.
+ *  Never truncated, never skipped (ruling B). */
+export const SCRUB_MAX_CHARS = 32 * 1024 * 1024;
+export const SCRUB_OVERLAP = 1024 * 1024;
+/** The most time a scrub may take, its final check included: past it, the scrub throws (cut mode fails closed, count
+ *  mode rejects). Every rule is linear, so it is not met in good faith. */
+export const SCRUB_BUDGET_MS = 30_000;
+
+/** Which hit names a cut where hits overlap (ruling C): the kind that drops the most and may not be restored first,
+ *  then the longest, then the deeper view, then the table's order. */
+const KIND_RANK: Readonly<Record<CutKind, number>> = { held: 0, format: 1, dump: 2, label: 3, personal: 4, jev: 5 };
+
+/** A cut's text in the output: its rule's replacement (a home folder's `~`), a value's `[redacted:<rule>]`, a dump's
+ *  `[redacted:<rule> N lines]`, N counted in the view that found it (a JSON string's escaped line breaks are lines). */
+const marker = (rule: ScrubRule, value: string): string => {
+  if (rule.replacement !== undefined) return rule.replacement;
+  if (rule.kind !== "dump") return `[redacted:${rule.id}]`;
+  return `[redacted:${rule.id} ${lineCount(value)} lines]`;
+};
+const MARKER = /\[redacted:[a-z0-9-]{1,64}(?: \d{1,9} lines)?\]/g;
+const QUOTES = "\"'";
+
+/** The clock and the deadline a scrub reads, and the chunks it reads a text in. */
+type Run = { readonly maxChars: number; readonly overlap: number; readonly deadline: number; readonly now: () => number };
+const runOf = (limits: ScrubLimits): Run => {
+  const now = limits.now ?? (() => performance.now());
+  const maxChars = limits.maxChars ?? SCRUB_MAX_CHARS;
+  const overlap = Math.min(limits.overlap ?? SCRUB_OVERLAP, Math.floor(maxChars / 2));
+  // A chunk's overlap holds a key's longest run (ruling XXXIII), so a key that straddles a bound is whole in one chunk;
+  // a chunk too short for that (a test's 4096) holds no such run anyway.
+  if (maxChars >= 2 * KEY_RUN_MAX && overlap < KEY_RUN_MAX) throw new Error(`scrub: overlap ${overlap} is below KEY_RUN_MAX ${KEY_RUN_MAX}`);
+  return { maxChars, overlap, deadline: now() + (limits.budgetMs ?? SCRUB_BUDGET_MS), now };
+};
+const inTime = (run: Run): void => {
+  if (run.now() > run.deadline) throw new Error("scrub: over its time budget");
+};
+/** The [start, end) of each chunk of `text`: one chunk when it fits, else maxChars long each, each starting `overlap`
+ *  before the last one's end; a bound that falls inside a JSON escape moves to the escape's start, so no chunk starts
+ *  or ends inside one (ruling XV). */
+function chunksOf(text: string, run: Run): [number, number][] {
+  const length = text.length;
+  if (length <= run.maxChars) return [[0, length]];
+  const out: [number, number][] = [];
+  for (let start = 0; ; start += run.maxChars - run.overlap) {
+    const end = Math.min(length, start + run.maxChars);
+    out.push([escapeStartAt(text, start), escapeStartAt(text, end)]);
+    if (end === length) return out;
+  }
+}
+
+const ESCAPE_LETTERS = "\"\\/bfnrt";
+const HEX4 = /^[0-9A-Fa-f]{4}$/;
+/** `at`, or the start of the JSON escape `at` falls strictly inside (`\n`, `\uXXXX`), read as a JSON string reads it:
+ *  a backslash opens an escape when an even number of backslashes stand right before it. */
+function escapeStartAt(text: string, at: number): number {
+  for (let from = at - 1; from >= 0 && from >= at - 5; from--) {
+    if (text.charCodeAt(from) !== 92) continue;
+    let before = 0;
+    while (from - before - 1 >= 0 && text.charCodeAt(from - before - 1) === 92) before++;
+    if (before % 2) continue;
+    const letter = text.charAt(from + 1);
+    const end = ESCAPE_LETTERS.includes(letter) && letter !== "" ? from + 2 : letter === "u" && HEX4.test(text.slice(from + 2, from + 6)) ? from + 6 : from + 1;
+    return from < at && at < end ? from : at;
+  }
+  return at;
+}
+
+type Found = { start: number; end: number; rule: ScrubRule; order: number; depth: number };
+
+/** The closing quote of the innermost string (of `lists`, each sorted and disjoint) that holds `at`, or Infinity. */
+function stringEnd(lists: readonly (readonly (readonly [number, number])[])[], at: number): number {
+  let end = Number.POSITIVE_INFINITY;
+  for (const spans of lists) {
+    let low = 0;
+    let high = spans.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (spans[mid]![0] < at) low = mid + 1;
+      else high = mid;
+    }
+    const span = spans[low - 1];
+    if (span && span[1] >= at) end = Math.min(end, span[1]);
+  }
+  return end;
+}
+
+/** Every rule's hits in one view of a chunk, mapped to the input (`offset`: the chunk's start in it), each widened to
+ *  hold an escape it starts or ends inside. A label rule's hit on a placeholder (isPlaceholder) is no hit, whichever
+ *  label rule found it. */
+async function viewHits(rules: readonly ScrubRule[], view: View, offset: number, opts: ScrubOptions, run: Run, out: Found[]): Promise<void> {
+  const ctx = contextOf(view, opts);
+  for (const [order, rule] of rules.entries()) {
+    if (!Object.hasOwn(RESTORABLE, rule.kind)) throw new Error(`scrub: rule ${rule.id} has no kind`);
+    for (const hit of await rule.find(view.text, ctx)) {
+      if (!Number.isInteger(hit.start) || !Number.isInteger(hit.end) || hit.start < 0 || hit.end > view.text.length || hit.end < hit.start) throw new Error(`scrub: rule ${rule.id} gave a span outside the text`);
+      if (hit.end === hit.start) continue;
+      if (rule.kind === "label") {
+        // What follows the value is read on its own line or in its own string only (ruling LIV, XLVI's bound): a JSON
+        // string's end and its object's `}` or `,` after it are no code's evidence for the value.
+        const slot = { name: hit.name, bare: hit.quoted !== true && !QUOTES.includes(view.source.charAt(hit.start - 1) || " "), after: view.text.slice(hit.end, Math.min(hit.end + 8, ctx.lines?.end(hit.end) ?? view.text.length)), code: hit.code, typed: hit.typed };
+        if (isPlaceholder(view.text.slice(hit.start, hit.end), slot)) continue;
+      }
+      const [start, end] = inputSpan(view, hit.start, hit.end);
+      if (end > start) out.push({ start: offset + start, end: offset + end, rule, order, depth: view.depth });
+    }
+    inTime(run);
+  }
+}
+
+/** Every rule's hits in every view of every chunk of `text` (ruling A: the union), resolved to cuts: hits that overlap
+ *  are one cut over all of them, named for the strongest (ruling C: KIND_RANK, then the longest in the input, then the
+ *  deeper view, then the table's order). Each cut's offsets are the input's; its shape and its marker are read from its
+ *  text decoded as often as the view that named it was. */
+async function cutsOf(rules: readonly ScrubRule[], text: string, opts: ScrubOptions, run: Run): Promise<{ cut: Cut; marker: string }[]> {
+  const hits: Found[] = [];
+  for (const [from, to] of chunksOf(text, run)) {
+    const found = hits.length;
+    const views = viewsOf(text.slice(from, to));
+    for (const view of views) await viewHits(rules, view, from, opts, run, hits);
+    // A hit that starts inside a JSON string ends by its closing quote at the latest (ruling XLIX): a string any view
+    // reads, in the input's offsets (a decoded string's quote is its escape there, `\"`), so a cut never eats a
+    // string's end and the output still parses.
+    const strings = views.map((view) => view.strings.map(([open, close]) => [from + view.at(open), from + view.at(close)] as const));
+    for (let at = found; at < hits.length; at++) {
+      const hit = hits[at]!;
+      hit.end = Math.min(hit.end, stringEnd(strings, hit.start));
+      if (hit.end <= hit.start) hits.splice(at--, 1);
+    }
+    // A hit widened past its chunk's bounds read an escape the chunk split: fails closed (ruling XV).
+    for (let at = found; at < hits.length; at++) if (hits[at]!.start < from || hits[at]!.end > to) throw new Error("scrub: a cut crosses its chunk's bounds");
+  }
+  hits.sort((a, b) => a.start - b.start || b.end - a.end);
+  const stronger = (a: Found, b: Found): boolean => {
+    const rank = KIND_RANK[a.rule.kind] - KIND_RANK[b.rule.kind];
+    if (rank) return rank < 0;
+    const length = a.end - a.start - (b.end - b.start);
+    if (length) return length > 0;
+    if (a.depth !== b.depth) return a.depth > b.depth;
+    return a.order < b.order;
+  };
+  const cuts: { cut: Cut; marker: string }[] = [];
+  for (let at = 0; at < hits.length; ) {
+    let best = hits[at]!;
+    const start = best.start;
+    let end = best.end;
+    let next = at + 1;
+    for (; next < hits.length && hits[next]!.start < end; next++) {
+      const hit = hits[next]!;
+      end = Math.max(end, hit.end);
+      if (stronger(hit, best)) best = hit;
+    }
+    const { rule } = best;
+    const value = decodedTimes(text.slice(start, end), best.depth);
+    cuts.push({ cut: { rule: rule.id, kind: rule.kind, restorable: RESTORABLE[rule.kind], start, end, shape: shapeOf(rule, value) }, marker: marker(rule, value) });
+    at = next;
+  }
+  return cuts;
+}
+
+const countsOf = (cuts: readonly Cut[]): Record<string, number> => {
+  const counts: Record<string, number> = {};
+  for (const cut of cuts) counts[cut.rule] = (counts[cut.rule] ?? 0) + 1;
+  return counts;
+};
+
+/** The text with each cut's marker in its place, or its own text where `keep` (cut mode alone) leaves it. */
+function cutText(text: string, cuts: readonly { cut: Cut; marker: string }[], keep: ScrubOptions["keep"]): { out: string; made: Cut[] } {
+  const parts: string[] = [];
+  let length = 0;
+  let from = 0;
+  const made: Cut[] = [];
+  for (const { cut, marker } of cuts) {
+    const value = text.slice(cut.start, cut.end);
+    // RESTORABLE, never the cut's own field, decides whether `keep` is asked at all.
+    const kept = RESTORABLE[cut.kind] && keep !== undefined && keep(Object.freeze({ ...cut })) === true;
+    const before = text.slice(from, cut.start);
+    const put = kept ? value : marker;
+    parts.push(before, put);
+    const outStart = length + before.length;
+    length = outStart + put.length;
+    made.push({ ...cut, outStart, outEnd: length, ...(kept ? { kept: true as const } : {}) });
+    from = cut.end;
+  }
+  parts.push(text.slice(from));
+  return { out: parts.join(""), made };
+}
+
+/** `scrub` over `rules` in place of SCRUB_RULES: the engine, for a test that injects a rule (and its limits). */
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions & { mode: "count" }, limits?: ScrubLimits): Promise<ScrubCount>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions & { mode: "cut" }, limits?: ScrubLimits): Promise<ScrubResult>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions, limits?: ScrubLimits): Promise<ScrubCount | ScrubResult>;
+export async function scrubWith(rules: readonly ScrubRule[], text: string, opts: ScrubOptions, limits: ScrubLimits = {}): Promise<ScrubCount | ScrubResult> {
+  if (opts.mode === "count") {
+    // A throw here rejects: a scorer must never read an error as zero cuts. The same output cut mode makes (no keep)
+    // and the same final check say whether cut mode would fail closed.
+    const run = runOf(limits);
+    const cuts = await cutsOf(rules, text, opts, run);
+    const blocked = !(await clean(rules, cutText(text, cuts, undefined).out, opts, run));
+    const made = cuts.map(({ cut }) => cut);
+    return { counts: countsOf(made), cuts: made, blocked };
+  }
+  try {
+    const run = runOf(limits);
+    const { out, made } = cutText(text, await cutsOf(rules, text, opts, run), opts.keep);
+    if (!(await clean(rules, out, opts, run))) throw new Error("scrub: the cut text is not clean");
+    return { ok: true, text: out, cuts: made, counts: countsOf(made) };
+  } catch {
+    // Fails closed: whatever threw, no text, no cut, no count leaves.
+    return { ok: false, counts: {} };
+  }
+}
+
+/** Cut `text` of every rule's finds ("cut": the text, its cuts and counts; on ANY error `{ok:false}` and no text), or
+ *  count them ("count": counts, cuts and whether a cut would be refused, never text). Async: secretlint's pass is. */
+export function scrub(text: string, opts: ScrubOptions & { mode: "count" }): Promise<ScrubCount>;
+export function scrub(text: string, opts: ScrubOptions & { mode: "cut" }): Promise<ScrubResult>;
+export function scrub(text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult>;
+export function scrub(text: string, opts: ScrubOptions): Promise<ScrubCount | ScrubResult> {
+  return scrubWith(SCRUB_RULES, text, opts);
+}
+
+const WHITESPACE = /\s/g;
+const heldOf = (opts: ScrubOptions): string[] => [...new Set((opts.held ?? []).filter((value) => value.replace(WHITESPACE, "").length >= MIN_SECRET))];
+
+/** This process's home folders: its user's (the password database's) and $HOME. */
+export function processHomes(): string[] {
+  const homes = new Set<string>();
+  try {
+    homes.add(userInfo().homedir);
+  } catch {
+    // No user entry (a container's uid with none): $HOME alone.
+  }
+  if (process.env.HOME) homes.add(process.env.HOME);
+  return [...homes].filter((home) => home.length > 1);
+}
+
+/** What the rules read beside a view: the held values, the view's unblanked text, the homes, the path and the command, and secretlint's
+ *  finds in the view (one pass a view, on first ask). */
+function contextOf(view: View, opts: ScrubOptions): ScrubContext {
+  let lint: Promise<LintFind[]> | undefined;
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+}
+
+/** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
+ *  chunk of it (each marker read as a blank, so a marker is never one), and no held value in any form (valueMatcher:
+ *  split by whitespace, partly encoded) in the text as written or in any decoding of it, each marker read as a
+ *  character no form holds. The time budget holds here too (a throw). */
+async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOptions, run: Run): Promise<boolean> {
+  const blanked = out.replace(MARKER, (found) => " ".repeat(found.length));
+  const formats = rules.filter((rule) => rule.kind === "format");
+  for (const [from, to] of chunksOf(blanked, run)) {
+    for (const view of viewsOf(blanked.slice(from, to))) {
+      const again: ScrubContext = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+      for (const rule of formats) {
+        if ((await rule.find(view.text, again)).some((hit) => hit.end > hit.start)) return false;
+        inTime(run);
+      }
+    }
+  }
+  const held = heldOf(opts);
+  if (!held.length) return true;
+  const matches = valueMatcher(held);
+  for (const view of viewsOf(out.replace(MARKER, "\u0000"))) {
+    if (matches(view.source)) return false;
+    inTime(run);
+  }
+  return true;
 }

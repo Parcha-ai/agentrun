@@ -54,7 +54,7 @@ test("without a default model a revision that names none is refused before it st
   assert.equal(refused.status, 409);
   assert.equal(refused.body.error.code, "agent_not_runnable");
   // A server that signs in with ChatGPT says so too: pi runs on the plan.
-  assert.match(refused.body.error.message, /No model yet: add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts; or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\./);
+  assert.match(refused.body.error.message, /No model yet: start Ollama and pull a model with tools, or add a model key in Settings → Model keys, or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts; or sign in with ChatGPT \(Settings → Model keys\) to run it on your ChatGPT plan\./);
   assert.doesNotMatch(refused.body.error.message, /--faux|AGENT_MODEL/, "a person's words: no operator flags");
   assert.equal((await api("POST", "/agents", agent("keyless", { model: "openai/gpt-6.1-sol" }))).status, 201);
   const keyless = await api("POST", "/agents/keyless/runs", { input: { content: "hi" } });
@@ -309,7 +309,7 @@ test("a tool's missing variables are named, never their values", async () => {
   // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
   // (Claude's own search is an explicit pick); Parallel picked
   // without its key, missing.
-  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "exa-keyless", "claude-agent": "exa-keyless", codex: "native", opencode: "exa-keyless" });
+  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" });
   assert.deepEqual(toolsView({}, { web_search: { provider: "parallel" } }).filter((t) => t.resolves && t.name !== "browser").map((t) => [t.name, t.available, t.missing]), [["web_fetch", true, undefined], ["web_search", false, ["PARALLEL_API_KEY"]]]);
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");

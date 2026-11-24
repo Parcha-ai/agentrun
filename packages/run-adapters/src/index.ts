@@ -1,4 +1,4 @@
-export { answeredUnpriced, costOfParts, createHarnessRunner, CUT_AT_HOLD, modelPortFor, rebooked, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS, turnCostOf } from "./runner.js";
+export { answeredUnpriced, billedToPlan, costOfParts, createHarnessRunner, CUT_AT_HOLD, modelPortFor, rebooked, sessionSpendOf, SUBMIT_TOOL, RUNNER_RECORDS, turnCostOf } from "./runner.js";
 export { RECORD_WAIT_MS, runBooking, type RunBookingOptions, type RunSessions, WAIT_POLL_FIRST_MS, WAIT_POLL_MOST_MS, WAIT_STALL_MS } from "./run-booking.js";
 export type { Admission, BeforeRequest, Refusal, HarnessRunner, HarnessRunnerOptions, HoldShort, InFlight, ModelBooking, ModelPortEvent, ModelPortOptions, CostParts, SessionCost } from "./runner.js";
 export { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
