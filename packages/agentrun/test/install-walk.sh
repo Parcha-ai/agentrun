@@ -4,7 +4,8 @@
 #       the service; its health through a stop and start, a restart by the service manager, `service restart`, a crash
 #       (SIGKILL), running the installer again, and `service uninstall`. Then on a terminal (a pty, on_terminal): asked
 #       first, Enter runs it in the background, still running after the terminal goes; y installs the service; and
-#       --no-service over that service is refused with the service left as it was.
+#       --no-service over that service is refused with the service left as it was; with its output captured (a program
+#       running it), it is not asked and installs the service.
 #   install-walk.sh container [installer options]  no service manager: the installer piped to sh, `service install`
 #       refused in words; the default start, in the background, returns and AgentRun answers after it; an older launcher
 #       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it. Then --tailscale with no
@@ -496,6 +497,21 @@ echo "$out"
 grep -q -- "--no-service, but AgentRun is a service of this user already" <<< "$out" || die "the refusal does not say why"
 [ "$(manager_pid)" = "$serving" ] || die "the service's process changed from $serving to $(manager_pid)"
 healthy 1
+
+step "service uninstall"
+"$agentrun" service uninstall
+down 30
+expect_exit 3 "$agentrun" service status
+
+step "on a terminal, its output to a file (a program that captures it): not asked, and the service is installed"
+on_terminal y /tmp/ask-captured.log bash -c 'cat "$0" | sh -s -- "$@" > /tmp/captured.log 2>&1' "$here/install.sh" "$@" || {
+  cat /tmp/captured.log
+  die "the installer exited $? with its output captured"
+}
+if grep -qF "$question" /tmp/ask-captured.log; then die "asked on the terminal, where nobody reads the question"; fi
+grep -q "AgentRun is running at" /tmp/captured.log || die "no address printed"
+"$agentrun" service status
+healthy 10
 
 step "service uninstall"
 "$agentrun" service uninstall

@@ -222,9 +222,9 @@ AgentRun's installer, for macOS and Linux (x64, arm64):
 It installs AgentRun, with a Node.js of its own, in ~/.agentrun, and starts it. In a terminal it asks first whether to
 make it a service of this user (launchd on macOS, systemd --user on Linux), which keeps running after the terminal
 closes and starts again at login; the answer is No unless you say yes, and then AgentRun runs in the background until
-the machine stops (`agentrun stop` stops it). With no terminal to ask in it installs the service, as --service does;
---no-service says no there. Where there is no service manager, it runs in the background. It returns once AgentRun
-answers.
+the machine stops (`agentrun stop` stops it). With no terminal to ask in, or its output going to a pipe or a file, it
+installs the service, as --service does; --no-service says no there. Where there is no service manager, it runs in the
+background. It returns once AgentRun answers.
 
 AgentRun counts itself anonymously (a random id, version and platform; never prompts, files or keys). To turn that
 off, put AGENTRUN_TELEMETRY=0 before sh: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md
@@ -404,6 +404,10 @@ no_service_over_service() {
 # says no there.
 want_service() {
   [ -z "$no_service" ] || return 1
+  # Output to a pipe or a file (an agent's or a program's shell that captures it, `| tee`): nobody reads the question,
+  # though a terminal may still be attached, and the read would wait on it for good. Not asked, as with no terminal. A
+  # file standing in for the terminal is asked.
+  [ -t 1 ] || [ -t 2 ] || [ ! -c "$1" ] || return 0
   # No terminal to open: nobody to ask. Appended (a terminal takes either; a file standing in for one keeps its answer).
   { printf 'Keep AgentRun running as a service of this user (it starts again at login)? [y/N] ' >> "$1"; } 2> /dev/null || return 0
   answer=

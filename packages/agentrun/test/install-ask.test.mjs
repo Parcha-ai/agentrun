@@ -34,6 +34,18 @@ test("--no-service says no without asking, and no terminal to ask in keeps the s
   assert.equal(await ask(t, { terminal: false }), 0);
 });
 
+// A program that captures the installer's output (an agent's shell, `| tee`) while a terminal is still attached: the
+// question would go where nobody reads it and the read would wait on the terminal for good, so it is not asked, as with no
+// terminal. /dev/null stands in for that terminal: a character device that opens, and a read on it ends at once.
+test("with its output going to a pipe, the installer does not ask on a terminal that is still there, and keeps the service", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "install-ask-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, "script.sh"), `set -u\nno_service=\n${wantService}want_service /dev/null\n`);
+  assert.equal(await promisify(execFile)("sh", [join(dir, "script.sh")]).then(() => 0, (e) => e.code), 0);
+  await writeFile(join(dir, "script.sh"), `set -u\nno_service=1\n${wantService}want_service /dev/null\n`);
+  assert.equal(await promisify(execFile)("sh", [join(dir, "script.sh")]).then(() => 0, (e) => e.code), 1, "--no-service still says no");
+});
+
 // The installer's choice once AgentRun is installed (its `default)` start), run with a fake agentrun whose
 // `service status` exits as a service manager would: 0 or 1 a service is there, 3 none.
 const choice = /^    default\)\n([\s\S]*?)\n      ;;\n  esac/m.exec(await readFile(INSTALL, "utf8"))?.[1];
