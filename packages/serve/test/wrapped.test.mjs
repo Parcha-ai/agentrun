@@ -263,6 +263,21 @@ test("keptReads keeps a year for good only when it was over before its read star
   assert.deepEqual(calls.map((call) => call.year), [2026, 2026]);
 });
 
+// The year is the one the read BEGAN in: a read that begins before New Year and ends after it still holds the year only
+// up to its start, so it is not kept for good either.
+test("keptReads takes the year from when the read began, not when it ended: a read across New Year is read again", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date(2026, 11, 31, 23, 59).getTime() });
+  const { calls, kept } = keptOver();
+  const first = kept(2026);
+  t.mock.timers.tick(2 * 60_000);
+  calls[0].resolve(READ);
+  await first;
+  await settled();
+  t.mock.timers.tick(2 * 60_000);
+  assert.notEqual(kept(2026), first, "read again: the read began in 2026, before the year was over");
+  assert.deepEqual(calls.map((call) => call.year), [2026, 2026]);
+});
+
 // Each read is a worker holding a year's sessions (up to 2 GB): one at a time per server, so asking for several years
 // at once never runs several. A year waiting its turn is a read still going: past the route's wait it answers 503.
 test("keptReads reads one year at a time: the next starts when the one before ends, whether it read or failed", async (t) => {
