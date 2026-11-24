@@ -15,6 +15,8 @@ import type { ChatGPTView, ToolKeys } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const LINE = "Codex and pi agents run on your ChatGPT plan. Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.";
+const GATEWAY_NAMES_NONE = "Name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.";
+const REFUSED = "AGENT_MODEL_BASE_URL must be an https URL of a gateway, with a path if it serves the API under one; it is http, not https.";
 const KEYS: ToolKeys = {
   keys: [
     servedKey({ id: "anthropic", kind: "model", label: "Anthropic", fields: [{ name: "ANTHROPIC_API_KEY", set: false, source: null }], unlocks: [], harnesses: ["pi"], check: null }),
@@ -31,11 +33,14 @@ const HARNESSES = [
   { id: "claude-agent", available: false, reason: "Claude Agent needs an Anthropic or OpenRouter key.", needs: ["key"] },
 ];
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-function server() {
+// GET /v2/settings/model-gateway as an environment's gateway serves it: `problem` is why serve refuses its address, else null.
+const gatewayView = (problem: string | null) => ({ source: "env", base_url: "http://gw.example/v1", ids: "as_named", models: { default: null, fast: null, strong: null }, set_at_start: ["AGENT_MODEL_BASE_URL"], secret: { set: true, source: "env" }, problem });
+function server(gateway: string | null = null) {
   const calls: string[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     calls.push(`${init?.method ?? "GET"} ${url}`);
     if (String(url) === "/v2/settings/tool-keys") return json(200, KEYS);
+    if (String(url) === "/v2/settings/model-gateway") return json(200, gatewayView(gateway));
     if (String(url) === "/v2/settings/chatgpt/sign-in") return json(200, { authorize_url: "https://auth.openai.com/api/accounts/authorize?state=fake", expires_at: new Date(Date.now() + 600_000).toISOString() });
     return json(200, { state: "pending" });
   }) as typeof globalThis.fetch;
@@ -45,8 +50,8 @@ function server() {
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.unstubAllGlobals(); });
 
-async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>) {
-  const { v2, calls } = server();
+async function open(props: Partial<Parameters<typeof ModelKeyCard>[0]>, gateway: string | null = null) {
+  const { v2, calls } = server(gateway);
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(ModelKeyCard, { v2, writable: true, needs: "key", ...props })));
@@ -77,10 +82,28 @@ describe("ModelKeyCard, a server with no key that offers the ChatGPT sign-in", (
     ]);
   });
 
-  it("on a gateway server, says the plan runs only an agent that names its model", async () => {
-    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway" });
-    expect(card.host.textContent).not.toContain(LINE);
-    expect(card.host.textContent).toContain("An agent runs on your ChatGPT plan only when it names one of the plan's models (chatgpt/…).");
+  // Behind a gateway, signing in gives no default (serve's settingsModel takes the plan only without AGENT_MODEL_BASE_URL)
+  // and the provider keys are not used (GATEWAY_RUNS): what runs an agent that names no model is the gateway's model.
+  it("on a gateway server that names no model, says to name the gateway's model, and offers neither the sign-in nor a key", async () => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model: null, routePrefix: "agent-model" });
+    expect(card.host.querySelector("h2")?.textContent).toBe("Name the gateway's model to run agents");
+    expect(card.host.textContent).toContain(GATEWAY_NAMES_NONE);
+    expect(card.buttons()).not.toContain("Continue with ChatGPT");
+    expect(card.host.querySelector('[role="group"][aria-label="Provider"]')).toBeNull();
+    expect(card.host.textContent).not.toContain("No model provider's key is set");
+  });
+
+  // A gateway address serve refuses (modelGatewayBase) runs no model, whatever AGENT_MODEL names, and no key or sign-in
+  // fixes it: the card says so in the server's words (GET /v2/settings/model-gateway's `problem`).
+  it.each([["names a default", "agent-model/gpt-6-luna"], ["names no model", null]])("on a gateway server whose address is refused (and that %s), says why in the server's words, with no sign-in or key", async (_, model) => {
+    const card = await open({ plan: { state: "signed_out" }, harnesses: HARNESSES, source: "gateway", model, routePrefix: "agent-model" }, REFUSED);
+    expect(card.calls).toContain("GET /v2/settings/model-gateway");
+    expect(card.host.querySelector("h2")?.textContent).toBe("This server's model gateway is refused");
+    expect(card.host.textContent).toContain(REFUSED);
+    expect(card.host.textContent).not.toContain(GATEWAY_NAMES_NONE);
+    expect(card.buttons()).not.toContain("Continue with ChatGPT");
+    expect(card.host.querySelector('[role="group"][aria-label="Provider"]')).toBeNull();
+    expect(card.host.textContent).not.toContain("No model provider's key is set");
   });
 
   // A gateway server whose AGENT_MODEL is a plan model (chatgpt/<id>) runs an agent with no model on the plan, so signed
