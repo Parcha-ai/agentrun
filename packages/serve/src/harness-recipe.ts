@@ -333,15 +333,10 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
-  if (r.announces !== undefined) {
-    // The same rule as the ACP package's recipeProblems (ANNOUNCES_PATH): field names joined by dots, inside _meta or
-    // rawInput, never the title.
-    const path = (value: unknown) => typeof value === "string" && /^(?:_meta|rawInput)(?:\.[A-Za-z_$][\w$-]*)+$/.test(value);
-    const said = r.announces;
-    if (!isPlain(said) || Object.keys(said).some((k) => k !== "tool" && k !== "server" && k !== "args") || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) say(RECIPE_CODES.invalid, 'announces is { "tool": a dotted path inside _meta or rawInput of the agent\'s tool_call (`_meta.goose.toolCall.toolName`), "server"?: one, "args"?: one }');
-  }
+  // The announces field, and the title tie that needs it: the ACP package's rule (announcesProblems), the one definition.
+  // Without that package no recipe runs.
+  for (const words of acpPackage()?.announcesProblems(r.announces, isPlain(r.quirks) ? r.quirks.permissionTie : undefined) ?? []) say(RECIPE_CODES.invalid, words);
   if (r.quirks !== undefined && (!isPlain(r.quirks) || Object.keys(r.quirks).some((k) => k !== "mcpCall" && k !== "permissionTie") || (r.quirks.mcpCall !== undefined && r.quirks.mcpCall !== "match" && r.quirks.mcpCall !== "mint") || (r.quirks.permissionTie !== undefined && r.quirks.permissionTie !== "title"))) say(RECIPE_CODES.invalid, 'quirks is { "mcpCall": "match" or "mint", "permissionTie": "title" }');
-  else if (isPlain(r.quirks) && r.quirks.permissionTie === "title" && r.announces === undefined) say(RECIPE_CODES.invalid, "the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   if (r.description !== undefined && typeof r.description !== "string") say(RECIPE_CODES.invalid, "description is a string");
   return problems;
 }

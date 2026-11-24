@@ -129,6 +129,21 @@ export function homePath(path: string): string | undefined {
   return clean;
 }
 
+/** What is wrong with a recipe's `announces` field, and with a title tie (quirks.permissionTie) without it, each in
+ *  words; none when both may run. The one rule for both loaders: recipeProblems here, and serve's, which reads it from
+ *  this package. */
+export function announcesProblems(announces: unknown, permissionTie: unknown): string[] {
+  const problems: string[] = [];
+  if (announces !== undefined) {
+    const said = typeof announces === "object" && announces !== null && !Array.isArray(announces) ? (announces as Record<string, unknown>) : undefined;
+    const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
+    const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
+    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path inside _meta or rawInput of the agent\'s tool_call (`_meta.goose.toolCall.toolName`), "server"?: one, "args"?: one }');
+  }
+  if (permissionTie === "title" && announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
+  return problems;
+}
+
 /** What is wrong with `recipe`, each in words; none when it may run. */
 export function recipeProblems(recipe: AcpRecipe): string[] {
   const problems: string[] = [];
@@ -149,16 +164,9 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
     if (typeof allow?.form !== "string" || !Object.hasOwn(ALLOW_FORMS, allow.form)) problems.push(`the allowFile form ${JSON.stringify(allow?.form ?? null)} is none of ${Object.keys(ALLOW_FORMS).join(", ")}`);
     if (path && Object.keys(recipe.files ?? {}).some((file) => homePath(file) === path)) problems.push(`the allowFile ${JSON.stringify(allow!.path)} is also one of the recipe's files`);
   }
-  if (recipe.announces !== undefined) {
-    const given: unknown = recipe.announces;
-    const said = typeof given === "object" && given !== null && !Array.isArray(given) ? (given as Record<string, unknown>) : undefined;
-    const path = (value: unknown) => typeof value === "string" && ANNOUNCES_PATH.test(value);
-    const shaped = said !== undefined && Object.keys(said).every((key) => key === "tool" || key === "server" || key === "args");
-    if (!said || !shaped || !path(said.tool) || (said.server !== undefined && !path(said.server)) || (said.args !== undefined && !path(said.args))) problems.push('announces is { "tool": a dotted path inside _meta or rawInput of the agent\'s tool_call, "server"?: one, "args"?: one }');
-  }
   const quirks = recipe.quirks as { mcpCall?: unknown; permissionTie?: unknown } | undefined;
+  problems.push(...announcesProblems(recipe.announces, quirks?.permissionTie));
   if (quirks?.permissionTie !== undefined && quirks.permissionTie !== "title") problems.push(`the quirk permissionTie ${JSON.stringify(quirks.permissionTie)} is not "title"`);
-  if (quirks?.permissionTie === "title" && recipe.announces === undefined) problems.push("the title tie (quirks.permissionTie) needs announces: it answers only a request for a call that field named");
   const reserved = Object.keys(recipe.env ?? {}).filter((name) => RESERVED_ENV.has(name));
   if (reserved.length) problems.push(`the env names ${reserved.join(", ")}, which the adapter sets`);
   const launching = Object.keys(recipe.env ?? {}).filter((name) => !RESERVED_ENV.has(name) && launchEnv(name));

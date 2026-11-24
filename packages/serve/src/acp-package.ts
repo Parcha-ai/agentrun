@@ -34,6 +34,8 @@ export type AcpPackage = {
   readonly MODEL_ID: RegExp;
   /** The forms a recipe's allowFile may take (`goose-permission`). */
   readonly ALLOW_FILE_FORMS: readonly string[];
+  /** What is wrong with a recipe's announces field, and with a title tie without it, each in words. */
+  announcesProblems(announces: unknown, permissionTie: unknown): string[];
   acpPlatform(): string | undefined;
   /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
    *  where none is pinned so. */
