@@ -55,10 +55,14 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     return () => { live = false; };
   }, [v2, tries, install]);
   const shown = name === undefined ? undefined : templates?.find((t) => t.id === name);
+  const retry = () => setTries((n) => n + 1);
   const body = install !== undefined ? <InstallTemplate v2={v2} source={install} go={go} />
-    : error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
+    // The list's own page keeps the marketplace's section when this server's list fails: it reads apart, and its cards
+    // need nothing from this server's list. The error stands where this server's templates go.
+    : error && !templates && name === undefined && !playground ? <TemplateList v2={v2} templates={[]} failed={error} onRetry={retry} go={go} playground={playground} onRemoved={retry} />
+    : error && !templates ? <ProblemCard problem={error} onRetry={retry} className="" />
     : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
+    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={retry} />
     : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
     : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
   // In the API playground the page sits under the playground's own bar, with its own way back.
@@ -92,7 +96,7 @@ const templateMatches = (query: string, t: TemplateView, line?: string) => match
 /** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is
  *  stored. Its own page lists this server's templates, then the marketplace's others (GRE-4834), under one search; the
  *  API playground's lists this server's alone, the ones an apply takes. */
-function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client; templates: TemplateView[]; go: (hash: string) => void; playground: boolean; onRemoved: () => void }) {
+function TemplateList({ v2, templates, failed, onRetry, go, playground, onRemoved }: { v2: Client; templates: TemplateView[]; failed?: Problem; onRetry?: () => void; go: (hash: string) => void; playground: boolean; onRemoved: () => void }) {
   const Heading = playground ? "h2" : "h1";
   const CardHeading = "h3";
   const market = useMarketplace(v2, !playground);
@@ -126,7 +130,8 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
       {said && <p className="mb-3 text-body text-destructive-text" role="alert">{said}</p>}
       {!playground && <ListFilter className="mb-5" value={search} onChange={setSearch} label="Search templates" placeholder="Search templates…" shown={here.length + others.length} total={listed.length + elsewhere.length} />}
       {!playground && <h2 className="mb-3 text-lead font-semibold">On this server</h2>}
-      {!listed.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p>
+      {failed ? <ProblemCard problem={failed} onRetry={onRetry} className="" />
+        : !listed.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p>
         : !here.length ? <p role="status" className="border px-4 py-6 text-center text-body text-muted-foreground">None of this server's templates match “{search}”.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
           {here.map((t) => (

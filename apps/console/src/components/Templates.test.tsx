@@ -61,7 +61,7 @@ const LEAD_TRIGGERS = [{ trigger_id: "trg_hook", name: "lead-webhook", kind: "we
 
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
-type Fake = { onDelete?: (id: string) => void; apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean; marketplace?: () => Promise<MarketplaceList> };
+type Fake = { onDelete?: (id: string) => void; apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean; marketplace?: () => Promise<MarketplaceList>; templatesDown?: { now: boolean } };
 async function open(name?: string, fake: Fake = {}) {
   const went: string[] = [];
   const sent: { name: string; body: { parameters?: Record<string, unknown>; grants?: string[]; servers?: Record<string, string>; overrides?: Record<string, unknown> }; key: string }[] = [];
@@ -72,7 +72,10 @@ async function open(name?: string, fake: Fake = {}) {
     // The marketplace's list as the server read it: off unless a case gives one, so the page shows this server's alone.
     listMarketplaceTemplates: async () => { marketplaceReads.push(Date.now()); return fake.marketplace ? fake.marketplace() : MARKETPLACE_OFF; },
     // A bundled package's id is its name, as the server serves it: the fixtures spread one under a new name.
-    listTemplates: async () => ({ templates: (fake.templates ?? [REVIEWER, NOTES]).map((t) => (t.bundled ? { ...t, id: t.name } : t)) }),
+    listTemplates: async () => {
+      if (fake.templatesDown?.now) throw new ClientError(503, "unavailable", "The store is not answering.");
+      return { templates: (fake.templates ?? [REVIEWER, NOTES]).map((t) => (t.bundled ? { ...t, id: t.name } : t)) };
+    },
     importTemplate: async (source: string, options: { dryRun?: boolean; trustPublisher?: boolean } = {}) => { imports.push({ source, options }); return fake.imported!(source, options); },
     deleteTemplate: async (id: string) => { deleted.push(id); fake.onDelete?.(id); },
     listMcpServers: async () => {
@@ -178,6 +181,19 @@ describe("the Templates page", () => {
     act(() => root?.unmount()); document.body.innerHTML = "";
     const apply = await open("odd", { templates: [ODD], playground: false });
     expect(apply.host.querySelector("h1")!.textContent).toContain("Odd: …");
+  });
+
+  it("keeps the marketplace's templates beside this server's list when that list fails, and Try again reads this server's", async () => {
+    const down = { now: true };
+    const t = await open(undefined, { playground: false, templatesDown: down, marketplace: async () => MARKETPLACE });
+    const alert = t.host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("The store is not answering.");
+    expect([...t.host.querySelectorAll("[data-marketplace-template]")].map((c) => c.getAttribute("aria-label"))).toEqual(["Company research brief", "Vendor outage watch"]);
+    down.now = false;
+    await t.click(t.button(/^Try again/));
+    expect(t.host.querySelector('[role="alert"]')).toBeNull();
+    expect([...t.host.querySelectorAll("article:not([data-marketplace-template])")].map((c) => c.getAttribute("aria-label"))).toEqual(["PR reviewer", "meeting-notes"]);
+    expect(t.host.querySelectorAll("[data-marketplace-template]")).toHaveLength(2);
   });
 
   it("has the sections' top bar: the list names it, a template leads back to it, and the playground's page has its own", async () => {
