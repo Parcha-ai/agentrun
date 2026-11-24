@@ -279,9 +279,9 @@ test("private, loopback, link-local and v4-mapped addresses are private; ordinar
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
 });
 
-// A trailing dot names the same host (an absolute name): a local name is refused with it as without it.
-test("a local name with a trailing dot is refused before any lookup, by the check and the fetch", async () => {
-  for (const url of ["http://localhost./", "http://app.localhost./", "http://printer.local./", "http://metadata.internal./"]) {
+// A trailing dot names the same host (an absolute name): a local name is refused with one or more as without any.
+test("a local name with one or more trailing dots is refused before any lookup, by the check and the fetch", async () => {
+  for (const url of ["http://localhost./", "http://app.localhost./", "http://printer.local./", "http://metadata.internal./", "http://localhost../", "http://printer.local../"]) {
     const checked = network();
     const fetched = network();
     await assert.rejects(publicCheck(url, { lookup: checked.lookup }), refused(/^refused: \S+ is not a public host$/), url);
