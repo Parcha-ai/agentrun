@@ -3517,7 +3517,8 @@ serves these routes alone:
   from the token: a save at a guessed origin answers whether it is listed (the `404`, or a save or a listing's failure
   at that address), while capabilities (`switches`) say only whether the list is set, never its origins.
   `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
-  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
+  an entry that is not an http or https origin alone, a wildcard, or plain http to a host other than a loopback one
+  (127.0.0.1, ::1, localhost), stops the start, naming the entry by its place. The list holds past
   the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
   an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
   a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,

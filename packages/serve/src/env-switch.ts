@@ -28,11 +28,15 @@ export function switchFrom(name: keyof typeof MEANS, env: NodeJS.ProcessEnv = pr
  *  as any route outside api-only.ts API_ONLY_ROUTES. AGENTRUN_MCP_ALLOW_LOOPBACK still decides whether a loopback origin is saved. */
 export const API_ONLY_MCP_ORIGINS_ENV = "AGENTRUN_API_ONLY_MCP_ORIGINS";
 
+/** A URL hostname on this machine: localhost, ::1 (bracketed, as URL writes it) or 127.0.0.0/8. */
+const LOOPBACK_HOST = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/;
+
 /** The origins `value` (API_ONLY_MCP_ORIGINS_ENV) names, each once, in its order: none when unset or blank. An entry
  *  that is not an http or https origin alone (a path, query, fragment, user or password, or no URL at all) is refused
  *  (a TypeError naming the entry by its place, never its text, which could hold a password), and so is a wildcard
- *  (`https://*.example.com`), which would otherwise be taken as a literal host and match nothing. Empty entries are
- *  skipped. */
+ *  (`https://*.example.com`), which would otherwise be taken as a literal host and match nothing, and so is plain http
+ *  to any host but a loopback one (LOOPBACK_HOST), whose traffic would cross the network in the clear. Empty entries
+ *  are skipped. */
 export function apiOnlyMcpOriginsFrom(value: string | undefined): string[] {
   const origins: string[] = [];
   (value ?? "").split(",").map((entry) => entry.trim()).forEach((entry, at) => {
@@ -46,6 +50,9 @@ export function apiOnlyMcpOriginsFrom(value: string | undefined): string[] {
     }
     if (!url || (url.protocol !== "http:" && url.protocol !== "https:") || url.href !== `${url.origin}/`) {
       throw new TypeError(`${API_ONLY_MCP_ORIGINS_ENV} is a comma-separated list of MCP origins (http or https, scheme://host[:port], no path): entry ${at + 1} is not one`);
+    }
+    if (url.protocol === "http:" && !LOOPBACK_HOST.test(url.hostname)) {
+      throw new TypeError(`${API_ONLY_MCP_ORIGINS_ENV} takes plain http only for this machine (127.0.0.1, ::1, localhost): entry ${at + 1} is plain http to a host off this machine; list it as https`);
     }
     if (!origins.includes(url.origin)) origins.push(url.origin);
   });
