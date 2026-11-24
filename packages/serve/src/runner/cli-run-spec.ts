@@ -54,7 +54,7 @@ import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, seedEvalFiles, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -397,6 +397,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.hold({ checkout });
   // A run's own process copies nothing: its runner placed them before the process started (run-child-host.ts).
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
+  await seedEvalFiles(ws.workspace, fakes?.files);
   // The run's skills and its learning seed laid before its computer exists, as the pi spec lays them (adapter-run-spec.ts):
   // on Archil the computer's mount takes the disk's write delegation, and a lay over the disk's file API after it is
   // refused (409) while the mount holds it.
