@@ -1,6 +1,7 @@
 // What a run's own process (run-child.ts) is answered by its runner (run-child-host.ts): each answer bound on the runner
 // to the claim it holds, whatever the process names. A GitHub token of the run's own pull request's repository alone,
-// contents read; decision and tier keys of the claim's learned workflows alone, as the runner chose them; the settings of
+// contents read; decision and tier keys of the claim's learned workflows alone, as the runner chose them; the saved model
+// keys of its subagent tiers' models alone, never another provider's; the settings of
 // the server's shared configuration and the claim's own rows, never another run's; its viewers' address under its own
 // run's proof key, never the runners' shared one; no channel post; the computer it made let go by the runner at the
 // claim's release; the install it asks for, readable by its user. Which runs stay in the runner, and the run on Claude
@@ -26,6 +27,7 @@ const host = await import("../dist/runner/run-child-host.js");
 const live = await import("../dist/live-reach.js");
 const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
+const { withSavedGateway } = await import("../dist/model-gateway.js");
 
 const KEY = randomBytes(32);
 const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
@@ -33,6 +35,8 @@ const { privateKey: PEM } = generateKeyPairSync("rsa", { modulusLength: 2048, pr
 const PARALLEL_DUMMY = `not-a-secret-${"parallel-key"}`;
 const ANTHROPIC_DUMMY = `not-a-secret-${"anthropic-key"}`;
 const OPENAI_DUMMY = `not-a-secret-${"openai-key"}`;
+const XAI_DUMMY = `not-a-secret-${"xai-key"}`;
+const GATEWAY_DUMMY = `not-a-secret-${"gateway-key"}`;
 const HEAD = "a".repeat(40);
 const PULL = `Review it.\n\n<trigger-payload source="github" installation="777" repo="acme/widgets" number="7" head_sha="${HEAD}">{}</trigger-payload>`;
 
@@ -129,6 +133,48 @@ test("a run's process gets no decision or tier key its claim's learned workflows
   assert.deepEqual(first.workflows.map(({ name }) => name), ["on-parallel"]);
   assert.deepEqual(await learning.decisionKeys(["parallel", "jev"]), { PARALLEL_API_KEY: PARALLEL_DUMMY });
   assert.deepEqual((await learning.tierModelKeys(["strong"])).keys, {}, "its workflow names no strong tier");
+});
+
+/** A revision granted the subagent tool, with `modelTiers` its models of the subagent tiers. */
+const subagentRevision = (modelTiers) => ({ kind: "agentic", body: { tools: ["subagent"], ...(modelTiers ? { modelTiers } : {}) } });
+/** A host whose own model is OpenAI's and whose strong tier is Anthropic's, holding a key of xAI too, which no model of
+ *  its names; no fast tier of its own. */
+const TIERED = { AGENT_MODEL: "openai/gpt-6.1-sol", AGENT_MODEL_STRONG: "anthropic/claude-sonnet-5-5", OPENAI_API_KEY: OPENAI_DUMMY, ANTHROPIC_API_KEY: ANTHROPIC_DUMMY, XAI_API_KEY: XAI_DUMMY };
+
+test("a subagent run's process is handed the saved model keys of its tiers' models alone: never a provider's no tier of it reaches, none for a tier it routes no model on, the gateway's alone behind a gateway, none to a run with its own model key", async (t) => {
+  const { store } = await storeOn(t);
+  // Its strong tier runs on the host's AGENT_MODEL_STRONG: Anthropic's key. Its fast tier is named nowhere (no
+  // AGENT_MODEL_FAST, no modelTiers.fast), so the run routes no model on it: no key for it. OpenAI's (the run's own model,
+  // its claim's to hand) and xAI's are no tier's.
+  assert.deepEqual(await heldOf(store, { env: TIERED, revision: subagentRevision() }).savedModelKeys(), { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, "the host's strong tier alone");
+  // The revision's own model of a tier over the host's: xAI's key for its fast tier, Anthropic's for its strong one.
+  assert.deepEqual(await heldOf(store, { env: TIERED, revision: subagentRevision({ fast: "xai/grok-5" }) }).savedModelKeys(), { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY, XAI_API_KEY: XAI_DUMMY }, "the revision's fast tier and the host's strong tier");
+  // Behind a gateway every model is the gateway's: its key alone.
+  const gateway = { ...TIERED, AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1", AGENT_MODEL_API_KEY: GATEWAY_DUMMY };
+  assert.deepEqual(await heldOf(store, { env: gateway, revision: subagentRevision({ fast: "xai/grok-5" }) }).savedModelKeys(), { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, "the gateway's key alone");
+  // Behind the gateway saved in the console, laid over the claim's environment as the runner lays it (the environment
+  // heldFor reads, and the one the run's process starts with): a tier whose model only the saved gateway names is routed,
+  // so its key is handed; with no tier model saved, and none in the environment, no tier is routed and nothing is.
+  const plainHost = { AGENT_MODEL: "openai/gpt-6.1-sol", OPENAI_API_KEY: OPENAI_DUMMY, ANTHROPIC_API_KEY: ANTHROPIC_DUMMY, XAI_API_KEY: XAI_DUMMY };
+  const saved = (models) => withSavedGateway(plainHost, { v: 1, base_url: "https://gateway.invalid/v1", ids: "as_named", models, key: GATEWAY_DUMMY });
+  assert.deepEqual(await heldOf(store, { env: saved({ fast: "gw-fast-1" }), revision: subagentRevision() }).savedModelKeys(), { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, "the saved gateway's fast tier");
+  assert.deepEqual(await heldOf(store, { env: saved({ default: "gw-1" }), revision: subagentRevision() }).savedModelKeys(), {}, "a saved gateway that names no subagent tier");
+  // A run that holds a model key of its own (model_key, sealed on its launch as the server seals it) gets none of the
+  // server's, whatever its tiers.
+  const sealed = sealRunLaunch(KEY, "run-own", { model: { key: `not-a-secret-${"run-own-key"}`, origin: "https://gateway.invalid" } });
+  const keyedStore = { ...store, runs: { ...store.runs, launch: async (id) => ({ body: "{}", sealed: id === "run-own" ? sealed : null }) } };
+  assert.deepEqual(await heldOf(keyedStore, { env: TIERED, revision: subagentRevision({ fast: "xai/grok-5" }) }).savedModelKeys(), {}, "a run with its own key");
+});
+
+test("a run's process with no subagent tiers gets no saved model key: a run with no subagent tool, a workflow revision that names the tool, a learning run and an SDK run (which stay in their runner and never ask); a subagent run beside them gets its tier's", async (t) => {
+  const { store } = await storeOn(t);
+  const hello = { input: { content: "Hello." } };
+  assert.deepEqual(await heldOf(store, { env: TIERED }).savedModelKeys(), {}, "no subagent tool");
+  assert.deepEqual(await heldOf(store, { env: TIERED, revision: { kind: "workflow", body: { tools: ["subagent"] } } }).savedModelKeys(), {}, "a workflow revision routes no subagent tier");
+  assert.deepEqual(await heldOf(store, { env: TIERED, launch: { ...hello, harness: "learning" } }).savedModelKeys(), {}, "a learning run");
+  assert.deepEqual(await heldOf(store, { env: TIERED, launch: { ...hello, sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } } }).savedModelKeys(), {}, "an SDK run");
+  // The firing case on the same host: a subagent run still gets its strong tier's key.
+  assert.deepEqual(await heldOf(store, { env: TIERED, revision: subagentRevision() }).savedModelKeys(), { ANTHROPIC_API_KEY: ANTHROPIC_DUMMY }, "a subagent run");
 });
 
 test("the settings a run's process reads are the server's shared configuration and its own run's and agent's rows: another run's SDK record is refused unread, and a listing holds only the readable rows", async () => {
