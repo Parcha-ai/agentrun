@@ -15,7 +15,8 @@ export const PAGES_HELD = 8;
 
 /** How a page came: `via`, the provider that gave it ("none": the caller's order holds no provider that ends it, and no
  *  provider in it read the page; "stopped": the call was stopped first); under the id of each provider whose misses are
- *  said (SaidProvider, provider.ts FetchShape) and that gave none, why. */
+ *  said (SaidProvider, provider.ts FetchShape) and that gave none, why, where the guarded direct fetch answered or none
+ *  did (never on a page another provider read). */
 export type Via = { via: FetchProvider | "stopped" | "none" } & Partial<Record<SaidProvider, string>>;
 export type WebPage = Page & Via;
 /** A page web_fetch read, and how. */
@@ -76,7 +77,8 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     const read = await reader.read(url, options);
     if ("ok" in read && read.ok) {
       tries.push({ provider: id, outcome: "ok" });
-      return { ...read, via: id, ...said };
+      // A reason is said only beside the direct fetch's answer or none's: webFetchText's line says it was fetched directly.
+      return { ...read, via: id };
     }
     const error = read.error ?? "";
     const limit: Limit | undefined = "limit" in read ? read.limit : undefined;

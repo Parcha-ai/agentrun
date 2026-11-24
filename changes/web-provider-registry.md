@@ -11,3 +11,5 @@ Deliberate changes (the first two and the last in receipts and errors alone):
 - An order naming an id no provider has, or a provider for a tool it does not serve, throws in `createWeb`. An unknown search provider used to be asked as keyless Exa.
 
 The breakers' scope is the base's: `test/breaker-scope.test.mjs`, written against the base, pins it for keyed Exa, Parallel and keyless Firecrawl (a refused key holds both tools; a quota or rate limit holds only the tool that met it).
+
+A reason Parallel gave no page is said only on a page the guarded direct fetch answered, or on the answer that none read it. With an order such as `[parallel, exa, direct]`, a page Exa read after Parallel failed used to carry `parallel` and a line telling the model it was fetched directly; it now carries neither, and Parallel's turn stays on the receipt.
