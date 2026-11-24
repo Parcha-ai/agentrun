@@ -25,7 +25,10 @@ async function adbServer() {
 		socket.on("data", (chunk) => {
 			buffer = Buffer.concat([buffer, chunk]);
 			while (buffer.length >= 4) {
-				const length = Number.parseInt(buffer.subarray(0, 4).toString("latin1"), 16);
+				const head = buffer.subarray(0, 4).toString("latin1");
+				// A peer that is not adb (another process on the box probing a new loopback port): its bytes frame nothing.
+				if (!/^[0-9a-f]{4}$/i.test(head)) return void socket.destroy();
+				const length = Number.parseInt(head, 16);
 				if (buffer.length < 4 + length) return;
 				requests.push(buffer.subarray(4, 4 + length).toString("utf8"));
 				buffer = buffer.subarray(4 + length);
