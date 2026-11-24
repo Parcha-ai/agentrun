@@ -878,7 +878,7 @@ async function planRecipeFile(t) {
     label: "Model Agent",
     release: { registry: "model-agent", version: "1.0.0", archives: { [archivePlatform()]: { url: "https://releases.example.invalid/model-agent-1.0.0.tar.bz2", format: "tar.bz2", sha256: "0".repeat(64), cmd: "./agent" } } },
     env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: "127.0.0.1:9", MODEL_AGENT_MODEL: "vendor-model" },
-    model: { billing: "plan", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", maxTurns: 8, maxToolCalls: 8, hosts: ["127.0.0.1:9"] },
+    model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["127.0.0.1:9"] },
     files: { ".config/model-agent/settings.json": "{\"telemetry\": false}\n" },
     state: [".model-agent/sessions"],
     declares: { load: true, mcp: "http" },
