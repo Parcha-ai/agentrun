@@ -28,8 +28,9 @@ import type { ToolServerModules } from "./host/tool-server.js";
 import { CLAUDE_AGENT_SDK_INSTALL, CLAUDE_AGENT_SDK_VERSION, CLAUDE_CODE_VERSION, installedVersion } from "./versions.js";
 export { CLAUDE_AGENT_CLI_SKILL_NAMES } from "./cli-names.js";
 
-/** The pinned CLI's tools the copied harness leaves undecided, off by name in every session (WebSearch unless `webSearch`). */
-export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch"]);
+/** The pinned CLI's tools off by name in every session (WebSearch unless `webSearch`): those the copied harness leaves
+ *  undecided, and WebFetch, which fetches from the CLI's own process where the host's web_fetch is the session's. */
+export const CLAUDE_AGENT_ALSO_OFF: readonly string[] = Object.freeze(["Skill", "WebSearch", "WebFetch"]);
 
 /** The local plugin the session's skills are served from: the model sees each as `agentrun:<name>`, and may load it by
  *  that name or, unless the CLI has a command or skill of that name (`CLAUDE_AGENT_CLI_SKILL_NAMES`), by its bare one. */
