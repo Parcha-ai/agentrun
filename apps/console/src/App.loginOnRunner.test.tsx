@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
-import { picker, pick } from "@/test/picker";
+import { optionsOf, picker, pick } from "@/test/picker";
 
 // A run of an agent on Claude Agent in a box, refused for its model while Claude Code's login on this machine is on: the
 // login runs agents on the runner only, so serve says so and sets details.login_on_runner. The Playground then offers to
@@ -134,6 +134,33 @@ describe("the Playground's offer to move an agent in a box to the runner, where 
     await act(async () => move!.click());
     await settle();
     expect(page.saved.map((s) => s.agent)).toEqual(["boxed"]);
+  });
+
+  it("a refused run that named a revision: after the move the next request names the revision the move saved, now in the revision list as the current one, not the boxed one", async () => {
+    const page = await open({ unbound: [], missing: {}, login_on_runner: true }, { revision: "r1" });
+    expect(page.runs.map((r) => r.body.revision), "the refused request named r1").toEqual(["r1"]);
+    await act(async () => page.move()!.click());
+    await settle();
+    expect(page.saved.length).toBe(1);
+    await page.send();
+    expect(page.runs.map((r) => r.body.revision), "the request sent after the move named the boxed revision it was refused on, not the one the move saved").toEqual(["r1", "r2"]);
+    const listed = await optionsOf(picker(page.request, "Revision")!);
+    expect(listed.map((o) => o.text), "the revision list after the move").toEqual(["The current revision", "rev 2 (current)", "rev 1"]);
+  });
+
+  it("the move names the box-only tools it dropped, and a second move of an agent already on the runner saves no revision", async () => {
+    const page = await open({ unbound: [], missing: {}, login_on_runner: true });
+    await act(async () => page.move()!.click());
+    await settle();
+    expect(page.host.textContent, "the moved line names the tool the move dropped").toContain("Moved to the runner without bash, which runs only in a box.");
+    // Sent again, refused again (this server still says so): the fresh offer, taken, finds the agent on the runner.
+    await page.send();
+    const again = page.move();
+    expect(again, "a fresh refusal offers the move again").toBeDefined();
+    await act(async () => again!.click());
+    await settle();
+    expect(page.saved.length, "a second move of an agent already on the runner saved a revision equal to its current one").toBe(1);
+    expect(page.host.textContent).toContain("It is on the runner already: nothing to save.");
   });
 
   it("a refusal without details.login_on_runner offers no move", async () => {
