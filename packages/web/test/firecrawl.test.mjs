@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { FIRECRAWL_CANARY, FIRECRAWL_HITS, firecrawlPage, firecrawlResults, keyedServer, ok, refused } from "./fixtures/fake-keyed.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 
@@ -99,7 +100,7 @@ test("Firecrawl's limits, read by status: a 429 holds its search for the Retry-A
   const spent = await w.search("gadgets");
   assert.deepEqual(spent.receipt.tries.map((one) => [one.outcome, one.limit]), [["error", { kind: "quota" }]]);
   clock.now += 86_400_000;
-  assert.deepEqual((await w.search("sprockets")).answer, { error: web.SEARCH_UNAVAILABLE });
+  assert.deepEqual((await w.search("sprockets")).answer, { error: SEARCH_UNAVAILABLE });
   assert.equal(fc.got.length, 2);
 });
 

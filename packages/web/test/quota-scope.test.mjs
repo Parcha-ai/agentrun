@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { answers, dailyLimit, firecrawlServer } from "./fixtures/fake-firecrawl.mjs";
 import { EXA_CANARY, EXA_HITS, exaPage, exaResults, FIRECRAWL_CANARY, firecrawlPage, keyedServer, refused } from "./fixtures/fake-keyed.mjs";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -22,7 +23,7 @@ test("keyed Exa: credit spent on a fetch holds web_search too, unsent; spent on 
   const spent = await w.fetch(PUBLIC);
   assert.deepEqual([spent.answer.via, spent.receipt.tries[0].failure?.covers], ["direct", "key"]);
   const found = await w.search("widgets");
-  assert.deepEqual([found.answer, found.receipt.tries.map((one) => one.outcome)], [{ error: web.SEARCH_UNAVAILABLE }, ["held"]]);
+  assert.deepEqual([found.answer, found.receipt.tries.map((one) => one.outcome)], [{ error: SEARCH_UNAVAILABLE }, ["held"]]);
   assert.deepEqual(fetchFirst.got.map((one) => one.path), ["/contents"], "search never sent");
 
   const searchFirst = await keyedServer(t, (path, body) => (path === "/search" ? refused(402, { error: "out of credits" }) : exaPage(body.urls[0], "Read.")));
@@ -66,7 +67,7 @@ test("Parallel: credit spent on a search holds its extract, and the page says so
   const extractFirst = parallelSend((path) => (path === "/v1/extract" ? { status: 402 } : { json: { results: [] } }));
   const v = parallelWeb(extractFirst.send);
   assert.equal((await v.fetch(PUBLIC)).answer.parallel, "out of quota for the rest of this run");
-  assert.deepEqual((await v.search("widgets")).answer, { error: web.SEARCH_UNAVAILABLE });
+  assert.deepEqual((await v.search("widgets")).answer, { error: SEARCH_UNAVAILABLE });
   assert.equal((await v.fetch(NOTES)).answer.parallel, "not tried: out of quota for the rest of this run", "the extract is off too");
   assert.deepEqual(extractFirst.got, ["/v1/extract"]);
 });
@@ -78,7 +79,7 @@ test("keyless Firecrawl: its daily limit met on a fetch holds web_search too unt
   const w = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => now });
   assert.equal((await w.fetch(PUBLIC)).answer.via, "direct");
   spent = false;
-  assert.deepEqual((await w.search("widgets")).answer, { error: web.SEARCH_UNAVAILABLE }, "search is held");
+  assert.deepEqual((await w.search("widgets")).answer, { error: SEARCH_UNAVAILABLE }, "search is held");
   assert.equal(fc.calls("firecrawl_search"), 0);
   now = Date.parse("2026-11-25T00:00:00Z");
   assert.equal((await w.search("widgets")).answer.provider, "firecrawl-keyless", "asked again at 00:00 UTC");
