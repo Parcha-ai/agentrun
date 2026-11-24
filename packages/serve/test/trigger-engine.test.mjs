@@ -1120,6 +1120,79 @@ test("a tick while a firing's host start is writing its run leaves the firing to
   assert.equal(drove, false, "no drive of a while its host's start wrote its run");
 });
 
+/** Firing a of a webhook trigger (hookBody), due on its retry: the tick's drive of a reads no run under a's key and its
+ *  answer is held; a's host start then begins, writes run-a and starts a with it, and `between` runs. Answers once the
+ *  drive, let go, has written what it decided, with the firing then and what the store's message queued meanwhile. */
+async function driveReadBeforeStart(t, between) {
+  const on = await shared(t, "2026-06-01T00:00:00Z");
+  const host = await heldHost(t);
+  const gate = { armed: false, entered: false, answer: held() };
+  const trap = { a: null, watching: false, waiting: 0, pending: 0, settles: 0 };
+  const queued = [];
+  const triggersOf = new Proxy(on.store.triggers, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        const out = value.apply(target, args);
+        if (name === "settle" && trap.watching && args[1] === trap.a) return out.then((row) => ((trap.settles += 1), row));
+        if (!gate.armed || (name !== "waiting" && name !== "pending")) return out;
+        return out.then((rows) => ((trap[name] += 1), rows));
+      };
+    },
+  });
+  const { clock, store, triggers } = await engine(t, {
+    launchHook: host.launchHook,
+    store: { ...on.store, triggers: triggersOf, runs: on.store.runs },
+    // The server's lookup of a run under a firing's key: the first once `gate` is armed (the drive's) reads, then
+    // answers what it read when the test lets it.
+    runOf: async (key) => {
+      const found = await on.store.runOfOrigin(key);
+      if (gate.armed && !gate.entered) {
+        gate.entered = true;
+        await gate.answer.promise;
+      }
+      return found ? { run_id: found.runId } : null;
+    },
+    // The server's message: its command row queued with the firing marked sent, in one store write, only while it is due.
+    message: async (target, input, key, from, bound) => {
+      const done = await on.store.triggers.message({ triggerId: from.trigger_id, key }, target.run_id, { kind: "message", body: { content: input.content, origin: from, answers: false } }, bound);
+      queued.push(done);
+      return done && "skipped" in done ? { skipped: done.skipped } : undefined;
+    },
+  }, { on });
+  const made = await triggers.create(hookBody);
+  const a = await timedOut(triggers, store, host, made.id, "evt-a");
+  trap.a = a;
+  const { retryAt } = await store.triggers.firing(made.id, a);
+  await armed(clock, new Date(retryAt).toISOString());
+  gate.armed = true;
+  clock.to(new Date(retryAt).toISOString());
+  await until(() => gate.entered && trap.waiting >= 1 && trap.pending >= 2, "the tick done, its drive of a holding its read of no run");
+  assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-a")), { run_id: "run-a", replayed: false });
+  const started = await store.triggers.firing(made.id, a);
+  assert.deepEqual([started.status, started.runId], ["started", "run-a"], "the host's start started a with its run");
+  await between({ store, triggers, made });
+  trap.watching = true;
+  gate.answer.resolve();
+  await until(() => trap.settles >= 1, "a's drive wrote what it decided");
+  return { row: await store.triggers.firing(made.id, a), queued };
+}
+
+test("a drive whose read found no run before a host start began, answered after that start wrote its run and the agent was archived, leaves the firing started with that run, never skipped over it", async (t) => {
+  const { row } = await driveReadBeforeStart(t, ({ store }) => store.agents.archive("a", true, { at: "2026-06-01T00:00:00.000Z", reason: "agent_archived", detail: "The agent a is archived." }));
+  assert.deepEqual([row.status, row.runId, row.reason], ["started", "run-a", null], JSON.stringify(row));
+});
+
+test("a drive whose read found no run before a host start began, answered after that start wrote its run and the trigger was moved to a message_run target, sends no message and leaves the firing started with that run, never sent", async (t) => {
+  const { row, queued } = await driveReadBeforeStart(t, async ({ store, triggers, made }) => {
+    await run9(store);
+    assert.equal((await triggers.update(made.id, { target: toRun9 })).target.kind, "message_run");
+  });
+  assert.deepEqual([row.status, row.runId, row.reason], ["started", "run-a", null], JSON.stringify(row));
+  assert.deepEqual(queued, [undefined], "the store queued no message for a started firing");
+});
+
 test("max_active_runs cleared leaves no firing held behind the old cap: a webhook with accept, a firing waiting on its cap of 1, is driven by the wait's poll once the cap is null, and starts while the trigger's other run still works", async (t) => {
   const { clock, triggers, runs } = await hookEngine(t, { statusOf: async () => "working" }, new Set(["run-1"]));
   const made = await triggers.create({ ...hookBody, source: { kind: "webhook", accept: [{ event: "push" }] }, max_active_runs: 1 });
