@@ -85,8 +85,8 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
   return { search: searchChainOf(search).filter(faked), fetch: fetchChainOf(fetch).filter(faked) };
 }
 
-/** Jev for the run's web tools (web's jevWebDecider: jev-1.14.0, rerank+label): on the TypeSafe key the run's process
- *  holds as it was handed (handedKeyOf: its pipe, else `env`, the claim's own environment; never process.env), unless
+/** Jev for the run's web tools (web's jevWebDecider: jev-1.14.0, rerank+label): on the TypeSafe key the claim handed
+ *  it (handedKeyOf: in `env`, the claim's own environment, never process.env; decisions.ts' pipe path is dead), unless
  *  Jev is off, in the run's plane (the server's switch at launch, tool-plane.ts planeFor) or by AGENTRUN_WEB_JEV_OFF in
  *  `env`. None on an OpenRouter key: the web decider runs on TypeSafe's route alone. Its requests go through `env`'s
  *  faux Jev under --faux, priced at Jev's published price for the run's cap. */

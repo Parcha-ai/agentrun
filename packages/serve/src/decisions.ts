@@ -5,14 +5,16 @@
 // same OpenRouter key Jev's OpenRouter route reads. A node names its provider (`provider: "parallel"`); one that names
 // none is answered by Jev.
 //
-// The server chooses the keys a run needs (decisionKeysFor) and hands them over once, by name, on an inherited pipe
-// (`DECISION_KEY_FD_ENV` names it), at each launch of the run: its workflow's decision providers' keys, and Parallel's
-// where one of its web tools resolves to Parallel (tool-plane.ts); a run that needs none gets no pipe. The run's process
-// reads them once (handedKeys) into its providers and the web tools' Parallel client (web-run.ts webOf), and nowhere else;
-// no provider reads a key from the environment. The TypeSafe and Parallel keys never enter a run's environment, which
-// the run's tools and its model's provider read (`ToolHost.env`, a call node's effect): the server drops the variables
-// from the run's process. On the OpenRouter route the Jev key is also the model gateway's key, which the run's process
-// holds for its model nodes.
+// The keys a run gets (decisionKeysFor): its workflow's decision providers' keys, Parallel's where one of its web tools
+// resolves to Parallel and TypeSafe's where its web tools run Jev (tool-plane.ts handsParallel, handsJevWeb), and no
+// other. The runner's claim reads them from the store and lays them on the claim's own environment
+// (runner/claim-secrets.ts claimSecrets), the `ToolHost.env` its tools and providers read (parallelKeyOf,
+// decisionProvidersIn, web-run.ts jevWebOf), a fresh object per claim, so no run sees another's. The run's shell is
+// never given it (workspace/hands.ts shellEnv is fixed). On the OpenRouter route the Jev key is also the model
+// gateway's key, which the claim holds for its model nodes.
+//
+// The pipe path (`DECISION_KEY_FD_ENV`, handedKeys) is dead: it was the old per-run process's, and nothing in src has
+// set it since #2244 removed that engine. Only tests set it; its deletion is its own change.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
