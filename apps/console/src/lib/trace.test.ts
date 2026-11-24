@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI, USAGE_REDO } from "@/components/RunTrace.sample";
-import { attemptWords, between, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { attemptWords, between, budgetStop, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, redoOf, redoWords, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -360,5 +360,29 @@ describe("requests a run sent twice", () => {
     expect(found.map((f) => f.id).slice(0, 2)).toEqual(["failed", "redo"]);
     expect(found[1]).toEqual({ id: "redo", title: "$0.0312 went on requests sent twice", detail: "1 of the run's 3 cost lines is of requests an attempt sent and was cut before they answered, which the next attempt sent again: 7% of the run's cost." });
     expect(findings(TRACE, TRACE_END, { usage: { ...USAGE_REDO, infra_usd: null } })[1]!.title).toBe("Requests were sent twice, at a cost not known");
+  });
+});
+
+describe("a run that wound down for its spend cap", () => {
+  it("says it stopped short near the cap as it was set, and how many calls were refused", () => {
+    expect(budgetStop({ stopped_for: null, budget_refused_calls: 0, cost: { cap_usd: 0.75 } })).toBeNull();
+    expect(budgetStop({})).toBeNull();
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 3, cost: { cap_usd: 0.75 } })).toEqual({ title: "The run stopped short for its budget", detail: "It wound down near its $0.75 cap and answered from what it had. 3 tool calls were refused, unrun, for its budget." });
+    // Told to wrap up with no call refused, on a run whose view names no cap.
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 0, cost: null })).toEqual({ title: "The run stopped short for its budget", detail: "It wound down near its spend cap and answered from what it had." });
+  });
+  it("names no amount for refused calls: the count is of every one since the run began, and a cap raised since is not the one they met", () => {
+    // Refused under a $1 cap since raised to $2: the run did not wind down under $2, and its view says only $2.
+    const said = budgetStop({ stopped_for: null, budget_refused_calls: 1, cost: { cap_usd: 2 } })!;
+    expect(said).toEqual({ title: "1 call refused for the run's budget", detail: "1 tool call was refused, unrun, for its budget, under the cap it had then." });
+    expect(`${said.title} ${said.detail}`).not.toContain("$");
+    // A run that stopped short under its cap now names that cap for the stop, never for the refusals.
+    expect(budgetStop({ stopped_for: "budget", budget_refused_calls: 2, cost: { cap_usd: 2 } })!.detail).toBe("It wound down near its $2.00 cap and answered from what it had. 2 tool calls were refused, unrun, for its budget.");
+  });
+  it("stands out first: it is why the run did less than it was asked", () => {
+    expect(findings(TRACE, TRACE_END, { run: { stopped_for: null, budget_refused_calls: 0 } }).map((f) => f.id)).not.toContain("budget");
+    const found = findings(TRACE, TRACE_END, { run: { stopped_for: "budget", budget_refused_calls: 3, cost: { cap_usd: 0.75 } } });
+    expect(found.map((f) => f.id).slice(0, 2)).toEqual(["budget", "failed"]);
+    expect([found[0]!.bad, found[0]!.span]).toEqual([true, undefined]);
   });
 });

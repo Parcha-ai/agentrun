@@ -55,6 +55,29 @@ describe("the Dev tools tab", () => {
     expect(tile(host, "Time")?.textContent).toMatch(/3m 45s.*model 38% · tools 60%/);
   });
 
+  it("says how much of its spend cap the run's cost is, and that it stopped short for it", async () => {
+    // $0.6336 of a $0.75 cap.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 3 };
+    const host = await open(TRACE, { run, view: "breakdown" });
+    expect(tile(host, "Cost, estimated")?.textContent).toMatch(/\$0\.6336.*84% of its \$0\.75 cap · requests \$0\.6132 · tools \$0\.0204/);
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")][0]!.textContent).toBe("The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had. 3 tool calls were refused, unrun, for its budget.");
+    // A cost that is a ceiling is at most that share of the cap, never an exact one.
+    const held = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75, upper_bound: true } } });
+    expect(tile(held, "Cost, estimated")?.textContent ?? tile(held, "Cost")?.textContent).toMatch(/at most 84% of its \$0\.75 cap/);
+    // A run with no cap says none, and one that never came near its cap says nothing of a stop.
+    const plain = await open(TRACE, { run: { ...RUN, cost: { ...RUN.cost!, cap_usd: 5 } }, view: "breakdown" });
+    expect(tile(plain, "Cost, estimated")?.textContent).toMatch(/13% of its \$5\.00 cap/);
+    expect(plain.textContent).not.toMatch(/stopped short|refused for the run/);
+  });
+  it("says a run stopped short for its budget though its trace has no request and no call", async () => {
+    // A CLI harness's record keeps no request, and the run answered its wrap-up without calling a tool.
+    const run = { ...RUN, cost: { ...RUN.cost!, cap_usd: 0.75 }, stopped_for: "budget" as const, budget_refused_calls: 0 };
+    const host = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 }, { run });
+    expect([...host.querySelectorAll("section[aria-label='What stands out'] li")].map((li) => li.textContent)).toEqual(["The run stopped short for its budgetIt wound down near its $0.75 cap and answered from what it had."]);
+    // A run with no span that did not stop for its budget has no such section.
+    const plain = await open({ run_id: RUN.run_id, model_requests: "not_recorded", spans: [], dropped: 0 });
+    expect(plain.querySelector("section[aria-label='What stands out']")).toBeNull();
+  });
   it("lists every request and call in the order they started, each call under the request that made it", async () => {
     const host = await open(TRACE);
     const listed = callRows(host);

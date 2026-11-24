@@ -7,8 +7,8 @@ import { ListFilter } from "@/components/ListFilter";
 import { Segmented } from "@/components/ui/segmented";
 import { Spinner } from "@/components/ui/spinner";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
-import { bytes, compact, isEstimate, runEnded, soFar } from "@/lib/format";
-import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
+import { bytes, capDollars, compact, isEstimate, runEnded, soFar } from "@/lib/format";
+import { attemptWords, BASIS_WORDS, type Bar, between, bookedWords, budgetStop, byModel, byTool, cacheShare, costSplit, duration, findings, inputTokens, keeps, lane, lineName, lineNotes, offset, ordered, panned, percent, place, quantityWords, redoOf, redoWords, type SpanKind, type SpanSort, type Spend, spanMs, ticks, timing, traceTotals, traceWindow, usd as dollars, type View, vitals, WHOLE, zoomed } from "@/lib/trace";
 import { cn } from "@/lib/utils";
 import type { Run, RunTrace as Trace, RunUsage, TraceSpan, UsageLine } from "@/lib/v2";
 
@@ -493,11 +493,11 @@ function CostByLine({ usage, lines }: { usage: RunUsage; lines: readonly UsageLi
 
 /** The run's requests and calls added up: what stands out, where the time and the cost went, each request's input and
  *  cost in the order they ran, and the same by model and by tool. */
-function Breakdown({ trace, usage, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; now: number; onPick: (id: string) => void; selected: string | null }) {
+function Breakdown({ trace, usage, run, now, onPick, selected }: { trace: Trace; usage: RunUsage | null; run: Run; now: number; onPick: (id: string) => void; selected: string | null }) {
   const totals = useMemo(() => traceTotals(trace, now), [trace, now]);
   const tools = useMemo(() => byTool(trace.spans, now), [trace, now]);
   const models = useMemo(() => byModel(trace.spans, trace.model_requests === "priced"), [trace]);
-  const found = useMemo(() => findings(trace, now, { usage }), [trace, now, usage]);
+  const found = useMemo(() => findings(trace, now, { usage, run }), [trace, now, usage, run]);
   const split = useMemo(() => costSplit(trace.spans), [trace]);
   const vital = useMemo(() => vitals(trace.spans, now), [trace, now]);
   // The figures every run has, in one order: what a browser's vitals are to a page load.
@@ -781,6 +781,13 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   // The Call column takes what is left of the table; where the time axis shows beside it, the two share it.
   const callWidth = selected ? "w-full md:max-xl:w-[30%] @4xl:w-[30%]" : "w-full md:w-[30%]";
   const priced = totals!.cost.requests;
+  // The run's spend cap, where it has one: how much of it the run's cost is, or the cap alone while the cost is not one
+  // figure. A cost that is a ceiling (a request cut before its usage was known counts at what was held for it) is at most
+  // that share of the cap.
+  const cap = typeof run.cost?.cap_usd === "number" ? run.cost.cap_usd : null;
+  const ofCap = cap === null ? null : typeof runUsd === "number" && cap > 0 ? `${run.cost?.upper_bound ? "at most " : ""}${percent(runUsd / cap)} of its ${capDollars(cap)} cap` : `cap ${capDollars(cap)}`;
+  const costParts = priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole";
+  const stopped = budgetStop(run);
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;
   // A zoom goes in about the open span's middle, so it stays in view; with none open, about the middle of what shows.
@@ -803,7 +810,7 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
           <Tile label="Tool calls" value={totals!.calls} note={toolNames.size === 1 ? "1 tool" : `${toolNames.size} tools`} />
           <Tile label="Failed" value={totals!.failed} tone={totals!.failed > 0 ? "bad" : undefined} note={firstFailed ? `First: ${firstFailed.name}` : "Nothing failed"} />
           <Tile label="Tokens" value={totals!.tokens ? compact(inputTokens(totals!.tokens) + totals!.tokens.output) : "–"} note={!totals!.tokens ? "No request to count" : `${share !== null ? `${percent(share)} of input read from cache` : "No input reported"}${totals!.untold ? ` · ${totals!.untold} request${totals!.untold === 1 ? "" : "s"} reported none` : ""}`} />
-          <Tile label={runUsd === null && known ? "Cost so far" : run.cost && isEstimate(run.cost) ? "Cost, estimated" : "Cost"} value={typeof runUsd === "number" ? dollars(runUsd) : known ? dollars(known.so_far_usd) : "Unknown"} note={priced ? `requests ${spendWords(priced)}${totals!.cost.charged ? ` · tools ${spendWords(totals!.cost.charges)}` : ""}` : totals!.cost.charged ? `tools ${spendWords(totals!.cost.charges)}` : "Booked for the run as a whole"} />
+          <Tile label={runUsd === null && known ? "Cost so far" : run.cost && isEstimate(run.cost) ? "Cost, estimated" : "Cost"} value={typeof runUsd === "number" ? dollars(runUsd) : known ? dollars(known.so_far_usd) : "Unknown"} note={ofCap ? `${ofCap} · ${costParts}` : costParts} />
           <Tile label="Time" value={duration(totals!.time.wall)} note={totals!.time.wall > 0 ? `model ${percent(totals!.time.model / totals!.time.wall)} · tools ${percent(totals!.time.tools / totals!.time.wall)}` : "Nothing ran yet"} />
         </dl>
 
@@ -821,9 +828,19 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
         {spans.length === 0 ? (
           // A run whose record keeps no request (a CLI harness's) and called no tool has no span, yet its booking may
           // still have its cost by line.
-          usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
-            : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>
-        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
+          <>
+            {/* A run can stop short for its budget with no span to show: a CLI harness's record keeps no request, and it may
+                answer the wrap-up with no call. Why it stopped is said all the same. */}
+            {stopped && (
+              <section aria-label="What stands out">
+                <Heading level="h2">What stands out</Heading>
+                <ul className="grid border-l border-t"><li className="border-b border-r bg-card p-3"><span className="block text-body font-semibold text-destructive-text">{stopped.title}</span><span className="mt-0.5 block text-small text-muted-foreground">{stopped.detail}</span></li></ul>
+              </section>
+            )}
+            {usage?.lines?.length ? <section aria-label="Where the cost went" className="border bg-card p-4"><CostByLine usage={usage} lines={usage.lines} /></section>
+              : <p className="border bg-card p-4 font-mono text-body text-muted-foreground">{live ? "No model request has answered and no tool has been called yet." : "This run made no model request and called no tool."}</p>}
+          </>
+        ) : view === "breakdown" ? <Breakdown trace={trace} usage={usage} run={run} now={now} onPick={pick} selected={selected?.id ?? null} /> : (
           <>
             <section aria-label="Overview of the run" className="border bg-card">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-4 py-1.5">
