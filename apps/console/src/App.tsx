@@ -49,6 +49,7 @@ import { ConnectExistingAgents, NativeConnections } from "@/components/NativeCon
 import { StartHere } from "@/components/StartHere";
 import { missionFrom, type MissionView, rangeFrom, type StatsRange } from "@/lib/mission";
 import { Playground, type StartResult, startFailure } from "@/components/Playground";
+import type { MovedToRunner } from "@/components/RunnerOffer";
 import { type Agent, decisionProvider, editBody, runsWhere, toolOffers } from "@/lib/agentForm";
 import { computerFields } from "@/lib/computers";
 import { RUN_STATUSES, RunsList } from "@/components/RunsList";
@@ -696,13 +697,18 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
     return refused;
   };
   const revsAsked = useRef(0);
+  /** Reads `agentId`'s revisions, every page: only the newest read lands. */
+  const readRevisions = (agentId: string) => {
+    const n = ++revsAsked.current;
+    allPages((cursor) => v2.listRevisions(agentId, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
+  };
   useEffect(() => {
     // The picked agent's revisions only: the old ones go at once, and an answer for an earlier pick is dropped.
-    const n = ++revsAsked.current;
+    ++revsAsked.current;
     setRevs([]);
     setPlaygroundRevision({ revision: "" });
-    if (pick) allPages((cursor) => v2.listRevisions(pick, cursor), (p) => p.revisions).then((r) => { if (n === revsAsked.current) setRevs(r); }).catch(() => {});
-  }, [v2, pick]);
+    if (pick) readRevisions(pick);
+  }, [v2, pick]); // eslint-disable-line react-hooks/exhaustive-deps
   // Runs the Playground started: the Claude login is read again after each (claudeSignedIn below).
   const [runsStarted, setRunsStarted] = useState(0);
   const send = async (agentId: string, body: Parameters<typeof v2.startRun>[1], key: string): Promise<StartResult> => {
@@ -718,12 +724,19 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   };
   // The Playground's offer under a run refused in a box while Claude Code's login, which runs agents on the runner only, is
   // on: the agent read now, saved with the edit its Computer step makes for a runner pick (computerFields), on the
-  // version read, and the agents read again so the bar and the next run see it there.
-  const moveToRunner = async (agentId: string) => {
+  // version read, and the agents and the picked agent's revisions read again so the bar, the revision picker and the next
+  // run see it there. An agent the edit leaves as it is (on the runner already: a second click, or a move made elsewhere)
+  // is not saved again. Answers the revision the agent runs now and the box-only tools the move dropped.
+  const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
     const { agent, etag } = await v2.getAgent(agentId);
-    const { unchanged: _unchanged, ...body } = editBody(agent, computerFields({ kind: "none" }, agent.definition.tools ?? [], editorCaps.tools), "Moved to the runner, where Claude Code's login on this machine runs it");
-    await v2.updateDefinition(agentId, body, etag);
+    const { unchanged, ...body } = editBody(agent, computerFields({ kind: "none" }, agent.definition.tools ?? [], editorCaps.tools), "Moved to the runner, where Claude Code's login on this machine runs it");
+    if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
+    const kept = new Set(body.definition.tools ?? []);
+    const dropped = (agent.definition.tools ?? []).filter((tool) => !kept.has(tool));
+    const saved = await v2.updateDefinition(agentId, body, etag);
     setRetry((n) => n + 1);
+    if (pickedAgent.current === agentId) readRevisions(agentId);
+    return { revision: saved.agent.revision, saved: true, dropped };
   };
   const efforts = ((caps as unknown as { features?: { efforts?: string[] } } | null)?.features?.efforts) ?? [];
   // The server's learning switch: undefined until its capabilities are read, null on a server without learning.
