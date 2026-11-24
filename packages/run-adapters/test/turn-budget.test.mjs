@@ -183,3 +183,66 @@ test("the session's model proxy opens the turn: the answer's input and output to
   assert.ok(total <= WINDOW, `${total} tokens after the results, past the window`);
   for (const r of results) assertCut(r, 10_000);
 });
+
+test("a call that arrives while the proxy is still reading the answer waits for its usage: it gets its share of the split, not the whole room", async (t) => {
+  const KEY = 'session-key-for-tests';
+  const policy = {
+    id: 'test',
+    routes: [{ method: 'POST', path: '/v1/messages' }],
+    keyOf: (headers) => String(headers.authorization ?? '').replace(/^Bearer /, ''),
+    authHeaders: (credential) => ({ authorization: `Bearer ${credential}` }),
+    apply: (body) => body,
+    modelOf: (body) => body.model,
+    usageOf: () => ({ input: 4_000, output: 100, cacheRead: 0 }),
+  };
+  const hooks = { beforeRequest: async () => ({ turn: 1 }), afterRequest: async () => {} };
+  // The answer's four tool_use blocks reach the client at once; its end (and so its usage) only once released.
+  const whole = messagesAnswer(4);
+  const at = whole.indexOf('event: message_delta');
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const encoder = new TextEncoder();
+  const fetch = async () => new Response(new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(whole.slice(0, at)));
+      await released;
+      controller.enqueue(encoder.encode(whole.slice(at)));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const turn = new TurnBudget();
+  const proxy = await startModelProxy({ policy, model: 'main-model', origin: 'https://provider.invalid', credential: () => 'provider-secret', hooks, price: () => 0, log: () => {}, fetch, turn }, KEY);
+  t.after(() => proxy.close());
+  const { hostname, port } = new URL(proxy.url);
+  let seenCalls;
+  const callsSeen = new Promise((resolve) => (seenCalls = resolve));
+  const answered = new Promise((resolve, reject) => {
+    const req = request({ host: hostname, port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json', authorization: `Bearer ${KEY}` } }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        text += chunk;
+        if ((text.match(/"content_block_stop"/g) ?? []).length === 4) seenCalls();
+      });
+      res.on('end', resolve);
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end(JSON.stringify({ model: 'main-model', stream: true, messages: [{ role: 'user', content: 'Read four files.' }] }));
+  });
+  // As a CLI that runs a call once its block is in: the four calls go before the answer has ended.
+  await callsSeen;
+  const tools = ['a', 'b', 'c', 'd'].map((n) => bigTool(n, 10_000));
+  const bridge = toolBridge(await driveOf('racing'), tools, { budget: { contextWindow: WINDOW, turn } });
+  let early = 0;
+  const pending = tools.map((tool, i) => bridge.call(tool.name, {}, `toolu_${i}`).then((r) => ((early += released.done ? 0 : 1), r)));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  released.done = true;
+  release();
+  const results = await Promise.all(pending);
+  await answered;
+  assert.equal(early, 0, 'no call was bound before the answer it came from was read');
+  const total = contextAfter(4_100, results);
+  assert.ok(total <= WINDOW - Math.floor(WINDOW * processExports.ANSWER_RESERVE_SHARE), `${total} tokens after the results, past what the turn has (${results.map((r) => r.text.length)} characters)`);
+  for (const r of results) assertCut(r, 10_000);
+});
