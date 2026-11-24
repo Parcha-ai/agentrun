@@ -22,7 +22,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, freeRequestLimi
 import { type AdapterFacts, type HarnessWire, type HostTool, PLAN_LIMIT_WORDS, type Refusal, type SessionSpec } from "@parcha/agentrun-kernel";
 import { modelWire, routed } from "../wires.js";
 import type { AdapterNeeds } from "../adapters.js";
-import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
+import { confineOf, noNewPrivsPrefix, ownSearchRuns, standsIn, thinkingFor } from "../adapters.js";
 import { claimSettled, claudeCliIn, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
@@ -63,7 +63,7 @@ import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
 import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, heldSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, keysOver, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
-import { mcpWhereHeld } from "./mcp-run.js";
+import { claimMetering, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { decisionProvidersIn } from "../decisions.js";
@@ -94,6 +94,7 @@ import { monidForClaim, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { routeTrace } from "../otel/genai.js";
 
 /** The shared claim-time computer types live on the base spec (adapter-run-spec.ts), re-exported for this module's API. */
 export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./adapter-run-spec.js";
@@ -367,7 +368,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
   const heldRefusal = launch.hold?.refused?.message;
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web, slots: deps.saveSlots } });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => runFolder(deps.data, runRow.agentId, claim.runId), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, runRow.agentId, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -656,7 +657,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // its MCP tools in the loop's one catalog seam; their answers pass the redactors as the web tools' do.
   const monid = monidForClaim(revisionRow.monidPin ?? undefined, { ...claimed }, () => ws.workspace, claim.runId, () => launch.maxCostUsd !== undefined, fakes?.monid);
   const catalog = withMonid(mcp, monid && { ...monid, tools: monid.tools.map((tool) => answersCut(tool, held)) });
-  const webNames = granted.filter(isWebHostTool);
+  // A run whose web_search is the harness's own search (ownSearchRuns: native on its plane, Claude's WebSearch, Codex's
+  // live search) is not handed the host's web_search beside it.
+  const webGranted = ownSearchRuns(ownerFacts, launch.plane) ? granted.filter((name) => name !== "web_search") : granted;
+  const webNames = webGranted.filter(isWebHostTool);
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
   let life: ReturnType<typeof hostLifecycle> | undefined;
@@ -722,7 +726,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const liveAt = await claimLiveAt(deps, claim.runId);
       const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) });
       gate.askedOn(host);
-      webTools = await webHostTools(host, granted, ctx);
+      webTools = await webHostTools(host, webGranted, ctx);
     }
     if (learns) {
       // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
@@ -804,6 +808,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry), as on pi.
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
+    // Its model, as its GenAI trace names it (otel/genai.ts); its requests' host is its CLI's own to choose.
+    trace: routeTrace({ named: `${chosen.model.provider}/${chosen.model.modelId}`, model: chosen.model.modelId }),
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),

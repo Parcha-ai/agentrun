@@ -63,7 +63,7 @@ import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
 import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
-import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
+import { asksOllama, chooseModel, EFFORTS, FAUX_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessRecipesEnv, harnessTable, planRecipesOf, recipeHarness, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
@@ -174,7 +174,7 @@ import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
 import { type COMPOSIO_KEY_ENV, composioEnvKey, composioMadeKey, composioPerRun } from "./composio-made.js";
-import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioToolkits, composioTools } from "./composio-preset.js";
 import { ComposioTriggers, composioNoPublicUrl } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
@@ -249,6 +249,7 @@ import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
+import { browserHoldKey } from "./browser-hold.js";
 import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
 import { redacted } from "./key-refusal.js";
@@ -415,9 +416,6 @@ export type ServeOptions = {
    *  with goes through (the tests' fake for that check alone), in place of monid's API; the runs' calls go through
    *  `fauxMonid`'s. */
   fauxMonidCheck?: string;
-  /** With `faux` only: a module whose default export is the fetch the Anthropic and OpenAI providers send through, in
-   *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
-  fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
    *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
@@ -558,7 +556,7 @@ export type ServeOptions = {
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
@@ -815,6 +813,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
+  { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/toolkits$/, name: "listComposioToolkits" },
   { method: "GET", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "getMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)$/, name: "saveMcpServer" },
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/([^/]+)\/composio$/, name: "saveComposioServer" },
@@ -1149,8 +1148,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
-       *  grant (runnable.ts takes one on any), a module's among them. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
+       *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
+       *  each run's own Composio account (mcp_auth's ComposioRunBinding, composioperrun/1), said here so a backend in
+       *  front learns it from this answer, which an API-only server serves, not from the API document, which it refuses. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)], composio_per_run: true },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -1575,7 +1576,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
   // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
   // landed or were undone, never by a key taken out for a removal that then fails.
-  await dropRefusedLogin(store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The sign-in this server starts, kept for this process (claude-sign-in.ts). Its queue is the one way the login's
+  // setting changes, the drop here included.
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  await dropRefusedLogin(claudeSignIns, store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The status checks' folders a server killed mid-check left in the temporary folder, each with a copy of the account
+  // file (the harness's sweepClaudeStatusFolders): this user's alone, and only once the check has ended by the end it
+  // wrote in its folder, so a check another server on this host runs now stays. Where the mode is there, as status
+  // checks are; a sweep that fails never stops the start.
+  if (loginOff === undefined) await import("@parcha/agentrun-harness-claude").then((claude) => claude.sweepClaudeStatusFolders()).catch(() => []);
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
   // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
@@ -1610,18 +1619,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
   let probes = 0;
+  // What the latest probe is made from, once it has read it, until it lands: none while no probe is out. A probe that
+  // failed never lands and leaves this at the inputs it read: a later change with those inputs reuses the offers held
+  // when they are made from them, and a change with any other inputs probes again.
+  let probing: readonly (string | undefined)[] | undefined;
   const probe = async (why: string) => {
     const mine = ++probes;
+    probing = undefined;
     // The Ollama listing the offers are made from is read before they are, so the first capabilities do not remake them.
     if (asksOllama(env)) await ollamaModels(env);
     const from = offersInputs(env);
+    if (mine === probes) probing = from;
     const started = performance.now();
     const next = await harnessOffers(offersEnvOf(env));
     log?.(logLine("harness_offers", { why, ms: Math.round(performance.now() - started) }));
     if (mine !== probes) return;
-    [offers, offersFrom] = [next, from];
+    [offers, offersFrom, probing] = [next, from, undefined];
     recompose();
   };
+  /** Whether `a` and `b` are the same offers' inputs (offersInputs). */
+  const sameInputs = (a: readonly (string | undefined)[], b: readonly (string | undefined)[]): boolean => a.length === b.length && a.every((value, i) => value === b[i]);
   /** After a save or delete of a key, the one writer of its file: env again, then what reads it. Writes can overlap
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
@@ -1635,7 +1652,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
-  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i]);
+  const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
@@ -1645,7 +1662,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
-    if (offersMadeFrom(offersInputs(env))) recompose();
+    const inputs = offersInputs(env);
+    // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
+    // lands: a probe of these overtakes it. Only a change starts one, one per change, so nothing loops. A change that
+    // leaves the inputs as they are (a tool key's) starts no probe only when the offers held are current: while they are
+    // behind the inputs, it probes too and drops the probe out, and the offers still end made from the inputs read now.
+    if (offersMadeFrom(inputs) && (probing === undefined || sameInputs(probing, inputs))) recompose();
     else await probe("key");
   };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
@@ -1670,10 +1692,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
    *  failed to take (changed_failed), until it takes. */
   const planNow = () => plan.refresh();
-  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
-   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
-  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  /** What Claude Code's login routes use: a turn on or off hands over the login it saved, then env is read again, as a
+   *  key's save does. A sign-in this server starts opens a browser on its machine, so only where the console is on
+   *  loopback here; it is kept for this process (claudeSignIns, above), and one still waiting is ended at the stop. */
   stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
     signIns: claudeSignIns,
@@ -1685,10 +1706,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     ...oneOwner,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
-    changed: async () => {
-      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-      await keysChanged();
+    saved: (login) => {
+      claudeLogin = login;
     },
+    changed: keysChanged,
   });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
@@ -3042,11 +3063,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
       // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
       // the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
+      await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
       await forgetKept("run", runId);
     },
@@ -3365,6 +3387,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return { warnings: [], stamp: {} };
     }
     if (cliLearningOf(body) || sdkOf(body)) return { warnings: [], stamp: {} };
+    // A workflow's own issues, as POST /workflows/validate lists them (workflowIssues: the DSL's checks, the durable
+    // runner's refusal), refuse its save before anything is written, each at its path under definition.workflow. Asked
+    // with no tools list: its run binds every tool its call nodes name whether `tools` lists it or not (tools.ts
+    // grantedTools), so a call node's unlisted tool is validate's hint, never a reason to refuse a runnable workflow.
+    if (revision.kind === "workflow") {
+      const { workflowIssues } = await import("./workflow-run.js");
+      const { issues } = await workflowIssues(body.workflow);
+      if (issues.length) throw invalid(issues.map(({ path, code, message }) => ({ field: `definition.workflow${path}`, reason: "invalid", code, message })));
+    }
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
     const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
     const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
@@ -5896,6 +5927,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Composio makes the managed MCP server; what is kept is the ordinary MCP save, so the key is a sealed header.
       case "listComposioTools":
         return send(res, 200, await composioTools(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
+      case "listComposioToolkits":
+        return send(res, 200, await composioToolkits(await bodyOf(req), options.composioControl ?? {}, stopping.signal), { "cache-control": "no-store" });
       case "saveComposioServer": {
         // The name is checked before Composio is called: a refused name leaves nothing made there.
         mcpNameOf(id);
@@ -5926,7 +5959,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteComposioSubscription":
         return send(res, 200, await composioTriggers.forget(id), { "cache-control": "no-store" });
       case "refreshMcpServer": {
-        const refreshed = await mcpServers.refresh(id, stopping.signal);
+        const refreshed = await mcpServers.refresh(id, stopping.signal, options.composioControl ?? {});
         await refreshMcpMeta();
         return send(res, 200, refreshed);
       }
