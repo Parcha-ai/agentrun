@@ -841,8 +841,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // the run carries resolves a tool as one the host holds would.
   const tooling = await toolingOf(revision);
   const plane: Plane = tooling ? planeFor(withCarried(deps.planeEnv(), carried), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
-  // The run's model, resolved once, at start (the runner reads launch.model only).
-  const model = await deps.modelOf(entry, revision);
+  // The run's model, resolved once, at start (the runner reads launch.model only). None for a held run whose model was
+  // refused: resolving it would throw those words, and its claim takes the stand-in on its revision's model (computer-held.ts).
+  const model = modelRefused ? undefined : await deps.modelOf(entry, revision);
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
