@@ -46,7 +46,9 @@ test("a port in use is passed over: under a range from 1025 the one candidate is
     holder.listen(1024, "127.0.0.1", () => resolve(true));
   });
   try {
-    await assert.rejects(freePort({ low: 1025 }), /^Error: no free port below the ephemeral range: none in 1024-1024 \(it starts at 1025\)$/);
+    const got = await freePort({ low: 1025 }).then((port) => ({ port }), (error) => ({ error }));
+    assert.ok(got.error, `the port in use was handed out (${got.port}), with 1024 held ${held ? "by this test" : "by something else on this machine"}`);
+    assert.equal(String(got.error), "Error: no free port below the ephemeral range: none in 1024-1024 (it starts at 1025)", `the failure was said as: ${got.error}`);
   } finally {
     if (held) await new Promise((resolve) => holder.close(resolve));
   }
@@ -95,8 +97,10 @@ test("a port whose probe fails with another error is released: the call rejects 
     process.nextTick(() => this.emit("error", Object.assign(new Error("a listen that fails"), { code: "EMOCKED" })));
     return this;
   });
-  await assert.rejects(freePort({ low }), { code: "EMOCKED" });
+  const got = await freePort({ low }).then((port) => ({ port }), (error) => ({ error }));
   listen.mock.restore();
+  const said = got.error ? `${got.error.code ?? "no code"}: ${got.error.message}` : `no error, port ${got.port} handed out`;
+  assert.equal(got.error?.code, "EMOCKED", `the probe's own error (EMOCKED) is passed up, not read as in use: the call ended with ${said}`);
   assert.equal(await freePort({ low }), port, `the port whose probe failed (${port}) is handed out by the next call`);
 });
 
