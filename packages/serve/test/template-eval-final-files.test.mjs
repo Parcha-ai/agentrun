@@ -228,6 +228,57 @@ test("a write the timeline cut at its budget (its text ending ...) counts as one
   assert.ok(old[1].length + (old[2]?.length ?? 0) > 60_000, String(old[1].length + (old[2]?.length ?? 0)));
 });
 
+test("a write a later one overwrote is not cut at 2,000 for sharing the file's head and tail: the middle it wrote stays in its call", () => {
+  const HEAD = `<!doctype html><html><head><style>${"a{color:red}".repeat(200)}</style></head><body>`;
+  const FOOT = `<script>${"track();".repeat(300)}</script></body></html>`;
+  const v1 = `${HEAD}<p>Q3 revenue: $4.1M (DRAFT-FIGURE)</p>${FOOT}`;
+  const v2 = `${HEAD}<p>Q3 revenue: $3.8M</p>${FOOT}`;
+  const calls = [
+    { tool: "write", arguments: { path: "report.html", content: v1 }, status: "ok", result: "wrote" },
+    { tool: "write", arguments: { path: "report.html", content: v2 }, status: "ok", result: "wrote" },
+  ];
+  const input = graderInput(GRADER, "Publish the report.", record(calls, [{ name: "report.html", bytes: v2.length, text: v2 }]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  assert.ok(input.includes("<p>Q3 revenue: $4.1M (DRAFT-FIGURE)</p>"), "the first write's draft figure is in the grader's input");
+  assert.equal(input.split("$3.8M").length - 1, 1, "the final file's figure is in the grader's input once, in <files>");
+});
+
+// Lines that each occur once, so a text's head or tail shows in <files> only where the text itself is.
+const rows = (tag, count) => Array.from({ length: count }, (_, i) => `${tag} ${String(i).padStart(5, "0")}\n`).join("");
+const reads = Array.from({ length: 20 }, (_, i) => ({ tool: "read", arguments: { path: `src-${i}.txt` }, status: "ok", result: `${"r".repeat(3_000)}${i}` }));
+
+test("an append whose tail <files> shows but whose head it cuts stays in its call: the text past its first 2,000 characters reaches the grader", () => {
+  const added = rows("app", 4_000);
+  const file = { name: "log.md", bytes: 110_000, text: `${"h".repeat(70_000)}${added}` };
+  const calls = [
+    { tool: "write", arguments: { path: "log.md", content: "h".repeat(70_000) }, status: "ok", result: "wrote" },
+    { tool: "append", arguments: { path: "log.md", content: added }, status: "ok", result: "appended" },
+    ...reads,
+  ];
+  const input = graderInput(GRADER, "Log it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
+  assert.match(files, /h \[\.\.\. \d+ characters cut \.\.\.\] /);
+  assert.ok(files.includes("app 03999") && !files.includes("app 00000") && !files.includes("app 00300"), "<files> shows the append's tail, not its head");
+  assert.ok(input.includes("app 00300"), "the append's row 300 is in the grader's input");
+});
+
+test("a first write whose head <files> shows but whose tail it cuts stays in its call: its end reaches the grader", () => {
+  const first = `${rows("wri", 7_000)}WEND`;
+  const added = rows("app", 4_000);
+  const file = { name: "log.md", bytes: 110_004, text: `${first}${added}` };
+  const calls = [
+    { tool: "write", arguments: { path: "log.md", content: first }, status: "ok", result: "wrote" },
+    { tool: "append", arguments: { path: "log.md", content: added }, status: "ok", result: "appended" },
+    ...reads,
+  ];
+  const input = graderInput(GRADER, "Log it.", record(calls, [file]));
+  assert.ok(input.length <= GRADER_PROMPT_MAX, String(input.length));
+  const files = input.slice(input.indexOf("<files untrusted>"), input.indexOf("</files>"));
+  assert.ok(files.includes("wri 00000") && !files.includes("WEND"), "<files> shows the write's head, not its end");
+  assert.ok(input.includes("wri 06999\\nWEND"), "the first write's end is in the grader's input");
+});
+
 test("a long argument stays whole when the calls fit", () => {
   const calls = [{ tool: "create_issue", arguments: { title: "Release notes", body: `${"b".repeat(30_000)}BODYEND` }, status: "ok", result: "created #12" }];
   const input = graderInput(GRADER, "File it.", record(calls, []));
