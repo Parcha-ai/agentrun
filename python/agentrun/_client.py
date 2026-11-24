@@ -52,9 +52,22 @@ URL_TEXT = re.compile(r"[\x21-\x7e]*")
 _SURROGATE = re.compile("[\ud800-\udfff]")
 
 
-def _key_from_environment() -> Optional[Secret]:
-    # AGENTRUN_TOKEN, the name the server and its setup page give the token, stands in when AGENTRUN_API_KEY is not set.
-    value = os.environ.get("AGENTRUN_API_KEY") or os.environ.get("AGENTRUN_TOKEN")
+# The hosts AgentRun's CLI takes as this machine (packages/agentrun/lib/device.mjs LOOPBACK; packages/client/src/client.ts
+# holds the same three). AGENTRUN_TOKEN, the name a local server gives its token, goes to no other host; a remote server
+# takes AGENTRUN_API_KEY.
+_LOOPBACK = ("localhost", "127.0.0.1", "[::1]")  # key-gate: loopback-rule the hosts AGENTRUN_TOKEN may go to
+
+
+def _loopback(base: str) -> bool:
+    # The library's host (no user, password or port; lowercased), with an IPv6 address's brackets put back as JS writes it.
+    host = urlsplit(base).hostname or ""
+    return (f"[{host}]" if ":" in host else host) in _LOOPBACK
+
+
+def _key_from_environment(base: str) -> Optional[Secret]:
+    # AGENTRUN_TOKEN, the name the server and its setup page give the token, stands in when AGENTRUN_API_KEY is not set,
+    # for a server on this machine alone: a local server's token is never sent to a remote address.
+    value = os.environ.get("AGENTRUN_API_KEY") or (os.environ.get("AGENTRUN_TOKEN") if _loopback(base) else None)
     return None if value is None else Secret(value)
 
 
@@ -220,8 +233,8 @@ class AgentRun(Resources):
 
     `base_url` is the server's address (default: AGENTRUN_BASE_URL), with /v2 added when its path holds no v2 segment,
     as the CLI takes it: http or https, with no query, fragment, user or password. `api_key` defaults to
-    AGENTRUN_API_KEY, else AGENTRUN_TOKEN. `timeout` is how long one try of a request may take, its
-    answer read included, in seconds; every method takes its own `timeout=` too, and that is how a call is cancelled.
+    AGENTRUN_API_KEY, else AGENTRUN_TOKEN when the server is on this machine (localhost, 127.0.0.1 or [::1]). `timeout` is
+    how long one try of a request may take, its answer read included, in seconds; every method takes its own `timeout=` too, and that is how a call is cancelled.
     `max_retries` is how many times a GET, or a request with an Idempotency-Key, is tried again after a 429, a 5xx or a
     dropped connection."""
 
@@ -233,9 +246,12 @@ class AgentRun(Resources):
         self.base_url = _base_of(base_url if base_url is not None else os.environ.get("AGENTRUN_BASE_URL"), "base_url" if base_url is not None else "AGENTRUN_BASE_URL")
         self.timeout = _positive(timeout, "timeout")
         self.max_retries = _whole(max_retries, "max_retries")
-        key = api_key if api_key is not None else _key_from_environment()
+        key = api_key if api_key is not None else _key_from_environment(self.base_url)
         if not key:
-            raise AgentRunAuthError("no_token", "No API key: pass api_key, or set AGENTRUN_API_KEY (or AGENTRUN_TOKEN).")
+            if not _loopback(self.base_url) and os.environ.get("AGENTRUN_TOKEN"):
+                origin_of = urlsplit(self.base_url)
+                raise AgentRunAuthError("no_token", f"No API key for {origin_of.scheme}://{origin_of.netloc}: AGENTRUN_TOKEN goes only to a server on this machine; pass api_key, or set AGENTRUN_API_KEY.")
+            raise AgentRunAuthError("no_token", "No API key: pass api_key, or set AGENTRUN_API_KEY (or AGENTRUN_TOKEN for a server on this machine).")
         # Refused before it is sent: http.client would quote a bad header value in its error.
         if not isinstance(key, str) or BAD_HEADER.search(key) or re.search(r"\s", key):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise AgentRunAuthError("bad_header", "The API key is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1).")

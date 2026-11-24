@@ -33,7 +33,9 @@ client = AgentRun(base_url="https://agentrun.example.com/v2", api_key=os.environ
 ```
 
 `base_url` defaults to `AGENTRUN_BASE_URL` and `api_key` to `AGENTRUN_API_KEY`, else `AGENTRUN_TOKEN`. `AGENTRUN_TOKEN` is
-the name the local server gives its token; the client sends it to whatever server `AGENTRUN_BASE_URL` names. The base URL is
+the name the local server gives its token, so the client sends it only to a server on this machine (`localhost`,
+`127.0.0.1` or `[::1]`, as the CLI); any other address takes `AGENTRUN_API_KEY` or `api_key`, and with neither is
+refused. The base URL is
 the server's address with or without `/v2`: as the CLI takes it, `/v2` is added when its path holds no `v2` segment, a
 path prefix kept. It must be http or https with
 no query, fragment, user, password, space or `.` or `..` segment, and the key must be a valid header value; both are
