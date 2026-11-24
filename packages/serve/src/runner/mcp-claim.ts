@@ -55,7 +55,7 @@
 // the next call sends the new one (or is refused for the move); and an OAuth access token within REFRESH_MARGIN_MS of its
 // end is refreshed through open's lease path: behind the call while the token is still valid (the call goes at once on
 // it), waited on only when it has run out. Concurrent calls to one server share one such open.
-import { offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
+import { heldApiOnlyMcpOrigins, offApiOnlyMcpOrigins } from "../mcp-api-only-origins.js";
 import { randomUUID } from "node:crypto";
 import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent, type Seen, systemNetwork, type OAuthNetwork, type TokenSet } from "../mcp-oauth.js";
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
@@ -474,9 +474,10 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     }
     // A per_run server: the API-only origin list read at every call, not only at the claim, since a runner of its own
     // holds its runs past a server's restart with the list changed. Refused or let in since its last open: opened again.
+    // The list is read first: with none held (a full server's store) the row is not read, and nothing is refused.
     let listMoved = false;
     if (stamp.auth === "per_run") {
-      const row = await getMcpServer(store, name);
+      const row = (await heldApiOnlyMcpOrigins(store)) ? await getMcpServer(store, name) : undefined;
       listMoved = (row !== undefined && (await offApiOnlyMcpOrigins(store, name, row)) !== undefined) !== offList.has(name);
       if (released) return;
     }

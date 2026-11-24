@@ -3493,8 +3493,11 @@ serves these routes alone:
   saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
   `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
   an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
-  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start and at
-  an agent's save, and nothing is sent to it. A server saved any other way (by the owner, before the profile was on)
+  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
+  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
+  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading.
+  The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list, never their
+  addresses, and nothing when there are none. A server saved any other way (by the owner, before the profile was on)
   is the owner's, and the list does not govern it;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 

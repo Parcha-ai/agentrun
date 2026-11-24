@@ -5,8 +5,6 @@
 // endpoint, triggers and their webhook hooks (all but a firing's release, which the launch hook's host sends), the rest
 // of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
-
-export { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
 import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-hook.js";
@@ -101,13 +99,13 @@ const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
 
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
  *  API_ONLY_ROUTES matches for that method (HEAD as GET), the generic MCP save when the operator names MCP origins
- *  (`mcpOrigins`, its body checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
-export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpOrigins: readonly string[] = []): boolean {
+ *  (`mcpSave`, its body checked at the route: apiOnlyMcpSave), or a GET of a run's computer live view. */
+export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string, mcpSave = false): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
   if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
-  const served = (name: string) => API_ONLY_ROUTES.has(name) || (name === "saveMcpServer" && mcpOrigins.length > 0);
+  const served = (name: string) => API_ONLY_ROUTES.has(name) || (name === "saveMcpServer" && mcpSave);
   return routes.some((route) => served(route.name) && route.method === asked && route.pattern.test(path));
 }
 
