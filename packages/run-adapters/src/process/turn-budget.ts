@@ -10,8 +10,8 @@ import { RESULT_CHARS_PER_TOKEN, resultMaxChars } from './tools.js';
  * tokens its request held and its output, and how many tool calls it made. The session's model proxy reports them for
  * every harness it serves (ModelProxyOptions.turn); pi reports them from its own answer hook.
  *
- * What is left for a turn: the window, less what the request held, the answer, and ANSWER_RESERVE_SHARE of the window
- * kept for the model's next answer, at RESULT_CHARS_PER_TOKEN. Each call claims the smaller of its own bound and what is
+ * What is left for a turn: the window, less what the request held, the answer, and the room kept for the model's next
+ * answer (answerReserve), at RESULT_CHARS_PER_TOKEN. Each call claims the smaller of its own bound and what is
  * left over the calls still unanswered, so parallel calls split it evenly, and a result shorter than its claim gives
  * the rest back. With no answer read (a harness whose model traffic the host does not see), the session's fixed text
  * (its system prompt and tool schemas, `fixed`), counted with o200k, is what the context holds, and each result is held
@@ -20,6 +20,12 @@ import { RESULT_CHARS_PER_TOKEN, resultMaxChars } from './tools.js';
 
 /** The share of the window a turn keeps for the model's answer after its results: the results never take it. */
 export const ANSWER_RESERVE_SHARE = 0.25;
+
+/** The most tokens a turn keeps for the model's answer, whatever the window. */
+export const ANSWER_RESERVE_MAX_TOKENS = 16_384;
+
+/** The tokens a turn on a window of `contextWindow` keeps for the model's answer after its results. */
+export const answerReserve = (contextWindow: number): number => Math.min(Math.floor(contextWindow * ANSWER_RESERVE_SHARE), ANSWER_RESERVE_MAX_TOKENS);
 
 /** The most a call waits for an answer still being read (`ready`) before it is bound on what is known: the proxy reads an
  *  answer's usage the moment it ends, so this is only reached if that reading never ends. */
@@ -130,7 +136,7 @@ export class TurnBudget {
     const held = facts ? facts.inputTokens : (this.#fixedTokens ?? 0);
     const share = resultMaxChars({ contextWindow, baseInputTokens: held });
     if (!facts) return share;
-    const room = contextWindow - facts.inputTokens - facts.outputTokens - Math.floor(contextWindow * ANSWER_RESERVE_SHARE);
+    const room = contextWindow - facts.inputTokens - facts.outputTokens - answerReserve(contextWindow);
     const left = Math.max(0, room * RESULT_CHARS_PER_TOKEN - this.#held);
     const unanswered = Math.max(1, (facts.calls ?? 0) - this.#claims.size);
     const max = Math.min(share, Math.floor(left / unanswered));
