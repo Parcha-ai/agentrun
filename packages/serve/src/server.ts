@@ -111,7 +111,7 @@ import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
-import { readLaunchBody } from "./run-launch.js";
+import { type HeldRefusal, readLaunchBody } from "./run-launch.js";
 import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
@@ -3106,8 +3106,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
    *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
    *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice).
-   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. */
-  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [] }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[] } = {}): Promise<void> {
+   *  `carried`: the names of the tool keys the run carries (run-keys.ts), each read as one this host holds. `held`: the
+   *  run holds its computer (hold: true): kept from running by its model alone, it is not refused, and the refusal is
+   *  returned for its launch, its start to answer it (computer-held.ts). */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice, carried = [], held = false }: { capped?: boolean; price?: (model: string) => Promise<unknown>; carried?: readonly string[]; held?: boolean } = {}): Promise<HeldRefusal | undefined> {
     if (cliLearningOf(revision.body)) throw new ApiError("agent_not_runnable", "Continue in the original CLI session; this connection records learning without launching its tools.");
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
@@ -3178,7 +3180,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const harness = blockers.find((b) => b.harness)?.harness;
     const box = blockers.find((b) => b.box)?.box;
     const named = { ...(harness ? { harness } : {}), ...(box ? { box } : {}), ...(notGrantable.length ? { not_grantable: notGrantable } : {}) };
-    if (revision.kind === "agentic") throw new ApiError("agent_not_runnable", message, { fields, details: { unbound, missing, ...named } });
+    if (revision.kind === "agentic") {
+      const details = { unbound, missing, ...named };
+      // A held run kept from running by its model alone opens: its computer is its owner's to call, and these words are
+      // its start's refusal (computer-held.ts). Any other blocker refuses it here, as any run.
+      if (held && blockers.every((b) => b.model)) return { message, fields, details };
+      throw new ApiError("agent_not_runnable", message, { fields, details });
+    }
     const tier = blockers.find((b) => b.tier)?.tier;
     const decisions = Object.fromEntries(blockers.flatMap((b) => (b.decision ? [[b.decision.provider, { reason: b.reason, needs: b.decision.needs }]] : [])));
     const denied = blockers.flatMap((b) => (b.denied ? [b.denied] : []));

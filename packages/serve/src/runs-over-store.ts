@@ -19,7 +19,7 @@ import type { Revision } from "./agent-rows.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import { type AgentEntry, type ExternalRef, externalKey, getAgent, ownedElsewhere } from "./agents-store.js";
 import { CAP_TOLERANCE, money } from "./cap.js";
-import { holdOf } from "./computer-held.js";
+import { heldRefused, holdOf } from "./computer-held.js";
 import { computerOfPlace, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, type InputIssue, invalid, unsupported } from "./errors.js";
 import { labelsOf } from "./run-labels.js";
@@ -31,7 +31,7 @@ import { thinkingLevel } from "./model.js";
 import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
-import { type LaunchDisk, launchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
+import { type HeldRefusal, type LaunchDisk, launchBody, readLaunchBody, sourceProjectOf, type RunLaunch } from "./run-launch.js";
 import { learningDiskOf } from "./learn/learning-of.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
@@ -197,6 +197,10 @@ export async function message(
   if (isObject(launchBody) && launchBody.cli_learning) throw new ApiError("not_continuable", "Continue in the original CLI session.");
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
+  // A held run its model kept from running at its create never runs its agent: a message would be its first turn (taken at
+  // a start, or opening it again once it ended), so it is refused as its start is (computer-held.ts).
+  const heldModel = readLaunchBody(launchBody)?.hold?.refused;
+  if (heldModel) throw heldRefused(heldModel);
   // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
   // system's agent is archived only by its delete: said so, as every run of it is refused (AgentDeleting).
   const archivedAgent = moment.archived === "agent" ? await store.agents.get(moment.agentId) : null;
@@ -434,8 +438,9 @@ export interface StartDeps {
   /** Marks an input refusal as told from a revision (server.ts told). */
   told(error: ApiError): ApiError;
   /** Refuses a revision this host cannot run, by field (server.ts runnable), each tool key the run carries (`carried`, by
-   *  name) read as one the host holds. */
-  runnable(revision: Revision, place: Place, options: { capped: boolean; carried?: readonly string[] }): Promise<void>;
+   *  name) read as one the host holds. `held`: the run holds its computer (hold: true), so a refusal for its model alone
+   *  is returned for its launch instead of thrown (computer-held.ts). */
+  runnable(revision: Revision, place: Place, options: { capped: boolean; carried?: readonly string[]; held?: boolean }): Promise<HeldRefusal | undefined>;
   /** The revision a run starts on, its MCP tools pinned: one that grants an MCP tool and was saved with no pin (before
    *  pins were made at save, or an inline agent's version stored then) is pinned once, at its first run (server.ts
    *  pinFirst); any other as it is. */
@@ -816,15 +821,16 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const refused = await deps.runnersRefused?.();
   if (refused !== undefined) throw new ApiError("runner_refused", refused);
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
-  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
-  // its server could not be listed, is refused with the rest (runnable).
-  await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried });
   // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
-  // revision's computer, else its place's).
+  // revision's computer, else its place's). Read before the run's check, which defers a held run's model refusal.
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);
   if (hold !== undefined && "field" in hold) throw invalid([hold]);
   // A workflow's loop opens no held computer and takes no start or release: its run holds nothing.
   if (hold !== undefined && revision.kind === "workflow") throw invalid([{ field: "hold", reason: "not_an_option", message: "hold is for an agent's run: a workflow run does not hold its computer for its owner." }]);
+  // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
+  // its server could not be listed, is refused with the rest (runnable). A held run kept from running by its model alone
+  // is not refused: those words ride its hold, for its start to answer (computer-held.ts).
+  const modelRefused = await deps.runnable(deps.pinFirst ? await deps.pinFirst(revision) : revision, place, { capped: cap !== undefined, carried, held: hold !== undefined });
   // The title shows on the run's page, the runs list and Mission Control: built from its input as shown, each held value
   // redacted before a long one is cut (a cut key could no longer be found).
   const shown = redactedOutput(input, deps.serverSecrets());
@@ -879,7 +885,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
     ...(from ? { inputOrigin: from } : {}),
     ...(model ? { model } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(hold ? { hold } : {}),
+    ...(hold ? { hold: modelRefused ? { ...hold, refused: modelRefused } : hold } : {}),
   };
   return { launch, revision };
 }

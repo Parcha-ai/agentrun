@@ -11,11 +11,11 @@
 // RUNNER_ONLY), so no run's agent reaches its own computer this way: it drives it through its tools.
 import { callComputer, callIssues, type ChannelOptions, type ChannelStore, sendRow, TAKE_MS } from "./computer-channel.js";
 import { type ComputerCallOptions, type ComputerCallStore, computerHoldOf, entriesOf, runOver } from "./computer-commands.js";
-import { COMPUTER_RELEASE, COMPUTER_START, heldIn, type HeldState, holdIssues } from "./computer-held.js";
+import { COMPUTER_RELEASE, COMPUTER_START, heldIn, heldRefused, type HeldState, holdIssues } from "./computer-held.js";
 import { type Definition, settingOfDefinition } from "./computer-setting.js";
 import { ApiError, invalid } from "./errors.js";
 import { runComputerField } from "./run-computer.js";
-import { readLaunchBody } from "./run-launch.js";
+import { type RunLaunch, readLaunchBody } from "./run-launch.js";
 import type { Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 
@@ -31,7 +31,7 @@ export type HeldStore = ComputerCallStore & ChannelStore & Pick<Store, "runs">;
 export type HeldOptions = ComputerCallOptions & ChannelOptions;
 
 /** The hold run `runId`'s launch asked for, or undefined when it holds no computer. */
-async function holdOfRun(store: Pick<Store, "runs">, runId: string): Promise<{ minutes: number } | undefined> {
+async function holdOfRun(store: Pick<Store, "runs">, runId: string): Promise<RunLaunch["hold"]> {
   return store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.hold, () => undefined);
 }
 
@@ -82,7 +82,8 @@ function fieldsOf(body: unknown): Record<string, unknown> {
  * - callRunComputer: the channel's answer (callComputer), the computer's own: `{ ok: true, value }` or `{ ok: false,
  *   error }`. 422 for a method the protocol does not have.
  * - startRun, releaseRunComputer: 404 for a run that holds no computer, and for a release of one already let go; 409
- *   computer_not_live when the hold is not where the route needs it (not up yet, already started, released).
+ *   computer_not_live when the hold is not where the route needs it (not up yet, already started, released). A start of a
+ *   run whose model kept it from running at its create: 409 agent_not_runnable, in its create's words (hold.refused).
  * Either: 503 when the runner took no row in time.
  */
 export async function heldRoute(name: string, runId: string, body: unknown, store: HeldStore, options: HeldOptions = {}): Promise<unknown> {
@@ -94,7 +95,11 @@ export async function heldRoute(name: string, runId: string, body: unknown, stor
   }
   const issues = unknownFields(fields, []);
   if (issues.length) throw invalid(issues);
-  if (!(await holdOfRun(store, runId))) throw new ApiError("not_found", `run ${runId} holds no computer: a run started with hold: true holds one`);
+  const hold = await holdOfRun(store, runId);
+  if (!hold) throw new ApiError("not_found", `run ${runId} holds no computer: a run started with hold: true holds one`);
+  // Its model kept it from running at its create: its agent never starts, in the words its create would have said, and
+  // nothing is sent, so its computer still takes calls and its release (computer-held.ts).
+  if (name === "startRun" && hold.refused) throw heldRefused(hold.refused);
   const read = heldIn(await entriesOf(store, runId, options));
   const over = await runOver(store, runId);
   if (name === "releaseRunComputer" && (over || read?.state === "released")) throw new ApiError("not_found", `run ${runId}'s computer was already let go`);

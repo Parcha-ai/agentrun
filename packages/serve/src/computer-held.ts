@@ -9,6 +9,11 @@
 // the run keeps its computer until the release or the lapse, then ends stopped. A cancel ends the run and lets the
 // computer go at once.
 //
+// A held run's create does not refuse it for its model (no key for it here, its harness refusing it, no price under a
+// cap): a benchmark that only calls the computer and lets it go never needs one. Those words ride its launch (hold.refused),
+// and its start and every message are refused in them (heldRefused), so its agent never runs; its computer still takes
+// calls until the release or the lapse. Every other blocker still refuses the create.
+//
 // Like the take-over (computer-commands.ts), it runs over the one store: the server writes command rows, the run's
 // runner applies them to the computer it holds (runner/held-run.ts), and commits what came of each to the run's journal.
 // The server reads the journal, never anything in its own memory.
@@ -22,7 +27,8 @@
 import { CALL_KIND } from "./computer-channel.js";
 import type { JournalEntry } from "./computer-commands.js";
 import type { ComputerKind } from "./computer-setting.js";
-import type { InputIssue } from "./errors.js";
+import { ApiError, type InputIssue } from "./errors.js";
+import type { HeldRefusal } from "./run-launch.js";
 
 /** The journal entry kind the runner commits for each change of the hold. */
 export const HELD_KIND = "computer.held";
@@ -63,6 +69,11 @@ export function holdOf(body: Record<string, unknown>, kind: ComputerKind): { min
   }
   return { minutes: typeof body.hold_minutes === "number" ? body.hold_minutes : HOLD_MINUTES };
 }
+
+/** The refusal of a held run whose model kept it from running when it was created (run-launch.ts hold.refused), for its
+ *  start and every message: 409 agent_not_runnable, in the words, fields and details its create would have answered.
+ *  Read from its launch, never checked again: a key saved since runs a new run, never this one. */
+export const heldRefused = (refused: HeldRefusal): ApiError => new ApiError("agent_not_runnable", refused.message, { fields: [...refused.fields], details: { ...refused.details } });
 
 /** Where a held computer is. */
 export type HeldState = "waiting" | "started" | "ended" | "released";
