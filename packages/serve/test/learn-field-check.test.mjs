@@ -117,8 +117,21 @@ test("a grade with no expected answer: graded right, the agent's answer is known
     agent: { n: 1, workflow_right: 1, agent_right: 1, pass: true },
   }, "in-0 repeats an answer graded wrong; in-1 differs from it, which no known answer judges");
   assert.equal(refuted.fields.x.unjudged, 1, "in-1 is counted as unjudged");
-  assert.deepEqual(refuted.misses, [{ field: "x", input_id: "in-0", workflow: "a", expected: undefined, known: "grade" }]);
+  assert.deepEqual(refuted.misses, [
+    { field: "x", input_id: "in-0", workflow: "a", expected: undefined, known: "unknown" },
+    { field: "x", input_id: "in-1", workflow: "b", expected: undefined, known: "unknown" },
+  ], "both are misses the recompile sees, marked wrong with no right answer given; none is made up");
   assert.deepEqual([refuted.verdict, refuted.joint.agreed], ["hold", 1], "only in-2 is right on every field");
+});
+
+test("a grade's known answer on a whole answer: `agrees` (the fast model's verdict on the workflow's answer and that one) decides where equal values do not, and the grade's own word decides the agent's", () => {
+  const rows = [
+    answered("in-0", { answer: { workflow: "w0", agent: "a0", grade: { k: 1 }, agrees: true, agent_correct: false } }),
+    answered("in-1", { answer: { workflow: "w1", agent: "a1", grade: { k: 1 }, agrees: false, agent_correct: true } }),
+  ];
+  const verdict = check(rows, BAR);
+  assert.deepEqual(verdict.fields.answer.by, { grade: { n: 2, workflow_right: 1, agent_right: 1, pass: false } });
+  assert.deepEqual(verdict.misses, [{ field: "answer", input_id: "in-1", workflow: "w1", expected: { k: 1 }, known: "grade" }]);
 });
 
 test("unjudged inputs are never right: 19 answers graded wrong with no correction, where the draft says anything else, and 1 ungraded input it matches, hold on the joint floor and on the field's judged count", () => {

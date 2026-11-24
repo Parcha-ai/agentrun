@@ -287,9 +287,9 @@ test("(b) a store holding a saved `queued` record of the revision and a `skipped
   assert.deepEqual(shown.serving, [{ workflow: "answer", digest: DIGEST, replaying: null }]);
 });
 
-test("(f) graded inputs: the check judges the answer against each grade's expected answer, not the agent's: a draft that says the expected 41 where the agent said 42 is promoted", { timeout: 180_000 }, async (t) => {
+test("(f) graded inputs: the check judges the whole answer against each grade's expected answer, not the agent's: a draft that says the expected answer where the agent said 42 is promoted", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: () => ({ answer: 41, sure: true }) });
-  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "agent" });
+  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41, sure: true }, source: "eval", at: new Date().toISOString(), path: "agent" });
   await w.start("run-1", "What is six times seven");
   await w.replaysEnded(5);
   const second = await w.start("run-2", "What is seven times six");
@@ -297,9 +297,8 @@ test("(f) graded inputs: the check judges the answer against each grade's expect
   const decided = (await promotionsOf(w.server.settings, "agent-1")).at(-1);
   assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed], ["promote", 5, 5], decided.reason);
   assert.deepEqual(Object.fromEntries(Object.entries(decided.check.fields).map(([name, one]) => [name, one.by])), {
-    answer: { agent: { n: 5, workflow_right: 5, agent_right: 5, pass: true } },
-    "answer.answer": { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
-  }, "right on all 5 against the grades, where the agent was right on none; the rest of the answer the agent's");
+    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
+  }, "one field, the whole answer: right on all 5 against the grades, where the agent was right on none");
 });
 
 test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is held (the default 0.8 would pass it)", { timeout: 180_000 }, async (t) => {
@@ -322,15 +321,16 @@ test("(e) agree_min 0.9 on the definition: 4 of 5 saying what the agent said is 
 /** Odd questions: the first revision answers 41 (the agent said 42) or hands back; the revision says 42 when `fixed`. */
 test("(f) graded inputs: a draft that says neither the expected 41 nor the agent's 42 is held, though the agent was wrong on every one", { timeout: 180_000 }, async (t) => {
   const w = await world(t, { learning: { compile_after: 5 }, prior: 5, submit: () => ({ answer: 7, sure: true }) });
-  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41 }, source: "eval", at: new Date().toISOString(), path: "agent" });
+  for (let i = 0; i < 5; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected: { answer: 41, sure: true }, source: "eval", at: new Date().toISOString(), path: "agent" });
   await w.start("run-1", "What is six times seven");
   await w.replaysEnded(5);
   const second = await w.start("run-2", "What is seven times six");
   assert.equal(second.metrics?.path, "agent", JSON.stringify(second.metrics));
   const held = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.decided === "hold" && one.check?.n);
   assert.ok(held, "the check held it");
-  assert.deepEqual(held.check.fields["answer.answer"].by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
-  assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer.answer", known: "grade", value: "41" }]), "each disagreement carries the known answer it missed");
+  assert.deepEqual(Object.keys(held.check.fields), ["answer"], "no field is made from a grade's keys");
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
+  assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "grade", value: JSON.stringify({ answer: 41, sure: true }) }]), "each disagreement carries the known answer it missed, whole");
 });
 
 const twice = (fixed) => (text) => (text.includes("exactly") && fixed ? { answer: 42, sure: true } : /Question [13]\b/.test(text) ? { answer: 41, sure: true } : /Question 2\b/.test(text) ? { answer: 42, sure: false } : { answer: 42, sure: true });

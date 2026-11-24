@@ -11,7 +11,9 @@
 //   (5) the audit compares through the grader, and its request is the served run's learning cost;
 //   (6) the grader's cost is its check's replay runs' cost, the revision's check_usd;
 //   (7) a person's stop while the grader's request hangs stops the replay at once, and its pair counts as differing;
-//   (8) a verdict is of the two answers it read: the source run answering again after it was compared makes it stale.
+//   (8) a verdict is of the two answers it read: the source run answering again after it was compared makes it stale;
+//   (9) a graded source run's replay is compared with the grade's expected answer, not the agent's: the same decision
+//       worded apart promotes, another decision holds with that answer shown.
 // Plus the pieces alone: the verdict's parse, the one retry, the comparison, the check's words, the request's ends (its
 // stop and its deadline among them).
 // The agent's runs are real runs of the store on a pi run of the faux gateway, whose faux grader (fixtures/faux-grader.mjs)
@@ -31,7 +33,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { promotionsOf, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
+const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
 const { decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
@@ -314,6 +316,30 @@ test("(8) a verdict is of the two answers it read: the source run answers 41 aft
   assert.ok(differs, JSON.stringify(record.check.disagreements));
   assert.equal(differs.differs_on, COMPARE_STALE);
   assert.match(differs.agent ?? "", /41/, "the disagreement shows the source's newest answer");
+});
+
+test("(9) a graded source run: its replay asks the fast model about the draft and the grade's expected answer, not the agent's; the same decision promotes, another holds, the expected answer shown whole", { timeout: 300_000 }, async (t) => {
+  const graded = async (prefix, expected) => {
+    const ids = undrawn(prefix);
+    const w = await world(t, { learning: { compile_after: 3 }, prior: 3 });
+    for (let i = 0; i < 3; i++) await putGrade(w.server.settings, "agent-1", { run: `prior-${i}`, correct: false, expected, source: "eval", at: new Date().toISOString(), path: "agent" });
+    const { record } = await checked(w, ids);
+    const users = w.graderRequests().map((request) => JSON.stringify(request.body));
+    return { record, users };
+  };
+  // The agent said 42 (graded wrong); the expected answer says 42 too, with its own reason: the same decision, worded apart.
+  const same = { answer: 42, sure: true, why: "checked by hand" };
+  const promoted = await graded("expected-same", same);
+  assert.equal(promoted.record.decided, "promote", promoted.record.reason);
+  assert.deepEqual(promoted.record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0, pass: true } });
+  assert.equal(promoted.users.length, 3, "one grader request per replay");
+  assert.ok(promoted.users.every((one) => one.includes("checked by hand") && !one.includes("six times seven is forty-two")), "each compares the draft with the expected answer, never the agent's");
+
+  const other = { answer: 41, sure: true };
+  const held = await graded("expected-other", other);
+  assert.equal(held.record.decided, "hold", held.record.reason);
+  assert.deepEqual(Object.keys(held.record.check.fields), ["answer"]);
+  assert.deepEqual(held.record.check.disagreements.map((one) => one.expected), Array.from({ length: 3 }, () => [{ field: "answer", known: "grade", value: JSON.stringify(other) }]));
 });
 
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {

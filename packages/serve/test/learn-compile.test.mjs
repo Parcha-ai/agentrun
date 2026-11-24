@@ -245,13 +245,17 @@ test("held by its check: the revise ask says the check's numbers and offers no '
 });
 
 // A miss against a grade or a label: the revise ask shows the known answer the draft missed and where it came from, as
-// data, and asks for the known answer there (never the agent's, which the grade corrected).
-test("held by its check on a known answer: each disagreement shows the known answer it missed and its source, and the ask is for the known answer", () => {
-  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer.answer"], expected: [{ field: "answer.answer", known: "grade", value: "41" }] };
-  const field = (name, n, right, known, pass) => ({ n, workflow_right: right, agent_right: 0, known, pass, reason: `${name}: ${right} of ${n}`, by: { [known]: { n, workflow_right: right, agent_right: 0, pass } } });
-  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1"], disagreements: [one], fields: { answer: field("answer", 5, 5, "agent", true), "answer.answer": field("answer.answer", 5, 0, "grade", false) } };
+// data, and asks for the known answer there (never the agent's, which the grade corrected). An input the owner graded
+// wrong without giving the right answer is shown too, saying so, with no answer made up for it.
+test("held by its check on a known answer: each disagreement shows the known answer it missed and its source, or that the owner marked the agent's answer wrong without the right one; the ask is for the known answer", () => {
+  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "{\"answer\":41}" }] };
+  const unknown = { run: "r2", input: "Question 2", agent: JSON.stringify({ answer: 43 }), draft: JSON.stringify({ answer: 9 }), fields: ["answer"], expected: [{ field: "answer", known: "unknown" }] };
+  const field = { n: 4, workflow_right: 0, agent_right: 0, unjudged: 1, known: "grade", pass: false, reason: "answer: 0 of 4", by: { grade: { n: 4, workflow_right: 0, agent_right: 0, pass: false } } };
+  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1", "r2"], disagreements: [one, unknown], fields: { answer: field } };
   const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
-  assert.match(prompt, /Input 1: Question 1\nYour answer: \{"answer":42\}\nThe draft's answer: \{"answer":7\}\nThe fields it had wrong: answer\.answer\nThe known answer of answer\.answer \(from a grade\): 41/);
+  assert.match(prompt, /Input 1: Question 1\nYour answer: \{"answer":42\}\nThe draft's answer: \{"answer":7\}\nThe fields it had wrong: answer\nThe known answer of answer \(from a grade\): \{"answer":41\}/);
+  assert.match(prompt, /Input 2: Question 2\nYour answer: \{"answer":43\}\nThe draft's answer: \{"answer":9\}\nThe fields it had wrong: answer\nOn answer, the owner marked your answer wrong without giving the right one\./);
+  assert.doesNotMatch(prompt, /known answer of answer \(from a unknown\)/);
   assert.match(prompt, /says the known answer/);
   assert.doesNotMatch(prompt, /answers these inputs alone and says what you said/);
 });
