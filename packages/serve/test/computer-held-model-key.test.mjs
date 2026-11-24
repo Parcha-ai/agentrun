@@ -3,7 +3,8 @@
 // Its create is not refused for that: a benchmark's held run only calls the computer and lets it go, and never needs the
 // model. The words the create would have said ride the run's launch (hold.refused): its start and every message are
 // refused in them (409 agent_not_runnable), and its computer still takes calls until the release or the hold's lapse.
-// Any other blocker still refuses the create, and so does a model gateway with no key here (422 model_key_required).
+// Any other blocker still refuses the create. On a model gateway with no key here it makes no model call, so it needs no
+// key, and a key handed with it is refused as never used.
 // The create resolves no model for such a run: its launch pins none.
 //
 // Its claim chooses no model and reads no key, on pi (adapter-run-spec.ts) and on every CLI harness (cli-run-spec.ts):
@@ -354,45 +355,44 @@ test("create (prepareLaunch): a held run whose model was refused resolves no mod
   assert.equal(held.launch.hold?.refused, undefined, "its hold carries no refusal");
 });
 
-test("served, a model gateway with no key here: a held run whose model was refused at its create is still refused 422 model_key_required, in the words any run there gets, and no computer is opened", async (t) => {
+test("served, a model gateway with no key here: a held run whose model was refused at its create opens with no key, and one handed a key is refused as never used", async (t) => {
   const seam = claimSeam();
   // A gateway on loopback that nothing listens on: nothing here asks it. No price is set, so its model has none.
   withEnv(t, {}, ["AGENT_MODEL_PRICE"]);
   const { api } = await keylessServer(t, seam, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9" });
   assert.equal((await api("POST", "/agents", agent("gw", { model: "agent-model/not-a-catalog-model", computer: SANDBOX }))).status, 201, "the gateway agent saves");
   const input = { content: "Do the task." };
-  const wordsOf = (error) => ({ code: error?.code, message: error?.message, fields: error?.fields });
 
-  // The words: a held run whose model is fine (uncapped, the gateway's model runs unpriced) is refused for the key alone.
+  // A held run whose model is fine (uncapped, the gateway's model runs unpriced) is refused for the key alone.
   const fine = await api("POST", "/agents/gw/runs", { input, hold: true });
   assert.deepEqual([fine.status, fine.body.error?.code], [422, "model_key_required"], `a held run on a gateway with no key is refused at its create: ${JSON.stringify(fine.body)}`);
   // Under a cap the gateway's model has no price: a model blocker. Not held, the run check refuses it, as before.
   const unheld = await api("POST", "/agents/gw/runs", { input, max_cost_usd: 1 });
   assert.deepEqual([unheld.status, unheld.body.error?.code], [409, "agent_not_runnable"], `the cap's unpriced model refuses a run that is not held: ${JSON.stringify(unheld.body)}`);
   assert.match(unheld.body.error.message, /has no price here/, "the refusal is the model's");
-  // Held, that refusal is deferred and the launch pins no model; its revision's model still keys it: 422, as above.
+  // Held, that refusal is deferred and the launch pins no model: the run makes no model call, so it needs no key and opens.
   const refused = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1 });
-  assert.deepEqual([refused.status, refused.body.error?.code], [422, "model_key_required"], `a held run whose model was refused at its create is still refused 422 model_key_required on a gateway with no key: ${JSON.stringify(refused.body)}`);
-  assert.deepEqual(wordsOf(refused.body.error), wordsOf(fine.body.error), "in the same words and fields any run there gets");
-  assert.deepEqual((await api("GET", "/agents/gw/runs")).body.runs, [], "no run was made");
-  assert.equal(seam.count.opened, 0, "no computer was opened for it");
-
-  // Handed a model key, the same held run opens: the key fits the gateway its revision's model goes to. A message to it,
-  // with a key too, is refused in its create's words, never first for the key (its launch pins no model to check it on).
-  const keyed = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1, model_key: GATEWAY_KEY });
-  assert.equal(keyed.status, 202, `a held run handed a key for the gateway opens: ${JSON.stringify(keyed.body)}`);
+  assert.equal(refused.status, 202, `a held run whose model was refused at its create opens on a gateway with no key: ${JSON.stringify(refused.body)}`);
   await seam.claimed;
   // The claim asked for its computer; the owner's call goes through its runner, so its answer comes once the hold is up.
-  const call = await api("POST", `/runs/${keyed.body.run_id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
-  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`));
-  const sent = await api("POST", `/runs/${keyed.body.run_id}/messages`, { content: "Go on.", model_key: GATEWAY_KEY });
-  await withRunRead(api, keyed.body.run_id, () => {
+  const call = await api("POST", `/runs/${refused.body.run_id}/computer/call`, { method: "files.list", params: { path: "/workspace" } });
+  await withRunRead(api, refused.body.run_id, () => assert.deepEqual([call.status, call.body.ok], [200, true], `the owner's call reaches the held computer: ${JSON.stringify(call.body)}`));
+  // A message to it, with a key, is refused in its create's words, never first for the key.
+  const sent = await api("POST", `/runs/${refused.body.run_id}/messages`, { content: "Go on.", model_key: GATEWAY_KEY });
+  await withRunRead(api, refused.body.run_id, () => {
     assert.deepEqual([sent.status, sent.body.error?.code], [409, "agent_not_runnable"], `a message with a key to a held run whose model was refused is refused as its start is: ${JSON.stringify(sent.body)}`);
     assert.equal(sent.body.error.message, unheld.body.error.message, "in the words its create would have given");
   });
-  const release = await api("POST", `/runs/${keyed.body.run_id}/computer/release`, {});
-  await withRunRead(api, keyed.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
+  const release = await api("POST", `/runs/${refused.body.run_id}/computer/release`, {});
+  await withRunRead(api, refused.body.run_id, () => assert.deepEqual([release.status, release.body], [200, { held: { state: "released" } }], `its release lets the computer go: ${JSON.stringify(release.body)}`));
   await seam.released;
+
+  // Handed a model key, the same held run is refused at its create: its launch pins no model, so the key would never be used.
+  const keyed = await api("POST", "/agents/gw/runs", { input, hold: true, max_cost_usd: 1, model_key: GATEWAY_KEY });
+  assert.deepEqual([keyed.status, keyed.body.error?.code, keyed.body.error?.fields?.[0]?.field], [422, "input_invalid", "model_key"], `a held run whose model was refused, handed a model key, is refused for it: ${JSON.stringify(keyed.body)}`);
+  assert.match(keyed.body.error.message, /so its model key would never be used/, "as a key never used");
+  assert.deepEqual((await api("GET", "/agents/gw/runs")).body.runs.map((run) => run.run_id), [refused.body.run_id], "no run was made for it");
+  assert.equal(seam.count.opened, 1, "and no computer was opened for it");
 });
 
 test("a message to a held run its model kept from running is refused in its create's words, whatever the run's state, a trigger's too, and nothing is sent or opened again", async () => {

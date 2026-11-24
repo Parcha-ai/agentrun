@@ -1575,3 +1575,66 @@ test("a trigger's message never runs in a session its claim started on its owner
   assert.deepEqual(heard.map((r) => r.headers["x-api-key"] === TOKEN ? "the owner's sign-in" : "a key"), [], "the vendor heard no turn of the trigger's message");
   assert.deepEqual(rows.map((c) => /started on its owner's own sign-in/.test(c.refused ?? "")), [true], JSON.stringify(rows.map((c) => c.refused)));
 });
+
+test("a held run on a plan-billed recipe whose model was refused at its create is laid no key saved for its harness: its claim opens none and still builds its adapter, and its runner answers its process none; the same run not held gets them", { timeout: 60_000 }, async (t) => {
+  const [{ harnessRecipesEnv }, { cliRunSpecFromLaunch }, { heldFor }, { openSqliteStore }, { BACKGROUND_CONTEXT: ctx }, { createModels }, { createRegistry, Harness }] = await Promise.all([
+    import("../dist/harness-table.js"), import("../dist/runner/cli-run-spec.js"), import("../dist/runner/run-child-host.js"), import("../dist/store/index.js"),
+    import("@earendil-works/chord/context"), import("@earendil-works/pi-ai/models"), import("@earendil-works/pi-durable"),
+  ]);
+  const KEY = "not-a-secret-held-harness-key";
+  const refused = { message: "model-agent/default has no price here, so a run capped at $1 cannot run it.", fields: [], details: { unbound: [], missing: {} } };
+  const data = join(await scratch(t), "agents");
+  const built = await release(t);
+  const plan = planOn({ url: "http://127.0.0.1:9" });
+  const file = await recipeFile(t, { ...plan, release: { ...plan.release, archives: { [PLATFORM]: { ...plan.release.archives[PLATFORM], sha256: built.archiveSha } } } });
+  await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
+  await noteChecked(data, file);
+  const env = { ...harnessRecipesEnv([file], data), PATH: process.env.PATH };
+  const seal = randomBytes(32);
+  const dir = await scratch(t);
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const specs = [];
+  t.after(async () => {
+    for (const { spec, harness } of specs) {
+      await spec.release?.().catch(() => {});
+      await harness.close(ctx).catch(() => {});
+    }
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+  });
+  const saved = new HarnessKeysOverStore(server, seal, planRecipesOf(env), data);
+  await saved.save(saved.recipe("model-agent"), "MODEL_AGENT_API_KEY", { value: KEY });
+  const body = { instructions: "Answer.", harness: "model-agent", model: "model-agent/default", tools: ["read"] };
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body });
+  // Each read of a key saved for a harness, by its row's name: what a claim opens (harness-keys.ts openHarnessKeys).
+  const asked = [];
+  const get = store.sealedKeys.get.bind(store.sealedKeys);
+  store.sealedKeys.get = async (name) => (name.startsWith("harness:") && asked.push(name), get(name));
+  const launchOf = (hold) => ({ input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "model-agent", ...(hold ? { hold } : {}) });
+  /** Run `id`'s claim on the runner, its spec built as the runner builds a CLI harness's: the harness keys it read. */
+  const claimOf = async (id, hold) => {
+    const launch = launchOf(hold);
+    await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+    await server.flush?.();
+    const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
+    const registry = createRegistry();
+    let models = createModels();
+    const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+    const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
+    asked.length = 0;
+    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    specs.push({ spec, harness });
+    return { spec, asked: [...asked] };
+  };
+  const unheld = await claimOf("run-1");
+  assert.deepEqual(unheld.asked, ["harness:model-agent:MODEL_AGENT_API_KEY"], "a run not held opens the key saved for its harness at its claim, as before");
+  const held = await claimOf("run-2", { minutes: 5, refused });
+  assert.deepEqual(held.asked, [], "a held run its model kept from running opens no key saved for its harness at its claim: its agent never starts");
+  assert.ok(held.spec.adapter, "and its claim still builds its agent's adapter, so it holds its computer");
+  // A run's own process asks its runner (run-child-host.ts heldFor) for its harness's keys, by the recipe file it loaded.
+  const digest = planRecipesOf(env)[0].digest;
+  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held;
+  assert.deepEqual(await seam(launchOf()).harnessKeys(digest), { MODEL_AGENT_API_KEY: KEY }, "a run not held is answered the keys saved for its harness, as before");
+  assert.deepEqual(await seam(launchOf({ minutes: 5, refused })).harnessKeys(digest), {}, "a held run its model kept from running is answered none, whatever its process asks");
+});
