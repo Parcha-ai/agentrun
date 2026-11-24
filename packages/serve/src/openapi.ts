@@ -24,6 +24,7 @@ import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
 import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
+import { HARNESS_KEY_REENTER } from "./server-keys.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
@@ -610,17 +611,24 @@ const KEY_ID = { name: "key_id", in: "path", required: true, description: "The t
 const HARNESS_KEYS_VIEW = closed({
   harnesses: {
     type: "array",
-    description: "Each harness recipe billed to its vendor's plan that this server is started with (--harness-recipe), in the table's order. Empty when it names none.",
+    description: "Each harness recipe billed to its vendor's plan that this server is started with (--harness-recipe), in the table's order; then each id with keys kept whose recipe it no longer names, by id. Empty when there is neither.",
     items: closed({
       id: { type: "string", pattern: HARNESS_ID_PATTERN, description: "The harness's id, as a revision's `harness` names it." },
-      label: { type: "string", description: "Its recipe's label." },
-      keys: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each key its recipe runs on (its `keys`, in their order) as every secret's view says it: named harness:<harness>:<KEY>; source `console` once saved; changed_at when its value was last saved. Never a value." },
-      ready: { type: "boolean", description: "Whether every one of `keys` is saved: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
+      label: { type: "string", description: "Its recipe's label; its id when the server no longer names its recipe." },
+      named: { type: "boolean", description: "Whether this server is started with its recipe. False: its keys are kept (sealed, still cut from what runs say) and no run gets them; DELETE removes each, and a PUT is 404." },
+      keys: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each key its recipe runs on (its `keys`, in their order; none when not named) as every secret's view says it: named harness:<harness>:<KEY>; set, with source `console`, once saved for this recipe file; changed_at when its value was last saved. Never a value." },
+      kept: { type: "array", items: { $ref: "#/components/schemas/SecretMeta" }, description: "Each key saved for this id that its recipe runs on no more, or every one when no recipe is named: no run gets it, and DELETE removes it." },
+      ready: { type: "boolean", description: "Whether every one of `keys` is saved for this recipe file: then its runs run on them, a scheduled or triggered one too, ahead of its owner's own sign-in (--harness-sign-in)." },
+      reenter: {
+        type: "array",
+        description: "Each of `keys` with a value kept that its runs do not get, and why: recipe_changed (saved for another recipe file of this id, so a recipe that changed never inherits it), seal_key_changed (sealed under another seal key), file_unreadable (damaged). Saving it again replaces it.",
+        items: closed({ name: { type: "string" }, why: { enum: [...HARNESS_KEY_REENTER] } }),
+      },
     }),
   },
 });
 const HARNESS_ID_PARAM = { name: "harness_id", in: "path", required: true, description: "The harness: one of GET /settings/harness-keys' ids.", schema: { type: "string" } };
-const HARNESS_KEY_PARAM = { name: "key", in: "path", required: true, description: "One of the harness's `keys`, by the name its recipe gives it.", schema: { type: "string" } };
+const HARNESS_KEY_PARAM = { name: "key", in: "path", required: true, description: "One of the harness's `keys` (or, for a DELETE, its `kept`), by the name its recipe gives it.", schema: { type: "string" } };
 /** The InputIssue reasons a saved MCP server's refusals give that the contract's enum lacks (mcp-probe.ts). */
 const MCP_ISSUE_REASONS = ["redirect", "not_https", "too_many_tools", "tools_too_large", "reserved", "expired", "registration_unavailable"] as const;
 /** Whether an MCP server's OAuth sign-in brings its own client, and the callback URL a hand-made one must name
@@ -1248,7 +1256,7 @@ const RUN_COMPUTER = {
   ...closedWith({
     kind: { enum: ["sandbox", "desktop", "phone", "browser"] },
     provider: { type: "string" },
-    state: { enum: ["starting", "ready", "taken_over", "released", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over); `released` while the run waits on its person with its computer let go: stopped, or parked on a question or an approval with no desktop, phone or sandbox kept for its resume; the run's next turn starts a new one; `failed` when the run could not have its computer (error code `computer_unavailable`)." },
+    state: { enum: ["starting", "ready", "taken_over", "released", "ended", "failed"], description: "`taken_over` while the owner holds the run's desktop or phone (POST /runs/{run_id}/computer/take-over), or its browser (Take over in the browser's live view); `released` while the run waits on its person with its computer let go: stopped, or parked on a question or an approval with no desktop, phone or sandbox kept for its resume; the run's next turn starts a new one; `failed` when the run could not have its computer (error code `computer_unavailable`)." },
   }, {
     why: { type: "string", description: "With `failed`: the server's words, naming the setting to fill." },
     held: {
@@ -2749,7 +2757,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       operationId: "deleteHarnessKey", tags: ["local"], summary: "Forget one key of a plan-billed harness recipe",
       // A removal has no body to mark a field in: the operation is marked whole, a secret write all the same.
       "x-agentrun-secret": true,
-      description: "Its runs no longer get it; the value stays sealed for the cut. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      description: "Its runs no longer get it; the value stays sealed for the cut. Takes a key its recipe runs on, or one kept for it (`kept`), also for an id whose recipe this server no longer names; 404 for an id it names no recipe of and keeps no key for. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       parameters: [HARNESS_ID_PARAM, HARNESS_KEY_PARAM],
       security: [{ ownerSession: [] }],
       responses: { "204": { description: "Forgotten." }, ...errors(401, 403, 404, 422, 429, 500) },
@@ -4128,7 +4136,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   RunFile: {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
-    name: { type: "string", description: "In a run's listing read with `?cut=run` alone, on every file: its `path` under the run's own cut, as a cut read cuts a file's text (each value the cut holds and each secret shape replaced by `[redacted]` in place), so a file named by a held value can be shown by its name. Absent without `cut` (and from a server that doesn't know it: show such a file by no name, never its `path`).", "x-agentrun-serve": "filecut/2" },
+    name: { type: "string", description: "In a run's listing read with `?cut=run` alone, on every file: its `path` under the run's own cut, as a cut read cuts a file's text (each value the cut holds and each secret shape replaced by `[redacted]` in place), so a file named by a held value can be shown by its name. Absent from every file of a run whose end erased what its caller handed it (its files cut by that end's count, which says where a value sits in a file's text, never in its name). Absent without `cut` (and from a server that doesn't know it: show such a file by no name, never its `path`).", "x-agentrun-serve": "filecut/2" },
   },
   DefinitionInput: {
     cli_learning: CLI_LEARNING_BINDING,
@@ -4441,8 +4449,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     harness_keys: {
-      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses"],
-      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." } },
+      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses", "kept"],
+      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." }, kept: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "Each harness id with keys saved whose recipe this server is no longer started with: kept sealed, run by nothing, listed by GET /settings/harness-keys until a DELETE removes them. Empty to a caller with neither the owner's session nor a token." } },
       description: "GET /settings/harness-keys and PUT/DELETE /settings/harness-keys/{harness_id}/{key}: the keys a plan-billed harness recipe runs on, each kept `sealed` for that harness alone, opened at the claim of a run on it and never handed to another harness or to any run's tools.",
       "x-agentrun-serve": "harnesskeys/1",
     },
@@ -4809,7 +4817,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const readFileOp = (doc.paths["/runs/{run_id}/files/{path}"] as Json).get as Json & { parameters: Json[]; responses: Record<string, Json> };
   readFileOp.parameters = [
     ...readFileOp.parameters,
-    query("cut", `\`run\`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by \`[redacted]\` in place, as the run's timeline cuts its calls; the text is \`[redacted]\` whole when a value still shows in a form not cut in place. The cut holds this server's values, not every secret: a value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it, and a secret of no known shape passes as written. Answered \`text/plain; charset=utf-8\` with \`x-agentrun-cut: run\` (a server that doesn't know \`cut\` answers the raw bytes, without it), the whole file (\`Range\` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is \`415 unsupported_media_type\`; one over ${RUN_FILE_CUT_MAX} bytes is \`413 payload_too_large\`; a run whose cut can't be read (the sign-in it was handed doesn't open) is \`403 forbidden\`. Without \`cut\`, the file's bytes as written.`, { type: "string", enum: ["run"] }),
+    query("cut", `\`run\`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed, and what its caller handed it: its own model key, tool keys and MCP servers' credentials), each one and each secret shape replaced by \`[redacted]\` in place, as the run's timeline cuts its calls; the text is \`[redacted]\` whole when a value still shows in a form not cut in place. The run's end erases what its caller handed it and counts where those values sat in each of its text files, never the values; from then a file is cut where that count says, while its bytes are the ones counted. A file the count cut in more than 256 places reads \`[redacted]\` whole. A file not counted as it is now (written or changed since the end, past the count's limits of 2,000 files, 64 MiB read and 512 KiB of count, or a run whose end made no count) is \`403 forbidden\`. That holds for good: once a run handed secrets has ended a turn, a file a later turn writes or changes is withheld from cut reads, whether or not that turn was handed secrets of its own (read it raw). A secret of no known shape passes as written. Answered \`text/plain; charset=utf-8\` with \`x-agentrun-cut: run\` (a server that doesn't know \`cut\` answers the raw bytes, without it), the whole file (\`Range\` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is \`415 unsupported_media_type\`; one over ${RUN_FILE_CUT_MAX} bytes is \`413 payload_too_large\`; a run whose cut can't be read (the sign-in it was handed, or what its caller handed it, doesn't open here) is \`403 forbidden\`. Without \`cut\`, the file's bytes as written.`, { type: "string", enum: ["run"] }),
   ];
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
@@ -4819,7 +4827,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const listFilesOp = (doc.paths["/runs/{run_id}/files"] as Json).get as Json & { parameters?: Json[] };
   listFilesOp.parameters = [
     ...(listFilesOp.parameters ?? []),
-    query("cut", "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.", { type: "string", enum: ["run"] }),
+    query("cut", "`run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose end erased what its caller handed it lists no `name`. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.", { type: "string", enum: ["run"] }),
   ];
   listFilesOp["x-agentrun-serve-changed"] = { ...(listFilesOp["x-agentrun-serve-changed"] as Json), parameters: "filecut/2" };
   // An agentic run's cancel is its end at once: the 202 reads `cancelled`, and no later end of its turn moves it.

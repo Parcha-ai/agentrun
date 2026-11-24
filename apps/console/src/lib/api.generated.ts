@@ -620,6 +620,7 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
+      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -4683,8 +4684,14 @@ export interface operations {
       harnesses: {
         id: string;
         label: string;
+        named: boolean;
         keys: components["SecretMeta"][];
+        kept: components["SecretMeta"][];
         ready: boolean;
+        reenter: {
+          name: string;
+          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+        }[];
       }[];
     };
   };

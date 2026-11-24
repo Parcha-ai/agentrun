@@ -243,6 +243,26 @@ whose stored cost was unknown that it read, those whose priced booking it wrote 
 heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
 names no run, and a store with no such run says nothing; quiet keeps it too.
 
+## Traces (OpenTelemetry)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) and every run on a pi or CLI harness
+exports a GenAI trace over OTLP/HTTP to any backend that takes one, with the official OpenTelemetry SDK: an
+`invoke_agent {harness}` span per claim of the run, under it a `chat {model}` span per model request (provider, model,
+`server.address` (the host the request goes to, OpenRouter's for a model reached through it; none where not known),
+and tokens with the cache: `gen_ai.usage.input_tokens` includes the cache read and write, which are also given on their
+own) and an `execute_tool {tool}` span per tool call. A run is one trace, sampled whole or not at
+all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`). A request billed to a plan, and every turn of a plan harness,
+has `agentrun.billing=plan` and no token counts. No span holds content (a prompt, a message, a tool's arguments or
+result), whatever `OTEL_INSTRUMENTATION_GENAI_CAPTURE_CONTENT` says; content capture comes later. Reasoning tokens are
+not on chat spans yet: the usage a run's requests are booked with does not count them apart. Nor is
+`gen_ai.response.model`: the model asked for is `gen_ai.request.model`. The exporter takes the standard
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT`, and the resource `OTEL_SERVICE_NAME` and
+`OTEL_RESOURCE_ATTRIBUTES` (put `deployment.environment.name` there); `service.name` is `agentrun` unless set. Runs never
+receive these settings: no `OTEL_*` variable reaches a run's harness, tools or computer, and a run's own process is
+handed them apart from its environment. Spans are sent in the background, so a run's end never waits on the collector;
+a server or runner that stops waits at most 3 s to send what is left, and a collector that is down costs one log line
+and the dropped spans. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads and nothing is sent.
+
 ## Anonymous usage counts
 
 The server sends six anonymous events: `server_started`, a daily `heartbeat`, `first_run_completed`, and, for
@@ -1717,7 +1737,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
-| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` an mp3, wav, mp4 or m4a's length in seconds read from its bytes. Never overwrites | nothing | no, no |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, duration_s?, url}` or `{ok: false, url, refused \| error}` out, `duration_s` its length in seconds when it is audio or video whose bytes give it (below). Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -4814,13 +4834,27 @@ not metered and bills its own account outside the cap. fal is counted: a job sen
 toolkit `fal`, or at `mcp.fal.ai`) through `run_model`, `submit_job` or `submit_jobs` is priced before it is sent, at
 fal's unit price for its endpoint (the server's own `get_pricing`, read with the run's credential and kept five
 minutes) times the units the job's input states: its images, their megapixels, its text's characters, the seconds it
-names, or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
-are given, that length, read from the file first. That price is held under the cap, a
+names (only on an endpoint whose input sets the length fal bills, such as Kling's or Veo's `duration`, and only in
+that field), or, for dubbing, lip-sync, voice isolation and speech-to-text, which fal bills by the length of the media they
+are given, that length, read from the file first. A length fal rounds up is rounded up the same way: a talking head's
+voice to whole seconds, ElevenLabs Music and dubbing to whole minutes. That price is held under the cap, a
 job the cap can't take is refused before it is submitted, and the job is booked as the run's tool cost, charged by the
 server, with the price and the count it came from. It is an estimate at fal's list price, not fal's invoice: fal
-reports no cost for a job, and a minimum charge, a discount or a rate that depends on a setting `get_pricing` does not
-list are not in it. A job whose units can't be known before it runs (one billed by compute time or tokens, one that
-names no size or length, media whose length can't be read, an endpoint with no listed price) is refused under a cap,
+reports no cost for a job, and a minimum charge or a discount `get_pricing` does not list is not in it. Where fal's rate
+depends on a setting and `get_pricing` states one rate (Ideogram v3's and Ideogram character's `rendering_speed`,
+Veo's audio and resolution, Kling v3's audio and voice control, sync-lipsync's pro model, Nano Banana Pro's and Nano
+Banana 2's resolution, web search and thinking, Fabric's resolution), a job is priced at `get_pricing`'s rate times the ratio fal's model page gives its
+settings, a setting it leaves out at its default, plus any charge the page adds per unit (a web search, per image).
+Where the page and `get_pricing` disagree, the higher is held. The endpoints of those families (Ideogram v3 and
+character, Nano Banana Pro and 2, each also served as a Gemini image preview, Veo 3 and 3.1, Kling v3, sync-lipsync v2,
+Fabric 1.0) are each decided: priced by their settings or at one rate. Some of their video endpoints have no reader for
+the length fal bills (the changelog lists them). These endpoints' rates are decided, but their holds aren't yet: under a cap, a job on one is refused until its length can be read. Ideogram v4, v4.5 and v4.6 and Nano Banana
+2.1 are such families with no rate decided, so all of them are refused under a cap. An image job whose `limit_generations` is anything but `true` or
+left out is refused under a cap too: `false` lets its prompt ask for more images than it names, each billed. A variant fal adds to one of them is refused under a cap until it is decided, in words that
+name it, never held at `get_pricing`'s one rate. Any other endpoint is priced at `get_pricing`'s one rate, whatever its
+settings. A job whose units can't be known before it runs (one billed by compute time or tokens,
+one that names no size or length, media whose length can't be read, an endpoint with no listed price, a setting value
+the model page names no rate for, a variant whose rate is not decided) is refused under a cap,
 in words that say why; with no cap it runs, booked as an unknown charge. A price saved for a fal tool takes the place
 of this. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:

@@ -40,6 +40,8 @@ import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
+import { RaceStart } from "@/components/RaceStart";
+import { RunSkeleton } from "@/components/Skeleton";
 import { TraceCompare } from "@/components/TraceCompare";
 import { comparedIds } from "@/lib/traceCompare";
 import { MissionControl } from "@/components/MissionControl";
@@ -82,8 +84,9 @@ import { cn } from "@/lib/utils";
 const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
- *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts). `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. */
-type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+ *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
+ *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. */
+type Where = { repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where {
   if (h === "#/dojo") return { section: "dojo" };
@@ -91,7 +94,10 @@ export function route(h: string = location.hash): Where {
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
-  // A race: the runs its race:<label> label groups, watched side by side, under Runs.
+  // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
+  // one. A race this console starts is never labeled `new` (newRaceLabel); one an API caller labeled `new` is not
+  // reachable here, and its runs still list under Runs with that label.
+  if (h === "#/races/new") return { section: "runs", newRace: true };
   m = h.match(/^#\/races\/([^/?]+)$/);
   if (m) return { section: "runs", race: decodeURIComponent(m[1]) };
   // Two to four runs' Dev tools figures side by side (lib/traceCompare.ts), under Runs: the runs its query names.
@@ -475,7 +481,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const capsPolling = useRef(false);
   // It answers whether the read landed, for a page that says so (Settings → Tools).
   // Whether the latest capabilities read failed: a row that waits on them (Claude Code's login) then asks as it would
-  // with no capabilities at all, never hidden for the rest of the visit by one failed read.
+  // with no capabilities at all, never hidden for the rest of the visit by one failed read; the race form says so, with
+  // Try again, rather than loading for ever.
   const [capsFailed, setCapsFailed] = useState(false);
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) { setCaps(x); setCapsFailed(false); } return true; }, () => { if (n === capsAsked.current) setCapsFailed(true); return false; }); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -522,7 +529,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length || caps?.features?.harness_keys?.kept?.length ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
   // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
@@ -846,6 +853,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
           : where.agent !== null && !where.edit ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={placesOf(caps)} go={go} {...(demo ? { upload: demoUpload } : {})} />
           // A new decision agent's judge names the server's decision provider (agentForm's decisionProvider).
           : <AgentEditPage key={`${where.agent ?? "new"}:${where.tool ?? ""}`} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={{ ...editorCaps, routePrefix: c?.models?.route_prefix, decisionProvider: decisionProvider((caps as unknown as { workflows?: Parameters<typeof decisionProvider>[0] } | null)?.workflows), places: placesOf(caps), mcp: !!caps?.features?.mcp_client, mcpHarnesses: caps?.features?.mcp_client?.harnesses }} agentId={where.agent} go={go} />
+        // The form picks its lanes from the harnesses once, so it waits for the capabilities' first read.
+        : where.newRace ? (caps ? <RaceStart v2={v2} harnesses={editorCaps.harnesses} tools={editorCaps.tools} places={placesOf(caps)} go={go} />
+          : capsFailed ? <div className="p-5 md:p-8"><Banner tone="error" actions={<Button size="xs" onClick={() => void readCaps()}>Try again</Button>}>The server's harnesses could not be read, so there is nothing to pick a lane from yet.</Banner></div>
+          : <RunSkeleton />)
         : where.race ? <Race key={where.race} v2={v2} label={where.race} />
         : where.compare ? <TraceCompare key={where.compare.join(",")} v2={v2} ids={where.compare} />
         : where.run ? <LiveRun key={where.run} v2={v2} runId={where.run} caps={caps} agentName={agentName} />

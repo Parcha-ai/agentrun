@@ -1273,6 +1273,7 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -2662,8 +2663,14 @@ export type ListHarnessKeysResponse = {
   harnesses: Array<{
     id: string;
     label: string;
+    named: boolean;
     keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
     ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
   }>;
 };
 
