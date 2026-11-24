@@ -672,8 +672,9 @@ export function boundedProgress(forward: (chunk: string) => void, max: number): 
  *  under the host's bound, HOST_TOOL_OUTPUT), as every bridged harness's tool bridge holds it. Each call gets what pi's
  *  own tool task gives a tool: the calling agent's model, resolved in the session's models (its input and input limits,
  *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
- *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). */
-function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined) {
+ *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). Exported for the
+ *  test of what its tool streams to pi (test/pi-tool-progress.test.mjs); the session builds it (sessionOn). */
+export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -696,7 +697,8 @@ function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => 
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
         ...(model ? { model } : {}),
         // What the tool streams is what pi's slot keeps, and the result pi writes without its hooks (past its restart
-        // limit) is that text: held to the same bound as the answer (boundedProgress).
+        // limit) is that text: held to the same bound as the answer (boundedProgress; MUTATION: handing the tool
+        // `(chunk) => api.output(chunk)` here fails test/pi-tool-progress.test.mjs).
         output: boundedProgress((chunk) => api.output(chunk), resultMaxChars(budget)),
         ...(attempt === undefined ? {} : { attempt }),
         ...(tool.nests ? { nested: piNested(api, toolContext, touched, nestedRefusals, io.nestedEnded) } : {}),
