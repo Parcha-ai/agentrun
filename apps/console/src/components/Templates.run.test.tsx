@@ -18,7 +18,7 @@ const template: TemplateView = {
 };
 const copied = vi.fn(async (_prompt: string) => {});
 const applyTemplate = vi.fn(async () => ({ agent_id: "review-1", triggers: [], warnings: [] }));
-const v2 = { listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
+const v2 = { listMarketplaceTemplates: async () => ({ url: null, state: "off", read_at: null, templates: [] }), listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
 async function mount(name?: string, playground = false, draft?: string) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);

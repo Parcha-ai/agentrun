@@ -119,6 +119,10 @@ AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (d
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
+AGENTRUN_MARKETPLACE=off stops the console listing marketplace.agentrun.ai's templates beside this server's own (the list
+is read only when a page asks for it, kept 5 minutes); an https address reads that site's list instead. Under --faux it
+is off unless set to an address.
+
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). With it, AGENTRUN_API_ONLY_MCP_ORIGINS (comma-separated origins, such
 as https://mcp.example.com) lets the token save a per_run MCP server at one of those origins (PUT

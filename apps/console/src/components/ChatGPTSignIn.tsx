@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { Button } from "@/components/ui/button";
 import { Chip, type ChipTone } from "@/components/ui/chip";
 import { Input } from "@/components/ui/field";
-import { harnessLabel } from "@/lib/agentForm";
+import { HarnessName } from "@/components/HarnessIcon";
 import { chatGPTView, EXPIRED, MANAGE_USAGE_URL, NOT_REVOKED, PASTE_STEP, PLAN_IS_YOURS, PLAN_RUNS, signedInAs, SIGNED_OUT } from "@/lib/chatgpt";
 import { type Client, ClientError } from "@/lib/client";
 import { clock } from "@/lib/format";
@@ -250,7 +250,7 @@ export function WhatRunsHere({ harnesses, routePrefix }: { harnesses: readonly H
           const chip = harnessChip(h);
           return (
             <li key={h.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2.5 last:border-b-0">
-              <span className="font-mono text-body font-semibold">{harnessLabel(h.id)}</span>
+              <HarnessName harness={h.id} className="self-center font-mono text-body font-semibold" />
               <Chip tone={chip.tone}>{chip.text}</Chip>
               {h.available && !h.needs?.length
                 ? h.default_model && <span className="font-mono text-small text-muted-foreground">{modelLabel(h.default_model, routePrefix).text}</span>
