@@ -253,6 +253,18 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.equal(old.serve.closed.code, ATTACH_CLOSE.protocol);
 	assert.match(old.accepted.error.message, /speaks protocol 0\.1\.4, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
+	// A number-led version of another shape reads past 0.2 part by part, but no server takes its shape, so updating the
+	// server never helps: the driver is the side to update.
+	for (const protocol of ["0.2.1", "0.3-beta"]) {
+		class Malformed extends Mac {
+			hello() {
+				return { ...super.hello(), protocol };
+			}
+		}
+		const malformed = await dial(hub, pairedFor(mac), new Malformed());
+		assert.equal(malformed.serve.closed.code, ATTACH_CLOSE.protocol, protocol);
+		assert.match(malformed.accepted.error.message, new RegExp(`speaks protocol ${protocol.replaceAll(".", "\\.")}, and this server 0\\.2: update the driver on Test Mac \\(the download is on the console's Computers page\\)$`), protocol);
+	}
 	class Major extends Mac {
 		hello() {
 			return { ...super.hello(), protocol: "1.0" };

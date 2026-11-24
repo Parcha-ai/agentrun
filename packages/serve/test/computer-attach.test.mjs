@@ -70,6 +70,11 @@ test("a hello of a protocol this server does not take is refused in words that n
   // 0.1 is before 0.2 replaced apps.ui_tree with ui: that driver would pair without its UI tools.
   assert.equal(pairRefusal("Ada's Mac", { ...HELLO, protocol: "0.1", version: "0.1.4" }), "Ada's Mac's driver 0.1.4 speaks protocol 0.1, and this server 0.2: update the driver on Ada's Mac, then pair with the same code");
   assert.equal(pairRefusal("Ada's Mac", { ...HELLO, protocol: "1.0", version: "1.0.4" }), "Ada's Mac's driver 1.0.4 speaks protocol 1.0, and this server 0.2: the server is older, so once whoever runs it updates it, pair with the same code");
+  // A number-led version of another shape reads past 0.2 part by part, but no server takes its shape: the driver is
+  // the side to update.
+  for (const protocol of ["0.2.1", "0.3-beta"]) {
+    assert.equal(pairRefusal("Ada's Mac", { ...HELLO, protocol, version: "0.2.9" }), `Ada's Mac's driver 0.2.9 speaks protocol ${protocol}, and this server 0.2: update the driver on Ada's Mac, then pair with the same code`, protocol);
+  }
 });
 
 test("a close reason is cut to the 123 bytes a close frame holds, never inside a character", () => {

@@ -35,7 +35,13 @@ async function until(read, done, what, ms = 20_000) {
 }
 
 /** A dial of the attach socket: open with the server's chosen subprotocol, or refused at the upgrade with its status. */
-function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
+async function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
+  const { words: _words, ...answer } = await dialWords(wsUrl, headers, protocol);
+  return answer;
+}
+
+/** dial's answer, and when the upgrade is refused, the words of its body too. */
+function dialWords(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
   const ws = new WebSocket(wsUrl, protocol, { headers });
   ws.on("error", () => undefined);
   return new Promise((resolve) => {
@@ -44,8 +50,13 @@ function dial(wsUrl, headers, protocol = ATTACH_SUBPROTOCOL) {
       ws.terminate();
     });
     ws.once("unexpected-response", (req, res) => {
-      resolve({ open: false, status: res.statusCode });
-      req.destroy();
+      let words = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => void (words += chunk));
+      res.once("end", () => {
+        resolve({ open: false, status: res.statusCode, words });
+        req.destroy();
+      });
     });
   });
 }
@@ -94,7 +105,13 @@ test("pair a computer with a code; it is listed as its hello says, offline once 
   assert.deepEqual(await dial(wsUrl, {}), { open: false, status: 401 }, "no token");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer art_${"x".repeat(43)}` }), { open: false, status: 401 }, "a token no computer has");
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${TOKEN}` }), { open: false, status: 401 }, "the server's own token is no computer's");
-  for (const other of ["agentrun.computer.1.0", "agentrun.computer.0.1"]) assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, other), { open: false, status: 426 }, other);
+  // A refused protocol is a 426 (both drivers stop dialing on it, as on 4426), whose words name the side to update: a
+  // 0.1 driver offers only its own subprotocol, so these are the words it gets; a version of another shape is the
+  // driver's to update too.
+  const update = `update the driver on ${NAME} (the download is on the console's Computers page)`;
+  for (const [other, side] of [["agentrun.computer.0.1", update], ["agentrun.computer.0.2.1", update], ["agentrun.computer.1.0", "the server is older: it is updated by whoever runs it"]]) {
+    assert.deepEqual(await dialWords(wsUrl, { authorization: `Bearer ${token}` }, other), { open: false, status: 426, words: `this server speaks ${ATTACH_SUBPROTOCOL}, and ${NAME}'s driver asked for ${other}: ${side}` }, other);
+  }
   // A driver a minor ahead is answered with the subprotocol it asked for: a minor step only adds.
   assert.deepEqual(await dial(wsUrl, { authorization: `Bearer ${token}` }, "agentrun.computer.0.3"), { open: true, protocol: "agentrun.computer.0.3" });
 
