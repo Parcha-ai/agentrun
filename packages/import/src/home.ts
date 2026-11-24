@@ -10,7 +10,7 @@ import { type CalculateCost, type Catalog, builtinCatalog, loadCalculateCost, pr
 import { childrenOf, inOrder, type Readers, readerOf, sessionLocators } from "./read.js";
 import { type Env, type Locator, locatorKey, type SessionRead } from "./reader.js";
 import { READERS, SOURCES, type Source } from "./readers/index.js";
-import { AT, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE, USAGE_FIELDS } from "./counts.js";
+import { AT, atOf, HAS_LONG, HAS_REASONING, HAS_USAGE, STRIDE } from "./counts.js";
 import { OLD_MB, type PoolRead, ReadPool, readAheadBytes } from "./pool.js";
 import { addAll, addRecord, dropOwner, locatorNumber, ownAll, ownerOf, type RecordIndex, recordIndex, someRecord } from "./record-index.js";
 import { type Packed, packed, packInto } from "./record-key.js";
@@ -128,12 +128,11 @@ type Unpriced = {
   session: Meta;
   /** Each request's model (its own, else the session's), as its index in the pass's Models; -1 for none. */
   models: Int32Array;
-  /** Each request's tokens, USAGE_FIELDS numbers a request, in order; HAS_* says which it has. */
-  usage: Float64Array;
+  /** Each request's numbers in Counts' stride (STRIDE a request): its tokens, HAS_* saying which it has, then its time
+   *  (ms, at AT: atOf), for the requests sink. */
+  values: Float64Array;
   /** Each request's HAS_* bits. */
   has: Uint8Array;
-  /** Each request's time (ms), for the requests sink. */
-  at: Float64Array;
 };
 
 /** A part once its requests are priced, as they are read when the prices are in hand: their tokens summed (exact: whole
@@ -186,26 +185,19 @@ function compact(read: SessionRead, models: Models): Unpriced {
     };
     const names = counts.models.map(intern);
     const fallback = intern(model);
-    // Each request's usage numbers, and apart from them its time (counts' stride is STRIDE, the time at AT).
-    const usage = new Float64Array(counts.n * USAGE_FIELDS);
-    const at = new Float64Array(counts.n);
-    for (let i = 0; i < counts.n; i += 1) {
-      usage.set(counts.values.subarray(i * STRIDE, i * STRIDE + USAGE_FIELDS), i * USAGE_FIELDS);
-      at[i] = counts.values[i * STRIDE + AT]!;
-    }
+    // Each request's numbers as counts holds them (its usage, then its time), trimmed to its requests.
     return {
       session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) },
       models: counts.model.slice(0, counts.n).map((at) => (at === -1 ? fallback : names[at]!)),
-      usage,
+      values: counts.values.slice(0, counts.n * STRIDE),
       has: counts.has.slice(0, counts.n),
-      at,
     };
   }
   const n = read.requests.length;
-  const out: Unpriced = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), usage: new Float64Array(n * USAGE_FIELDS), has: new Uint8Array(n), at: new Float64Array(n) };
+  const out: Unpriced = { session: { id, child, users, copies, ...(parent !== undefined ? { parent } : {}), ...(costUsd !== undefined ? { costUsd } : {}), ...(model !== undefined ? { model } : {}) }, models: new Int32Array(n), values: new Float64Array(n * STRIDE), has: new Uint8Array(n) };
   for (let i = 0; i < n; i += 1) {
     const request = read.requests[i]!;
-    out.at[i] = request.at;
+    out.values[i * STRIDE + AT] = request.at;
     const name = request.model ?? model;
     let at = -1;
     if (name !== undefined) {
@@ -215,18 +207,18 @@ function compact(read: SessionRead, models: Models): Unpriced {
     out.models[i] = at;
     const { usage } = request;
     if (!usage) continue;
-    const o = i * USAGE_FIELDS;
-    out.usage[o] = usage.input;
-    out.usage[o + 1] = usage.output;
-    out.usage[o + 2] = usage.cacheRead;
-    out.usage[o + 3] = usage.cacheWrite;
+    const o = i * STRIDE;
+    out.values[o] = usage.input;
+    out.values[o + 1] = usage.output;
+    out.values[o + 2] = usage.cacheRead;
+    out.values[o + 3] = usage.cacheWrite;
     let has = HAS_USAGE;
     if (usage.cacheWrite1h !== undefined) {
-      out.usage[o + 4] = usage.cacheWrite1h;
+      out.values[o + 4] = usage.cacheWrite1h;
       has |= HAS_LONG;
     }
     if (usage.reasoning !== undefined) {
-      out.usage[o + 5] = usage.reasoning;
+      out.values[o + 5] = usage.reasoning;
       has |= HAS_REASONING;
     }
     out.has[i] = has;
@@ -238,13 +230,13 @@ function compact(read: SessionRead, models: Models): Unpriced {
 function requestAt(read: Unpriced, i: number, models: Models): SessionRequest {
   const index = read.models[i]!;
   const model = index === -1 ? undefined : models.names[index];
-  const request: SessionRequest = { at: read.at[i]!, ...(model !== undefined ? { model } : {}) };
+  const request: SessionRequest = { at: atOf(read, i), ...(model !== undefined ? { model } : {}) };
   const has = read.has[i]!;
   if (!(has & HAS_USAGE)) return request;
-  const o = i * USAGE_FIELDS;
-  const usage: Usage = { input: read.usage[o]!, output: read.usage[o + 1]!, cacheRead: read.usage[o + 2]!, cacheWrite: read.usage[o + 3]! };
-  if (has & HAS_LONG) usage.cacheWrite1h = read.usage[o + 4]!;
-  if (has & HAS_REASONING) usage.reasoning = read.usage[o + 5]!;
+  const o = i * STRIDE;
+  const usage: Usage = { input: read.values[o]!, output: read.values[o + 1]!, cacheRead: read.values[o + 2]!, cacheWrite: read.values[o + 3]! };
+  if (has & HAS_LONG) usage.cacheWrite1h = read.values[o + 4]!;
+  if (has & HAS_REASONING) usage.reasoning = read.values[o + 5]!;
   return { ...request, usage };
 }
 
@@ -572,8 +564,15 @@ async function totalsOf(home: string, source: string, tops: Part[], children: (P
     };
     out.push(totals);
     if (sink) {
-      const times = parts.flatMap(({ read }) => Array.from((read as Unpriced).at)).filter(Number.isFinite);
-      sink(totals, requests, times.reduce<number | undefined>((least, at) => (least === undefined || at < least ? at : least), undefined));
+      // The session's first time: the least finite one of its own files' requests (Unpriced, as every part is with a
+      // sink), read where they are held.
+      let started: number | undefined;
+      for (const { read } of parts as { read: Unpriced }[])
+        for (let i = 0; i < read.models.length; i += 1) {
+          const at = atOf(read, i);
+          if (Number.isFinite(at) && (started === undefined || at < started)) started = at;
+        }
+      sink(totals, requests, started);
     }
   }
   return out;

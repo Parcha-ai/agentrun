@@ -19,8 +19,8 @@ export type Counts = { n: number; models: string[]; model: Int32Array; values: F
 
 export const counts = (): Counts => ({ n: 0, models: [], model: new Int32Array(16), values: new Float64Array(16 * STRIDE), has: new Uint8Array(16) });
 
-/** Request i's time: its Answer's `at` in a read of turns. */
-export const atOf = (c: Counts, i: number): number => c.values[i * STRIDE + AT]!;
+/** Request i's time: its Answer's `at` in a read of turns. It reads `values` alone, so any numbers in Counts' stride do. */
+export const atOf = (c: Pick<Counts, "values">, i: number): number => c.values[i * STRIDE + AT]!;
 
 /** A request added, its model `model` and its usage `usage` (either absent), at `at` (the time a read of turns gives
  *  its Answer): its index. */
