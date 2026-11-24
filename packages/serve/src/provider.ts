@@ -9,13 +9,17 @@
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
+//   any wire the runner's model route translates a model's provider onto (wires.ts routed: an Ollama model of this
+//     machine on Anthropic's Messages): the route's own origin and fetch (runner/model-route.ts routeOf), no key, at the
+//     model's catalog price; for every harness on that wire alike.
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
-import type { HarnessWire as Wire } from "@parcha/agentrun-kernel";
+import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
+import { ROUTE_ORIGIN } from "@parcha/agentrun-kernel/host";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
-import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
-import { modelWire, WIRES, wireOf } from "./wires.js";
+import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef, ollamaWouldRun, START_OLLAMA } from "./model.js";
+import { modelWire, routed, routedId, translatesOnto, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
 import { gatewayHeadersOf } from "./request-metadata.js";
 import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
@@ -144,7 +148,30 @@ export function anthropicModelId(model: ModelRef): string {
  *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
 /** `headers`: what each request on serve's own gateway carries beside its key (request-metadata.ts: the run, turn and
  *  attempt it was made for, as LiteLLM's spend-logs metadata); none on any other endpoint. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>> };
+/** `fetch`: the route's own, for a model it translates onto the wire (routedProvider): the harness's proxy forwards
+ *  with it, to `origin` (ROUTE_ORIGIN), and nothing goes to the network but what the route sends. */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin; headers?: Readonly<Record<string, string>>; fetch?: typeof fetch };
+
+/** A model the runner's route translates onto a harness's wire (wires.ts routed): its proxy forwards to the route's own
+ *  origin (ROUTE_ORIGIN), where the route's fetch answers (runner/model-route.ts routeOf on `env`: the model's own
+ *  provider, an Ollama model's num_ctx and its tools as text where it takes them so), translated onto `wire` by its entry
+ *  in TRANSLATORS, priced by its catalog entry ($0 for an Ollama model, whose requests the cap counts as local). No key. The route is made at the first
+ *  request (routeOf is asynchronous) and kept; one that failed is made again at the next. */
+function routedProvider(env: NodeJS.ProcessEnv, wire: ModelWire, model: ModelRef): Provider {
+  let route: Promise<typeof fetch> | undefined;
+  const sent = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    route ??= import("./runner/model-route.js").then(({ TRANSLATORS }) => {
+      const translate = TRANSLATORS[wire];
+      if (!translate) throw new Error(`The model route has no translation onto ${wire}.`);
+      return translate(`${model.provider}/${model.modelId}`, env);
+    }).catch((error: unknown) => {
+      route = undefined;
+      throw error;
+    });
+    return (await route)(input, init);
+  }) as typeof fetch;
+  return { origin: ROUTE_ORIGIN, credential: () => "model-route", auth: "x-api-key", modelId: model.modelId, priceModel: model, fetch: sent };
+}
 
 /** `env`'s gateway headers (gatewayHeadersOf), as a Provider's optional field. */
 const onGateway = (env: NodeJS.ProcessEnv): { headers?: Readonly<Record<string, string>> } => {
@@ -166,6 +193,8 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
   const named = `${model.provider}/${model.modelId}`;
   // A harness on its own plan (Cursor's) calls its vendor itself, on its owner's key: no route of ours is its.
   if (!modelWire(wire)) throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
+  // A model the route translates onto this wire, for any harness on it; never behind serve's gateway, whose models are its.
+  if (routed(wire, model) && !env.AGENT_MODEL_BASE_URL) return routedProvider(env, wire, model);
   if (wire === "anthropic-messages") {
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
@@ -232,6 +261,13 @@ export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | 
   if (!modelWire(wire)) return { why: `${harness} runs a model of its own plan, which its own entry chooses.`, host: false };
   const { vendor, label } = WIRES[wire];
   const named = ref ?? hostModel(env, "default", harness);
+  // A model the route translates onto this wire (an Ollama model; the host's default with no key held, read from the
+  // Ollama here): chosen as pi's is (model.ts chooseModel: that Ollama listed, its tag asked of it, an expired default
+  // chosen again), with the no-model words below where none is.
+  if (!env[FAUX_ENV] && !env.AGENT_MODEL_BASE_URL && (named === undefined ? translatesOnto(wire) : routedId(wire, named))) {
+    const chosen = await chooseModel(env, ref, "default", harness);
+    if ("model" in chosen || named !== undefined) return chosen;
+  }
   if (wire === "openai-responses") {
     if (env[FAUX_ENV] || !openRouterOnly(wire, env) || !named?.startsWith(`${vendor}/`)) return chooseModel(env, ref, "default", harness);
     const modelId = named.slice(vendor.length + 1);
@@ -239,7 +275,7 @@ export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | 
     if (!builtinModels().getModel(vendor, modelId)) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined, needs: "model" };
     return { model: { provider: vendor, modelId } };
   }
-  if (!named) return { why: `No model yet for ${harness}: add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
+  if (!named) return { why: `No model yet for ${harness}: ${ollamaWouldRun(env, harness) ? START_OLLAMA : ""}add an OpenRouter or ${label} key in Settings → Model keys, or set OPENROUTER_API_KEY or ${WIRES[wire].key} where AgentRun starts.`, host: true };
   const slash = named.indexOf("/");
   if (slash < 1) return { why: modelFormWhy(env, harness, named, ref === undefined), host: ref === undefined };
   const [provider, modelId] = [named.slice(0, slash), named.slice(slash + 1)];

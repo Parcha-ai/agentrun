@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { AttachHub, attachedProvider, DaemonClient, PROTOCOL_VERSION, pushTar, readBackOf, tarOf } from "@parcha/agentrun-computer";
 import { pairedEntry, pairedOf, servesNoKind, withPaired } from "../dist/workspace/attached-computers.js";
 import { archilWorkspace, computerForClaim, resolveComputer, runKey } from "../dist/workspace/index.js";
+import { computerdListening } from "../../computer/test/computerd-listening.mjs";
 import { computerReadiness, noNetworkRefusal } from "../dist/workspace/resolve-computer.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
@@ -130,10 +131,7 @@ describe("a paired Linux box's synced folder against computerd in a user namespa
     const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
     init = spawn("unshare", ["-Ur", DAEMON, "init", "--deadline", deadline], { env: { PATH: process.env.PATH, AGENTRUN_COMPUTERD_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
     init.stderr.on("data", (chunk) => (stderr += chunk));
-    for (let tries = 0; !existsSync(socket); tries++) {
-      assert.ok(tries < 200 && init.exitCode === null, `computerd's init did not listen at ${socket}: ${stderr}`);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+    await computerdListening(socket, init, () => stderr);
     const stream = connect(socket);
     await new Promise((resolve, reject) => stream.once("connect", resolve).once("error", reject));
     const said = await new DaemonClient({ readable: stream, writable: stream }).call("hello", { protocol: PROTOCOL_VERSION });

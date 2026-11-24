@@ -9,4 +9,5 @@ export { type FileCursor, type LineSource, lineReader, type ReadContext, type Re
 export { HARNESS_OF, READERS, SOURCE_NAMES, SOURCES, type Source } from "./readers/index.js";
 export { childrenOf, inOrder, locatorOf, type Readers, readerOf, readSession, type Session, sessionLocators } from "./read.js";
 export { builtinCatalog, type CalculateCost, type Catalog, catalogOf, type Listed, type ModelCost, type Priced, priceRequests } from "./price.js";
-export { type HomeState, type ParseOptions, parseHome, type ReadFailure, ReadFailures, type SessionTotals } from "./home.js";
+export { type HomeState, type ParseOptions, parseHome, type ReadFailure, ReadFailures, type SessionRequest, type SessionTotals } from "./home.js";
+export { type Wrapped, wrappedHome } from "./wrapped.js";

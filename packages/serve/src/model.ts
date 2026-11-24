@@ -152,8 +152,9 @@ export const harnessRuns = (env: NodeJS.ProcessEnv, id: string, harness: string)
 /** The model a revision that names none runs on with `harness`, for `tier`: the tier's own variable, else AGENT_MODEL,
  *  each only when `harness` runs it (harnessRuns; one it can't is skipped, never an error), else that of the first of
  *  MODEL_KEYS whose key is here (a placeholder behind a base URL counts) and that `harness` runs on, else, in a run's
- *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, on pi, the first
- *  model of the Ollama here that calls tools (localDefault). Undefined when none is: the harness has no default here. */
+ *  process that holds none of those keys, the one the server's keys gave it (DEFAULT_MODEL_ENV), else, where `harness`
+ *  runs it (pi, a harness on a wire the route translates it onto), the first model of the Ollama here that calls tools
+ *  (localDefault). Undefined when none is: the harness has no default here. */
 export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harness: string = DEFAULT_HARNESS): string | undefined {
   return settingsModel(env, tier, harness) ?? localDefault(env, harness);
 }
@@ -172,8 +173,9 @@ function settingsModel(env: NodeJS.ProcessEnv, tier: Tier, harness: string): str
 
 /** The default with no key held: the first model of the Ollama here that calls tools (ollama-provider.ts
  *  ollamaToolsModel, from its last listing, which chooseModel asks for first), where `harness` runs it (harnessRuns, its
- *  entry's facts: pi any model, an adapter its wire's vendor's alone); none behind a gateway or under the faux model. A
- *  model that takes no tools is never a default: a run on it would have none. */
+ *  entry's: pi any model, an adapter its wire's vendor's and the models the route translates onto its wire); none behind a gateway or under the faux model. A
+ *  model that takes no tools is never a default: a run on it gets its tools as text, and text tools are unreliable on
+ *  small models. */
 function localDefault(env: NodeJS.ProcessEnv, harness: string): string | undefined {
   if (!asksOllama(env)) return undefined;
   const model = ollamaToolsModel(env);

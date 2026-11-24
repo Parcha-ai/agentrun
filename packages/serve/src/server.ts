@@ -85,7 +85,7 @@ import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
 import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
-import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
+import { hostFix, hostName, isLoopbackName, loopbackNames, movedFix } from "./host-check.js";
 import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
@@ -135,7 +135,7 @@ import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, ty
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
-import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels } from "./ollama-provider.js";
+import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -143,20 +143,23 @@ import { runLines } from "./usage-lines.js";
 import { type BoxOffer, boxesByDefault, boxesLog, type ContainerFacts, enabledBoxes, placeOffers, withNetworks } from "./place-offers.js";
 import { dockerComputerRefusal, type DockerPaths, dockerPathsOf, FAUX_MOUNTINFO_ENV, remoteDockerOnce } from "./box-paths.js";
 import { dockerDaemonCheck, type DockerDaemon } from "./docker-daemon.js";
-import { hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
+import { type HostRead, hostAddressesOnce, noHostAddresses, retryHostAddresses, unionOf, type Wait } from "./docker-host-addresses.js";
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
-import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
+import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { recordDataRoot } from "./runner/disk-free.js";
 import { recordRunEnv, runFacingNames } from "./runner/runner-check.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { readWrapped, wrappedView } from "./wrapped.js";
 import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
@@ -202,7 +205,7 @@ import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
 import { mcpNameOf as mcpToolOf, mcpToolName } from "./tool-names.js";
-import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
+import { CATCHUP_WINDOW_S, FAILURES_TO_PAUSE, HISTORY_KEPT, MIN_EVERY_S, RELEASE_WORDS_MAX, SOURCE_KINDS, TARGET_KINDS, type TriggerClock, Triggers } from "./triggers.js";
 import type { LaunchHook } from "./trigger-launch-hook.js";
 import { PAYLOAD_KEPT_BYTES } from "./trigger-adapter.js";
 import { applyBodyOf, choiceUnrunnable, COMPOSIO_TRIGGER_FIX, composioTriggerSkipped, COMPUTER_FIX, compiled, feedLeftEmpty, feedTriggerEmpty, githubTriggerUnconnected, githubTriggerWords, madeTriggerIssues, mcpSetUp, type McpServed, onServerName, onServers, type Package, packageDetail, packageModel, packageTiers, packageView, pickComputer, readPackages, notSetUpYet, serversFor, type ShellHere, TemplateRegistry, type TemplatesDeps } from "./templates.js";
@@ -246,6 +249,7 @@ import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
 import { agentComputerOf, agentComputerView, agentDirName, agentFolder, agentHomeFolder, claimKinds, runFolder, scratchFolder, computerProviderFactories, computerProviderMakers, computerReadiness, dockerHostAddressesOf, isWorkspaceError, localWorkspace, reconcileAgentComputer, registryHere, runShellOf, serverRunWorkspace, type ShellPlace, storeLedger, type Workspace } from "./workspace/index.js";
 import { keyReader } from "./key-meta.js";
+import { redacted } from "./key-refusal.js";
 
 export const CONTRACT = "agentrun.v2/0";
 
@@ -429,6 +433,9 @@ export type ServeOptions = {
   harnessSignIn?: boolean;
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
+  /** For tests: how long the Claude Code CLI's own sign-in this server starts waits for its browser before it is ended
+   *  (claude-sign-in.ts), in place of 10 minutes. */
+  claudeSignInLimitMs?: number;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
    *  locks beside it, in place of the one AgentRun ships, whose packages a test's own registry serves. */
   harnessLocks?: Readonly<Record<string, string>>;
@@ -762,6 +769,8 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/stats$/, name: "getStats" },
   // The runs waiting and held, the live runners and their free slots, and the recent hand-backs (capacity.ts).
   { method: "GET", pattern: /^\/capacity$/, name: "getCapacity" },
+  // A year of the work under this machine's home (wrapped.ts), on a server on the person's own machine alone.
+  { method: "GET", pattern: /^\/wrapped$/, name: "getWrapped" },
   { method: "GET", pattern: /^\/settings\/tool-keys$/, name: "listToolKeys" },
   { method: "PUT", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "saveToolKey" },
   { method: "DELETE", pattern: /^\/settings\/tool-keys\/([^/]+)$/, name: "deleteToolKey" },
@@ -837,6 +846,7 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/triggers\/([^/]+)$/, name: "deleteTrigger" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/fire$/, name: "fireTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
+  { method: "POST", pattern: /^\/triggers\/([^/]+)\/firings\/([^/]+)\/release$/, name: "releaseTriggerFiring" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
@@ -976,10 +986,13 @@ async function planStep<T>(step: () => Promise<T>): Promise<T> {
  *  Made from `env` alone, so it is remade only when env is. */
 type ModelState = { needs: ModelNeeds | null; priced: boolean | null; learning_model: LearningModel };
 async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
-  const chosen = await chooseModel(env, undefined);
-  const learning_model = await learningModelOf(env);
-  if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
-  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  // A reading no run waits on, as the offers are (ollamaReading): a key's save never waits on a stuck Ollama's /api/show.
+  return ollamaReading(async () => {
+    const chosen = await chooseModel(env, undefined);
+    const learning_model = await learningModelOf(env);
+    if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
+    return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
+  });
 }
 
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
@@ -1496,7 +1509,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
-  stops.push(async () => plan.close());
+  stops.push(async () => void plan.close());
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
@@ -1590,16 +1603,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     savedGateway = await readSavedGateway(store, seal.key);
     await keysChanged();
   };
-  /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again;
-   *  so does a sign-in's change this server failed to take (changed_failed), until it takes. */
-  const planNow = async () => {
-    const was = plan.state;
-    if ((await plan.load()).state !== was) await keysChanged();
-    else await plan.changeAgain();
-  };
+  /** The sign-in as the store holds it now (ChatGPTPlan.refresh): a change reads env again, and so does one this server
+   *  failed to take (changed_failed), until it takes. */
+  const planNow = () => plan.refresh();
   /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
-   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
+   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here; it is
+   *  kept for this process (claude-sign-in.ts), and one still waiting is ended at the stop. */
+  const claudeSignIns = new ClaudeSignIns({ limitMs: options.claudeSignInLimitMs });
+  stops.push(async () => claudeSignIns.close());
   const loginDeps = (): ClaudeLoginDeps => ({
+    signIns: claudeSignIns,
     settings: store.settings,
     data,
     env: base,
@@ -1641,7 +1654,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A read that failed with none known is read again in the background (retryHostAddresses) until one answers and the
   // helper containers the failed reads left are gone, or this server stops: the boxes are made again from the answer and
   // said again, so Docker is offered with no restart. Every reader of boxOffers reads it when it is called; capabilities
-  // are composed again.
+  // are composed again. One that failed with the operator's addresses known changes no box: the retry only removes the
+  // containers it left. The close cuts a read in flight (its client killed) and stop() awaits the retry last, so the
+  // read's container is removed within the stop's deadline (docker-host-addresses.ts REMOVE_MS).
   const boxesOf = (hostAddresses: { addresses: readonly string[]; why?: string } | undefined): BoxOffer[] => {
     if (hostAddresses) log?.(logLine("docker_host_addresses", { addresses: hostAddresses.addresses.join(",") || "none", ...(hostAddresses.why ? { read: hostAddresses.why } : {}) }));
     const dockerRefused = dockerElsewhere ?? (hostAddresses && hostAddresses.addresses.length === 0 ? noHostAddresses(hostAddresses.why ?? "the read through Docker's socket found none") : undefined);
@@ -1652,19 +1667,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const hostAddresses = dockerElsewhere === undefined && "paths" in dockerPaths && boxAllow !== "none" ? unionOf(await hostAddressesOnce(env), dockerHostAddressesOf(env)) : undefined;
   let boxOffers = boxesOf(hostAddresses);
-  if (hostAddresses?.why !== undefined && hostAddresses.addresses.length === 0) {
-    void retryHostAddresses({
-      env,
-      read: () => hostAddressesOnce(env),
-      found: (read) => {
-        boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
-        // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
-        if (caps) recompose();
-      },
-      signal: stopping.signal,
-      ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
-    });
-  }
+  const hostRetried: Promise<void> =
+    hostAddresses === undefined || hostAddresses.why === undefined
+      ? Promise.resolve()
+      : retryHostAddresses({
+          env,
+          ...(hostAddresses.addresses.length === 0
+            ? {
+                read: () => hostAddressesOnce(env, stopping.signal),
+                found: (read: HostRead) => {
+                  boxOffers = boxesOf(unionOf(read, dockerHostAddressesOf(env)));
+                  // Capabilities are first composed at the start's probe, below; before it, there is nothing to compose again.
+                  if (caps) recompose();
+                },
+              }
+            : {}),
+          signal: stopping.signal,
+          ...(options.hostReadWait ? { wait: options.hostReadWait } : {}),
+        }).catch(() => undefined);
   const adapters = options.triggerAdapters ?? TRIGGER_ADAPTERS;
   const openapi = openapiDocument((operationId) => ROUTES.find((r) => r.name === operationId)?.capability, adapters);
   const sealKey = seal.key;
@@ -3276,7 +3296,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const never = blockers.filter((b) => !b.host);
     if (never.length) throw invalid(never.map(issueOf));
     const mcpPin = listing.pin();
-    return { warnings: [...blockers.map(issueOf), ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
+    // A computer every tool of which is set to deny, here or in the agent's own settings: its runs never start it.
+    const denied = await deniedComputer(shape, settings.get(), shellOf);
+    const off: InputIssue[] = denied ? [{ field: "definition.computer", reason: "not_allowed", message: computerDeniedWords(denied) }] : [];
+    return { warnings: [...blockers.map(issueOf), ...off, ...usage], stamp: { ...(mcpPin ? { mcpPin } : {}), ...(monid ? { monidPin: monid } : {}) } };
   }
 
   /** An agentic `revision`'s monid pin (monid.ts pinMonid) and a warning per endpoint priced by usage; a grant that
@@ -5434,7 +5457,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needRun(id);
         // A run's files through the server's read-only Workspace of its folder (serverRunWorkspace); a run with no folder
         // lists none, a withheld run refuses (403), as the base did (filesShown). Same shape and cap the file route answered.
-        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps));
+        // With ?cut=run, each file's name under the run's cut too.
+        return send(res, 200, await listRunFilesOverStore(store, id, runReadsDeps, url.searchParams.get("cut")));
       }
       // An archived agent's home is read and written as any other's: as its definition is.
       case "listHomeFiles": {
@@ -5573,6 +5597,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await usage(url));
       case "getCapacity":
         return send(res, 200, await capacityOverStore(store.runners, capacityWindowOf(url)));
+      case "getWrapped": {
+        // The session files of the machine this server runs on: only a server bound to loopback with no public URL answers.
+        // A name an operator allowed (--allow-host) passes the server's Host check for its other routes, but a page that rebound
+        // one to this address must not read the machine's files: here the Host is a loopback name or address, or it is refused.
+        if (options.apiOnly || options.publicUrl || !isLoopback(host) || !isLoopbackName(hostName(req.headers.host))) throw new ApiError("forbidden", "wrapped reads this machine's own session files, so only a server on loopback with no public URL, reached by a loopback name, answers it");
+        const given = url.searchParams.get("year");
+        const year = given === null ? new Date().getFullYear() : Number(given);
+        if (given !== null && !/^[1-9]\d{3}$/.test(given)) throw new ApiError("bad_request", "year is a four-digit year");
+        const [{ wrapped, unread }, analytics] = await Promise.all([readWrapped(year), analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() })]);
+        return send(res, 200, wrappedView(wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), unread));
+      }
       case "getStats": {
         const filter = analyticsFilter(url);
         // The store's counts and cost sums (store-reads/stats), the runs' metrics summed (store-reads/analytics), and the
@@ -6189,6 +6224,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTriggerFirings":
         return send(res, 200, await triggers.firings(id));
+      case "releaseTriggerFiring":
+        // The launch hook's host took the firing and will start no run for it: failed now, its trigger's room free. Its
+        // words are kept and sent on (trigger.failed) as any stored string is, cut of every secret the server holds.
+        return send(res, 200, await triggers.release(id, decodeURIComponent(second!), await bodyOf(req), (text) => redacted(text, serverSecrets(), RELEASE_WORDS_MAX)));
     }
     throw new ApiError("not_found", `no route ${path}`);
   }
@@ -6705,8 +6744,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     closing = true;
     stopping.abort();
     clearInterval(localSourceTimer);
-    // Cancel a pending ChatGPT callback without signing out or changing the saved credential.
-    plan.close();
+    // Cancel a pending ChatGPT callback without signing out or changing the saved credential (not waited for).
+    void plan.close();
+    // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
+    // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
+    const signInStopped = claudeSignIns.close();
     const observationStopped = stopObservationRetention();
     // A harness install under way stops with the server: npm gets SIGTERM, then SIGKILL, and nothing half installed stays.
     const installStopped = Promise.all(Object.values(installs).map((install) => install.stop()));
@@ -6724,6 +6766,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await importing;
     await schemaSealed;
     await installStopped;
+    await signInStopped;
     await observationStopped;
     await localSourceSweep;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
@@ -6754,6 +6797,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await store.close();
     dataLock.release();
     seal.release();
+    // Last, so a stop cut at its deadline has closed the rest: the host-address retry, aborted above, its read in flight
+    // cut then and its container's removal running since, within two REMOVE_MS.
+    await hostRetried;
   }
   return {
     url,
