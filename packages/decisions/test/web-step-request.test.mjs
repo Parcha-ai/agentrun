@@ -19,7 +19,7 @@ for (const step of ['sift', 'judge']) {
       sent.push({ url: String(url), body: JSON.parse(init.body) });
       return json({ decision_id: 'd-1', mode: 'fast', answers: Object.fromEntries(Object.entries(nouls(step, 0.25)).map(([id, noul]) => [id, { type: 'noul', noul }])), citations: [], usage: { input_tokens: 300 } });
     };
-    const outcome = await parallelProvider({ apiKey: 'parallel-canary', baseURL: 'https://fake.invalid', fetch }).decide(pinned[step].request, ctx());
+    const outcome = await parallelProvider({ apiKey: 'not-a-secret', baseURL: 'https://fake.invalid', fetch }).decide(pinned[step].request, ctx());
     assert.equal(sent[0].url, 'https://fake.invalid/v1/decisions');
     assert.deepEqual(sent[0].body, { mode: 'fast', state: pinned[step].request.state, questions: pinned[step].request.questions, include_excerpts: true });
     for (const sampling of ['temperature', 'top_p', 'top_k']) assert.equal(Object.hasOwn(sent[0].body, sampling), false, sampling);
@@ -32,7 +32,7 @@ for (const step of ['sift', 'judge']) {
       sent.push({ url: String(url), body: JSON.parse(init.body) });
       return json({ id: 'msg_1', model: 'claude-haiku-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(nouls(step, 0.25)) }], usage: { input_tokens: 900, output_tokens: 30 } });
     };
-    await anthropicProvider({ apiKey: 'anthropic-canary', baseURL: 'https://fake.invalid', fetch }).decide(pinned[step].request, ctx());
+    await anthropicProvider({ apiKey: 'not-a-secret', baseURL: 'https://fake.invalid', fetch }).decide(pinned[step].request, ctx());
     const { body } = sent[0];
     assert.equal(body.model, 'claude-haiku-5-5');
     assert.deepEqual(body.messages, [{ role: 'user', content: JSON.stringify({ state: pinned[step].request.state, questions: pinned[step].request.questions }) }]);

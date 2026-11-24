@@ -8,7 +8,7 @@ import { anthropicDecisionPrice, anthropicProvider, PARALLEL_DECISION_PRICE, par
 
 const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 const half = (questions) => Object.fromEntries(Object.keys(questions).map((id) => [id, 0.5]));
-const settings = { apiKey: 'canary-key-0123456789', baseURL: 'https://fake.invalid' };
+const settings = { apiKey: 'not-a-secret', baseURL: 'https://fake.invalid' };
 
 /** Each arm on a fake transport that answers 0.5 to every question, and the states it sent, in order. */
 function arms() {

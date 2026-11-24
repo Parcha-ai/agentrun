@@ -17,7 +17,7 @@ for (const step of ['sift', 'judge']) {
       const answers = Object.fromEntries(Object.keys(pinned[step].request.questions).map((id) => [id, { type: 'noul', noul: 0.25 }]));
       return new Response(JSON.stringify({ model: 'jev-1.14.0', answers, usage: { input_tokens: 2000, output_tokens: 0 } }), { status: 200, headers: { 'content-type': 'application/json' } });
     };
-    const outcome = await jevProvider({ apiKey: 'jev-canary', baseURL: 'https://fake.invalid/gw', fetch }).decide(pinned[step].request, ctx());
+    const outcome = await jevProvider({ apiKey: 'not-a-secret', baseURL: 'https://fake.invalid/gw', fetch }).decide(pinned[step].request, ctx());
     assert.equal(sent.length, 1);
     assert.equal(sent[0].url, 'https://fake.invalid/gw/v1/systemone');
     assert.deepEqual(sent[0].body, { state: pinned[step].request.state, model: 'jev-latest', questions: pinned[step].request.questions });
