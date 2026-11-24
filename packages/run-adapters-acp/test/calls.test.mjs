@@ -166,12 +166,23 @@ test("the update's kind: a late update with an effect kind never names its call 
 
 test("an announcement naming no tool with empty input (Cursor's untitled `MCP: tool`, rawInput {}) is never matched by its arguments: a parallel no-argument call of another tool never takes its id", async () => {
   // Before: it was kept under the arguments {}, so the first MCP call of any tool with no arguments took its id before
-  // Cursor's late update named the call.
+  // Cursor's late update named the call. Held so only on a recipe whose announces field names its calls (Cursor's).
   const ids = new CallIds();
   const signal = new AbortController().signal;
-  ids.add('call_cursor', undefined, {});
+  calls.announceCall(ids, { toolCallId: 'call_cursor', title: 'MCP: tool', kind: 'other', rawInput: {} }, CURSOR, TOOLS);
   assert.equal(await ids.take('check_echo', {}, signal, 50), undefined, "another tool's call with no arguments");
   // The late update names it; then its own MCP call takes it.
-  ids.add('call_cursor', 'look_up', {});
+  calls.nameCall(ids, { toolCallId: 'call_cursor', rawInput: { providerIdentifier: 'agentrun', toolName: 'look_up', args: {} } }, 'other', CURSOR, TOOLS);
   assert.equal(await ids.take('look_up', {}, signal, 50), 'call_cursor');
+});
+
+test('on a recipe with no announces field, a call with no arguments is matched by its arguments at once: its {} announcement waits for no name', async () => {
+  // Before: every {} announcement that named no tool waited for a later update to name it, a name only a recipe with
+  // announces gives. On any other recipe (antigravity.json's) a no-argument call of ours waited out the 10 s and ran
+  // under an id of the adapter's, not the agent's.
+  const ids = new CallIds();
+  calls.announceCall(ids, { toolCallId: 'c1', title: 'now', kind: 'other', rawInput: {} }, undefined, TOOLS);
+  const started = Date.now();
+  assert.equal(await ids.take('look_up', {}, new AbortController().signal, 300), 'c1');
+  assert.ok(Date.now() - started < 50, `matched at once, not after the wait (${Date.now() - started} ms)`);
 });
