@@ -664,8 +664,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
-   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key, answers it keyless, opens it no harness key and no MCP,
+   *  and refuses it a learning step (its learned workflows and its end-of-run step), as its spec asks for none of them
+   *  (adapter-run-spec.ts, cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
@@ -735,7 +736,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return runSignIn(store, sealKey, claim, String(resolution), { vendors: vendorsOver(() => claimed, vendorFetch), log });
     },
     verifySignIn: (kept, at) => verifyRunSignIn(store, sealKey, claim, kept, Number(at)),
+    // None for a held run its model kept from running: nothing can call it, so no credential of it is opened.
     mcp: (ask) => projectCall(async () => {
+      if (modelRefused) return undefined;
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
       const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(run.agentId)?.web, slots: deps.saveSlots } });
