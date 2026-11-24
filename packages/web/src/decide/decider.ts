@@ -5,7 +5,7 @@ import type { Hit } from "../search.js";
 import { codeOf, costOf, costTogether } from "./failure.js";
 
 /** What a provider said of one item: p(needed), or null where it refused the question. What is done with it is the
- *  step's (step.ts), never the decider's. */
+ *  step's (search.ts, fetch.ts), never the decider's. */
 export type Verdict = { score: number | null };
 /** "counted": the provider reported none, and the request's text was counted by the host's counter. */
 export type Tokens = { in: number; out: number | null; basis: "reported" | "counted" };
@@ -73,23 +73,26 @@ export const judgeQuestion = (id: string): NoulQuestion => ({
 /** The walls a page guard tells from the page's content, in the harness's words (pi-browser's page classifier). */
 export const WALLS = ["captcha_or_bot_check", "login_wall", "paywall", "region_or_geo_block", "consent_interstitial", "error_or_not_found", "loading_or_js_required", "empty_or_template"] as const;
 export type Wall = (typeof WALLS)[number];
+/** Each wall as the page guard asks about it (`asked`, its criterion) and as a warning names it (`named`). */
+export const WALL_WORDS: Record<Wall, { asked: string; named: string }> = {
+  captcha_or_bot_check: { asked: "an access-denied or bot-check page, a CAPTCHA, or a 'verify you are human' challenge", named: "a CAPTCHA or bot check" },
+  login_wall: { asked: "a sign-in or registration gate that shows none of the page", named: "a login wall" },
+  paywall: { asked: "a subscription or payment gate that shows none of the article", named: "a paywall" },
+  region_or_geo_block: { asked: "a notice that the page is not available in the visitor's country or region", named: "a region block" },
+  consent_interstitial: { asked: "a cookie or consent notice covering the page", named: "a consent notice" },
+  error_or_not_found: { asked: "an error or not-found page, or a tool or API error message, including a usage limit or quota notice", named: "an error or not-found page" },
+  loading_or_js_required: { asked: "a loading placeholder or an 'enable JavaScript' notice", named: "a loading placeholder or a page that needs JavaScript" },
+  empty_or_template: { asked: "an empty page or an unfilled template", named: "an empty page or template" },
+};
 /** Characters of a page, from its start, the page guard is shown. */
 export const GUARD_CHARS = 16_000;
-const WALL_CRITERIA: Record<"content" | Wall, string> = {
-  content: "the text is the page's own content (an article, listing, record, document, profile, directory or search page), even if short or partial, or surrounded by navigation, cookie notices or a paywall teaser",
-  captcha_or_bot_check: "an access-denied or bot-check page, a CAPTCHA, or a 'verify you are human' challenge",
-  login_wall: "a sign-in or registration gate that shows none of the page",
-  paywall: "a subscription or payment gate that shows none of the article",
-  region_or_geo_block: "a notice that the page is not available in the visitor's country or region",
-  consent_interstitial: "a cookie or consent notice covering the page",
-  error_or_not_found: "an error or not-found page, or a tool or API error message, including a usage limit or quota notice",
-  loading_or_js_required: "a loading placeholder or an 'enable JavaScript' notice",
-  empty_or_template: "an empty page or an unfilled template",
-};
 const wallQuestion: ChoiceQuestion = {
   type: "choice",
   instructions: "What is `page.text`, the text returned for the page at `page.url`? Choose `content` when it is the page's own content; otherwise the kind of wall, error or placeholder it is.",
-  criteria: WALL_CRITERIA,
+  criteria: {
+    content: "the text is the page's own content (an article, listing, record, document, profile, directory or search page), even if short or partial, or surrounded by navigation, cookie notices or a paywall teaser",
+    ...Object.fromEntries(WALLS.map((wall) => [wall, WALL_WORDS[wall].asked])),
+  },
 };
 const injectionQuestion: NoulQuestion = {
   type: "noul",

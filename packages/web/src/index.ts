@@ -3,7 +3,10 @@
 // through WebConfig (createWeb) or as arguments, as data or injected functions.
 export * from "./decide/decider.js";
 export * from "./decide/passages.js";
-export * from "./decide/step.js";
+export * from "./decide/fetch.js";
+export * from "./decide/page-guard.js";
+export { DECIDE_MS, decisionPay, type DecisionRecord, type Scored, type Sift, type StepOptions, THRESHOLD } from "./decide/record.js";
+export * from "./decide/search.js";
 export * from "./fees.js";
 export * from "./fetch.js";
 export * from "./guard.js";

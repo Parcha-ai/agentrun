@@ -10,7 +10,10 @@ import { firecrawlFetch, type FirecrawlOptions, firecrawlSearch, type KeylessFet
 import type { Words } from "./providers/mcp.js";
 import { type Extract, parallelExtract, parallelSearched } from "./providers/parallel.js";
 import type { WebDecider } from "./decide/decider.js";
-import { decideFetch, type DecidePolicy, decisionPay, type DecisionRecord, type FetchAnswer, guardPage, type InjectionVerdict, judgePart, type PageGuard, policyOf, type Sift, siftSearch, type StepOptions, type WallVerdict } from "./decide/step.js";
+import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
+import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
+import { decisionPay, type DecisionRecord, type Sift, type StepOptions } from "./decide/record.js";
+import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { type Backend, type Breaker, breakers, fitSearch, type Search, type SearchBounds, type Searched, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
 export type ProviderId = "parallel" | "firecrawl-keyless" | "exa-keyless" | "native" | "direct";
