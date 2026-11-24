@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FAUX_ENV } from "../dist/model.js";
-import { chargeOf, CLIP, FAUX_MONID_ENV, fixedUsd, MONID_KEY_ENV, monidClient, monidText, pinMonid } from "../dist/monid.js";
+import { chargeOf, CLIP, FAUX_MONID_ENV, fixedUsd, MONID_KEY_ENV, monidClient, monidReads, monidText, pinMonid } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
@@ -56,6 +56,80 @@ test("a save's read of the listing or an inspect refused for the rate (429) is r
   assert.deepEqual(waits, [3000, 3000], "the listing's page and the first inspect, each waited out once");
   const ran = await monidClient({ key: KEY, fetch: rated, sleep: async (ms) => void waits.push(ms) }).run({ provider: "faux", endpoint: "/person/enrich", input: { body: { name: "Ada" } } });
   assert.equal(ran.status, 429, "a run, which may charge, is not sent again");
+});
+
+test("a save's read monid keeps refusing for its rate is sent again until its waits pass the budget, then refused in monid's words", async () => {
+  const sent = [];
+  const limited = async (url) => (sent.push(new URL(url).pathname), new Response(JSON.stringify({ message: "Rate limited. Retry after 1s." }), { status: 429, headers: { "retry-after": "1" } }));
+  const waits = [];
+  const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: limited, sleep: async (ms) => void waits.push(ms) });
+  assert.deepEqual(pinned, { refused: [{ tool: "monid:apollo/*", message: "monid:apollo/* could not be pinned: monid's listing could not be read (monid answered 429: Rate limited. Retry after 1s.)." }] });
+  assert.deepEqual(waits, Array(20).fill(1000), "monid's Retry-After each time, 20 s of waits in all");
+  assert.equal(sent.length, 21, "sent once, then once after each wait");
+});
+
+test("a save's read refused as sent (403, 404) is its answer at once, never sent again; one not answered or failed by monid (5xx) is", async (t) => {
+  const once = (path, res) => {
+    const sent = [];
+    return { sent, fetch: async (url, init) => (sent.push(new URL(url).pathname), new URL(url).pathname === path ? res() : fakeMonid(url, init)) };
+  };
+  const forbidden = () => new Response(JSON.stringify({ message: "This key may not use this endpoint." }), { status: 403 });
+  await t.test("a 403 on the listing", async () => {
+    const { sent, fetch } = once("/v1/endpoints", forbidden);
+    const waits = [];
+    const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch, sleep: async (ms) => void waits.push(ms) });
+    assert.deepEqual(pinned, { refused: [{ tool: "monid:apollo/*", message: "monid:apollo/* could not be pinned: monid's listing could not be read (monid answered 403: This key may not use this endpoint.)." }] });
+    assert.deepEqual([sent, waits], [["/v1/endpoints"], []]);
+  });
+  await t.test("a 403 on an inspect", async () => {
+    const { sent, fetch } = once("/v1/inspect", forbidden);
+    const waits = [];
+    const pinned = await pinMonid([ENRICH], { key: KEY, fetch, sleep: async (ms) => void waits.push(ms) });
+    assert.deepEqual(pinned, { refused: [{ tool: ENRICH, message: `${ENRICH} could not be pinned: monid's listing of it could not be read (monid answered 403: This key may not use this endpoint.).` }] });
+    assert.deepEqual([sent, waits], [["/v1/inspect"], []]);
+  });
+  await t.test("a 404 on an inspect", async () => {
+    const sent = [];
+    const waits = [];
+    const pinned = await pinMonid(["monid:faux/nowhere"], { key: KEY, fetch: async (url, init) => (sent.push(new URL(url).pathname), fakeMonid(url, init)), sleep: async (ms) => void waits.push(ms) });
+    assert.deepEqual(pinned, { refused: [{ tool: "monid:faux/nowhere", message: "monid lists no endpoint /nowhere of a provider faux." }] });
+    assert.deepEqual([sent, waits], [["/v1/inspect"], []]);
+  });
+  await t.test("no answer on the listing, a 503 on an inspect", async () => {
+    const failed = new Set();
+    const flaky = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (failed.has(path)) return fakeMonid(url, init);
+      failed.add(path);
+      if (path === "/v1/endpoints") throw new TypeError("fetch failed");
+      return new Response(JSON.stringify({ message: "upstream unavailable" }), { status: 503 });
+    };
+    const waits = [];
+    const pinned = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: flaky, sleep: async (ms) => void waits.push(ms) });
+    assert.ok(pinned && "pin" in pinned, JSON.stringify(pinned));
+    assert.equal(Object.keys(pinned.pin).length, 3);
+    assert.deepEqual(waits, [2000, 2000], "each sent again after 2 s, monid naming no wait");
+  });
+});
+
+test("saves sharing one server's reads (monidReads) read the listing and each inspect once while they are out together; a read that failed is not kept", async () => {
+  const sent = [];
+  const counted = async (url, init) => {
+    const path = new URL(url).pathname;
+    sent.push(path === "/v1/inspect" ? JSON.parse(init.body).endpoint : `${path}${new URL(url).search}`);
+    return fakeMonid(url, init);
+  };
+  const shared = monidReads();
+  const pins = await Promise.all(Array.from({ length: 8 }, () => pinMonid(["monid:apollo/*", ENRICH], { key: KEY, fetch: counted, shared })));
+  for (const pinned of pins) assert.deepEqual(Object.keys(pinned.pin), ["monid:apollo/news_articles/search", "monid:apollo/organizations/enrich", "monid:apollo/people/match", ENRICH]);
+  assert.equal(sent.filter((one) => one === "/v1/endpoints?limit=100").length, 1, "the listing's first page, read once");
+  assert.deepEqual(sent.filter((one) => !one.startsWith("/v1/endpoints")).sort(), ["/news_articles/search", "/organizations/enrich", "/people/match", "/person/enrich"], "each endpoint inspected once");
+  // A read that failed (here a 400) is dropped once it ends.
+  const other = monidReads();
+  const refused = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: async () => new Response(JSON.stringify({ message: "down" }), { status: 400 }), shared: other });
+  assert.ok("refused" in refused);
+  const after = await pinMonid(["monid:apollo/*"], { key: KEY, fetch: fakeMonid, shared: other });
+  assert.ok("pin" in after, "a failed read is read again by the next save");
 });
 
 test("an endpoint's input keeps its local references: each part's $ref rebased to where the part sits in the tool's input", async () => {
