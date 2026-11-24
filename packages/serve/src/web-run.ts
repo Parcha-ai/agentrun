@@ -9,6 +9,7 @@ import { type Guard, MAX_CHARS_MIN, PAGE_CHARS, TEXT_CAP } from "@parcha/agentru
 /** pi-browser's guard and reader, as web's Guard: its publicFetch, and its readPage for an HTML page. */
 export const GUARD: Guard = {
   fetch: async (url, options) => (await import("@parcha/pi-browser")).publicFetch(url, options),
+  check: async (url, options) => (await import("@parcha/pi-browser")).publicCheck(url, options),
   html: async (html, url, options) => (await import("@parcha/pi-browser")).readPage(html, url, options),
 };
 

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import test from "node:test";
 import { fetch as undiciFetch } from "undici";
-import { BrowserFailureError, isPrivateAddress, pinnedLookup, publicFetch, readPage } from "../dist/index.js";
+import { BrowserFailureError, isPrivateAddress, pinnedLookup, publicCheck, publicFetch, readPage } from "../dist/index.js";
 
 const PUBLIC = "93.184.216.34";
 const PAGE = '<html><head><title>Public</title></head><body><p>Hello.</p><a href="/next">Next</a></body></html>';
@@ -277,4 +277,22 @@ test("a reply the fetch does not read (not text, an error status, a redirect) ne
 test("private, loopback, link-local and v4-mapped addresses are private; ordinary ones are not", () => {
   for (const ip of ["127.0.0.1", "10.0.0.1", "172.16.5.5", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "not an address"]) assert.equal(isPrivateAddress(ip), true, ip);
   for (const ip of ["93.184.216.34", "8.8.8.8", "172.32.0.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"]) assert.equal(isPrivateAddress(ip), false, ip);
+});
+
+test("publicCheck refuses exactly the first hops publicFetch refuses, in the same words, and dials nothing", async () => {
+  const names = { "private.example": ["10.0.0.5"], "mixed.example": [PUBLIC, "127.0.0.1"], "none.example": [] };
+  const urls = ["http://public.example/", "https://public.example:443/x", "http://public.example:8080/", "ftp://public.example/", "file:///etc/passwd", "http://localhost/", "http://app.localhost/", "http://printer.local/", "http://metadata.internal/", "http://private.example/", "http://mixed.example/", "http://none.example/", "http://127.0.0.1/", "http://[::1]/", "http://169.254.169.254/latest/meta-data/", "http://[::ffff:10.0.0.1]/"];
+  for (const url of urls) {
+    const fetched = network({ names });
+    const checked = network({ names });
+    const fetchWords = await publicFetch(url, fetched).then(() => "passed", (error) => error.message);
+    const checkWords = await publicCheck(url, { lookup: checked.lookup }).then(() => "passed", (error) => (assert.ok(refused(/^refused: /)(error), `${url}: a refusal`), error.message));
+    assert.equal(checkWords, fetchWords, url);
+    assert.deepEqual(checked.dialled, [], `${url}: the check dials nothing`);
+    assert.deepEqual(checked.looked, fetched.looked, `${url}: the same names looked up`);
+  }
+  // A signal stopped before the check asks no resolver.
+  const stopped = network();
+  await assert.rejects(publicCheck("http://public.example/", { lookup: stopped.lookup, signal: AbortSignal.abort() }), { name: "AbortError" });
+  assert.deepEqual(stopped.looked, []);
 });

@@ -2,10 +2,10 @@
 // readPage, a devDependency here), so a moved case reads a page exactly as serve's run does. `fetchPage`, `readDirect`
 // and `webFetch` are web's, through that guard: a case moved from serve calls them as it called serve's. `withEnv` as in
 // serve's test support.
-import { publicFetch, readPage } from "@parcha/pi-browser";
+import { publicCheck, publicFetch, readPage } from "@parcha/pi-browser";
 import * as web from "../dist/index.js";
 
-export const guard = { fetch: publicFetch, html: readPage };
+export const guard = { fetch: publicFetch, check: publicCheck, html: readPage };
 
 export const fetchPage = (url, options = {}) => web.fetchPage(url, { guard, ...options });
 export const readDirect = (url, options = {}) => web.readDirect(url, guard, options);

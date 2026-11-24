@@ -41,16 +41,13 @@ export const FETCH_ORDER: readonly FetchProvider[] = ["firecrawl-keyless", "para
 /** Where a read notes what the model is not told: an event and its fields (serve writes them as a log line). */
 export type WebLog = (event: string, fields: Record<string, string>) => void;
 
-/** Whether the public-host guard passes `url` within `ms` and the caller's signal: the guarded fetch's port check and its
- *  refusal of a user name or password in the URL (readDirect's), then the guard's own checks of the first hop (scheme,
- *  name, every address it resolves to), stopped before it dials. A check that runs out of time (a resolver that does
- *  not answer) does not pass, and neither does any URL with no guard given. */
+/** Whether `url` may go to a provider: readDirect's own refusals (port, length, a user name or password) pass it, and so
+ *  does the guard's check within `ms` and the caller's signal. No guard, or a check out of time, does not pass. */
 async function passes(url: string, guard: Guard | undefined, options: GuardOptions, ms: number): Promise<boolean> {
   const target = URL.parse(url);
   if (!guard || !target || !PORTS.has(target.port) || url.length > URL_MAX || target.username || target.password) return false;
-  const checked = new Error("checked, not dialled");
   const signal = AbortSignal.any([AbortSignal.timeout(ms), ...(options.signal ? [options.signal] : [])]);
-  return guard.fetch(url, { ...options, signal, fetchImpl: async () => { throw checked; } }).then(() => false, (error: unknown) => error === checked);
+  return guard.check(url, { ...(options.lookup ? { lookup: options.lookup } : {}), signal }).then(() => true, () => false);
 }
 
 /** What one read is given: the provider clients, the order they are asked in, the guard, the check's bound and the log. */

@@ -211,7 +211,7 @@ const serveFetch = (resolved, envOf = () => ({})) => async (f) => {
 };
 /** createWeb's fetch on serve's order for `resolved`, its guard pi-browser's on the fake network. */
 const benchFetch = (resolved, more = () => ({})) => async (f) => {
-  const guard = { fetch: (url, options) => GUARD.fetch(url, { lookup: f.net.lookup, fetchImpl: f.net.fetchImpl, ...options }), html: GUARD.html };
+  const guard = { fetch: (url, options) => GUARD.fetch(url, { lookup: f.net.lookup, fetchImpl: f.net.fetchImpl, ...options }), check: (url, options) => GUARD.check(url, { lookup: f.net.lookup, ...options }), html: GUARD.html };
   const w = web.createWeb({ order: { search: [], fetch: FETCH_ORDERS[resolved] }, endpoints: { "firecrawl-keyless": f.fc.url }, send: { parallel: fakeParallel }, guard, pay: paidRequest, words: { rateLimited: RATE_LIMITED }, ...more(f) });
   const inCall = await inCalls();
   return async ({ url, part = {} }) => inCall(() => w.fetch(url, part));
