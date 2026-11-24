@@ -689,6 +689,35 @@ test("the work count reads each stage: a form's search, a view and its decoders,
   assert.deepEqual(problems, []);
 });
 
+// The adversarial texts, read by the shape scanners in work linear in their length: the characters the scanners visit,
+// counted by match.ts, are at most a fixed multiple of the text's length, through both shape sets. The multiple, 128,
+// covers each of the shapes' 30-odd prefixes sought once over the text and once over its cut, and each scanner's own
+// reads; a scanner that read a run again at each place in it would pass it many times over at this size. The texts are
+// read with no held value, so nothing but the shapes, the finds merged and the cut is counted: the views and the
+// needles' searches are not read at all (holds returns before any view).
+const ADVERSARIAL = [
+  fill("eyJ"), fill("eyJ-"), `-----BEGIN ${fill("A", SIZE - 11)}`, `-----BEGIN ${fill("PRIVATE KEY ", SIZE - 11)}`, `://a:${fill("a", SIZE - 5)}`, fill("://a:"),
+  fill("sk-"), fill("github_pat_"), fill("ghp_"), fill("xoxb-"), fill("whsec_"), fill("Bearer "), `Bearer ${fill("a", SIZE - 7)}`, fill("?token="),
+  `?token=${fill("a", SIZE - 7)}`, fill(`${"a".repeat(1021)}eyJ`), fill("eyJaaaaaaaa."), `account ${fill("1 ", SIZE - 8)}`, fill("routing number "), fill("sort code "),
+  `IBAN GB00${fill("A ", SIZE - 9)}`, fill("AKIA"), fill("AIza"), fill("-----BEGIN "), fill("a-sk-"), fill("Bearer a-Bearer "),
+];
+
+test("adversarial texts: the characters the shape scanners visit are at most a fixed multiple of the text's length", async (t) => {
+  const { scanned } = await import("../dist/redact/match.js");
+  const over = [];
+  let most = 0;
+  for (const text of ADVERSARIAL) {
+    for (const redact of [redactSecrets, redactLearned]) {
+      scanned.chars = 0;
+      redact(text, [], Buffer.byteLength(text));
+      most = Math.max(most, scanned.chars / text.length);
+      if (scanned.chars > 128 * text.length) over.push(`${redact.name} ${short(text)}: ${scanned.chars} for ${text.length}`);
+    }
+  }
+  t.diagnostic(`the most characters visited per character of a text: ${most.toFixed(1)}`);
+  assert.deepEqual(over, []);
+});
+
 // The whole pipeline reads a text in work linear in its length: every character a stage visits, counted by match.ts
 // (the shapes' prefixes and runs, each form, hex and folded search, each view built, its decoders and its cover, each
 // needle searched in it, the cut) and by key-refusal.ts (each piece's end found, each peek, the pass's join), is at most
@@ -696,7 +725,7 @@ test("the work count reads each stage: a form's search, a view and its decoders,
 //
 // WORK, from the code's structure, per character of the text, one held value (at most 7 forms and 7 plain needles: as
 // written, and its base64 at three alignments in two alphabets; one hex; at most one folded):
-// - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound before;
+// - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
 // - one whole-text check: whether each of the three decoding views is read (3); four views at most, each built in 9
@@ -712,7 +741,7 @@ test("the work count reads each stage: a form's search, a view and its decoders,
 // per find: a held value found every 9 characters is found 14,563 times in 128 KiB.
 const WORK = 1024;
 
-test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", { timeout: 900_000 }, async (t) => {
+test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
   const over = [];
   for (const size of [128 * 1024, 512 * 1024]) {
