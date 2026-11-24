@@ -356,12 +356,13 @@ const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSa
 /** A usage's tokens: undefined unless it has an input and an output count (a cache count it omits is 0), and unless it
  *  has some input. A request that reached a model always sent some, so a usage with none is a writer's zeros for a
  *  request it did not measure (an imported transcript's, a harness answer's written with no booking): unknown, never 0.
- *  `failed`: a failed request's counts are taken as they are, as its cost is. */
+ *  `failed`: a failed request's counts are taken as they are, as its cost is; so are a `folded` usage's (an imported
+ *  request whose tokens its source counted in a later request of the session). */
 function tokensOf(usage: unknown, failed = false): Tokens | undefined {
   const u = obj(usage);
   const [input, output, cacheRead, cacheWrite] = [tokenCount(u?.input), tokenCount(u?.output), u?.cacheRead === undefined ? 0 : tokenCount(u.cacheRead), u?.cacheWrite === undefined ? 0 : tokenCount(u.cacheWrite)];
   if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
-  return failed || input + cacheRead + cacheWrite > 0 ? { input, cacheRead, cacheWrite, output } : undefined;
+  return failed || u?.folded === true || input + cacheRead + cacheWrite > 0 ? { input, cacheRead, cacheWrite, output } : undefined;
 }
 
 /** A run's model requests as its entries mark them: how many, what they cost and the tokens they used. The usage row

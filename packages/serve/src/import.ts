@@ -1,5 +1,5 @@
-// `agentrun-serve import`: the Claude Code, Codex and pi sessions under a person's own home, into this server's agent
-// store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
+// `agentrun-serve import`: the Claude Code, Codex, pi and Factory Droid sessions under a person's own home, into this
+// server's agent store, once, when asked. Each project directory is one agent; each harness seen in it one revision of that agent, its
 // instructions the project's CLAUDE.md or AGENTS.md and its skills the project's skill folders; each session one run,
 // ended as it ended, its transcript the run's timeline. An imported run is history: it takes no message, stop or cancel.
 // Nothing leaves the machine, every string written has the environment's key values cut out, and every file written is
@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
+import { childrenOf, droidSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, mostEffortOf, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionLocators, type Turn } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -120,7 +120,8 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
   const handle = await open(file, 'r');
-  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
+  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record (Droid's by
+  // the reader's own rule, droidSessionId).
   let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
   const metadataOf = (parts: Buffer[]): void => {
@@ -131,6 +132,9 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
         cwd??=str(row.cwd);child ||= row.isSidechain===true;
       }else if(source==='pi'){
         if(row.type==='session'){id=str(row.id)??id;cwd=str(row.cwd)??cwd;}
+      }else if(source==='droid'){
+        // A Worker's session_start names the session whose Task tool ran it: a child.
+        if(row.type==='session_start'){id=droidSessionId(file,row);cwd=str(row.cwd)??cwd;child ||= !!str(row.callingSessionId);}
       }else if(row.type==='session_meta'){
         const payload=row.payload;
         if(!payload || typeof payload!=='object' || Array.isArray(payload))return;
@@ -148,7 +152,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       if (!bytesRead) {
         metadataOf(parts);
         // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=basename(file,'.jsonl');
+        id??=source==='droid'?droidSessionId(file):basename(file,'.jsonl');
         return metadata();
       }
       position += bytesRead;
@@ -756,8 +760,8 @@ const subagentMarks = (children: readonly Session[]): EntryLike[] =>
     child.turns.flatMap((turn) => {
       if (turn.role !== "assistant") return [];
       const { input, output, cacheRead, cacheWrite } = turn.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      // A failed request's counts are its own, zeros included, as its answer's are (entryOf).
-      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
+      // A failed request's counts are its own, zeros included, as its answer's are (entryOf); so are a folded one's.
+      return [{ kind: REQUEST_COST, data: { request: "subagent", usd: turn.costUsd ?? null, usage: { input, output, cacheRead, cacheWrite, ...(turn.folded ? { folded: true } : {}) }, ...(turn.error !== undefined ? { failed: true } : {}) } } as EntryLike];
     }),
   );
 
@@ -972,6 +976,8 @@ const entryOf = (turn: Turn, model: string | undefined): { entry: typeof UserEnt
         ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
         totalTokens: input + output + cacheRead + cacheWrite,
         cost: cost === undefined ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: cost },
+        // Its zeros are counted in a later request of the session (the source wrote a total): known, never unmetered.
+        ...(turn.folded ? { folded: true } : {}),
       },
       // A failed request's zero counts are its counts, as a live run's failed request's are.
       ...(turn.error !== undefined ? { stopReason: "error", errorMessage: turn.error } : { stopReason: turn.calls.length ? "toolUse" : "stop" }),

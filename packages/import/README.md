@@ -1,8 +1,8 @@
 # @parcha/agentrun-import
 
-Reads the coding-agent sessions under a home (Claude Code, Codex, pi) into one Session shape: normalized token usage,
-subagents counted under their parent, and byte-offset cursors so a second pass reads only what was appended. AgentRun's
-server imports past sessions through it.
+Reads the coding-agent sessions under a home (Claude Code, Codex, pi, Factory Droid) into one Session shape: normalized
+token usage, subagents counted under their parent, and byte-offset cursors so a second pass reads only what was
+appended. AgentRun's server imports past sessions through it.
 
 ## Totals for a home
 
@@ -47,7 +47,7 @@ built on: each session's totals and its requests, as they are totalled.
 ## Known answer
 
 ```sh
-node dist/cli.js <home> [--sources claude-code,codex,pi] --known-answer
+node dist/cli.js <home> [--sources claude-code,codex,pi,droid] --known-answer
 ```
 
 One JSONL line per session, sorted by key: `{key, source, tokens: {input, output, cacheRead, cacheWrite, cacheWrite1h},
@@ -60,19 +60,46 @@ CLI as it is; the library loads it only to price.
 
 ## Usage
 
-`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"` or `"pi"` writes it:
+`normalizeUsage(format, raw)` reads one request's usage as `"anthropic"`, `"openai"`, `"pi"` or `"droid"` writes it:
 
 | Source | `input` | `cacheWrite1h` | `reasoning` |
 | --- | --- | --- | --- |
 | Anthropic | `input_tokens` (already excludes the cache) | `cache_creation.ephemeral_1h_input_tokens` | |
 | OpenAI, Codex | `input_tokens - cached_input_tokens` | | `reasoning_output_tokens` (part of `output`) |
 | pi | `input` | `cacheWrite1h` | |
+| Droid | `inputTokens` (already excludes the cache) | | `thinkingTokens` (part of `output`) |
 
 A Claude Code session's id is its file's name (`<id>.jsonl`): a resumed session's file is its own session, and a
 record copied into it from an earlier file counts only in that file; a file holding nothing but copies is no session.
 Codex sessions sum each request's `last_token_usage`, never `total_token_usage`. Claude Code writes one line per content
 block of a response, each with the response's usage: a request (`message.id`, `requestId`) counts once, at its last
 line's usage.
+
+### Factory Droid
+
+Sessions are `~/.factory/sessions/<cwd slug>/<session id>.jsonl` (some in `sessions/` itself), under
+`$FACTORY_HOME_OVERRIDE` instead of the home where `env` names it. Each assistant message is one request, each record
+counted once by its `id` (a fork copies its source's records), in the session it was forked from: a fork, whose
+`session_start` names its `parent`, is read after it, even when a resume wrote the source later. A Worker, whose
+`session_start` names its `callingSessionId`, counts under that session.
+
+Droid writes no request's tokens. The `<session id>.settings.json` beside the transcript holds the session's running
+total (`tokenUsage`, its own calls alone; `inclusiveTokenUsage` is not read, as the Workers count on their own) and its
+latest `model`, read whole on each read. That total goes on the session's last request, the others 0 and marked
+`folded: true` (their tokens are counted in that later request: known, not unknown), or on a request of its own when
+the transcript holds none and the total is not all zeros (a fork that made no request of its own adds none). A settings
+file that cannot be checked for any cause but its absence fails the read. So:
+
+- A session with no settings file, or one with no `tokenUsage`, is unmetered: its requests have no usage, and cost
+  `null`.
+- Droid writes no dollar cost. `cost` is the total at the catalog's list price for the model `settings.json` names (the
+  session's latest; a session that switched models is priced at that one), else the model of the last request; `null`
+  with neither, or for a model the catalog does not list (a BYOK `custom:` model).
+- A turn ends with an `agent_turn_outcome` record. One whose provider refused or never answered (`model_rate_limited`,
+  `model_provider_unreachable` and the like) is one more request, failed: its error is the reason with turns, a fixed
+  `"API error"` without them. Droid's own failures fail the session with no request; a cancel stops it.
+- `droidSessionId(file, sessionStart?)` is the one rule for a session's id (its `session_start`'s, else the file's
+  name), which serve's import reads too.
 
 ## Readers
 
@@ -87,6 +114,7 @@ type Reader<S extends string, C> = {
   discover(home: string, env?: Env): Promise<Locator[]>;
   read(locator: Locator, cursor?: C, options?: { turns?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
+  lineage?(file: string): Promise<{ id: string; parent?: string } | undefined>;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
 };
 ```
@@ -98,4 +126,5 @@ newline yet is read but not consumed. A source that keeps many sessions in one f
 `discover` and `read` itself and returns one locator per session, with its `id`.
 
 `readSession(locator, source)`, `sessionLocators(home, source)`, `inOrder(locators, source)` and
-`childrenOf(home, source)` are what serve's import reads through.
+`childrenOf(home, source)` are what serve's import reads through. `inOrder` sorts by the reader's `order`, then, where
+the reader names `lineage` (Droid), puts each fork after the sessions it was forked from, so their records count there.

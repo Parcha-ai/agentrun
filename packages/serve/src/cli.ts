@@ -41,7 +41,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
-       agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
+       agentrun-serve import [--data DIR] [--from claude-code,codex,pi,droid] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve learning connect|status|disconnect|retry --project PATH --runtime codex|claude-code [--url URL] [--data DIR] [--no-sync]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
@@ -137,9 +137,10 @@ start: set it only on a machine you alone use, since loopback is this machine's 
 process reaches one only with the variable set in its own environment, on its own loopback (its own machine or
 container), never at a server's own port (${DEFAULT_PORT}, or where the server says it listens).
 
-\`agentrun-serve import\` reads the Claude Code, Codex and pi sessions in your own home (~/.claude/projects,
-~/.codex/sessions, ~/.pi/agent/sessions) into the data directory, once: each project directory an agent, with its
-CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read but not continue. Nothing leaves this
+\`agentrun-serve import\` reads the Claude Code, Codex, pi and Factory Droid sessions in your own home
+(~/.claude/projects, ~/.codex/sessions, ~/.pi/agent/sessions, ~/.factory/sessions) into the data directory, once: each
+project directory an agent, with its CLAUDE.md or AGENTS.md and its skill folders, and each session a run you can read
+but not continue. Nothing leaves this
 machine; the values of key-shaped environment variables are cut out of what is written. --dry-run lists what it would
 import; run again, it imports only what it has not. Sessions written in the last 10 minutes wait for the next import;
 What is left out is counted by why; --verbose lists each file. --include-deleted keeps projects whose directory is gone (a

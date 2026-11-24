@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import fs from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, droidSession } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -99,3 +99,15 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   const after=statSync(oversized);assert.equal(after.size,before.size);assert.equal(after.mtimeMs,before.mtimeMs);
  });
 }
+
+test('droid: the metadata probe reads the project from session_start, a Worker a child, another project none of the selection',async t=>{
+ // Droid is no remote-history runtime: this is the probe planImport shares (a chosen project's left-out sessions).
+ const f=await fixture(t),target={...f.target,runtime:'droid'};
+ droidSession(f.home,f.project,1);
+ droidSession(f.home,f.project,2,{worker:1});
+ const other=join(f.home,'unrelated');mkdirSync(other,{recursive:true});
+ droidSession(f.home,other,3);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ assert.deepEqual(preview.skipped,[{reason:'Subagent history is not a separate session.',count:1}]);
+});

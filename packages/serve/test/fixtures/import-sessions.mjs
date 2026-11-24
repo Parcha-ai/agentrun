@@ -1,4 +1,5 @@
-// Synthetic Claude Code, Codex and pi sessions, written as each tool writes its JSONL, for the importer's tests. Every
+// Synthetic Claude Code, Codex, pi and Factory Droid sessions, written as each tool writes its JSONL (Droid: with its
+// settings.json beside it), for the importer's tests. Every
 // value is invented: the projects are under the test's own scratch home, the ids are made up, and no line comes from a
 // real transcript.
 import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
@@ -461,4 +462,28 @@ export function claudeSubagent(home, cwd, n, k, { model = "claude-haiku-5", slug
     { ...base, type: "assistant", uuid: `s${k}-a2-${n}`, timestamp: at(2), message: { id: `msg_sub${k}_2_${n}`, role: "assistant", model, content: [{ type: "text", text: answer }], usage: usage(17, 19) } },
   ];
   return writeSession(join(home, ".claude", "projects", slug, sessionId(n), "subagents", `agent-a${k}.jsonl`), records);
+}
+
+/** A Factory Droid session in `cwd`, as Droid 1.17.2 writes one (see @parcha/agentrun-import's readers/droid.ts): a
+ *  question, a Read call and its result, an answer, the turn's outcome, and beside it <id>.settings.json with the
+ *  session's model and token total. With `usage: false` the settings hold no tokenUsage, with `settings: false` there is
+ *  no settings file. `worker` makes it a Worker that session `worker`'s Task tool ran; `failed`, a turn that ends on a
+ *  provider that never answered; `file`, a file name other than the session's id. */
+export function droidSession(home, cwd, n, { prompt = "Read the notes.", output = "three notes", usage = true, settings = true, model = "claude-sonnet-5", worker, failed = false, fresh = false, file = sessionId(n) } = {}) {
+  const id = sessionId(n);
+  const message = (key, minute, role, content, extra = {}) => ({ type: "message", id: `${key}-${n}`, timestamp: at(minute), message: { role, content, ...extra } });
+  const records = [
+    { type: "session_start", id, title: "Fixture title.", owner: "fixture", version: 2, cwd, ...(worker !== undefined ? { callingSessionId: sessionId(worker), callingToolUseId: "toolu_worker" } : {}) },
+    message("u1", 0, "user", [{ type: "text", text: prompt }]),
+    message("a1", 1, "assistant", [{ type: "tool_use", id: `toolu_${n}`, name: "Read", input: { file_path: "notes.md" } }], { modelId: model }),
+    message("r1", 2, "user", [{ type: "tool_result", tool_use_id: `toolu_${n}`, content: output }]),
+    message("a2", 3, "assistant", [{ type: "text", text: `Read: ${output}.` }], { modelId: model }),
+    { type: "agent_turn_outcome", turnId: `turn-${n}`, reason: failed ? "model_provider_unavailable" : "completed" },
+  ];
+  const path = writeSession(join(home, ".factory", "sessions", cwd.replaceAll("/", "-"), `${file}.jsonl`), records, { fresh });
+  if (settings) {
+    const tokenUsage = { inputTokens: 100, outputTokens: 20, cacheCreationTokens: 30, cacheReadTokens: 400, thinkingTokens: 5 };
+    writeFileSync(path.replace(/\.jsonl$/, ".settings.json"), JSON.stringify({ model, providerLock: "anthropic", ...(usage ? { tokenUsage } : {}) }));
+  }
+  return path;
 }
