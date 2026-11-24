@@ -954,15 +954,16 @@ const lookedBack = (past, lookBackOf) => past.map((run) => ({
 
 test("money rule, all-in: a workflow whose runs are cheap but whose learning pushes its all-in over the agent's by hand stops running first", async (t) => {
   // Served runs at $0.1 each, by hand $0.2: under the line on their own cost; each served run's learning books $0.4, so
-  // all-in they cost $0.5 a run. The by-hand runs' learning is on their side too ($0.05 each: $0.25 all-in).
+  // all-in they cost $0.5 a run. A by-hand run's end-of-run step ($0.05 each) is its compile turn, which the run view
+  // charges to the revision it drafted, never to the agent's by hand: $0.2 by hand, as GET /runs/{id} reads each.
   const past = pastRuns({ servedUsd: 0.1, byHandUsd: 0.2 });
   const keptBefore = lookedBack(past, (run) => (run.metrics.path === "agent" ? 0.05 : 0.4));
   const { row, gateway, entries, logs } = await piRun(t, { past, keptBefore });
   assert.equal(row.metrics?.path, "agent", `the agent took the run: ${JSON.stringify(row.metrics)}`);
   assert.equal(gateway.requests.filter(isNode).length, 0, "the workflow never ran");
   const revise = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST)?.data;
-  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.25, COST_WINDOW], "the two numbers are all-in");
-  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.25 by hand, both all-in;/.test(line)), JSON.stringify(logs));
+  assert.deepEqual([revise?.outcome, revise?.served_usd, revise?.by_hand_usd, revise?.runs], ["needs_revision", 0.5, 0.2, COST_WINDOW], "the two numbers are all-in, by hand less its compile turns");
+  assert.ok(logs.some((line) => /answer cost \$0\.5 a run over its last 10 served runs, at or over \$0\.2 by hand, both all-in;/.test(line)), JSON.stringify(logs));
 });
 
 test("money rule, all-in: a served run whose learning's cost is unknown is left out of the mean and counted, never read as 0", async (t) => {
