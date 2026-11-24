@@ -1597,8 +1597,9 @@ export interface RunCapacity {
  *  put removes every row older than this. */
 export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 
-/** How old a runner's row can be and still count as there, on the store's clock (runner/presence.ts PRESENCE_STALE_MS:
- *  three renewals missed). The claim rule reads it for a kept computer's pin. */
+/** How old a runner's row can be and still count as there, on the store's clock: three of its renewals missed
+ *  (runner/presence.ts PRESENCE_RENEW_MS). Every reader of who is there uses it, the claim rule's kept computer pin
+ *  included. */
 export const RUNNER_STALE_MS = 30_000;
 
 /** The settings key prefix of the computers kept at a run's park, one row per run (workspace/computer-kept.ts). A row

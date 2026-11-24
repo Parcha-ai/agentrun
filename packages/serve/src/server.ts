@@ -1716,7 +1716,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
     runnerApart: options.runnerApart === true,
     // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+    // within RUNNER_STALE_MS on the store's clock (liveRelays), at a host this server dials.
     relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.

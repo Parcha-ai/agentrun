@@ -1,5 +1,5 @@
 // A parked run's kept computer survives a resume while the runner that kept it is alive: that runner alone claims the
-// run, and the same machine comes back. Once that runner is stale (no word of it for PRESENCE_STALE_MS) any runner
+// run, and the same machine comes back. Once that runner is stale (no word of it for RUNNER_STALE_MS) any runner
 // claims it, starts a new machine, and the run says in words that the kept one was lost with its runner. Once that runner
 // refuses claims but is still there, any runner claims it too, and puts the kept row back as it read it when it can't
 // reach the machine, so the runner that kept it still ends it at its time; that claim's own park later never writes over
@@ -24,7 +24,7 @@ import { readBackOf } from "@parcha/agentrun-computer";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
-const { openSqliteStore } = await import("../dist/store/index.js");
+const { openSqliteStore, RUNNER_STALE_MS } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -34,7 +34,6 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { computerForClaim } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { endKept, KEEP_MS, keptKeyOf, readKept, sweepKept } = await import("../dist/workspace/computer-kept.js");
-const { PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 
 const RUN = "run-1";
@@ -348,7 +347,7 @@ test("park on A, A goes stale: B claims it, starts a new desktop, and the run sa
   const one = await parkedOnA(t);
   // A crash: its word stops and goes stale on the stores' clock. The keep's own 10 minutes are far off.
   one.a.kill();
-  one.clock.skewMs += PRESENCE_STALE_MS + 1_000;
+  one.clock.skewMs += RUNNER_STALE_MS + 1_000;
   await one.start("runner-b", "b");
   await one.server.command(RUN, { kind: "approve", body: { approval: one.ask.callId } });
   const said = await ends(one.server);
@@ -379,7 +378,7 @@ test("park on A, A still there but refusing claims: B claims on the answer, can'
   assert.equal(said.filter((summary) => summary.includes(`${HELD} ${NEW}`)).length, 1, `said once, with why: ${JSON.stringify(said)}`);
   assert.deepEqual(said.filter((summary) => summary.includes(LOST)), [], "never said the runner that kept it is gone");
   assert.ok(one.hosts.a.computers.has("a-d1"), "A's desktop still runs on A's host");
-  assert.ok((await one.server.runners.live(PRESENCE_STALE_MS)).some((row) => row.runner === "runner-a"), "runner-a is still there");
+  assert.ok((await one.server.runners.live(RUNNER_STALE_MS)).some((row) => row.runner === "runner-a"), "runner-a is still there");
   // B took the row and could not reach the machine: the row is back as A's park wrote it, marked ending (B went on on a
   // new desktop, so no claim takes A's back as the run's), for A's end to finish.
   assert.equal(JSON.stringify(await one.server.settings.get(key)), JSON.stringify({ ...written, ending: true }), `the kept row is back as runner-a's park wrote it, marked ending: ${JSON.stringify(await one.server.settings.get(key))}`);

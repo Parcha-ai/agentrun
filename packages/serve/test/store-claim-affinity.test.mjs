@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const { KEEP_MS, keptKeyOf, readKept, takeKept, writeKept } = await import("../dist/workspace/computer-kept.js");
-const { PRESENCE_STALE_MS } = await import("../dist/runner/presence.js");
+const { RUNNER_STALE_MS } = await import("../dist/store/index.js");
 
 const RUN = "run-1";
 
@@ -58,8 +58,8 @@ test("store: a woken run kept on a live runner is that runner's alone; B's polls
   assert.equal(await one.store.claim(RUN, "runner-b", { leaseMs: 30_000 }), null, "nor take it by its id");
   assert.deepEqual(await one.store.runs.claimable(), [RUN], "the count of what waits still counts it");
   assert.equal((await one.store.runs.get(RUN)).epoch, one.epoch, "nothing claimed and given back: the epoch did not move");
-  // A stops: its word goes stale PRESENCE_STALE_MS later, on the store's clock. The keep is still in its time.
-  one.clock.now += PRESENCE_STALE_MS + 1;
+  // A stops: its word goes stale RUNNER_STALE_MS later, on the store's clock. The keep is still in its time.
+  one.clock.now += RUNNER_STALE_MS + 1;
   const taken = await one.store.runs.claimMany("runner-b", 1);
   assert.deepEqual(taken.map((claim) => [claim.runId, claim.runner, claim.epoch]), [[RUN, "runner-b", one.epoch + 1]], "B's next poll claims it, once");
 });
@@ -67,14 +67,14 @@ test("store: a woken run kept on a live runner is that runner's alone; B's polls
 test("store: the pin's runner is there at exactly the stale time since its word and gone 1 ms later, in the claim rule and in the runners' live read alike", async (t) => {
   const one = await pinnedParked(t);
   assert.equal(await one.store.runners.renew("runner-a", "inc-a", null), true);
-  // Its word exactly PRESENCE_STALE_MS old on the store's clock: still there, so still pinned.
-  one.clock.now += PRESENCE_STALE_MS;
+  // Its word exactly RUNNER_STALE_MS old on the store's clock: still there, so still pinned.
+  one.clock.now += RUNNER_STALE_MS;
   assert.deepEqual(await one.store.runs.claimMany("runner-b", 1), [], "at the stale time, B's poll claims nothing");
-  assert.deepEqual((await one.store.runners.live(PRESENCE_STALE_MS)).map((row) => row.runner), ["runner-a"], "and the live read counts runner-a there");
+  assert.deepEqual((await one.store.runners.live(RUNNER_STALE_MS)).map((row) => row.runner), ["runner-a"], "and the live read counts runner-a there");
   assert.equal((await one.store.runs.get(RUN)).epoch, one.epoch, "the epoch did not move");
   // 1 ms past it: gone, in both.
   one.clock.now += 1;
-  assert.deepEqual(await one.store.runners.live(PRESENCE_STALE_MS), [], "1 ms past, the live read counts no runner");
+  assert.deepEqual(await one.store.runners.live(RUNNER_STALE_MS), [], "1 ms past, the live read counts no runner");
   const taken = await one.store.runs.claimMany("runner-b", 1);
   assert.deepEqual(taken.map((claim) => [claim.runId, claim.runner, claim.epoch]), [[RUN, "runner-b", one.epoch + 1]], "1 ms past, B's poll claims it");
 });
