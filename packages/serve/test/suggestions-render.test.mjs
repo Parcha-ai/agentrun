@@ -87,6 +87,22 @@ test("a model's words in every field land only in comments and strings they cann
   assert.match(body, /@​someone/);
 });
 
+test("the pull request says where the API key comes from: the console's Settings page, linked at the server's public address", () => {
+  const s = checked(base());
+  const at = { repo: "acme/app", commit: "a".repeat(40), agentId: "agent_1" };
+  const row = (body) => body.split("\n").find((line) => line.startsWith("| `AGENTRUN_API_KEY` |"));
+  assert.equal(
+    row(pullText(s, { ...at, publicUrl: "https://agents.example.test/" }).body),
+    "| `AGENTRUN_API_KEY` | an API key of that server, made in its console under [Settings → AgentRun API keys](https://agents.example.test/#/settings/api-keys) and shown once: keep it in your secrets, never in the repository |",
+  );
+  assert.equal(
+    row(pullText(s, at).body),
+    "| `AGENTRUN_API_KEY` | an API key of that server, made in its console under Settings → AgentRun API keys and shown once: keep it in your secrets, never in the repository |",
+    "with no public address, the page is named and not linked",
+  );
+  assert.match(clientFile(s, "acme/app", at.commit).content, /AGENTRUN_API_KEY\s+an API key of that server \(make one in its console: Settings > AgentRun API keys\)/, "the client file's header says it too");
+});
+
 test("a title that reads as a Python encoding declaration declares nothing: escaped text in a later comment stays a comment", () => {
   const raw = base();
   raw.title = "coding: unicode_escape";

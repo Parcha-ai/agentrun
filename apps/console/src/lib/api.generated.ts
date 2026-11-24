@@ -193,6 +193,7 @@ export interface components {
         billing: "proxy" | "plan";
       };
       available: boolean;
+      ready_models: string[];
       free_models: {
         id: string;
         context_window: number;
@@ -545,7 +546,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
   ExternalRef: {
     source: string;
     kind: string;
@@ -626,6 +627,7 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
+      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -639,6 +641,11 @@ export interface components {
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
       at_rest: "sealed";
+    };
+    api_keys?: {
+      routes: boolean;
+      limit: number;
+      at_rest: "hashed";
     };
     slack?: {
       routes: boolean;
@@ -968,7 +975,7 @@ export interface components {
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
       provider: string;
-      state: "starting" | "ready" | "taken_over" | "ended" | "failed";
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
       why?: string;
       held?: {
         state: "starting" | "waiting" | "started" | "ended" | "released";
@@ -1350,6 +1357,14 @@ export interface components {
     final: boolean;
     cost: components["Cost"];
     poll_after_ms?: number;
+    in_flight?: {
+      kind: "model" | "tool";
+      name: string;
+      started_at: string | null;
+      tool_use_id?: string;
+      for_tool?: string;
+      input_tokens_max?: number;
+    }[];
   };
   TimelineRow: {
     id: string;
@@ -1810,6 +1825,19 @@ export interface operations {
   createAgent: {
     body: components["AgentCreate"];
     answer: components["Agent"];
+  };
+  createApiKey: {
+    body: {
+      name: string;
+    };
+    answer: {
+      id: string;
+      name: string;
+      created_at: string;
+      last_used_at: string | null;
+      secret: components["SecretMeta"];
+      api_key: string;
+    };
   };
   createFile: {
     body: components["FileCreate"];
@@ -2544,6 +2572,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   fireTrigger: {
@@ -2753,6 +2782,7 @@ export interface operations {
       expires_at?: string;
       models?: string[];
       problem?: string;
+      hint?: string;
     };
   };
   getClaudeLogin: {
@@ -4442,6 +4472,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listApiKeys: {
+    body: never;
+    answer: {
+      keys: {
+        id: string;
+        name: string;
+        created_at: string;
+        last_used_at: string | null;
+        secret: components["SecretMeta"];
+      }[];
+      limit: number;
+      refused?: string;
+      unreadable?: string[];
+    };
+  };
   listCliLearning: {
     body: never;
     answer: {
@@ -4646,8 +4691,14 @@ export interface operations {
       harnesses: {
         id: string;
         label: string;
+        named: boolean;
         keys: components["SecretMeta"][];
+        kept: components["SecretMeta"][];
         ready: boolean;
+        reenter: {
+          name: string;
+          why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+        }[];
       }[];
     };
   };
@@ -4912,6 +4963,28 @@ export interface operations {
           } | null;
         } | null;
       }[];
+    };
+  };
+  listMarketplaceTemplates: {
+    body: never;
+    answer: {
+      url: string | null;
+      state: "read" | "stale" | "unreachable" | "off";
+      read_at: string | null;
+      templates: {
+        name: string;
+        title: string;
+        tags: string[];
+        needs: string[];
+        page_url: string;
+        summary?: string;
+        description?: string;
+        category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+        harness?: string[];
+        source?: string;
+        here?: string;
+      }[];
+      problem?: string;
     };
   };
   listMcpServerNames: {
@@ -6294,6 +6367,10 @@ export interface operations {
         }[];
       }[];
     };
+  };
+  revokeApiKey: {
+    body: never;
+    answer: never;
   };
   revokeCliLearning: {
     body: never;

@@ -22,7 +22,7 @@ test("every tool in capabilities has a blurb: one line of at most 48 characters,
   const by = Object.fromEntries(tools.map((tool) => [tool.name, tool.blurb]));
   assert.equal(by.web_fetch, "Read a public web page");
   assert.equal(by.bash, "Run shell commands in the sandbox");
-  assert.equal(by.ask_person, "Ask you a question mid-run");
+  assert.equal(by.ask_person, "Lets the agent stop and ask you a question");
 });
 
 test("an agent's tools carry the same blurb as capabilities; an MCP tool has none", () => {

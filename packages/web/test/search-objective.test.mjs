@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
+import { SEARCH_UNAVAILABLE } from "../dist/search.js";
 import { decideWeb, pagesOf, PUBLIC, scoringProvider } from "./fixtures/decide-runs.mjs";
 import { fakeWeb } from "./fixtures/web-runs.mjs";
 
@@ -107,7 +108,7 @@ test("keyed Firecrawl's failures: some requests failing answers the merged rest 
   const first = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
   assert.deepEqual((first.answer.results ?? []).map((hit) => hit.url), ["https://b.example/"], "the request that answered is the answer");
   const again = await w.search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
-  assert.deepEqual([again.answer, some.sent.length], [{ error: web.SEARCH_UNAVAILABLE }, 3], "the 402 among them turned Firecrawl off for the run: the next search is not sent");
+  assert.deepEqual([again.answer, some.sent.length], [{ error: SEARCH_UNAVAILABLE }, 3], "the 402 among them turned Firecrawl off for the run: the next search is not sent");
   const all = keyed((_path, body) => (body.query === QUERIES[0] ? json({ error: "down" }, 500) : json({ error: "slow" }, 429, { "retry-after": "30" })));
   const failing = await web.createWeb({ order: { search: ["firecrawl"], fetch: [] }, keys: { firecrawl: KEY }, send: { firecrawl: all.send } }).search({ objective: OBJECTIVE, queries: QUERIES.slice(0, 3) }, { n: 3 });
   assert.deepEqual([failing.answer, failing.receipt.tries[0]?.failure?.code], [{ error: "Firecrawl's search answered 500" }, "HTTP_500"], "every request failing: the first failure in query order, typed");

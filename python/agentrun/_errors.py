@@ -5,6 +5,7 @@ message names the route, the status, the server's error code and its reason, rea
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, Literal, Optional, Tuple, Type
 
 if TYPE_CHECKING:
@@ -19,13 +20,25 @@ REASON_CHARS = 300
 """The most of the server's reason a message carries."""
 
 
+_SPACES = re.compile(r"[\t\n\v\f\r \x85\xA0\U00001680\U00002000-\U0000200A\U00002028\U00002029\U0000202F\U0000205F\U00003000]+")
+"""The characters a reason keeps as one space: every whitespace run is one. Spelled out, not str.split(), so the
+TypeScript client's rule (packages/client/src/errors.ts) is the same character for character."""
+_DROPPED = re.compile(r"[\x00-\x08\x0E-\x1F\x7F-\x84\x86-\x9F\U0000200B-\U0000200F\U0000202A-\U0000202E\U00002060-\U00002064\U00002066-\U00002069\U0000FEFF]")
+"""The characters a reason drops: every other control character (C0, DEL, C1), the zero-width ones, the bidi controls
+and the BOM, none of which a terminal or a log shows as what it is."""
+
+
 def said(error: Optional[ServerError]) -> str:
-    """The server's reason as a message's end: ": <its message>", on one line, at most REASON_CHARS characters; empty
-    when the error object holds no message. `error` is the one the client keeps, the key already cut from it."""
+    """The server's reason as a message's end: ": <its message>", on one line (whitespace runs one space, every control,
+    zero-width, bidi and BOM character dropped, the ends trimmed), at most REASON_CHARS characters (code points), the last
+    a … when cut; empty when the error object holds no message, or none that survives. `error` is the one the client
+    keeps, the key already cut from it. The same cases test both clients (packages/client/test/reason-cases.json)."""
     message = error.get("message") if error else None
-    if not isinstance(message, str) or not message.strip():
+    if not isinstance(message, str):
         return ""
-    line = " ".join(message.split())
+    line = _SPACES.sub(" ", _DROPPED.sub("", message)).strip(" ")
+    if not line:
+        return ""
     return f": {line if len(line) <= REASON_CHARS else line[: REASON_CHARS - 1] + '…'}"
 
 
