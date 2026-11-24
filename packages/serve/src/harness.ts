@@ -131,6 +131,7 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { factsOf } = await import("./harness-table.js");
           const facts = factsOf(env, offer.id);
           const { OLLAMA_PROVIDER, ollamaToolsModels } = await import("./ollama-provider.js");
+          const { serverKeyMissing } = await import("./run-model-key.js");
           const toolsModels = ollamaToolsModels(env);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
@@ -145,6 +146,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
                 lacksKey = true;
               }
             }
+            // A model whose route goes to the gateway runs only on a gateway key: the server's, or each run's own
+            // (model_key). Without the server's, a run that brings none is 422 model_key_required, so it is not ready.
+            if (!lacksKey && "model" in chosen && serverKeyMissing(env, { kind: "agentic", model: chosen.model })) lacksKey = true;
             models.push(id);
             if (!lacksKey) ready.push(id);
             // A model of the Ollama here that takes no tools stays pickable, and a run on it gets its tools as text, but

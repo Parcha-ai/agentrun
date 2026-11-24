@@ -46,6 +46,11 @@ describe("the Model field, by the providers connected here", () => {
     expect(host.querySelector("[data-no-provider] a")!.getAttribute("href")).toBe("#/settings/keys");
     expect(host.querySelector('[role="switch"][aria-label="Show models that need a key"]')).not.toBeNull();
   });
+  it("says nothing of providers for a harness that does not run here for another reason: it offers no model at all", async () => {
+    const host = await draw([{ id: "pi", default_model: null, models: [], ready_models: [], available: false, reason: "pi needs more memory than this server has for runs." }]);
+    expect(host.querySelector("[data-no-provider]"), "no advice to connect a provider").toBeNull();
+    expect(host.querySelector('[role="switch"][aria-label="Show models that need a key"]')).toBeNull();
+  });
   it("lists every offered model from a server that does not say which are ready", async () => {
     const host = await draw([{ id: "pi", default_model: "openai/gpt-6.1-sol", models: MODELS }]);
     expect(await values(host)).toEqual(["", ...MODELS, "custom"]);

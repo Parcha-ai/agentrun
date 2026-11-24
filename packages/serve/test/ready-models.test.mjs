@@ -28,3 +28,14 @@ test("ready_models is empty where no provider is connected, whatever is offered"
   const none = await piOf({ AGENTRUN_SERVE_DATA: data });
   assert.deepEqual(none.ready_models, []);
 });
+
+test("a gateway's models are ready only where the server holds the gateway's key: without it a run must bring its own (model_key)", async (t) => {
+  const data = await scratch(t);
+  const MODEL = "openai/gpt-6.1-sol";
+  const gateway = { AGENTRUN_SERVE_DATA: data, AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL: MODEL };
+  const keyless = await piOf(gateway);
+  assert.ok(keyless.models.includes(MODEL), `the gateway's model is offered: ${keyless.models.join(", ")}`);
+  assert.deepEqual(keyless.ready_models, [], "but not ready with no AGENT_MODEL_API_KEY: a run that brings no key is 422 model_key_required");
+  const keyed = await piOf({ ...gateway, AGENT_MODEL_API_KEY: "fake-test-key" });
+  assert.ok(keyed.ready_models.includes(MODEL), `ready once the server holds the gateway's key: ${keyed.ready_models.join(", ")}`);
+});

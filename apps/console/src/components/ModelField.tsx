@@ -71,8 +71,10 @@ export function ModelField({ id, harness, model, onModel, harnesses, routePrefix
           setCustomPicked(false); onModel(v || undefined);
         }} />
       {customModel && <Input id={id ? `${id}-custom` : undefined} aria-label="Custom model" className="mt-2" value={model ?? ""} onChange={(e) => { setCustomPicked(true); onModel(e.target.value || undefined); }} placeholder="provider/model" />}
-      {/* No provider connected: say where one is, rather than a list of models that would not run. */}
-      {ready && ready.length === 0 && <p className="mt-2 text-small text-muted-foreground" data-no-provider>No model provider is connected here. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Connect one in Settings → Model keys</a> to pick its models.</p>}
+      {/* No provider connected: say where one is, rather than a list of models that would not run. Only where the harness
+          offers models and each lacks only its key: one that does not run here (no binary, too little memory) offers
+          none, and its own reason says why. */}
+      {ready && ready.length === 0 && offered.length > 0 && <p className="mt-2 text-small text-muted-foreground" data-no-provider>No model provider is connected here. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Connect one in Settings → Model keys</a> to pick its models.</p>}
       {lacking.length > 0 && (
         <label className="mt-2 flex items-center gap-2 text-small text-muted-foreground">
           <Switch checked={needingKey} onChange={setNeedingKey} label="Show models that need a key" /> Show models that need a key ({lacking.length}): their provider isn't connected here.
