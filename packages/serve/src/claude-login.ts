@@ -10,7 +10,7 @@
 // harness selection reads no setting, so claude-agent runs on the model keys as it does without the mode. The mode is
 // for a server one person runs: it is refused where more than one person can start runs, `on` included, and the owner
 // confirms they alone run agents here. It runs only in a runner place, on the machine the owner turned it on for.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -306,7 +306,7 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
     // Asked once: a person waits on this read. Its answer is a run's too (loginBeforeRun), so one who just saw the
     // login signed in here has a run on a slow host go on.
     const said = await (await deps.claude()).claudeLoginStatus(cli, login, pathOf(deps.env));
-    noteAnswer(login, said, Date.now());
+    noteAnswer(login, said, Date.now(), deps.data);
     return said.signedIn ? { state: "signed_in", ...base, account: accountOf(said) } : { state: "signed_out", ...base };
   } catch {
     return { state: "unknown", ...base };
@@ -382,17 +382,42 @@ const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: str
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */
 export const LOGIN_ANSWER_STANDS_MS = 10 * 60_000;
 
-/** When each login last answered signed in, in this server process: in memory only, never on disk, and nothing but the
- *  time. A signed-out answer removes its entry. */
-const signedInAt = new Map<string, number>();
+/** The folder in the data folder that holds, per login, when it last answered signed in (noteAnswer). The server and its
+ *  runner may be two processes on one data folder (`--no-runner` beside `agentrun-serve runner`): the Settings view's
+ *  answer is the server's, a run's check the runner's, so the answer is kept where both read it. */
+export const LOGIN_ANSWERS_DIR = "claude-login-answers";
 
 /** What tells one login from another here: its folder and its credentials dir. */
 const loginKey = (login: ClaudeAgentLogin): string => JSON.stringify([login.dir, login.secure ?? null, login.unsuffixed === true]);
 
-/** Notes what the CLI said of `login` at `now`: signed in, the time; signed out, nothing (the earlier time goes). */
-function noteAnswer(login: ClaudeAgentLogin, said: ClaudeLoginStatus, now: number): void {
-  if (said.signedIn) signedInAt.set(loginKey(login), now);
-  else signedInAt.delete(loginKey(login));
+/** The file of `login`'s answer in `data`: named by a hash of this machine's id (machineId) and the login, so nothing of
+ *  the login's paths is in its name, and an answer is only ever this machine's and this login's. */
+const answerFile = (data: string, login: ClaudeAgentLogin): string => join(data, LOGIN_ANSWERS_DIR, createHash("sha256").update(JSON.stringify([machineId(data), loginKey(login)])).digest("hex").slice(0, 32));
+
+/** Notes what the CLI said of `login` at `now` in `data`: signed in, the time, alone, in a file of its own (0600, in a
+ *  folder of 0700), written aside and renamed in place so a reader never sees half of it; signed out, the file goes (the
+ *  earlier time with it). The answer only spares a later run a refusal, so a note that can't be written is left out. */
+function noteAnswer(login: ClaudeAgentLogin, said: ClaudeLoginStatus, now: number, data: string): void {
+  try {
+    const file = answerFile(data, login);
+    if (!said.signedIn) return void rmSync(file, { force: true });
+    mkdirSync(join(data, LOGIN_ANSWERS_DIR), { recursive: true, mode: 0o700 });
+    const aside = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+    writeFileSync(aside, `${now}\n`, { mode: 0o600, flag: "wx" });
+    renameSync(aside, file);
+  } catch {
+    // Not noted: a run whose checks give no answer is refused, as with no earlier answer.
+  }
+}
+
+/** When `login` last answered signed in on this machine (noteAnswer), or undefined. */
+function signedInAt(data: string, login: ClaudeAgentLogin): number | undefined {
+  try {
+    const at = Number(readFileSync(answerFile(data, login), "utf8").trim());
+    return Number.isSafeInteger(at) ? at : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The harness's codes for a status check that gave no answer (claudeLoginStatus's ClaudeLoginTimedOut and
@@ -408,13 +433,15 @@ const unknownLogin = (error: unknown): Error => new Error(`${LOGIN_UNKNOWN}: ${S
  *  claudeLoginStatus, which asks once and, when the CLI gives no answer, throws with `code` "timed_out" or "no_status").
  *  A check that gives no answer (it timed out, or the CLI said nothing that reads as a status) is asked once more, since
  *  a loaded host can take past the limit with the login fine. Still none: the run goes on when this login answered
- *  signed in within LOGIN_ANSWER_STANDS_MS in this server process (a run's check here, or the Settings view's), as its
- *  own CLI still fails in words if the login is gone; else it is refused with LOGIN_UNKNOWN and why. Any other failure (a
- *  CLI that is not at its path, say) is refused with LOGIN_UNKNOWN and its own words at once, asked once and never
- *  waved through by an earlier answer. A signed-out answer is the answer: never asked again nor overridden, refused at
- *  once, and the earlier signed-in time goes. `now`: the clock (Date.now). */
-export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, options: { now?: () => number } = {}): Promise<void> {
+ *  signed in on this machine within LOGIN_ANSWER_STANDS_MS (a run's check, or the Settings view's, in this process or
+ *  another on the same data folder, `data`), as its own CLI still fails in words if the login is gone; else it is
+ *  refused with LOGIN_UNKNOWN and why. Any other failure (a CLI that is not at its path, say) is refused with
+ *  LOGIN_UNKNOWN and its own words at once, asked once and never waved through by an earlier answer. A signed-out answer
+ *  is the answer: never asked again nor overridden, refused at once, and the earlier signed-in time goes. `now`: the
+ *  clock (Date.now). */
+export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: string | undefined, status: (cli: string, login: ClaudeAgentLogin) => Promise<ClaudeLoginStatus>, options: { data: string; now?: () => number }): Promise<void> {
   if (!login || !cli) return;
+  const { data } = options;
   const now = options.now ?? Date.now;
   let said: ClaudeLoginStatus | undefined;
   let lastError: unknown;
@@ -427,10 +454,12 @@ export async function loginBeforeRun(login: ClaudeAgentLogin | undefined, cli: s
     }
   }
   if (said === undefined) {
-    const at = signedInAt.get(loginKey(login));
-    if (at !== undefined && now() - at <= LOGIN_ANSWER_STANDS_MS) return;
+    // An answer from after now (the clock set back since) stands for nothing.
+    const at = signedInAt(data, login);
+    const age = at === undefined ? undefined : now() - at;
+    if (age !== undefined && age >= 0 && age <= LOGIN_ANSWER_STANDS_MS) return;
     throw unknownLogin(lastError);
   }
-  noteAnswer(login, said, now());
+  noteAnswer(login, said, now(), data);
   if (!said.signedIn) throw new Error(LOGIN_SIGNED_OUT);
 }

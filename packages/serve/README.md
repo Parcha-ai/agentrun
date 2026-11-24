@@ -1619,7 +1619,9 @@ reads of the login. A model named on a gateway or OpenRouter keeps its key, and 
 `model_key`. With no key at all, claude-agent's default
 model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. A status check
 the CLI outlasts (15 s) is asked once more; still no answer, the run goes on when the same login read signed in within
-the last 10 minutes in this server process (at a run's check or in Settings), else it fails saying the check timed out.
+the last 10 minutes on this machine (at a run's check or in Settings, in the server or in a runner process of its own on
+the same data folder, which keeps that time alone per login in `claude-login-answers/`, 0600), else it fails saying the
+check timed out.
 A check where the CLI answered nothing that reads as a status gets the same. Any other failure of the check, such as no CLI at
 its path, fails the run at once in the check's own words. It never switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
 apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
