@@ -768,11 +768,12 @@ async function replaceFile(file: string, text: string): Promise<void> {
 export const agentRunLogin = (login: ClaudeAgentLogin, data: string): boolean => login.dir === loginAt("agentrun", data).dir;
 
 /** One reader per login folder in this process, so every claim on it holds the same watchers' tokens and the same
- *  refused token; each renews with the pinned CLI's own request (renewLogin). */
+ *  refused token; each renews with the pinned CLI's own request (renewLogin), and says each renewal's outcome to `log`
+ *  in fields that hold no token (the runner's log, given by the claim that first asks for the folder's reader). */
 const readers = new Map<string, LoginTokens>();
-export function loginTokensFor(login: ClaudeAgentLogin): LoginTokens {
+export function loginTokensFor(login: ClaudeAgentLogin, log: (fields: Record<string, string>) => void): LoginTokens {
   let reader = readers.get(login.dir);
-  if (!reader) readers.set(login.dir, (reader = new LoginTokens({ login })));
+  if (!reader) readers.set(login.dir, (reader = new LoginTokens({ login, log })));
   return reader;
 }
 

@@ -71,6 +71,7 @@ import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
 import { agentRunLogin, loginRunnerInProcess, loginTokensFor } from "../claude-login-token.js";
+import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
@@ -745,7 +746,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       if (!at || !agentRunLogin(at, deps.data)) return undefined;
       const carry = cut.carry;
       if (!carry) throw new ClaimRefused("This runner has no redactor that can cut the login's token from what its run writes, so it hands none.");
-      const tokens = loginTokensFor(at);
+      // Each renewal's outcome on the runner's log, in the server's line (print.ts logLine) under event claude_login:
+      // fixed words, a status and an OAuth error code, never a token.
+      const tokens = loginTokensFor(at, (fields) => log(logLine("claude_login", fields)));
       return {
         token: async () => {
           const token = await tokens.token();
