@@ -2,13 +2,14 @@
 // the web, and what each resolves to on a run. A capability resolves in one order: (1) the provider the user picked, the
 // agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) for web_search,
 // Parallel where the server holds its key (env or saved, which then bills it); (3) the keyless fallback: Firecrawl's
-// public keyless MCP endpoint (firecrawl-keyless.ts), with Exa's (exa-keyless.ts) behind it. web_fetch's `auto` is the
-// guarded direct fetch where the server holds a Parallel key (as before keyless Firecrawl), else keyless Firecrawl with
-// the guarded direct fetch behind it, and Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a
-// third party, and its `why` says so; a URL the public-host guard refuses never goes (web-fetch.ts). The native search,
-// a harness's own (Claude's WebSearch, Codex's live search) or on pi one request to the run's own model provider with
-// its hosted search (hosted-search.ts), runs only where it is picked, `native`: `auto` never resolves to it, on any
-// harness. `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
+// public keyless MCP endpoint (@parcha/agentrun-web providers/firecrawl-keyless.ts), with Exa's
+// (providers/exa-keyless.ts) behind it. web_fetch's `auto` is the guarded direct fetch where the server holds a
+// Parallel key (as before keyless Firecrawl), else keyless Firecrawl with the guarded direct fetch behind it, and
+// Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a third party, and its `why` says so; a URL
+// the public-host guard refuses never goes (web-fetch.ts). The native search, a harness's own (Claude's WebSearch,
+// Codex's live search) or on pi one request to the run's own model provider with its hosted search (hosted-search.ts),
+// runs only where it is picked, `native`: `auto` never resolves to it, on any harness. `off` turns web_search off.
+// web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never a keyless search. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
 // launch, from its pinned revision and the settings then, keeps them for the run's life (runs.ts), and hands the run's

@@ -1,9 +1,9 @@
-// Parallel's published prices as a web tool's request is booked at them (paid-calls.ts parallelFeeOf), by the request's
+// Parallel's published prices as a web tool's request is booked at them (fees.ts parallelFeeOf), by the request's
 // own body: a search by its mode and the results it asks for, an extract by its URLs. The figures are Parallel's pricing
 // page's (https://docs.parallel.ai/resources/pricing, read 2026-11-20), worked out by hand, not read from the code.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parallelFeeOf } from "../dist/paid-calls.js";
+import { parallelFeeOf } from "../dist/index.js";
 
 const SEARCH = "https://api.parallel.ai/v1/search";
 const EXTRACT = "https://api.parallel.ai/v1/extract";

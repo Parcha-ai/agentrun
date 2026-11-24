@@ -34,8 +34,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
-import { RUN_KEYS_ENV } from "./env-switch.js";
+import { API_ONLY_HOOKED_KINDS, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
 import { carriedFields } from "./answer-json.js";
@@ -53,10 +54,8 @@ import { uuidv7 } from "./ids.js";
 import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
-import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
+import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV } from "./web-run.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
-import { FAUX_EXA_ENV } from "./exa-keyless.js";
-import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
@@ -362,6 +361,10 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The MCP origins an API-only server's token may save a per_run MCP server at through the generic save
+   *  (AGENTRUN_API_ONLY_MCP_ORIGINS, api-only.ts apiOnlyMcpSave), normalized as the environment's are (a bad entry
+   *  stops the start). None, that save is refused as any route outside the profile's. Read only with apiOnly. */
+  apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
    *  a run is handed to the host instead, which starts it through the API. None, firings start their runs here. */
   launchHook?: LaunchHook;
@@ -413,10 +416,10 @@ export type ServeOptions = {
    *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
   fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
-   *  of Exa's MCP endpoint (exa-keyless.ts). */
+   *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
   /** With `faux` only: the URL of a fake MCP server (a test's, on loopback) that web_search's and web_fetch's keyless
-   *  Firecrawl ask in place of Firecrawl's endpoint (firecrawl-keyless.ts). A URL, not a module: it is passed as given.
+   *  Firecrawl ask in place of Firecrawl's endpoint (web-run.ts FAUX_FIRECRAWL_ENV). A URL, not a module: it is passed as given.
    *  Under `faux` with none, keyless Firecrawl is never asked. */
   fauxFirecrawl?: string;
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
@@ -1465,6 +1468,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
   toolKeys.view();
+  // The API-only profile's MCP origins, normalized as the environment's are (a list passed in code included), and held in
+  // the store for every reader of a saved server there (mcp-api-only-origins.ts); removed when the profile is off.
+  const apiOnlyMcpOrigins = options.apiOnly ? apiOnlyMcpOriginsFrom((options.apiOnlyMcpOrigins ?? []).join(",")) : [];
+  await holdApiOnlyMcpOrigins(store, options.apiOnly === true, apiOnlyMcpOrigins);
+  // Said once at an API-only start: the per_run servers the token saved whose origin is off that list (with the setting
+  // unset, every one, as on an upgrade whose operator has not listed them), whose runs are refused until it lists them.
+  // Their names alone, never an address. Nothing is said when there are none.
+  const offList = options.apiOnly ? await offApiOnlyMcpServers(store) : [];
+  if (offList.length) {
+    const fields = { count: offList.length, servers: offList.join(","), line: `runs that grant these per_run MCP servers the API token saved are refused, nothing sent, until ${API_ONLY_MCP_ORIGINS_ENV} lists their origin` };
+    log ? log(logLine("api_only_mcp_off_list", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_only_mcp_off_list", fields)}\n`);
+  }
   const mcpServers = mcpServersOverStore(store, own(withSecrets(base, "own")), VERSION);
   if (options.githubMcpOrigin) mcpServers.appOrigin = options.githubMcpOrigin;
   if (options.composioMcpOrigin) mcpServers.composioOrigin = options.composioMcpOrigin;
@@ -5741,8 +5756,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await mcpServers.preview(await bodyOf(req), stopping.signal));
       case "saveMcpServer": {
         const body = await bodyOf(req);
+        const preset = await mcpServers.composioPreset(id);
+        // API-only, where this route is served only with the operator's MCP origins: a per_run server at one of them alone,
+        // under a name no Composio preset has (api-only.ts apiOnlyMcpSave). Anything else is the refused route's own 404,
+        // before anything reaches the address. The secret-write gate has already refused a credential, and a save over a
+        // server the token did not save or one that seals a credential (403).
+        if (options.apiOnly && !apiOnlyMcpSave(body, preset, apiOnlyMcpOrigins)) throw new ApiError("not_found", apiOnlyRefusal(`/v2${path}`));
         // A server that isn't a Composio preset's is saved at once, as ever: no save waits on another's listing.
-        if (!(await mcpServers.composioPreset(id))) {
+        if (!preset) {
           const saved = await mcpServers.save(id, body, stopping.signal, secretSeen as McpCredentialMark | undefined, undefined, undefined, undefined, undefined, byToken);
           await refreshMcpMeta();
           return send(res, 200, saved);
@@ -6361,7 +6382,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const raw = (req.url ?? "/").split("?")[0]!;
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
-    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
+    if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
     if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);

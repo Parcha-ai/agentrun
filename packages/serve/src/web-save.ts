@@ -8,15 +8,15 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { extensionOf, typeOf } from "./file-types.js";
 import { mediaSeconds } from "./media-duration.js";
-import { clip, URL_MAX } from "./web-fetch-direct.js";
+import { clip, URL_MAX } from "@parcha/agentrun-web";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 
 export const WEB_SAVE_TOOL = "web_save";
 /** The most bytes a saved file may have. */
 export const SAVE_MAX_BYTES = 200 * 1024 * 1024;
-/** One deadline for a whole download: a 200 MiB file at about 350 KB/s. A page's 30 s (web-fetch-direct.ts) would cut a
- *  large file on any link under about 7 MB/s. */
+/** One deadline for a whole download: a 200 MiB file at about 350 KB/s. A page's 30 s (@parcha/agentrun-web page.ts
+ *  TIMEOUT_MS) would cut a large file on any link under about 7 MB/s. */
 export const SAVE_TIMEOUT_MS = 600_000;
 /** The folder a bare name is saved in. */
 export const MEDIA_DIR = "media";
