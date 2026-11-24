@@ -9,13 +9,14 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, client, follow, serve, webhookLookup, whenFree, withEnv } from "./support.mjs";
 
 const { serveWithRunner } = await import("../dist/runner/beside.js");
+const { settingFor } = await import("../dist/claude-login.js");
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const FAUX_CHANNEL = new URL("./fixtures/faux-channel.mjs", import.meta.url).pathname;
@@ -169,7 +170,7 @@ test("where runs have users of their own, a claude-agent run on Claude Code's lo
   const lines = [];
   const server = await serve(t, { faux: undefined, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 1 }, log: (line) => void lines.push(line) } });
   // Claude Code's login on this machine, turned on for this machine as the owner's turn-on saves it.
-  await server.store.settings.put("claude_login", { v: 1, place: "agentrun", host: hostname(), only_me: true });
+  await server.store.settings.put("claude_login", settingFor("agentrun", server.data));
   const runId = await started(server.api, "on-login", { harness: "claude-agent", model: "anthropic/claude-haiku-5-5" }, { input: { content: "Say hi." } });
   const { last } = await follow(server.api, runId, ["failed", "completed"], { deadlineMs: 60_000 });
   assert.equal(last.status, "failed", lines.join("\n"));
