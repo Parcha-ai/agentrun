@@ -9,6 +9,8 @@ type Obj = Record<string, unknown>;
 
 const WEB_SEARCH = "web_search";
 const WEB_FETCH = "web_fetch";
+/** The names eachString has tried for a property, counted so a test can bound the work, not time it. */
+export const namesTried = { count: 0 };
 
 /** A web call's output with each text that gives way cut to `keep` characters (a cut one ending "…"), the rest whole. */
 export type WebShown = (keep: number) => string;
@@ -32,7 +34,7 @@ function eachString(value: unknown, each: (text: string) => string): unknown {
   for (const [key, item] of Object.entries(value)) {
     const once = each(key);
     let name = once;
-    for (let n = 2; Object.hasOwn(out, name); n++) name = `${once} (${n})`;
+    for (let n = 2; (namesTried.count++, Object.hasOwn(out, name)); n++) name = `${once} (${n})`;
     Object.defineProperty(out, name, { value: eachString(item, each), enumerable: true, writable: true, configurable: true });
   }
   return out;
