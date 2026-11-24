@@ -398,9 +398,18 @@ async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promis
     }
     let lost = false;
     let timer: NodeJS.Timeout | undefined;
-    /** The heartbeat's touch in flight: a release waits for it, so it never reads the mtime a touch just set as another's. */
-    let beat: Promise<void> | undefined;
-    const owned = async (): Promise<boolean> => {
+    /** Every read of the lock (owned), the heartbeat's read and touch, and the release run one at a time, in order: a
+     *  read never meets a touch half done (the mtime on disk new, `mine` still the old one, or the other way round), so
+     *  this holder never takes its own live lock for another's. */
+    let turn: Promise<unknown> = Promise.resolve();
+    const inTurn = <T>(step: () => Promise<T>): Promise<T> => {
+      const run = turn.then(step, step);
+      turn = run.catch(() => undefined);
+      return run;
+    };
+    /** A heartbeat waiting or running: the next tick adds none. */
+    let beating = false;
+    const check = async (): Promise<boolean> => {
       if (lost) return false;
       try {
         if (sameMtime((await fs.stat(path)).mtimeMs, mine)) return true;
@@ -411,10 +420,12 @@ async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promis
       clearInterval(timer);
       return false;
     };
+    const owned = (): Promise<boolean> => inTurn(check);
     timer = setInterval(() => {
-      if (lost || beat) return;
-      beat = (async () => {
-        if (!(await owned())) return;
+      if (lost || beating) return;
+      beating = true;
+      void inTurn(async () => {
+        if (!(await check())) return;
         const at = Date.now();
         try {
           await fs.utimes(path, new Date(at), new Date(at));
@@ -426,8 +437,8 @@ async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promis
             clearInterval(timer);
           }
         }
-      })().finally(() => {
-        beat = undefined;
+      }).finally(() => {
+        beating = false;
       });
     }, updateMs);
     timer.unref();
@@ -435,9 +446,10 @@ async function lockDirectory(path: string, fs: LockFs, updateMs: number): Promis
       owned,
       release: async () => {
         clearInterval(timer);
-        await beat;
-        if (await owned()) await fs.rm(path, { recursive: true, force: true });
-        lost = true;
+        await inTurn(async () => {
+          if (await check()) await fs.rm(path, { recursive: true, force: true });
+          lost = true;
+        });
       },
     };
   }
