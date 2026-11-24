@@ -30,7 +30,7 @@ import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
 import { wireName } from "../catalog.js";
 import { environmentLine, runZone } from "../environment.js";
-import { factsOf, type HarnessEntry, harnessOf, recipeKeysOf } from "../harness-table.js";
+import { factsOf, type HarnessEntry, harnessOf, planRecipeOf } from "../harness-table.js";
 import { layHarnessKeys, openHarnessKeys, RECIPE_SIGN_IN_PERSON_ONLY, RECIPE_TURN_PERSON_ONLY } from "../harness-keys.js";
 import { laidLearned, learningFolderOf, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
@@ -511,11 +511,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // is chosen, so it never falls to its owner's sign-in (a row counted at its claim may be gone, or not open, by now).
   // A person's claim that laid none keeps its session on the sign-in (or on nothing) for good: a trigger's message the
   // claim takes later is refused in it (personOnly), keys saved since or not, as no new claim opens them.
-  const recipeKeys = name === undefined ? undefined : recipeKeysOf(deps.env ?? {}, name);
+  const recipe = name === undefined ? undefined : planRecipeOf(deps.env ?? {}, name);
+  const recipeKeys = recipe?.keys;
   let personOnly: string | undefined;
-  if (name !== undefined && recipeKeys?.length) {
+  if (recipe !== undefined && recipeKeys?.length) {
     for (const key of recipeKeys) delete env[key];
-    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, name, recipeKeys) : ((await runnerSeam()?.harnessKeys()) ?? {});
+    const opened = deps.sealKey ? await openHarnessKeys(deps.store, deps.sealKey, recipe) : ((await runnerSeam()?.harnessKeys(recipe.digest)) ?? {});
     hold(Object.values(opened));
     if (recipeKeys.every((key) => typeof opened[key] === "string" && opened[key] !== "")) layHarnessKeys(env, opened);
     else if (!personStarted(launch)) throw new ClaimRefused(RECIPE_SIGN_IN_PERSON_ONLY);
@@ -766,7 +767,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run its model kept from running takes none, as on pi: null, so the loop asks none of its deps either.
+  const endOfRun = heldRefusal !== undefined ? null : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -802,8 +804,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(catalog ? { mcp: catalog } : {}),
     // The run's own model key: a command row opens it again before the next model request (a message's new key).
     ...(runKey ? { modelKey: runKey } : {}),
-    // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf).
-    ...(endOfRun ? { endOfRun } : {}),
+    // The run's end-of-run step, when it learns (the spec's, preferred over the loop's deps': adapter-loop.ts stepOf), or
+    // null, none at all.
+    ...(endOfRun === undefined ? {} : { endOfRun }),
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     ...(workflowFirst ? { workflowFirst } : {}),
     ...(workflowRevise ? { workflowRevise } : {}),

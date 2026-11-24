@@ -99,8 +99,10 @@ export interface Held {
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
   /** The keys saved for the claim's own harness alone (harness-keys.ts openHarnessKeys), by name, opened by the runner:
-   *  none unless that harness is a plan-billed recipe. The process lays them on its adapter's environment alone. */
-  harnessKeys(): Promise<Record<string, string>>;
+   *  none unless that harness is a plan-billed recipe, and none unless they are bound to `digest`, the sha256 of the
+   *  recipe file the process loaded itself (a file swapped since the runner read its table never takes the first's).
+   *  The process lays them on its adapter's environment alone. */
+  harnessKeys(digest: string): Promise<Record<string, string>>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
    *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;

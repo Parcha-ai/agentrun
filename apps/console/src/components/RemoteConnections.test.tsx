@@ -62,7 +62,7 @@ it("creates a one-use code only on request, keeps it out of handoffs/storage and
   await act(async () => buttons("Done")[0]!.click());
   expect(document.querySelector('input[readonly]')).toBeNull();
   expect(document.body.textContent).not.toContain(code);
-  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect agent"]')!.click());
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Connect your agents"]')!.click());
   await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent === "Copy prompt")!.click());
   expect(writeText.mock.calls.at(-1)?.[0]).toContain("/skills/agentrun-serve/SKILL.md");
   expect(writeText.mock.calls.at(-1)?.[0]).not.toContain(code);

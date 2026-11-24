@@ -591,9 +591,50 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   const replaySeam = (hold) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-2", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-2", signInHanded: null }, launch: { ...launch, replay: { of: "run-asked", workflow: "answer", digest: "d".repeat(16) }, ...hold }, revision: graded, claimed: {} }, (text) => text, () => {}).held;
   assert.deepEqual(await replaySeam({}).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a replay not held is answered its grader's provider's saved key, as before");
   assert.deepEqual(await replaySeam({ hold: { minutes: 5, refused: REFUSAL } }).subagentTierKeys(), {}, "a held replay its model kept from running is answered no grader's key either: it grades nothing");
-  assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "nor a tier's key");
+  // Its learnedFirst is refused below, so it lays no learned workflow whose tiers it could ask for: this answer is that
+  // refusal's as much as tierModelKeys' own.
+  assert.deepEqual((await held.tierModelKeys(["fast", "strong"])).keys, {}, "and no tier's key: none is chosen, its learned workflows refused");
   assert.equal(await held.serverKeyless(), true, "its keyless check answers that no key of the server's pays for its spend, with no saved key read (this host has no gateway, so a read would answer false)");
   await assert.rejects(held.learnedFirst({ laid: false }), HELD_SPEND_WORDS, "nor a learning step: it settles no audit and starts no replay run");
+  // The same held run, learning: its end-of-run step would compile a draft over the server's decision keys and could start
+  // an audit on the server's key (claimSpendOff), were it asked.
+  const learning = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL }, learning: { seed: "0".repeat(40), section: "" } });
+  const ended = { runId: "run-1", agentId: "agent-1", claim: { runId: "run-1", epoch: 1 }, outcome: "completed", ask: async () => assert.fail("a held run's end-of-run step asks nothing"), signal: new AbortController().signal };
+  await assert.rejects(learning.endOfRun(ended), HELD_SPEND_WORDS, "nor its end-of-run step, though it learns: it reads no saved key, compiles nothing and starts no audit");
+  // The control: the same learning run not held is not refused in those words. Its step runs as any claim's, against a test
+  // store with no seed, so how it ends here (an answer, or a failure of its own) is not this test's; only the refusal is.
+  const unheldEnd = await seam({ ...launch, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
+    .then(() => "answered", (error) => error.message);
+  assert.doesNotMatch(unheldEnd, HELD_SPEND_WORDS, "the same learning run not held is not refused its end-of-run step: only a held run its model kept from running is");
+  // And held, its hold carrying no refusal (its model fine): the refusal is the hold's refusal's, never the hold's.
+  const heldFineEnd = await seam({ ...launch, hold: { minutes: 5 }, learning: { seed: "0".repeat(40), section: "" } }).endOfRun({ ...ended, ask: async () => Promise.reject(new Error("the control's step asked its model")) })
+    .then(() => "answered", (error) => error.message);
+  assert.doesNotMatch(heldFineEnd, HELD_SPEND_WORDS, "a held learning run whose hold carries no refusal is not refused its end-of-run step either: only one its model kept from running is");
+});
+
+/** A learning start, as a learning run's launch carries it (run-launch.ts learningStartOf). */
+const LEARNS = { seed: "0".repeat(40), section: "" };
+
+test("pi (adapter-run-spec), end of run: a held run its model kept from running that learns carries no end-of-run step; the same run not held carries one", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-model-key-end-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const body = { model: MODEL, computer: PHONE, learning: true };
+  // The control's route is specFor's stub: no key is needed for a claim that is not held to open.
+  const { spec: unheld } = await specFor(t, { body, launch: { model: undefined, learning: LEARNS }, computer: phoneOn(root) });
+  assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
+  const { spec } = await specFor(t, { body, launch: { model: undefined, hold: { minutes: 5, refused: REFUSAL }, learning: LEARNS }, computer: phoneOn(root) })
+    .catch((error) => assert.fail(`a held learning run its model kept from running opens its claim: ${error.message}`));
+  assert.equal(spec.endOfRun, null, "a held run its model kept from running carries no end-of-run step, though it learns, and says none (null), so the loop asks none of its own: its model runs nowhere, so nothing is compiled and no audit starts");
+});
+
+test("CLI (cli-run-spec), end of run: a held opencode run its model kept from running that learns carries no end-of-run step; the same run not held carries one", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  // The control's host holds opencode's key (the test's host model key), so the claim that is not held opens.
+  const unheld = await cliClaim(t, undefined, { learning: LEARNS }, { env: { OPENAI_API_KEY: HOST_MODEL_KEY } });
+  assert.equal(typeof unheld.endOfRun, "function", "the run not held, learning, carries its end-of-run step, as before");
+  const spec = await cliClaim(t, { minutes: 5, refused: REFUSAL }, { learning: LEARNS }).catch((error) => assert.fail(`a held learning opencode run opens its claim: ${error.message}`));
+  assert.equal(spec.endOfRun, null, "a held run its model kept from running carries no end-of-run step, though it learns, and says none (null)");
 });
 
 test("pi: the stand-in route refuses every model request in the create's words, verbatim, and sends none", async (t) => {

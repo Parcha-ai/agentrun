@@ -6,13 +6,14 @@ import { buttonVariants } from "@/components/ui/button";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { cn } from "@/lib/utils";
 
-/** The same title, body and footer for every agent; each source supplies only the actions it supports. */
-export function AgentCardFrame({ name, icon: Icon, harness, badges, description, children, facts, actions, href, onOpen, archived }: {
-  name: string; icon: LucideIcon; harness?: string; badges?: ReactNode; description?: ReactNode; children?: ReactNode;
+/** The same title, body and footer for every agent; each source supplies only the actions it supports. `harnessName`
+ *  names the runtime its icon draws: the icon says it, in place of a chip in words. */
+export function AgentCardFrame({ name, icon: Icon, harness, harnessName, badges, description, children, facts, actions, href, onOpen, archived }: {
+  name: string; icon: LucideIcon; harness?: string; harnessName?: string; badges?: ReactNode; description?: ReactNode; children?: ReactNode;
   facts?: ReactNode; actions?: ReactNode; href?: string; onOpen?: () => void; archived?: boolean;
 }) {
   const heading = <>
-    <span data-agent-card-icon className="flex h-6 shrink-0 items-center">{harness ? <HarnessIcon harness={harness} /> : <Icon className="size-4 text-muted-foreground" aria-hidden />}</span>
+    <span data-agent-card-icon className="flex h-6 shrink-0 items-center">{harness ? <HarnessIcon harness={harness} label={harnessName} /> : <Icon className="size-4 text-muted-foreground" aria-hidden />}</span>
     <span className="min-w-0 flex-1">
       <span className="flex min-h-6 flex-wrap items-center gap-2"><span className="break-words text-base font-semibold">{name}</span>{badges}</span>
       {description && <span className="mt-2 line-clamp-2 block text-lead leading-relaxed text-muted-foreground">{description}</span>}

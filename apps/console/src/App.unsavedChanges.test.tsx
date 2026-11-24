@@ -99,11 +99,11 @@ describe("App, the agent builder's unsaved changes", () => {
     serve();
     const p = await open("#/agents/calc/edit");
     await p.type(p.instructions()!, "Answer in French.");
-    await act(async () => { p.host.querySelector<HTMLButtonElement>('button[aria-label="Back to agents"]')!.click(); });
+    await act(async () => { p.host.querySelector<HTMLButtonElement>('header button[aria-label="Back"]')!.click(); });
     await wait(() => !!p.dialog(), "Leave without saving? is asked");
     expect(location.hash).toBe("#/agents/calc/edit");
     await act(async () => { p.button("Leave", p.dialog())!.click(); });
-    await wait(() => location.hash === "#/agents" && !p.instructions(), "on the agents list");
+    await wait(() => location.hash === "#/agents/calc" && !p.instructions(), "on its agent's page: the editor was opened at its own address");
   });
 
   it("the browser's back on an edited agent is taken back and asks first: Stay keeps the edits, Leave goes back", async () => {
