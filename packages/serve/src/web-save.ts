@@ -8,7 +8,7 @@ import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { extensionOf, typeOf } from "./file-types.js";
 import { mediaSeconds } from "./media-duration.js";
-import { clip, URL_MAX } from "./web-fetch-direct.js";
+import { clip, URL_MAX } from "@parcha/agentrun-web";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
 

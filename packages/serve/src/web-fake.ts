@@ -2,7 +2,7 @@
 // web_search and web_fetch answer from the case, never from the network, in the shapes and through the tool names the
 // model sees live. `unavailable`: every search fails as keyless search past its free limit does (keyless-mcp.ts
 // RATE_LIMITED), and every page fails as a fetch whose connection is refused does (the guarded direct fetch's own words,
-// web-fetch-direct.ts readDirect). A fixture: each search answered by the first answer whose `query` (a regular
+// @parcha/agentrun-web readDirect). A fixture: each search answered by the first answer whose `query` (a regular
 // expression, case-insensitive) matches the query, else its default; each page by the answer for exactly its URL, else
 // its default, read through the guarded direct fetch's own path (its URL, port and status checks, its parts). web_save's
 // files (web-save.ts) answer from the fixture's optional `save`: each file by the answer for exactly its URL, else its
@@ -12,9 +12,8 @@
 // Only the eval's own in-process runner binds it (runner/beside.ts `evalFakes`, by the agent the eval made for the run):
 // no package field, API field, setting or environment variable reaches it, so no other server's runs ever see a fake.
 import { RATE_LIMITED } from "./keyless-mcp.js";
-import { clip, type Page, type Part, partProblem, TITLE_CAP, URL_MAX } from "./web-fetch-direct.js";
-import { webFetch, type WebPage } from "./web-fetch.js";
-import { type Hit, type Search, searchArgs, snippetOf } from "./web-search.js";
+import { clip, type Hit, type Page, type Part, partProblem, type Search, searchArgs, snippetOf, TITLE_CAP, URL_MAX, type WebPage } from "@parcha/agentrun-web";
+import { webFetch } from "./web-fetch.js";
 import type { Plane } from "./tool-plane.js";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 

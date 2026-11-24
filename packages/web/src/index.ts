@@ -1,0 +1,15 @@
+// @parcha/agentrun-web: web search and web fetch for an agent. It imports nothing of a server, a harness, a browser or a
+// vendor SDK: the public-host guard, the HTML reader, the run's cap, a native search and a product's words come in
+// through WebConfig (createWeb) or as arguments, as data or injected functions.
+export * from "./fees.js";
+export * from "./fetch.js";
+export * from "./guard.js";
+export * from "./page.js";
+export * from "./providers/direct.js";
+export * from "./providers/exa-keyless.js";
+export * from "./providers/firecrawl-keyless.js";
+export * from "./providers/mcp.js";
+export * from "./providers/parallel.js";
+export * from "./search.js";
+export * from "./text-urls.js";
+export * from "./web.js";
