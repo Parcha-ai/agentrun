@@ -847,6 +847,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.type("composio-key", KEY);
     await p.click(/^Load toolkits$/);
     expect(p.host.querySelector('[role="alert"]')?.textContent).toContain("Composio did not answer while listing the toolkits");
+    expect(p.input("composio-toolkit"), "a field to type the toolkit's slug in").not.toBeNull();
     await p.type("composio-toolkit", "github");
     await p.click(/^Load actions$/);
     expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
@@ -860,6 +861,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.type("composio-key", KEY);
     await p.click(/^Load toolkits$/);
     expect((await optionsOf(picker(p.host, "Toolkit")!)).map((o) => o.value)).not.toContain("linear");
+    expect(p.button(/^Not listed\? Type its slug$/), "a way to type a toolkit the list leaves out").toBeDefined();
     await p.click(/^Not listed\? Type its slug$/);
     await p.type("composio-toolkit", "linear");
     await p.click(/^Load actions$/);
