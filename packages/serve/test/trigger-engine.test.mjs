@@ -897,6 +897,8 @@ async function staleRead(t, body) {
   const wait = held();
   gate.next = wait;
   const late = triggers.handedStart({ trigger_id: made.id, firing_id: b }, "a", hostRun(store, b, "run-b"));
+  // Refused once its wait ends, maybe before the caller asserts it: handled from now on, asserted by the caller.
+  late.catch(() => {});
   await until(() => gate.entered, "b's start has read the trigger, with no last run, and waits on its next read");
   assert.deepEqual(await triggers.handedStart({ trigger_id: made.id, firing_id: a }, "a", hostRun(store, a, "run-a")), { run_id: "run-a", replayed: false });
   assert.equal((await store.triggers.get(made.id)).lastRunId, "run-a");
@@ -1505,6 +1507,10 @@ test("a release that read its firing sent before the host's start wrote its run,
     }
   });
   const released = b.triggers.release(id, key, { error: "The job failed at launch." }, (text) => text);
+  // Its refusal can land before this start answers (on Postgres, each of the release's reads and writes is a round trip
+  // that can finish ahead of the start's own): handled from now on, so the node:test runner never sees it as unhandled,
+  // and asserted below.
+  released.catch(() => {});
   // Server b read the firing sent with no run under its key, and holds its write.
   await reached.promise;
   const started = await a.triggers.handedStart({ trigger_id: id, firing_id: key }, "a", async (handed) => {
