@@ -178,7 +178,9 @@ function persistenceIssues(kind: Exclude<ComputerKind, "none">, provider: string
 
 /** The setting and its place a definition says, from `computer` or `place` (both: they must agree), or undefined when
  *  it says neither. Each is checked already (computerIssues, placeIssues). */
-export function settingOfDefinition(definition: { computer?: unknown; place?: unknown }): { computer: ComputerSetting; place: PlaceView } | undefined {
+/** What settingOfDefinition reads of a definition or a stored revision body. */
+export type Definition = { computer?: unknown; place?: unknown };
+export function settingOfDefinition(definition: Definition): { computer: ComputerSetting; place: PlaceView } | undefined {
   if (isObject(definition.computer)) {
     const computer = definition.computer as ComputerSetting;
     return { computer, place: placeOfComputer(computer) };

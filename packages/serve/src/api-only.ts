@@ -2,8 +2,8 @@
 // deploy's routes alone, and refuses every other address before anything else reads the request: the console at "/" and
 // its assets, sign-in and setup, settings but the MCP servers' names, a Composio server's save, a per_run server's save at
 // a listed origin and the delete of a server (the secret-write gate lets the token save over or delete only a server it
-// saved, mcp-secret-writes.ts), the MCP endpoint, triggers and their webhook hooks, the rest of agents and templates. Off
-// by default.
+// saved, mcp-secret-writes.ts), the MCP endpoint, triggers and their webhook hooks (all but a firing's release, which the
+// launch hook's host sends), the rest of agents and templates. Off by default.
 import { API_ONLY_ENV } from "./env-switch.js";
 import { NOT_SET_UP } from "./runnable.js";
 import type { Route } from "./server.js";
@@ -12,8 +12,9 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
 /** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
  *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
  *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
- *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it (a run
- *    of an agent made here is refused by the purge's route itself, server.ts deleteRun, in this profile's words);
+ *  - an agent its inline runs made has its disk, its delete and its runs' purges sent by the backend that made it. A run
+ *    of an agent made here is purged too (deleteRun): the token may archive and delete that whole agent below, every
+ *    run of it purged, so one run of it is no more;
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
  *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
@@ -25,10 +26,10 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
  *    revision back, and archives it before its delete (or unarchives it, the schedule and feed triggers its archive
  *    turned off on again when the server has the launch hook). That is more than inline runs give its token: it makes
- *    agents and revisions that stay, archives and deletes any agent made here, as the whole server's token does, and with
- *    the launch hook its apply makes schedule and feed triggers. A trigger the apply can't make here is skipped, and said
- *    (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was: without the hook, an enabled one
- *    still fires here on this server's keys until the agent is archived;
+ *    agents and revisions that stay, archives and deletes any agent made here and purges any run of one, as the whole
+ *    server's token does, and with the launch hook its apply makes schedule and feed triggers. A trigger the apply can't
+ *    make here is skipped, and said (apiOnlyTriggerSkipped). One the agent had before the profile stays as it was:
+ *    without the hook, an enabled one still fires here on this server's keys until the agent is archived;
  *  - an API-only server has no owner, so the token is the backend's own, as with take-over: it saves the Composio servers
  *    its agents need through the preset (saveComposioServer), saves over or deletes only a server it saved
  *    (mcp-secret-writes.ts tokenWriteOverRefused), and never writes a secret (secret-writes.ts). A Composio server names
@@ -38,11 +39,14 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    listed exactly in AGENTRUN_MCP_TOKEN_ORIGINS (mcp-token-origins.ts; unset, none), checked again at each run's start
  *    and claim; any other auth is the secret-write refusal (mcp-secret-writes.ts mcpSaveWritesSecret). There is no list or
  *    read of the servers here (listMcpServerNames above is the listing). Previews, refreshes, sign-ins and Composio's
- *    triggers stay refused. */
+ *    triggers stay refused;
+ *  - the launch hook's host (the backend in front of this server) releases a firing it took and will start no run for
+ *    (releaseTriggerFiring, triggers.ts release), so its trigger's room frees at once; with no launch hook the route is
+ *    the route's own 422. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
-  "listComputers", "getWorkspaceArchil",
+  "listComputers", "listRunningComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning", "deleteRun",
   "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
@@ -51,7 +55,9 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
-  "saveComposioServer", "saveMcpServer", "deleteMcpServer",
+  "saveComposioServer", "saveMcpServer", "deleteMcpServer", "releaseTriggerFiring",
+  // Refused in its own words (403): it reads the machine's session files, which a server behind a backend does not have to give.
+  "getWrapped",
 ]);
 
 /** The trigger sources an apply on an API-only server makes once the server has the launch hook: the ones that fire on
