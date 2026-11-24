@@ -52,7 +52,9 @@ describe("LearningGlance", () => {
   it("a run a restart cut mid-call never finished alone: it counts with the hand-backs, out of the share", () => {
     const cut: LearningCost = { ...COST, summary: { ...COST.summary, hand_backs: { ran: 59, back: 3, cut: 2 } } };
     const host = draw(createElement(LearningGlance, { cost: cut, revisions: REVISIONS }));
-    expect(cell(host, "glance-alone")).toMatch(/^Finished alone92%54 of 59 runs it ran first, 5 handed back to the agent · 95% interval /);
+    expect(cell(host, "glance-alone")).toMatch(/^Finished alone92%/);
+    expect(short(host, "glance-alone")).toBe("54 of 59 runs it ran first");
+    expect(whole(host, "glance-alone")).toMatch(/^54 of 59 runs it ran first, 5 handed back to the agent · 95% interval /);
   });
   it("shows nothing before a learned workflow has taken a run over", () => {
     const before: LearningCost = { ...COST, summary: { ...COST.summary, takeover: null } };

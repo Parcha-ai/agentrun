@@ -1,12 +1,14 @@
-// The marketplace's templates (GET /v2/templates/marketplace, GRE-4834): the list marketplace.agentrun.ai publishes
+// The marketplace's templates (GET /v2/marketplace/templates, GRE-4834): the list marketplace.agentrun.ai publishes
 // (/search.json) read when asked, kept 5 minutes, one read at a time, the last good list kept through a failed read,
 // each entry checked field by field, and each matched to the package here that it is. Off under --faux unless
 // AGENTRUN_MARKETPLACE names an address. A fake marketplace on loopback stands in for the site: no test reaches it.
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import { test } from "node:test";
 import { entryOf, hereOf, listOf, Marketplace, MARKETPLACE_LIMITS, MARKETPLACE_RETRY_MS, MARKETPLACE_TTL_MS, MARKETPLACE_URL, marketplaceUrlOf } from "../dist/marketplace.js";
-import { serve } from "./support.mjs";
+import { scratch, serve } from "./support.mjs";
 
 const SITE = "https://market.example";
 const SHA = "c".repeat(40);
@@ -149,30 +151,44 @@ test("a read that never answers, or answers and then stalls, ends at the deadlin
   assert.equal((await market.list()).templates.length, 1, "and tried again after a minute");
 });
 
-test("GET /v2/templates/marketplace answers the marketplace's list with the package here that each is, read once for callers within 5 minutes; off and unreachable answer 200 with an empty list", { timeout: 60_000 }, async (t) => {
+test("GET /v2/marketplace/templates answers the marketplace's list with the package here that each is, read once for callers within 5 minutes; off and unreachable answer 200 with an empty list", { timeout: 60_000 }, async (t) => {
   let answer = () => ({});
   const market = await fakeMarketplace(t, () => answer());
   const { api } = await serve(t, { marketplace: market.url, runner: false });
-  const read = await api("GET", "/templates/marketplace");
+  const read = await api("GET", "/marketplace/templates");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.deepEqual([read.body.url, read.body.state, typeof read.body.read_at], [market.url, "read", "string"]);
   assert.deepEqual(read.body.templates.map((e) => [e.name, e.here ?? null, e.page_url]), [["kyb", "kyb", `${market.url}/templates/kyb/`], ["company-brief", null, `${market.url}/templates/company-brief/`]]);
   assert.deepEqual(read.body.templates[1].tags, ["research"]);
-  assert.equal((await api("GET", "/templates/marketplace")).status, 200);
+  assert.equal((await api("GET", "/marketplace/templates")).status, 200);
   assert.deepEqual(market.seen, ["GET /search.json agentrun-serve"], "read once, as agentrun-serve, and kept");
   assert.equal((await api("GET", "/templates/kyb")).body.template.id, "kyb", "a template's own route still answers");
 
   const { api: offApi } = await serve(t, { marketplace: null, runner: false });
-  const off = await offApi("GET", "/templates/marketplace");
+  const off = await offApi("GET", "/marketplace/templates");
   assert.deepEqual([off.status, off.body.state, off.body.templates], [200, "off", []]);
 
   const { api: fauxApi } = await serve(t, { runner: false });
-  assert.equal((await fauxApi("GET", "/templates/marketplace")).body.state, "off", "--faux reads no marketplace unasked");
+  assert.equal((await fauxApi("GET", "/marketplace/templates")).body.state, "off", "--faux reads no marketplace unasked");
 
   answer = () => ({ status: 500, body: "boom" });
   const down = await fakeMarketplace(t, () => answer());
   const { api: downApi } = await serve(t, { marketplace: down.url, runner: false });
-  const unreachable = await downApi("GET", "/templates/marketplace");
+  const unreachable = await downApi("GET", "/marketplace/templates");
   assert.deepEqual([unreachable.status, unreachable.body.state, unreachable.body.templates], [200, "unreachable", []]);
   assert.match(unreachable.body.problem, /answered 500/);
+});
+
+test("a template named marketplace keeps its own address: GET /templates/marketplace reads the package, and the marketplace's list is GET /marketplace/templates", { timeout: 60_000 }, async (t) => {
+  const market = await fakeMarketplace(t, () => ({}));
+  // A package name is lowercase letters, digits and dashes, so "marketplace" is one; a slash in the list's address never is.
+  const root = join(await scratch(t), "templates");
+  mkdirSync(join(root, "marketplace"), { recursive: true });
+  writeFileSync(join(root, "marketplace", "agent.md"), "---\nname: marketplace\nversion: 1.0.0\ndescription: Watches a market.\ntools: []\n---\nWatch it.\n");
+  const { api } = await serve(t, { templates: root, marketplace: market.url, runner: false });
+  const own = await api("GET", "/templates/marketplace");
+  assert.equal(own.status, 200, JSON.stringify(own.body));
+  assert.equal(own.body.template?.id, "marketplace", `the package itself, not the marketplace's list: ${JSON.stringify(own.body).slice(0, 200)}`);
+  const list = await api("GET", "/marketplace/templates");
+  assert.deepEqual([list.status, list.body.state, list.body.templates.map((e) => e.name)], [200, "read", ["kyb", "company-brief"]]);
 });

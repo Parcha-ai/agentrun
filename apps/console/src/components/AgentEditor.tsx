@@ -12,13 +12,13 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Chip } from "@/components/ui/chip";
 import { ConfirmDialog } from "@/components/ui/dialog";
-import { ToolCard } from "@/components/ToolCard";
+import { BuiltInToolCards } from "@/components/BuiltInToolCards";
 import { AgentToolSettings } from "@/components/ToolSettings";
 import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
@@ -32,7 +32,7 @@ import { placeOfComputer } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
-import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
+import { callNodeTools, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
 import { pageToolbarClass } from "@/components/ui/toolbar";
@@ -46,7 +46,7 @@ export type Revision = { revision: string; version: number; current: boolean; no
  *  the server runs for it when a definition names none (null: none). */
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
-export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
+export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; needs?: string[]; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
 
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
@@ -436,27 +436,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                 {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). */}
                 {/* Every collapsed card one height, top-aligned: one card's Details grows it alone, never its row. */}
                 <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-                  {builtIns(toolQuery).map((t) => {
-                    // A call-only tool runs only in a workflow's call node, which needs it in its revision's tools: a
-                    // workflow agent picks it like any other. An agentic agent is never offered one, and one it already
-                    // names shows as such, to untick.
-                    const runs = runsOn(f.harness ?? "pi", t.name, caps.tools, toolOpts);
-                    const on = f.tools?.includes(t.name) ?? false;
-                    // A tool the server's provider leaves unavailable runs here once this agent picks a provider of its own.
-                    const choice = providerChoices.find((c) => c.name === t.name);
-                    const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
-                    const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
-                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, [...(f.tools ?? []), t.name], caps.places));
-                    const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
-                    // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
-                    // (cut to one line); the reason in full is its title, and in Details.
-                    const tag = !why ? undefined : t.call_only && !workflow ? "Workflow only" : sandbox && runs && why === sandbox ? "Sandbox-only" : why;
-                    return (
-                      <li key={t.name} className="min-w-0"><ToolCard value={t.name} name={t.name} blurb={t.blurb} description={t.summary} why={why} tag={tag} on={on} disabled={!!why && !on}
-                        onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
-                    );
-                  })}
+                  <BuiltInToolCards shown={builtIns(toolQuery)} offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places}
+                    workflow={workflow} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
+                    onChange={(tools) => { setToolsTouched(true); set({ tools }); }} />
                   {/* The MCP and monid groups span the whole row: each lays out its own cards in the same columns. */}
                   {caps.mcp && !workflow && <li className="col-span-full"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} filter={toolQuery} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                   {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
@@ -507,20 +489,23 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,9rem),1fr))] gap-3" role="radiogroup" aria-label="Harness">
                     {/* A harness this server runs is one label, a click anywhere on the card picks it. One it doesn't run says so
                         briefly (the served `available: false`), and the server's whole reason, an install command in it, is one
-                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it. */}
+                        tap away in a details line beside the label (so opening it never picks the card), wrapping inside it.
+                        One off only for want of a model key (`wantsKey`) is still a choice: a save of it is taken, with a
+                        warning, and it runs once a key is added. */}
                     {choices.map((h) => {
+                      const pickable = h.available || h.wantsKey === true;
                       const row = (
                         <>
-                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
-                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : "Not available here"}</span></span>
+                          <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!pickable && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
+                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : h.wantsKey ? "Needs a model key" : "Not available here"}</span></span>
                         </>
                       );
                       const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");
                       return h.available ? (
                         <label key={h.id} className={cn(edge, "flex cursor-pointer items-start gap-3")}>{row}</label>
                       ) : (
-                        <div key={h.id} className={cn(edge, "opacity-60")}>
-                          <label className="flex cursor-not-allowed items-start gap-3">{row}</label>
+                        <div key={h.id} className={cn(edge, !pickable && "opacity-60")}>
+                          <label className={cn("flex items-start gap-3", pickable ? "cursor-pointer" : "cursor-not-allowed")}>{row}</label>
                           {h.reason && (
                             <details className="mt-2 font-mono text-label text-muted-foreground">
                               <summary className="cursor-pointer select-none hover:text-foreground">Why, and what to do</summary>

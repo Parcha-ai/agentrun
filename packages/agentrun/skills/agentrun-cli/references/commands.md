@@ -212,6 +212,14 @@ Check native CLI and sign-in without a paid model call.
 
 Route: `POST /agents/{agent_id}/native/verify`.
 
+## api-keys
+
+### `agentrun api-keys list`
+
+The API keys made for this server's apps; never a key.
+
+Route: `GET /settings/api-keys`.
+
 ## capabilities
 
 ### `agentrun capabilities get-capacity`
@@ -433,8 +441,8 @@ Route: `POST /templates/import`, `POST /templates/{template}/apply`.
 - `--yes` (boolean, this CLI's own): apply without asking (needed off a terminal)
 - `--force` (boolean, this CLI's own): replace an agent edited on the target since the last deploy
 - `--params FILE` (string, this CLI's own): the package's parameters, a JSON object
-- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places)
-- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent
+- `--pause-source` (boolean, this CLI's own): an install agent: turn its schedules off on this install once deployed (else they fire in both places); exits 1, once deployed, when it could not turn every one off
+- `--agent ID|new` (string, this CLI's own): with no lock for the target: deploy onto its agent ID, or make another agent (new), where it has one this package made with these parameters; with a lock, only the lock's agent while it is there (one gone from the target, any)
 
 ### `agentrun deploy delete SOURCE`
 
@@ -472,7 +480,7 @@ Write an agent's current revision as a template package folder, and say what the
 
 Route: `GET /agents/{agent_id}/package`.
 
-- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one
+- `--out DIR` (string, this CLI's own): the folder to write: a new one, or an empty one, named as the package is (another name is refused, naming the folder to use)
 
 ## files
 
@@ -788,7 +796,7 @@ Route: `GET /integrations/github/repositories`.
 
 The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is.
 
-Route: `GET /templates/marketplace`.
+Route: `GET /marketplace/templates`.
 
 ### `agentrun local list-mcp-server-names`
 
@@ -1029,7 +1037,7 @@ The files the run wrote.
 
 Route: `GET /runs/{run_id}/files`.
 
-- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
+- `--cut run` (string, one of these): `run`: each file also has its `name`, its path under the run's own cut (each value the cut holds and each secret shape replaced by `[redacted]` in place, as a cut read cuts a file's text), whatever its type. A run whose end erased what its caller handed it lists no `name`. A run whose cut can't be read is `403 forbidden`, as without `cut`. A server that doesn't know `cut` lists no `name`.
 
 ### `agentrun runs get RUN_ID`
 
@@ -1127,7 +1135,7 @@ One file's raw bytes.
 Route: `GET /runs/{run_id}/files/{path}`. It prints the answer's bytes as they are. PATH keeps its slashes.
 
 - `--download INTEGER` (integer): `1` forces a download.
-- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The cut holds this server's values, not every secret: a value handed to the run alone at its launch (a key of its own, an MCP server's headers) is not in it, and a secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed doesn't open) is `403 forbidden`. Without `cut`, the file's bytes as written.
+- `--cut run` (string, one of these): `run`: the file's text cut of every value the run's own cut holds (the server's keys, the keys a person saved, its secret stores' values, the sign-in refs the run was handed, and what its caller handed it: its own model key, tool keys and MCP servers' credentials), each one and each secret shape replaced by `[redacted]` in place, as the run's timeline cuts its calls; the text is `[redacted]` whole when a value still shows in a form not cut in place. The run's end erases what its caller handed it and counts where those values sat in each of its text files, never the values; from then a file is cut where that count says, while its bytes are the ones counted. A file the count cut in more than 256 places reads `[redacted]` whole. A file not counted as it is now (written or changed since the end, past the count's limits of 2,000 files, 64 MiB read and 512 KiB of count, or a run whose end made no count) is `403 forbidden`. That holds for good: once a run handed secrets has ended a turn, a file a later turn writes or changes is withheld from cut reads, whether or not that turn was handed secrets of its own (read it raw). A secret of no known shape passes as written. Answered `text/plain; charset=utf-8` with `x-agentrun-cut: run` (a server that doesn't know `cut` answers the raw bytes, without it), the whole file (`Range` is not read). A file whose type is not text (text/*, JSON, NDJSON, or an extension the server doesn't type), or whose bytes are not UTF-8 or hold a NUL, is `415 unsupported_media_type`; one over 262144 bytes is `413 payload_too_large`; a run whose cut can't be read (the sign-in it was handed, or what its caller handed it, doesn't open here) is `403 forbidden`. Without `cut`, the file's bytes as written.
 - `--range STRING` (string): One byte range, `bytes=<start>-<end>`.
 
 ### `agentrun runs resume RUN_ID`

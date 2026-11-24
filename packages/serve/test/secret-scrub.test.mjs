@@ -10,7 +10,7 @@ import * as secretCut from "../dist/secret-cut.js";
 import { SECRET_SHAPES, shapeSpans } from "../dist/redact/match.js";
 
 const { RULE_PATTERNS = {}, SCRUB_RULES, scrub, scrubWith } = secretCut;
-import { AKIA, BLOB, GHP, HELD, HEX64, JWT, macHome, NPM, PEM, SK, unixHome, windowsHome } from "./scrub-positives.mjs";
+import { AKIA, AR_KEY, BLOB, GHP, HELD, HEX64, JWT, macHome, NPM, PEM, SK, unixHome, windowsHome } from "./scrub-positives.mjs";
 
 /** Restorable, by kind: the contract's fixed map. */
 const RESTORABLE = { format: false, held: false, dump: false, label: true, personal: true, jev: true };
@@ -53,7 +53,7 @@ test("SCRUB_RULES: unique ids, a known kind each, restorable fixed by kind", () 
 });
 
 test("format: a known key is cut whole, not restorable, its shape a public prefix and a length", async () => {
-  for (const [secret, rule, prefix] of [[SK, "sk-key", "sk-"], [GHP, "github-token", "ghp_"], [AKIA, "aws-access-key", "AKIA"], [JWT, "jwt", "eyJ"]]) {
+  for (const [secret, rule, prefix] of [[SK, "sk-key", "sk-"], [GHP, "github-token", "ghp_"], [AKIA, "aws-access-key", "AKIA"], [JWT, "jwt", "eyJ"], [AR_KEY, "agentrun-api-key", "ar_key_"]]) {
     const { text, cut } = await oneCut(`the tool printed ${secret} and went on`);
     assert.equal(text, `the tool printed [redacted:${rule}] and went on`);
     assert.equal(cut.rule, rule);
@@ -341,6 +341,7 @@ test("SCRUB_RULES: each rule's kind is what anchors its match (a format names it
     "private-key-block": "format",
     "github-token": "format",
     "sk-key": "format",
+    "agentrun-api-key": "format",
     "slack-token": "format",
     jwt: "format",
     "webhook-secret": "format",
