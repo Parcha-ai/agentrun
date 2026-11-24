@@ -76,15 +76,20 @@ const DERIVED = new WeakMap<readonly string[], { readonly values: readonly strin
 /** What the matcher looks for of a set of values, whatever the text: each value, each string of a held JSON value
  *  that may be printed alone (heldFields) and their path spellings, their forms found as they stand (as written, as
  *  JSON writes it, their plain needles and percent forms), their hex and folded needles, the needles the whole-text
- *  check reads (redact/match.ts Needles), and the parts of each of many lines (partsOf), as written and squeezed. */
+ *  check reads (redact/match.ts Needles), and the parts of each of many lines (partsOf), as written and squeezed: of
+ *  each value but a JSON object or array, and of each string heldFields holds. */
 function derivedOf(values: readonly string[]): Needles {
   const kept = DERIVED.get(values);
   if (kept && kept.values.length === values.length && kept.values.every((value, at) => value === values[at])) return kept.derived;
   const held = values.filter((v) => v.length > 0);
-  const whole = [...held, ...held.flatMap(heldFields)];
+  const fields = held.map(heldFields);
+  const strings = fields.flatMap((of) => of ?? []);
+  const whole = [...held, ...strings];
   const given = withPathSpellings(whole);
   const needles = new Map(given.filter(longEnough).map((v) => [v, needlesOf(v)]));
-  const parts = [...new Set(whole.flatMap(partsOf))];
+  // A held JSON value's own lines are no parts of it (a pretty-printed one has its public strings on lines of their
+  // own); the strings heldFields holds of it have theirs.
+  const parts = [...new Set([...held.filter((_, at) => fields[at] === undefined), ...strings].flatMap(partsOf))];
   const derived: Needles = {
     forms: [...new Set([...given.flatMap((v) => {
       const of = needles.get(v);
@@ -231,15 +236,16 @@ function partsOf(value: string): string[] {
  *  .private_key`), and one whose key, lowered, is a credential's whole name (redact/match.ts CREDENTIAL_NAMES: an OAuth
  *  client's "client_secret", a token's "refresh_token"; never "page_token"). An array's items have no key, so only the
  *  line-break rule holds them. Its other strings are not held: an id, a project, an email and public URLs ("client_id",
- *  "token_uri") are no secret, and would be cut wherever a text names them. */
-function heldFields(value: string): string[] {
+ *  "token_uri") are no secret, and would be cut wherever a text names them. Undefined where `value` is no JSON object
+ *  or array. */
+function heldFields(value: string): string[] | undefined {
   const head = value.trimStart()[0];
-  if (head !== "{" && head !== "[") return [];
+  if (head !== "{" && head !== "[") return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return [];
+    return undefined;
   }
   const out: string[] = [];
   // Walked with a stack of its own, not a call per level: a value nested thousands deep is read as any other.
