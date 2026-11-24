@@ -422,6 +422,39 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   /** The paired computers (not removed) by id, with their names: read once at the first tick, then kept by this
    *  server's own pair and remove answers (only the server writes paired rows). */
   let known: Map<string, string> | undefined;
+  /** The pair (its name) and remove (null) answers given while that first read is pending, by computer id: its snapshot
+   *  may predate them (on Postgres a read and a write are separate connections), so they go over it before it is
+   *  `known`. A read that starts after an answer's commit sees it, so an answer given while no read is pending needs no
+   *  keeping, and a read that fails leaves the answers to the next one. */
+  let early: Map<string, string | null> | undefined;
+  /** Whether a tick is running: the interval does not wait on one, and a tick then does nothing. */
+  let ticking = false;
+
+  /** A pair (`name`) or a remove (null) answered: told to `known`, or kept for the first read while it is pending. */
+  function note(id: string, name: string | null): void {
+    if (known === undefined) return void early?.set(id, name);
+    if (name === null) known.delete(id);
+    else known.set(id, name);
+  }
+
+  /** The paired computers by id: `known`, or the first read, with the answers given meanwhile over its snapshot. */
+  async function knownNow(): Promise<Map<string, string>> {
+    if (known !== undefined) return known;
+    early = new Map();
+    try {
+      const read = new Map<string, string>((await paired.list()).map((row) => [row.id, row.name]));
+      for (const [id, name] of early) {
+        if (name === null) read.delete(id);
+        else read.set(id, name);
+      }
+      // In the same step as the answers' merge, so none given after it misses `known`.
+      known = read;
+      return read;
+    } finally {
+      early = undefined;
+    }
+  }
+
   /** Whether `route` is a run's of the runner beside this server, in this process (`beside`): the box's place is this
    *  hub. A route of an earlier server's runner beside it names another runner (a new name and incarnation at each
    *  start), so it is stale as any runner's that is gone. */
@@ -451,7 +484,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });
     if (!made) throw new ApiError("not_found", "no such pairing code: make a new one on the console's Computers page");
     log("computer_paired", { computer: id, kind: hello.kind, os: hello.os, driver: hello.version });
-    known?.set(id, name);
+    note(id, name);
     return { computer: id, token, runs_refused: await runsRefused() };
   }
 
@@ -463,7 +496,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const gone = `${row.name} was removed from this server's console: pair it again to use it`;
     hub.revoke(id, gone);
     relayedPaired.get(id)?.ws.close(ATTACH_CLOSE.unauthorized, closeReason(gone));
-    known?.delete(id);
+    note(id, null);
     // Not in the revoke's transaction: a route left by a crash between the two names a revoked computer, whose token
     // the upgrade refuses anyway, and the tick removes it.
     await settings?.remove(routeKeyOf(id)).catch((error: unknown) => log("computer_route_unremoved", { computer: id, error: error instanceof Error ? error.message : String(error) }));
@@ -759,10 +792,22 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
    *  mid-dial, gets its route noted "not attached now", which ends its claim's wait at once. An empty row, and a row of a
    *  computer that is no longer paired, goes. Nothing while no computer is paired; with this server's runner beside it
    *  (not runnerApart), nothing past that one read while no route row is there and no box is relayed. It judges no
-   *  runner's liveness: a stale route is dropped at the box's next upgrade. */
+   *  runner's liveness: a stale route is dropped at the box's next upgrade. One tick runs at a time: one called while
+   *  another runs does nothing. */
   async function tick(): Promise<void> {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await judgeRoutes();
+    } finally {
+      ticking = false;
+    }
+  }
+
+  /** One tick's work (tick). */
+  async function judgeRoutes(): Promise<void> {
     if (options.owner !== undefined || settings === undefined || closing) return;
-    known ??= new Map((await paired.list()).map((row) => [row.id, row.name]));
+    const known = await knownNow();
     if (known.size === 0 && relayedPaired.size === 0) return;
     const rows = await allRoutes(settings);
     // With its runner beside it, only a runner apart on another host takes a route: the read says whether one did. A
