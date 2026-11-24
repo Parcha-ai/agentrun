@@ -11,11 +11,15 @@ export const isPlanModel = (id: string | null | undefined): boolean => !!id && i
 
 /** Said under "Continue with ChatGPT": what the plan runs, and what still needs a key. */
 export const PLAN_RUNS = "Codex and pi agents run on your ChatGPT plan. Claude Agent, OpenCode, Jev decisions and paid tools need their own keys.";
-/** PLAN_RUNS on a server whose models go to a gateway (`models.source` `gateway`): there an agent that names no model runs
- *  on the gateway, signed in or not (serve's settingsModel), and the plan runs only an agent that names one of its models. */
+/** PLAN_RUNS on a server whose models go to a gateway (`models.source` `gateway`) and whose own default is not a plan model:
+ *  there an agent that names no model runs on the gateway, signed in or not (serve's settingsModel), and the plan runs only
+ *  an agent that names one of its models. */
 export const PLAN_RUNS_GATEWAY = "This server sends its models to a gateway, so agents run there by default. An agent runs on your ChatGPT plan only when it names one of the plan's models (chatgpt/…).";
-/** What the plan runs on a server of `source` (capabilities' `models.source`). */
-export const planRuns = (source?: Capabilities["models"]["source"]): string => (source === "gateway" ? PLAN_RUNS_GATEWAY : PLAN_RUNS);
+/** What the plan runs on a server of `source` (capabilities' `models.source`) whose default model is `model`
+ *  (`models.default`). A gateway's server whose AGENT_MODEL names a plan model runs an agent that names none on the plan,
+ *  as any server does (serve's settingsModel takes AGENT_MODEL first, and chooseModel the plan before the gateway). */
+export const planRuns = (source?: Capabilities["models"]["source"], model?: string | null): string =>
+  source === "gateway" && !isPlanModel(model) ? PLAN_RUNS_GATEWAY : PLAN_RUNS;
 /** The paste step, while a sign-in waits. */
 export const PASTE_STEP = "Signing in on this computer finishes by itself. On a server elsewhere, the tab ends on a page that won't load: copy that tab's whole address and paste it here.";
 /** Ours, under OpenAI's disclosure: one person's plan, one server. */

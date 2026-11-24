@@ -84,7 +84,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
                 <p className="text-body text-muted-foreground">This server has no model yet, so an agent that names no model can't run.</p>
                 <ChatGPTSignIn v2={v2} view={planView} onView={moved} writable={writable} whyNot={whyNot}
                   beside={<Button type="button" size="sm" aria-expanded={keysOpen} onClick={() => setKeysOpen((open) => !open)}>Add a key</Button>} />
-                <p className="text-body text-muted-foreground">{planRuns(source)}</p>
+                <p className="text-body text-muted-foreground">{planRuns(source, model)}</p>
                 {keysOpen && <p className="text-body text-muted-foreground">{KEY_ADVICE}</p>}
               </>
             : <><p className="text-body text-muted-foreground">No model provider's key is set on this server, so an agent that names no model can't run. Save one: such an agent then runs on that provider's everyday model.</p>
