@@ -90,15 +90,15 @@ export function createWeb(config: WebConfig): Web {
   const policy = policyOf(config.policy);
   if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
   if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
-  /** The page guard's verdict on each page the run read, by the URL asked for: a page is asked about once a run, and
-   *  again after a guard that failed. */
-  const pageVerdicts = new Map<string, Promise<PageGuard>>();
+  /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
+   *  and a page read again is asked about again, as is one whose guard failed. */
+  const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
   const guardOf = (decider: WebDecider, url: string, read: WebRead, step: StepOptions): Promise<PageGuard> => {
-    const known = pageVerdicts.get(url);
+    const known = pageVerdicts.get(read);
     if (known) return known;
     const asked = guardPage(decider, url, read, step);
-    pageVerdicts.set(url, asked);
-    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(url));
+    pageVerdicts.set(read, asked);
+    void asked.then((verdict) => verdict.wall.error && pageVerdicts.delete(read));
     return asked;
   };
   /** A receipt's `unsifted`, only in a run with a classifier. */
@@ -196,7 +196,7 @@ export function createWeb(config: WebConfig): Web {
       const step = { signal: guarded.signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines) };
       // The guard is asked beside the step; its fee lines go after the step's once both have settled, in one order.
       const guardLines: Fee[] = [];
-      const guarding = config.pageGuard && config.decider && whole.ok && whole.text ? guardOf(config.decider, asked, whole, { ...step, pay: decisionPay(config.pay ?? unmetered, guardLines) }) : undefined;
+      const guarding = config.pageGuard && config.decider && read.ok && read.text ? guardOf(config.decider, asked, read, { ...step, pay: decisionPay(config.pay ?? unmetered, guardLines) }) : undefined;
       const need = typeof lookingFor === "string" ? clip(lookingFor.trim(), QUERY_MAX) : "";
       const notApplied = (why: string) => ({ ...part, sift: `looking_for not applied (${why}); this part is in page order` });
       let answer: (((WebPage | Page) & Sift) | FoundPage) & Warned = part;
