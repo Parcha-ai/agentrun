@@ -523,8 +523,12 @@ function heldLine(workflow: string, held: HeldAsk): string {
     const shares = checkShares({ n: check.n, agreed: check.agreed ?? 0, alone: check.alone ?? 0 });
     const fields = Object.entries(check.fields ?? {});
     const failing = fields.filter(([, one]) => !one.pass).map(([name]) => name);
+    // The joint floor (learn/field-check.ts): right on every field at once, at least agree_min of those answered alone.
+    // With one field it is that field's own count, so it is said only for two or more.
+    const together = fields.length < 2 || shares.agreement + 1e-9 >= check.agree_min;
+    const short = [...failing, ...(together ? [] : ["its fields together"])];
     const judged = fields.length
-      ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${failing.length ? `. It fell short on ${listed(failing)}` : ""}`
+      ? `; field by field: ${fields.map(([, one]) => one.reason).join("; ")}${fields.length > 1 ? `; right on every field at once: ${check.agreed ?? 0} of ${check.alone ?? 0} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)` : ""}${short.length ? `. It fell short on ${listed(short)}` : ""}`
       : `, and ${check.agreed ?? 0} of those said what you said${check.agree_on?.length ? ` on ${listed(check.agree_on)}` : ""} (${pct(shares.agreement)}, at least ${pct(check.agree_min)} needed)`;
     return `Your learned workflow \`${workflow}\` does not run first: checked on ${check.n} ${check.n === 1 ? "input" : "inputs"} of your last ${check.compile_after} completed runs, it answered ${check.alone ?? 0} alone (${pct(shares.alone)}, at least ${pct(check.alone_min)} needed)${judged}.`;
   }

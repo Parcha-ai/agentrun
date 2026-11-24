@@ -107,13 +107,20 @@ A new revision is checked once before it serves (`runner/promotion.ts` startChec
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
 workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
 (`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, a
-label (none is fed yet), else the expected answer of the agent run's grade (`Grade.expected`, cut to the field), else the
-agent's own recorded answer to it; no teacher is read. A field known from a grade passes when the draft is right on it
-within `margin` (0.02) of the agent's own accuracy on the same inputs; one known only from the agent passes when at least
-the agent's self-agreement on it less the margin, or `agree_min` where no self-agreement was measured (none is yet), said
-what the agent said. It serves when at least `alone_min` of the inputs were answered alone and every field passes; a
-hold names the failing fields (`check.fields`, each with its counts and reason) and each disagreement the fields it had
-wrong. Against the agent, the answers are compared on the fields
+label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`, cut to the field),
+else the agent's own recorded answer to it; no teacher is read. With no agree_on, a graded input's whole answer is judged
+on the expected answer's keys alone (the rest of the answer is not judged there), though the grader's verdict on the
+pair is still read and kept. A grade with no expected answer still says something: `correct` makes the agent's answer a
+known one (from the grade); not correct, on the whole answer, makes a draft that repeats it wrong there, and leaves any
+other answer unjudged (under agree_on it names no field, so it changes nothing). A field known from a grade passes when
+the draft is right on at least `agree_min` of those inputs and within `margin` (0.02) of the agent's own accuracy on
+them (a correction, where the agent was wrong, is no free pass); one known only from the agent passes when at least the
+agent's self-agreement on it less the margin, or `agree_min` where no self-agreement was measured (none is yet), said
+what the agent said. It serves when at least `alone_min` of the inputs were answered alone, at least `agree_min` of those
+were right on every field at once (the joint floor: misses spread over several fields add up), and every field passes;
+a hold names the failing fields (`check.fields`, each with its counts and reason) and each disagreement the fields it had
+wrong. A connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No
+agree_on path may hold a `__proto__`, `constructor` or `prototype` segment. Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
@@ -149,8 +156,8 @@ inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
 answer alone), and `agreed` counts those right on every field. A newer revision that comes while a
 check runs waits and records nothing; the claim after the running check is decided starts the newest. It is promoted
-when alone is at least `learning.alone_min` (0.7) and every field passes (above; `learning.agree_min`, 0.8, is the floor
-of a field known only from the agent). Otherwise
+when alone is at least `learning.alone_min` (0.7), `agreed` is at least `learning.agree_min` (0.8) of `alone`, and
+every field passes (above). Otherwise
 it is held, and the agent's next run it fits asks one revision with the inputs it did not agree on as data (each one's
 input, the agent's answer, and the draft's answer or why it handed it back); that revision is checked the same way.
 Held again, it stops (`check.stopped`): the agent keeps the runs and nothing compiles again until a hold or its owner

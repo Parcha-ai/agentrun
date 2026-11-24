@@ -68,11 +68,14 @@ export const AGREE_ON_PATH_MAX = 128;
 export const AGREE_ON_SEGMENTS_MAX = 8;
 /** An agree_on path's segments: each a key of an object, from the answer's top level down (a dot always splits). */
 export const pathSegments = (path: string): string[] => path.split(".");
+/** Segments no agree_on path may hold: names an object's prototype answers to, never a key of an answer's own. */
+const RESERVED_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 /** What is wrong with one agree_on path, in words, or undefined. */
 function pathIssue(path: string): string | undefined {
   if (path.length > AGREE_ON_PATH_MAX) return `over ${AGREE_ON_PATH_MAX} characters`;
   const segments = pathSegments(path);
   if (segments.some((segment) => !segment)) return "an empty segment";
+  if (segments.some((segment) => RESERVED_SEGMENTS.has(segment))) return "a reserved segment (__proto__, constructor or prototype)";
   if (segments.length > AGREE_ON_SEGMENTS_MAX) return `more than ${AGREE_ON_SEGMENTS_MAX} segments`;
   return undefined;
 }
