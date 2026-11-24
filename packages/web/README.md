@@ -39,4 +39,4 @@ provider asked, with its outcome. `cost` holds the fees of the requests sent. `c
 
 The pieces `createWeb` is built from are exported too: `searchWith`, `searchInTurn` and `breakers` for search,
 `webFetch` and `webFetchText` for fetch, `fetchPage` for one direct read, the providers, and the Parallel prices in
-`fees`. `@parcha/agentrun-web/text-urls` holds the link finder alone, for code that only finds the URLs in a text.
+`fees`, and `linksOf`, the links a page's text holds.

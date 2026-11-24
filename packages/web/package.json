@@ -23,10 +23,6 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./text-urls": {
-      "types": "./dist/text-urls.d.ts",
-      "default": "./dist/text-urls.js"
-    },
     "./package.json": "./package.json"
   },
   "files": [

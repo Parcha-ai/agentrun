@@ -71,11 +71,9 @@ export const EXCEPTIONS = [
   ['apps/console/tsconfig.json', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/tsconfig.json', 'packages/serve', 2, ...CONSOLE_SERVE],
-  ['apps/console/tsconfig.json', 'packages/web', 2, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/dsl', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/pi-browser', 1, ...CONSOLE_SOURCE],
   ['apps/console/vite.config.ts', 'packages/serve', 2, ...CONSOLE_SERVE],
-  ['apps/console/vite.config.ts', 'packages/web', 2, ...CONSOLE_SOURCE],
   ['packages/agentrun/package.json', 'packages/serve', 1, ...LAUNCHER_SERVER],
   ['packages/agentrun/lib/start.mjs', 'packages/serve', 1, ...LAUNCHER_SERVER],
 ];
