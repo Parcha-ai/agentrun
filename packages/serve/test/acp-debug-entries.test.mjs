@@ -4,17 +4,16 @@
 // reaches none. The test walks the table: an entry it does not know (a new ACP entry) fails it until it is walked too.
 // What reached each adapter is read from the package itself: a hook hands serve's loader (acp-package.ts) the package
 // with each adapter factory recording its options (fixtures/acp-recording.mjs), before serve loads it.
-// Goose and Cursor are built from their pinned installs alone, digests checked: AGENTRUN_TEST_GOOSE and
-// AGENTRUN_TEST_CURSOR name them (as harness-goose.test.mjs and harness-cursor.test.mjs read them). Where one is not
-// named, its entry is refused as not installed, before any adapter is made, and the test says so.
+// No real release is needed, so it runs anywhere: Goose and Cursor are built on stand-ins installed where their installs
+// go, pinned in that package by their own digests (its GOOSE_PIN and CURSOR_PIN). Serve's checks run unchanged on them:
+// Goose's binary sha256 and Cursor's tree digest against the pin, before gooseLaunch and Cursor's entry reach a factory.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { installGoose } from "./fixtures/goose-installed.mjs";
 
 const PACKAGE = "@parcha/agentrun-harness-acp";
 const RECORDING = new URL("./fixtures/acp-recording.mjs", import.meta.url).href;
@@ -24,13 +23,12 @@ const hooks = registerHooks({
 after(() => hooks.deregister());
 
 // Only now serve: its loader reads the package once, when it is first asked (adapter-facts.ts asks at import).
-const [{ harnessRecipesEnv, harnessTable }, { DATA_ENV }, recipes, { archivePlatform }, { layHarnessKeys }, { HarnessUnavailable }, { RECORDS }, { scratch, withEnv }] = await Promise.all([
+const [{ harnessRecipesEnv, harnessTable }, { DATA_ENV }, recipes, { archivePlatform }, { layHarnessKeys }, { HarnessUnavailable }, recording, { scratch, withEnv }] = await Promise.all([
   import("../dist/harness-table.js"), import("../dist/files.js"), import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
   import("../dist/harness-keys.js"), import("../dist/provider.js"), import(RECORDING), import("./support.mjs"),
 ]);
 
-const GOOSE = process.env.AGENTRUN_TEST_GOOSE;
-const CURSOR = process.env.AGENTRUN_TEST_CURSOR;
+const { RECORDS } = recording;
 /** The table's entries that run on no ACP adapter. */
 const NATIVE = ["pi", "claude-agent", "codex", "opencode"];
 const MODEL = "claude-sonnet-5-5";
@@ -80,8 +78,20 @@ async function installed(t, data, built, recipe) {
   return file;
 }
 
+/** A stand-in for an owner-installed release in `data` (Goose's, Cursor's): an executable at `cmd` in its folder, pinned
+ *  in the recording package's `pin` by its sha256 and, for a tree, by the folder's digest, as the real pin holds them. */
+async function standIn(data, id, pin, cmd, tree = false) {
+  const root = join(data, "harnesses", id);
+  const binary = join(root, cmd);
+  mkdirSync(join(binary, ".."), { recursive: true });
+  writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+  chmodSync(binary, 0o755);
+  const archive = { url: `https://releases.example.invalid/${id}.tar.gz`, format: "tar.gz", sha256: "0".repeat(64), cmd: `./${cmd}`, binarySha256: sha256(readFileSync(binary)) };
+  pin.archives[recording.acpPlatform()] = tree ? { ...archive, treeSha256: await recording.treeDigest(root) } : archive;
+}
+
 /** For each ACP entry of `env`'s table, built under AGENTRUN_LOG as `value` says (undefined: unset): each adapter
- *  factory it called and whether `debug: true` reached it, or "not installed here" where it was refused for that. */
+ *  factory it called and whether `debug: true` reached it. */
 async function walk(env, value) {
   if (value === undefined) delete process.env.AGENTRUN_LOG;
   else process.env.AGENTRUN_LOG = value;
@@ -93,12 +103,10 @@ async function walk(env, value) {
     const model = table[id].facts?.wire === "anthropic-messages" ? { provider: "anthropic", modelId: MODEL } : { provider: id, modelId: "default" };
     try {
       await table[id].adapter(env, { model, models: { getModel: () => undefined } });
-      seen[id] = calls.map((call) => [call.factory, call.debug === true]);
     } catch (error) {
-      assert.ok(error instanceof HarnessUnavailable && /NOT_INSTALLED|not installed/i.test(error.message), `${id}: ${error?.stack ?? error}`);
-      assert.deepEqual(calls, [], `${id} made no adapter before its refusal`);
-      seen[id] = "not installed here";
+      assert.fail(`${id}'s adapter was not built: ${error instanceof HarnessUnavailable ? error.message : error?.stack ?? error}`);
     }
+    seen[id] = calls.map((call) => [call.factory, call.debug === true]);
   }
   return seen;
 }
@@ -108,8 +116,8 @@ test("AGENTRUN_LOG=debug reaches the adapter every ACP entry of the harness tabl
   withEnv(t, {}, ["AGENTRUN_LOG", "AGENT_MODEL_BASE_URL"]);
   const data = join(await scratch(t), "agents");
   mkdirSync(join(data, "harnesses"), { recursive: true });
-  if (GOOSE) installGoose(data);
-  if (CURSOR) symlinkSync(CURSOR, join(data, "harnesses", "cursor"));
+  await standIn(data, "goose", recording.GOOSE_PIN, "goose");
+  await standIn(data, "cursor", recording.CURSOR_PIN, "dist-package/cursor-agent", true);
   const built = await release(t);
   const proxy = await installed(t, data, built, recipeOf(built));
   const plan = await installed(t, data, built, recipeOf(built, {
@@ -119,19 +127,17 @@ test("AGENTRUN_LOG=debug reaches the adapter every ACP entry of the harness tabl
     env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: "127.0.0.1:9", MODEL_AGENT_MODEL: "vendor-model" },
     model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["127.0.0.1:9"] },
   }));
-  const env = { HOME: process.env.HOME, PATH: process.env.PATH, [DATA_ENV]: data, ...harnessRecipesEnv([proxy, plan], data), ANTHROPIC_API_KEY: "fake-test-key", ...(CURSOR ? { CURSOR_API_KEY: "fake-test-key" } : {}) };
+  const env = { HOME: process.env.HOME, PATH: process.env.PATH, [DATA_ENV]: data, ...harnessRecipesEnv([proxy, plan], data), ANTHROPIC_API_KEY: "fake-test-key", CURSOR_API_KEY: "fake-test-key" };
   // The plan-billed recipe's key, as a start's claim lays it.
   layHarnessKeys(env, { MODEL_AGENT_API_KEY: "fake-harness-key" });
 
   const expect = (debug) => ({
-    cursor: CURSOR ? [["acpAdapter", debug]] : "not installed here",
-    goose: GOOSE ? [["gooseAdapter", debug]] : "not installed here",
+    cursor: [["acpAdapter", debug]],
+    goose: [["gooseAdapter", debug]],
     "model-agent": [["acpAdapter", debug]],
     "plan-agent": [["acpAdapter", debug]],
   });
   assert.deepEqual(await walk(env, "debug"), expect(true));
   assert.deepEqual(await walk(env, undefined), expect(false));
   assert.deepEqual(await walk(env, "quiet"), expect(false));
-  if (!GOOSE) t.diagnostic("AGENTRUN_TEST_GOOSE is not set: Goose's entry was refused as not installed, so its adapter was not walked");
-  if (!CURSOR) t.diagnostic("AGENTRUN_TEST_CURSOR is not set: Cursor's entry was refused as not installed, so its adapter was not walked");
 });
