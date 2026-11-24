@@ -309,7 +309,8 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
     // The presence first, then the relay says where it answers on the presence's row.
     // Its row says this build's version and the most runs it holds (its loops), for the server's capacity read.
-    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID(), slots: options.loops ?? RUNNER_LOOPS });
+    const incarnation = randomUUID();
+    presence = keepPresence(store.runners, name, null, { warn, incarnation, slots: options.loops ?? RUNNER_LOOPS });
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
     relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
@@ -319,11 +320,14 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     const createLoop = typeof parts === "function" ? parts : parts.createLoop;
     // The janitor sweeps with the computers the loop composed, never a second composition. Its lines are the runner's
     // warnings, said where the runner says its others (warn: stderr unless a test gives its own).
-    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn });
+    // It sweeps as this runner (its name and its presence's incarnation): a computer kept at a park pinned to another
+    // runner still there is that runner's to end (computer-kept.ts sweepKept).
+    if (options.janitor && typeof parts !== "function") janitor = startJanitor({ store, computers: parts.computers, env: parts.env, log: warn, self: { runner: name, incarnation } });
     // Before it claims: the scratch folders of runs that ended after their runner died (scratch-sweep.ts), said as warnings.
     await sweepEndedScratch(store, options.dataDir, { log: warn });
-    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts).
-    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn }) : undefined);
+    // A run's end lets go of what its earlier claims' computers left, with the same computers (run-end-computers.ts), as
+    // this runner, as the janitor sweeps: a computer kept pinned to another runner still keeping it is that runner's.
+    const runEnded = projectRunEnded(store, typeof parts !== "function" ? runEndComputers({ store, computers: parts.computers, log: warn, self: () => ({ runner: name, incarnation }) }) : undefined);
     runner = startRunner({
       store,
       createLoop,

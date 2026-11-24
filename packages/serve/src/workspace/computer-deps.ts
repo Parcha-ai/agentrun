@@ -32,7 +32,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { computerLapsedWords, KEEP_WORDS } from "./computer-kept.js";
+import { computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -267,13 +267,14 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  replaced an earlier claim's (`replaced`) says it is a new one, never why the old one went (a lost runner, a crash, a
  *  server's stop, a park: the words fit each), and, where the run's folder is on Archil and mounted in it
  *  (`folderKept`), that the folder is kept. The one kept through the run's park (`kept`) says it is the same; a new one
- *  after a kept one's time passed (`replaced.lapsed`) says why first. */
+ *  after a kept one's time passed (`replaced.lapsed`) says why first, as does one after a kept one pinned to a runner
+ *  that was gone by the resume (`replaced.lost`, computerLostWords). */
 export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
   if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  const lapsed = replaced.lapsed ? ` ${computerLapsedWords(kind)}` : "";
-  return `${ready}${lapsed} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
+  const why = replaced.lost ? ` ${computerLostWords(kind)}` : replaced.lapsed ? ` ${computerLapsedWords(kind)}` : "";
+  return `${ready}${why} It's a new ${kind}: the one before is gone, with what was on it.${replaced.folderKept ? " The run folder is kept." : ""}`;
 };
 
 /** The run's timeline phase as its run parks with its computer kept (ClaimComputer.keeps), such as "The desktop is kept

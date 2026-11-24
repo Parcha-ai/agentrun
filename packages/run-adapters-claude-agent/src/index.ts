@@ -13,3 +13,5 @@ export type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "./lo
 export { LOGIN_REFRESH as CLAUDE_LOGIN_REFRESH } from "./login-refresh.js";
 export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer, type ToolServerModules } from "./host/tool-server.js";
 export type { ServedTool } from "./host/tool-server.js";
+export { SIGN_IN_MS as CLAUDE_SIGN_IN_MS, signInEnv as claudeSignInEnv } from "./login.js";
+export type { ClaudeSignIn, ClaudeSignInEnd } from "./login.js";
