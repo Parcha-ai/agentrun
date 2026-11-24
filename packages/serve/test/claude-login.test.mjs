@@ -146,7 +146,9 @@ test("a run on a signed-out login is refused in words, asked of the pinned CLI, 
 // offer. The box is Docker on a fake `docker` first on PATH (fixtures/fake-docker.mjs): nothing is pulled or run.
 const FAKE_DOCKER = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const RUNNER_ONLY = "Claude Code's login on this machine runs agents on the runner only, and this agent runs in the docker box";
-test("a run of an agent on Claude Agent in a box, while the login is on and reads signed in, is refused in words that say the login runs agents on the runner only and that this one runs in the box, with details.login_on_runner", { timeout: 120_000 }, async (t) => {
+/** A server for test `t` with a Docker box (a fake `docker`) and no model key, and the fake CLI that answers for its
+ *  login. */
+async function withDockerBox(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-docker-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "bin"));
@@ -155,6 +157,10 @@ test("a run of an agent on Claude Agent in a box, while the login is on and read
   const fake = await fakeCli(t);
   withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker" }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   const { api } = await serve(t, { faux: undefined, harnesses: false });
+  return { api, fake };
+}
+test("a run of an agent on Claude Agent in a box, while the login is on and reads signed in, is refused in words that say the login runs agents on the runner only and that this one runs in the box, with details.login_on_runner", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
   const boxed = agent("boxed", { harness: "claude-agent", place: { mode: "sandbox", box: "docker" } });
   assert.equal((await api("POST", "/agents", boxed)).status, 201);
 
@@ -173,6 +179,30 @@ test("a run of an agent on Claude Agent in a box, while the login is on and read
   assert.match(on.body.error.message, /No model yet for claude-agent/);
   assert.ok(on.body.error.message.includes(RUNNER_ONLY), `the refusal of a box agent on Claude Agent while the login reads signed in does not say the login runs agents on the runner only: ${on.body.error.message}`);
   assert.equal(on.body.error.details.login_on_runner, true, `the refusal's details do not offer the move to the runner: ${JSON.stringify(on.body.error.details)}`);
+});
+
+// The move is offered only where the login would run the agent once it is moved: on Anthropic's own model, or on none
+// (the test above; the login's default is Anthropic's). An OpenRouter model, Anthropic's through OpenRouter included,
+// goes on OpenRouter's key on the runner too, so its refusal names that key and offers no move.
+test("an agent on Claude Agent in a box on an OpenRouter model, while the login reads signed in, is refused for OpenRouter's key with no move to the runner offered; one on Anthropic's own model is offered the move", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  const place = { mode: "sandbox", box: "docker" };
+  assert.equal((await api("POST", "/agents", agent("routed", { harness: "claude-agent", model: "openrouter/anthropic/claude-sonnet-5.5", place }))).status, 201);
+  assert.equal((await api("POST", "/agents", agent("own", { harness: "claude-agent", model: "anthropic/claude-sonnet-5-5", place }))).status, 201);
+
+  const routed = await api("POST", "/agents/routed/runs", { input: { content: "Say hi." } });
+  assert.equal(routed.status, 409, JSON.stringify(routed.body));
+  assert.equal(routed.body.error.code, "agent_not_runnable");
+  assert.match(routed.body.error.message, /OPENROUTER_API_KEY/, "the refusal of an OpenRouter model does not name OpenRouter's key");
+  assert.ok(!routed.body.error.message.includes(RUNNER_ONLY), `an OpenRouter model, which the login never runs, was told to move to the runner: ${routed.body.error.message}`);
+  assert.equal(routed.body.error.details.login_on_runner, undefined, `an OpenRouter model, which the login never runs, was offered the move to the runner: ${JSON.stringify(routed.body.error.details)}`);
+
+  const own = await api("POST", "/agents/own/runs", { input: { content: "Say hi." } });
+  assert.equal(own.status, 409, JSON.stringify(own.body));
+  assert.ok(own.body.error.message.includes(RUNNER_ONLY), own.body.error.message);
+  assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
 });
 
 test("the switch, unset, follows the listen address: 0.0.0.0 has the mode off, 127.0.0.1 has it; off wins on loopback, on turns it on past it", () => {
