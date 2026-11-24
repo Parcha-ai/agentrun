@@ -1,8 +1,9 @@
 // How an ACP agent's calls get their ids. Written for AgentRun.
 //  - A call of one of our tools reaches the adapter twice: as the agent's `tool_call` update (its own id, a title, the
 //    input it reports) over ACP, and as the MCP call itself over HTTP or stdio, which names no id. The two are matched by
-//    the host tool's name and the arguments' canonical JSON, first in first out, as OpenCode's calls are matched to the
-//    model's: the call runs under the agent's own id, which is the memo key a resumed session asks under again.
+//    the arguments' canonical JSON, first in first out, as OpenCode's calls are matched to the model's: the call runs
+//    under the agent's own id, which is the memo key a resumed session asks under again. The title is the agent's text
+//    in a form each release may change, so it only breaks a tie between announcements with the same arguments.
 //  - A permission request for one of the agent's own tools (a shell, an edit) is the host gate's call. Its id is made from
 //    what a second request for the same call after a resume says the same: the open turn, the tool's title, kind and input,
 //    and how many such requests came before it in the drive. Never from the agent's tool call id, which a new agent
@@ -46,56 +47,75 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
   return candidates.find((name) => tools.has(name));
 }
 
-/** The agent's announced calls of our tools, matched to the MCP calls that reach the server. */
+/** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
 export class CallIds {
   private readonly seen = new Map<string, string[]>();
   private readonly waiting = new Map<string, ((id: string) => void)[]>();
   private readonly used = new Set<string>();
   private readonly tools = new Map<string, string>();
+  /** The key each announcement still waiting for its MCP call is kept under. */
+  private readonly keyOf = new Map<string, string>();
 
-  /** The agent announced call `id` of `tool` with `input` (undefined: it reported none). */
-  add(id: string, tool: string, input: unknown): void {
+  /** The agent announced call `id` with `input` (undefined: it reported none), its title naming `tool` of ours, or none
+   *  (undefined: a title in no form ourTool reads). One with no tool is matched by its input alone, an object; one with
+   *  no input by its tool alone; one with neither is never matched. A tool named for an id already announced without one (a
+   *  call the agent named in a later update) keys it again. */
+  add(id: string, tool: string | undefined, input: unknown): void {
     if (this.used.has(id)) return;
-    if (!this.tools.has(id)) this.tools.set(id, tool);
-    // An announced call with no input is matched by its tool alone; one with input only by its tool and that input, so
-    // it never takes an MCP call of the same tool with other arguments that is waiting for its own announcement.
-    const key = input === undefined || input === null ? `${tool}\0*` : `${tool}\0${canonical(isPlain(input) ? input : {})}`;
+    const reported = input !== undefined && input !== null;
+    if (tool === undefined && !isPlain(input)) return;
+    if (tool !== undefined && !this.tools.has(id)) this.tools.set(id, tool);
+    // An announced call with input is matched only by that input (and its tool, where the title named one), so it never
+    // takes an MCP call with other arguments that is waiting for its own announcement.
+    const key = reported ? `${tool ?? ""}\0${canonical(isPlain(input) ? input : {})}` : `${tool}\0*`;
+    const before = this.keyOf.get(id);
+    if (before === key) return;
+    if (before !== undefined) {
+      const list = this.seen.get(before) ?? [];
+      const at = list.indexOf(id);
+      if (at >= 0) list.splice(at, 1);
+    }
     const waiter = this.waiting.get(key)?.shift();
     if (waiter) {
+      this.keyOf.delete(id);
       this.used.add(id);
       waiter(id);
       return;
     }
     const list = this.seen.get(key) ?? [];
-    if (!list.includes(id)) list.push(id);
+    list.push(id);
     this.seen.set(key, list);
+    this.keyOf.set(id, key);
   }
 
   /** Whether the agent announced `id` (matched or not). */
   has(id: string): boolean {
-    return this.used.has(id) || [...this.seen.values()].some((ids) => ids.includes(id));
+    return this.used.has(id) || this.keyOf.has(id);
   }
 
-  /** The tool of ours the agent's tool_call `id` was announced as, or undefined when no such tool_call came. */
+  /** The tool of ours the agent's tool_call `id` was announced as, or undefined when no tool_call named one. */
   announced(id: string): string | undefined {
     return this.tools.get(id);
   }
 
   /** The id of an MCP call of `tool` with `args`: the agent's announced one, waited for at most `ms`; undefined when none
-   *  came by then. */
+   *  came by then. Of the announcements with the same arguments, the oldest whose title named `tool` first, then the
+   *  oldest whose title named none; then the oldest of `tool` that reported no input. */
   async take(tool: string, args: Record<string, unknown>, signal: AbortSignal, ms: number): Promise<string | undefined> {
-    const keys = [`${tool}\0${canonical(args)}`, `${tool}\0*`];
+    const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
     const ready = (from: readonly string[]) => {
       for (const key of from) {
         const id = this.seen.get(key)?.shift();
         if (id) {
+          this.keyOf.delete(id);
           this.used.add(id);
           return id;
         }
       }
       return undefined;
     };
-    // Once the wait is over, the oldest announced call of the tool whose reported input differs from what reached MCP.
+    // Once the wait is over, the oldest announced call the title named `tool` whose reported input differs from what
+    // reached MCP. Never one the title named no tool for: its arguments are all that ties it, and they differ.
     const loose = () => ready([...this.seen.keys()].filter((key) => key.startsWith(`${tool}\0`)));
     const now = ready(keys);
     if (now) return now;

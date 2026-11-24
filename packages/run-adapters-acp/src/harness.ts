@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { CallIds, MCP_SERVER, ourTool, permissionCallId } from "./calls.js";
+import { CallIds, MCP_SERVER, NATIVE_EFFECT_KINDS, ourTool, permissionCallId } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -335,10 +335,11 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
         if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
-        // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
-        // MCP call's id, and never passes the permission shortcut below.
-        const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
-        if (tool) rt.calls.add(update.toolCallId, tool, update.rawInput);
+        // Only a call whose kind has no effects of its own can be ours: a shell titled as our tool never takes an MCP
+        // call's id, and never passes the permission shortcut below. Its title names the tool where ourTool reads it; one
+        // it does not read is still matched to an MCP call by its arguments (CallIds).
+        if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return;
+        rt.calls.add(update.toolCallId, ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names), update.rawInput);
         return;
       }
       case "tool_call_update": {
@@ -347,7 +348,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         // input, then this update titled `agentrun: <tool>` with {providerIdentifier, toolName, args}): taken as ours
         // here, under the id its tool_call already counted. Its kind is the tool_call's, which ourTool already let
         // through, or this update's own when it names one.
-        if (!rt.calls.has(update.toolCallId)) {
+        if (rt.calls.announced(update.toolCallId) === undefined) {
           // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
           const title = update.title ?? null;
           const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
