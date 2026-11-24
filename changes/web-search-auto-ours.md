@@ -1,7 +1,8 @@
 ---
-packages: @parcha/agentrun-serve
+packages: @parcha/agentrun-serve, @parcha/agentrun-harness-claude
 kind: feature
 ---
 `web_search`'s default, `auto`, is now agentrun's own search on every harness: Parallel where the server holds a Parallel key, else keyless Firecrawl with keyless Exa behind it. Before, `auto` on codex was Codex's own live search, and on pi with a direct `anthropic/*` or `openai/*` model it was one request to that provider's hosted search. Both now go through agentrun's `web_search` instead. This changes what a codex or pi search costs and returns: Parallel's fee per search on the server's key, or keyless Firecrawl at no charge, in place of the provider's per-search fee, and those providers' results in place of Codex's or the model provider's.
 `native` stays a provider you can pick, for an agent (`definition.tool_settings`) or the server (`PUT /settings/tools`). Picked, it still turns on Claude's WebSearch, Codex's live search or pi's hosted search, and it is unavailable where it was before (behind a gateway, on OpenRouter, under a spend cap). To keep the old behaviour on codex or pi, pick `native`. claude-agent's `auto` is unchanged.
 The openapi document's `web_search` provider list is unchanged (`native` stays in it). Only `auto`'s description and capabilities' `resolves` and `why` change: on codex and pi, `resolves` reads `parallel` or `firecrawl-keyless` where it read `native`. A run that started before the upgrade keeps the plane it launched with, `native` included, for its life.
+A claude-agent session now also names Claude Code's WebFetch in the CLI's `disallowedTools` (`CLAUDE_AGENT_ALSO_OFF`), as it names WebSearch. WebFetch was already off three ways: the session's tools list is empty, the PreToolUse hook denies it, and the CLI's sandbox network is deny-all. Naming it keeps the host's `web_fetch` the session's only fetch even if one of those changes.
