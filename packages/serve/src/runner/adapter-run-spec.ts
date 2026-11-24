@@ -1177,19 +1177,25 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
  *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
  *  its links whole for a grader's link check; one whose strings, read joined, hold a held value no cut in place takes (a
  *  value split across two of them) is "[redacted]" (webHeld). The join is read against the values `cut` holds
- *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them: withheld when it withholds the
- *  join whole. */
+ *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them (joinCut). Each string is cut once
+ *  in a call, for the join's read and the answer both. */
 export function answersCut(tool: HostTool, cut: Redact): HostTool {
-  const holds = (joined: string): boolean => {
-    const values = cut.heldValues?.();
-    return values ? withheldWhole(joined, values) : cut(joined) === "[redacted]";
-  };
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: webCut(tool.name, answer.text, cut, holds) ?? cut(answer.text) };
+        const seen = new Map<string, string>();
+        const once = (text: string): string => {
+          let out = seen.get(text);
+          if (out === undefined) seen.set(text, (out = cut(text)));
+          return out;
+        };
+        const holds = (joined: string, parts: readonly string[]): boolean => {
+          const values = cut.heldValues?.();
+          return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
+        };
+        return { ...answer, text: webCut(tool.name, answer.text, once, holds) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -1200,6 +1206,19 @@ export function answersCut(tool: HostTool, cut: Redact): HostTool {
       }
     },
   };
+}
+
+/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
+ *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
+ *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. So the
+ *  join's cut is set beside the parts' cuts joined: no value split across parts is in any part to cut, so the two differ
+ *  wherever the join holds one, in one piece or across two. Where nothing spans two parts they are the same: every piece
+ *  ends at whitespace or inside a run of more than a piece (the same run in a part as in the join, cut at the same
+ *  places), and a line break ends each part. */
+function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
+  const whole = cut(joined);
+  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
 }
 
 /** The ToolHost a run's non-hand tools bind through, the one both the pi spec and the CLI spec build: the run's folder and
