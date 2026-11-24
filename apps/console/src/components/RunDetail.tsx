@@ -22,7 +22,7 @@ import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
-import { BY_THE_MINUTE } from "@/lib/computers";
+import { BY_THE_MINUTE, providerOf } from "@/lib/computers";
 import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/lib/learning";
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
@@ -208,7 +208,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   useEffect(() => {
     if (!machine || !BY_THE_MINUTE.has(machine.kind) || !readComputers) return;
     let alive = true;
-    readComputers().then((c) => { if (alive) setMetered(!!c.kinds.find((k) => k.kind === machine.kind)?.providers.find((p) => p.id === machine.provider)?.metered); }).catch(() => {});
+    readComputers().then((c) => { if (alive) setMetered(!!providerOf(c.kinds, machine.kind, machine.provider)?.metered); }).catch(() => {});
     return () => { alive = false; };
   }, [machine?.kind, machine?.provider]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agent's ask at its computer: its card above the tabs' content, and the page moves to the Screen tab once per ask.
@@ -264,7 +264,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} readUsage={readUsage} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.

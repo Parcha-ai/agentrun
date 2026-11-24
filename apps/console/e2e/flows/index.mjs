@@ -35,10 +35,12 @@ import screenSteps from "./screen-steps.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
+import computersRunning from "./computers-running.mjs";
 import workspaceArchil from "./workspace-archil.mjs";
 import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
+import connectAgentTabs from "./connect-agent-tabs.mjs";
 import costPerRun from "./cost-per-run.mjs";
 import playgroundPaneLines from "./playground-pane-lines.mjs";
 import learningBill from "./learning-bill.mjs";
@@ -77,10 +79,12 @@ export const flows = [
   serverDeny,
   secretsWriteOnly,
   computersKeys,
+  computersRunning,
   workspaceArchil,
   triggerRowLabel,
   computerStep,
   agentCardFooter,
+  connectAgentTabs,
   costPerRun,
   learningBill,
   workflowReplay,
