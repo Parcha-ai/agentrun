@@ -5,8 +5,8 @@
 //    unpacks to where it was measured. An installer verifies the archive, then the binary; a host checks the binary
 //    again at each start (`verifyPinnedBinary`).
 //  - An agent the registry lists with no digest (Cursor) is pinned here by what its first download held; a binary no
-//    pin names has its first digest recorded by the server's installer alone (agentrun-serve, harness-archive.ts
-//    installArchive's binaryRecord), the one first-seen path.
+//    pin names is held by the first tree digest (every file, the binary among them) the server's installer records
+//    (agentrun-serve, harness-archive.ts installArchive's treeRecord), the one first-seen path.
 // Every check reads the file's bytes (the kernel's chunked sha256, kept once per file identity) and never executes it.
 import { createHash } from "node:crypto";
 import { lstat, readdir, readlink } from "node:fs/promises";
@@ -28,7 +28,8 @@ export interface AcpArchivePin {
   /** The binary's path inside the archive (the registry's `cmd`). */
   readonly cmd: string;
   /** The sha256 of the binary the archive unpacks to, where it was measured. Absent: unmeasured on this platform, so an
-   *  installer records the first one it unpacks from the verified archive (agentrun-serve's binaryRecord). */
+   *  installer records the first tree it unpacks from the verified archive, the binary among it (agentrun-serve's
+   *  treeRecord). */
   readonly binarySha256?: string;
   /** The digest of every file the archive unpacks to (treeDigest), for an agent whose binary is a launcher of the code
    *  beside it (Cursor's `cursor-agent` runs its own `node` on `index.js` and a hundred chunks): checked by the installer

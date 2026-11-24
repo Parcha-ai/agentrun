@@ -444,7 +444,8 @@ describe("the before and after", () => {
     const t = await open(agent(true), { learning: async () => view({ impact: IMPACT }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
     expect(card.getAttribute("aria-label")).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
-    expect(card.textContent).toContain("Answers in12sinstead of 18s−33%");
+    // A figure cell like the four at the top: its label, its time, the change in the band under it, then what it was.
+    expect(card.textContent).toContain("Answers in12s−33%instead of 18s");
     // A run's cost is the cost card's all-in before and after, learning included: a median of the job's own cost here
     // left learning out and read -86% beside the cost card's 2.0x cheaper.
     expect(card.textContent).not.toContain("A run costs");
@@ -456,10 +457,10 @@ describe("the before and after", () => {
     // Learning's cost is the bill's: the impact has no figure of its own (its old median of mostly-zero rows read $0).
     const t = await open(agent(true), { cost, learning: async () => view({ impact: { before: { runs: 2, median_duration_s: 1.2 }, after: { runs: 4, median_duration_s: 1.3 } } }) });
     const card = t.host.querySelector('section[aria-label^="Since it learned"]')!;
-    expect(card.textContent).toContain("Learning itself$0.0075 a run, booked");
+    expect(card.textContent).toContain("Learning itself$0.0075a run, booked");
     expect(card.textContent).not.toContain("$0.0000");
-    const up = [...card.querySelectorAll("span")].find((x) => x.textContent === "+8%")!;
-    expect(card.textContent).toContain("Answers in1.3sinstead of 1.2s+8%");
+    const up = [...card.querySelectorAll("span")].filter((x) => x.textContent === "+8%").at(-1)!;
+    expect(card.textContent).toContain("Answers in1.3s+8%instead of 1.2s");
     expect(up.className).toContain("text-warning-text");
   });
   it("renders for an agent that learned only a workflow", async () => {

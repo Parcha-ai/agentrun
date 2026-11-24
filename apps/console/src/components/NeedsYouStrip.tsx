@@ -256,9 +256,12 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
   );
   const first = runs[0]!;
   const one = runs.length === 1;
+  // The square, the time and the button keep to the first line: opening the list of runs grows the row downwards and
+  // moves none of them (centred on the whole row, they slid down as it opened).
   return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0">
-      <span className="size-2 shrink-0 bg-destructive" aria-hidden />
+    <li className="flex flex-wrap items-start gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0" data-failed-group>
+      {/* A line box of the first line's own text (an empty one: a zero-width space), the square centred in it. */}
+      <span className="flex shrink-0 items-center text-lead" aria-hidden data-failed-mark>{"\u200b"}<span className="size-2 bg-destructive" /></span>
       <div className="min-w-0 flex-1">
         {one
           ? <p className="flex min-w-0 gap-3 text-lead"><span className="shrink-0 font-mono text-small leading-5">{agentName(first.agent_id)}</span><a href={runHref(first.run_id)} className="min-w-0 truncate hover:underline">{runTitle(first)}</a></p>
@@ -272,9 +275,11 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
         )}
         {problem && <p className="mt-1 font-mono text-small text-destructive-text" role="alert">{problem}</p>}
       </div>
-      <span className="font-mono text-small text-muted-foreground">{ago(first.ended_at ?? first.created_at, at)} ago</span>
-      {startedNote}
-      <Button type="button" size="sm" disabled={busy} onClick={() => void again()}>{one ? "Run again" : "Run all again"}</Button>
+      <span className="flex shrink-0 items-center gap-4" data-failed-actions>
+        <span className="font-mono text-small text-muted-foreground">{ago(first.ended_at ?? first.created_at, at)} ago</span>
+        {startedNote}
+        <Button type="button" size="sm" disabled={busy} onClick={() => void again()}>{one ? "Run again" : "Run all again"}</Button>
+      </span>
     </li>
   );
 }

@@ -1112,6 +1112,7 @@ export type Capabilities = {
       billing: "proxy" | "plan";
     };
     available: boolean;
+    ready_models: Array<string>;
     free_models: Array<{
       id: string;
       context_window: number;
@@ -1272,12 +1273,14 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
+    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
     auth: Array<"none" | "bearer" | "headers" | "oauth" | "github_app" | "per_run">;
     at_rest: "sealed";
     harnesses: Array<string>;
+    composio_per_run: boolean;
   };
   tool_permissions?: boolean;
   webhooks?: {
@@ -2661,8 +2664,14 @@ export type ListHarnessKeysResponse = {
   harnesses: Array<{
     id: string;
     label: string;
+    named: boolean;
     keys: Array<SecretMeta>;
+    kept: Array<SecretMeta>;
     ready: boolean;
+    reenter: Array<{
+      name: string;
+      why: "recipe_changed" | "seal_key_changed" | "file_unreadable";
+    }>;
   }>;
 };
 
@@ -3245,6 +3254,7 @@ export type GetClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -3430,6 +3440,17 @@ export type ListComposioEventsResponse = {
   }>;
 };
 
+/** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type ListComposioToolkitsBody = {
+  api_key: string;
+};
+export type ListComposioToolkitsResponse = {
+  toolkits: Array<{
+    slug: string;
+    name: string;
+  }>;
+};
+
 /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type ListComposioToolsBody = {
   api_key: string;
@@ -3585,6 +3606,27 @@ export type ListGitHubRepositoriesResponse = {
     account: string;
     why: string;
   }>;
+};
+
+/** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+export type ListMarketplaceTemplatesResponse = {
+  url: string | null;
+  state: "read" | "stale" | "unreachable" | "off";
+  read_at: string | null;
+  templates: Array<{
+    name: string;
+    title: string;
+    tags: Array<string>;
+    needs: Array<string>;
+    page_url: string;
+    summary?: string;
+    description?: string;
+    category?: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal";
+    harness?: Array<string>;
+    source?: string;
+    here?: string;
+  }>;
+  problem?: string;
 };
 
 /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
@@ -3900,6 +3942,11 @@ export type SaveComposioServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
   connect_url?: string;
   not_served?: Array<string>;
@@ -4060,6 +4107,7 @@ export type StartClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4168,6 +4216,7 @@ export type TurnOffClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4201,6 +4250,7 @@ export type TurnOnClaudeLoginResponse = {
   machine: {
     folder: string;
     source: "CLAUDE_CONFIG_DIR" | "default";
+    credentials?: string;
   };
   sign_in?: {
     state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
@@ -4266,6 +4316,11 @@ export type GetMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
 };
 
 /** The remote MCP servers saved here, with their tools; never a credential (GET /settings/mcp-servers). */
@@ -4313,6 +4368,11 @@ export type ListMcpServersResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   }>;
 };
 
@@ -4408,6 +4468,11 @@ export type RefreshMcpServerResponse = {
     listed_at: string;
     updated_at: string;
     secret?: SecretMeta;
+    composio_account?: {
+      state: "connected" | "pending" | "expired" | "none" | "unknown";
+      labels?: Array<string>;
+      checked_at: string;
+    };
   };
 };
 
@@ -4465,6 +4530,11 @@ export type SaveMcpServerResponse = {
   listed_at: string;
   updated_at: string;
   secret?: SecretMeta;
+  composio_account?: {
+    state: "connected" | "pending" | "expired" | "none" | "unknown";
+    labels?: Array<string>;
+    checked_at: string;
+  };
   composio?: {
     removed: boolean;
     note: string;
@@ -7282,11 +7352,13 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   gitHubInstalled: {"method":"GET","path":"/integrations/github/installed","pathParams":[],"multiSegment":[],"query":["installation_id","setup_action","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listComposioEvents: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/events","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listComposioToolkits: {"method":"POST","path":"/settings/mcp-servers/composio/toolkits","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
   listComposioTools: {"method":"POST","path":"/settings/mcp-servers/composio/tools","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit"],"tagged":false},
   listComposioTriggers: {"method":"GET","path":"/settings/mcp-servers/{name}/composio/triggers","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputerChoices: {"method":"GET","path":"/computers/{provider}/choices","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listComputers: {"method":"GET","path":"/computers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listGitHubRepositories: {"method":"GET","path":"/integrations/github/repositories","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listMarketplaceTemplates: {"method":"GET","path":"/marketplace/templates","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7598,6 +7670,8 @@ export function resources(call: Call) {
       getWorkspaceArchil: (options?: RequestOptions): Promise<GetWorkspaceArchilResponse> => call("getWorkspaceArchil", [], undefined, undefined, options),
       /** List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events). */
       listComposioEvents: (name: string, options?: RequestOptions): Promise<ListComposioEventsResponse> => call("listComposioEvents", [name], undefined, undefined, options),
+      /** List the toolkits Composio offers, for the console's toolkit picker; stores nothing (POST /settings/mcp-servers/composio/toolkits). */
+      listComposioToolkits: (body: ListComposioToolkitsBody, options?: RequestOptions): Promise<ListComposioToolkitsResponse> => call("listComposioToolkits", [], body, undefined, options),
       /** List the actions of a Composio toolkit, for the console's picker; stores nothing (POST /settings/mcp-servers/composio/tools). */
       listComposioTools: (body: ListComposioToolsBody, options?: RequestOptions): Promise<ListComposioToolsResponse> => call("listComposioTools", [], body, undefined, options),
       /** A saved Composio server's triggers, each with its instance's state on Composio (GET /settings/mcp-servers/{name}/composio/triggers). */
@@ -7608,6 +7682,8 @@ export function resources(call: Call) {
       listComputers: (options?: RequestOptions): Promise<ListComputersResponse> => call("listComputers", [], undefined, undefined, options),
       /** The repositories this server's GitHub App is installed on (GET /integrations/github/repositories). */
       listGitHubRepositories: (options?: RequestOptions): Promise<ListGitHubRepositoriesResponse> => call("listGitHubRepositories", [], undefined, undefined, options),
+      /** The marketplace's templates: every package on marketplace.agentrun.ai, each with the package here that it is (GET /marketplace/templates). */
+      listMarketplaceTemplates: (options?: RequestOptions): Promise<ListMarketplaceTemplatesResponse> => call("listMarketplaceTemplates", [], undefined, undefined, options),
       /** The names of the MCP servers saved here, and nothing else of them (GET /settings/mcp-server-names). */
       listMcpServerNames: (options?: RequestOptions): Promise<ListMcpServerNamesResponse> => call("listMcpServerNames", [], undefined, undefined, options),
       /** Every run still going that has a computer (GET /computers/running). */

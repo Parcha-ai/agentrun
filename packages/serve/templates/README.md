@@ -135,9 +135,11 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   tools it sees live and needs `MONID_API_KEY` as a live eval does. The package must grant a monid endpoint; only the
   eval's own server honours `monid`, so a case with it refuses `--server`. `unavailable` is its only value.
 - `now: 2026-11-14T09:00:00Z`, a date and time with its offset: each run's current date and time. The run's environment
-  line says that day ("Today is 2026-11-14 (UTC)"), as does claude-agent's turn date, and each `llm` grader is told it,
-  so a rubric can say "the run's date". A tool that reads the machine's clock (a shell's `date`, a browser's page) and
-  a harness CLI's own date (Codex adds its own to each turn) still read the real one. A fixture case whose prompt or
+  line says that day ("Today is 2026-11-14 (UTC)"), as do claude-agent's turn date and the Claude CLI's own date lines
+  (rewritten at the session's model proxy, so a claude-agent case on a person's Claude login keeps the real date: run it
+  on the provider route), and each `llm` grader is told it, so a rubric can say "the run's date". A tool that reads the
+  machine's clock (a shell's `date`, a browser's page) and another harness CLI's own date (Codex adds its own to each
+  turn) still read the real one. A fixture case whose prompt or
   pages carry dates sets `now:`, else it drifts a day each day it is run. Only the eval's own server honours it: a case with `now` refuses
   `--server`. Without it, the real clock.
 - `email: fixtures/mailbox.json`, a fixture file in the case: each run gets a fake mail account of its own, seeded from

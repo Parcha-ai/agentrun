@@ -70,7 +70,8 @@ describe("Connected agents is one inventory", () => {
     expect(t.host.textContent).not.toContain("Observed");
     const card = t.cards()[1];
     expect(card.textContent).toContain("Review the checkout flow");
-    for (const value of ["Codex", "Running", "coding-model", "Project · shop", "Session 12345678", "— tokens reported"]) expect(card.textContent).toContain(value);
+    for (const value of ["Running", "coding-model", "Project · shop", "Session 12345678", "— tokens reported"]) expect(card.textContent).toContain(value);
+    expect(card.querySelector('[data-agent-card-icon] [role="img"]')?.getAttribute("aria-label"), "the icon names its harness").toBe("Codex");
     expect(card.querySelector('a[href="#/observations/os_record-abcdefgh"]')).not.toBeNull();
     expect(card.querySelector('[aria-label="Run Review the checkout flow options"]')).not.toBeNull();
     expect(card.querySelector('[aria-label="Edit Review the checkout flow options"]')).not.toBeNull();

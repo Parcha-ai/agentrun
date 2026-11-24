@@ -15,20 +15,22 @@ export type FoldSpec = {
 const labels = new Map<string, LabelFn>();
 const folds = new Map<string, FoldSpec>();
 const names = new Map<string, string>();
-const saying = new Set<string>();
+const saying = new Map<string, (result: ToolResultView) => boolean>();
 
 /** Registers the label of one tool, in the past tense, and with `name` what the tool is called where calls are counted
  *  (a run's analytics). `saysFailure`: the label of a call that errored says so itself ("Could not take a screenshot"),
- *  so its row adds only why. A host adds its own tools here. */
-export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { name, saysFailure }: { name?: string; saysFailure?: true } = {}): void {
+ *  so its row adds only why; `true` for every error, or a test of the errored result for the errors whose label says so.
+ *  A host adds its own tools here. */
+export function registerLabel(tool: string, label: LabelFn, fold?: FoldSpec, { name, saysFailure }: { name?: string; saysFailure?: true | ((result: ToolResultView) => boolean) } = {}): void {
   labels.set(tool, label);
   if (fold) folds.set(tool, fold);
   if (name) names.set(tool, name);
-  if (saysFailure) saying.add(tool);
+  if (saysFailure) saying.set(tool, saysFailure === true ? () => true : saysFailure);
 }
 
-/** Whether `tool`'s label says a call that errored failed (registerLabel's saysFailure). */
-export const saysFailure = (tool: string): boolean => saying.has(tool);
+/** Whether `tool`'s label says that its errored call `result` failed (registerLabel's saysFailure). `result` is the one
+ *  the label was given, so the two read the same text. */
+export const saysFailure = (tool: string, result: ToolResultView): boolean => saying.get(tool)?.(result) === true;
 
 /** A remote MCP server's tool, read `<server> · <tool>`: by its catalog name, `mcp:<server>/<tool>`, or by the name the
  *  harnesses call it, `mcp__<server>__<tool>` (a server's name has no `_`; `hands` is a harness's own tools'). A tool whose
@@ -196,10 +198,19 @@ registerLabel(
 );
 registerLabel("snapshot", () => "Looked at the page structure", { many: (n) => `Looked at the page structure ${n} times` }, { name: "Look at the page structure" });
 registerLabel("screenshot", () => "Took a screenshot", { many: (n) => `Took ${n} screenshots` }, { name: "Take screenshots" });
+/** Whether a browser call errored as the browser's refusal before it ran: pi-browser's typed failure, `code: "refused"`
+ *  with `effect: "none"` (code sent to a browser that takes only actions, an op it does not take), read by those fields,
+ *  never by its words. A refusal after some of its actions ran (`effect: "partial"`, a take-over mid-batch) is not one. */
+const browserRefused = (result: ToolResultView | undefined): boolean => {
+  const failure = result?.isError === true ? obj(json(result.text)) : undefined;
+  return str(failure?.code) === "refused" && str(failure?.effect) === "none";
+};
 registerLabel(
   "run",
   (a, result) => {
     const goto = GOTO.exec(str(a.code) ?? "")?.[1];
+    // Refused before it ran: the row says what the browser refused, never that a page failed to open.
+    if (browserRefused(result)) return str(a.code) === undefined ? "The browser refused the action" : goto ? `The browser refused the code to open ${where(goto)}` : "The browser refused the agent's code";
     if (goto) return `Opened ${where(goto)}`;
     const sent = obj(result?.details)?.sent;
     const requests = Array.isArray(sent)
@@ -208,7 +219,7 @@ registerLabel(
     return requests.length ? `Acted on the page (${requests.length} request${requests.length === 1 ? "" : "s"} sent: ${list(requests)})` : "Acted on the page";
   },
   { many: (n) => `Acted on the page ${n} times` },
-  { name: "Open or act on a page in the browser" },
+  { name: "Open or act on a page in the browser", saysFailure: browserRefused },
 );
 registerLabel(
   "browser_downloads",
