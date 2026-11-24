@@ -116,13 +116,13 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     const options = providerOptions(entry.id, keys, computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     if (!options.ok) throw new NoProviderHere(options.error.message);
     // A throw from here on is the vendor's or the daemon's (Docker's architecture asked): asked again.
-    return endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes);
+    return { entry: entry.id, provider: endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes) };
   };
-  /** The id of the run's computer its park kept pinned to a runner other than this one, while the keep lasts; a read
-   *  that fails throws, and is asked again (a delete from here must not guess). */
-  const keptElsewhere = async (runId: string): Promise<string | undefined> => {
+  /** The run's computer its park kept pinned to a runner other than this one, while the keep lasts: its provider's id
+   *  and its own. A read that fails throws, and is asked again (a delete from here must not guess). */
+  const keptElsewhere = async (runId: string): Promise<{ readonly provider: string; readonly id: string } | undefined> => {
     const kept = await readKept(store.settings, runId);
-    return kept && kept.runner !== undefined && !kept.ending && !kept.ended && !keptBy(kept, deps.self?.()) ? kept.id : undefined;
+    return kept && kept.runner !== undefined && !kept.ending && !kept.ended && !keptBy(kept, deps.self?.()) ? { provider: kept.provider, id: kept.id } : undefined;
   };
   return async ({ runId, epoch }) => {
     if (epoch <= 1) return;
@@ -139,9 +139,12 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     const tries = async () => {
       for (;;) {
         try {
-          const provider = await providerOf(runId, epoch);
-          if (!provider) return;
-          const spared = await keptElsewhere(runId);
+          const made = await providerOf(runId, epoch);
+          if (!made) return;
+          const { provider } = made;
+          // Spared only on the kept row's own provider: an id is a provider's, so another's machine of the same id is not it.
+          const kept = await keptElsewhere(runId);
+          const spared = kept?.provider === made.entry ? kept.id : undefined;
           // Every claim's at or below this one's: a computer of a later epoch fences the call (a later claim holds the run).
           const released = await releaseOlder(spared === undefined ? provider : sparing(provider, spared), runId, epoch + 1, { signal });
           if (released.ok) {
