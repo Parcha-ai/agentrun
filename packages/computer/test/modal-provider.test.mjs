@@ -459,6 +459,50 @@ test('the Modal conformance module: mountFor("archil") gives a fresh run folder 
 	noToken(objects.calls, "the object API's calls");
 });
 
+test("a conformance run's mount cases fit Modal's 10 tags and 512 bytes: each computer as the runner makes it, the run's and the runner's labels, the claim, the case, the mount and the box image, the longest image a Modal recipe runs", async (t) => {
+	const { conformanceImage, mountFor } = await import("../dist/conformance/modal.js");
+	const { runConformance } = await import("../dist/conformance/index.js");
+	// The box image: the run's image on dial, and the image that holds the Archil client, so an Archil run's --image.
+	const image = conformanceImage({ env: { COMPUTER_MODAL_CONNECT: "dial" } });
+	assert.equal(image, BOX_IMAGE);
+	const env = {
+		AGENTRUN_COMPUTER_LIVE_MODAL: "1",
+		COMPUTER_ARCHIL_DISK: MOUNT.disk,
+		COMPUTER_ARCHIL_REGION: MOUNT.region,
+		COMPUTER_ARCHIL_TOKEN: TOKEN,
+		COMPUTER_ARCHIL_API_KEY: "fake-test-key",
+		COMPUTER_ARCHIL_S3_URL: "https://s3.green.us-east-1.aws.prod.archil.com",
+	};
+	const { provider, rec } = setup();
+	const report = await runConformance(provider, {
+		image,
+		only: ["mount"],
+		mountFor: (kind) => mountFor(kind, { env, archil: { objects: fakeObjects() } }),
+		caseTimeoutMs: 10_000,
+		cleanupTimeoutMs: 2_000,
+	});
+	// The tags of each create, as Modal is handed them: the recorder refuses every create, so each case ends at its first.
+	// The mount cases carry the most of a run's labels (a claim's two and the mount's beside the case's), so they bound it.
+	const made = rec.calls.filter(([name]) => name === "sandboxes.create").map(([, , , params]) => params.tags);
+	const results = report.results.map(({ id, status, reason }) => `${id} ${status}: ${reason}`).join("\n");
+	assert.deepEqual(
+		made.map((tags) => tags["agentrun.conformance.case"]).sort(),
+		["mount-archil", "mount-archil-durable", "mount-archil-isolated-durable", "mount-archil-loop-tool-edit", "mount-archil-takeover-1", "mount-archil-token", "mount-sync-cap", "mount-sync-delete", "mount-sync-durable", "mount-sync-push"],
+		`every mount case Modal takes reached sandboxes.create:\n${results}`,
+	);
+	for (const tags of made) {
+		const which = `${tags["agentrun.conformance.case"]} (${JSON.stringify(tags).replaceAll(TOKEN, "[token]")})`;
+		assert.ok(tags["agentrun.conformance"] && tags["agentrun.conformance.runner"], `${which}: the run's and the runner's labels`);
+		assert.ok(Object.keys(tags).length <= 10, `${which}: ${Object.keys(tags).length} tags, past Modal's 10`);
+		assert.ok(bytesOf(tags) <= 512, `${which}: ${bytesOf(tags)} bytes of tags, past Modal's 512`);
+	}
+	noToken(made, "the tags");
+	// The worst: an Archil case, the longest case name, its mount's tag beside the box image's.
+	const worst = made.reduce((most, tags) => (bytesOf(tags) > bytesOf(most) ? tags : most));
+	assert.equal(worst["agentrun.conformance.case"], "mount-archil-isolated-durable");
+	t.diagnostic(`the worst case's tags: ${Object.keys(worst).length} of Modal's 10, ${bytesOf(worst)} of its 512 bytes`);
+});
+
 // --- the token, the server, the environment ---
 
 /** The names a host may hold a production token under, with values that must never be used. */
