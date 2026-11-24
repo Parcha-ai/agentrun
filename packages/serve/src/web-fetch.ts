@@ -26,7 +26,7 @@ import { fetchOptions, GUARD, URL_PARAMETERS } from "./web-fetch-direct.js";
 import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
 import { RATE_LIMITED } from "./keyless-mcp.js";
 import { FAUX_ENV } from "./model.js";
-import { paidRequest } from "./paid-calls.js";
+import { PaidRefused, paidRequest } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
 import { isUnavailable, planeOf, whyUnavailable } from "./tool-plane.js";
@@ -35,9 +35,17 @@ export const WEB_FETCH_TOOL = "web_fetch";
 type GuardOptions = Omit<PublicFetchOptions, "maxBytes">;
 
 /** Parallel's extract on `apiKey` (web's parallelExtract), each request paid on the run's ledger (paid-calls.ts): held
- *  by the run's cap and booked as the call's cost at its endpoint's price. One the cap refuses is not sent. */
+ *  by the run's cap and booked as the call's cost at its endpoint's price. One the cap refuses is not sent. Every
+ *  refusal its `post` throws is serve's PaidRefused: web's client refuses a request to an endpoint with no price itself,
+ *  before it reaches paidRequest, and throws web's PayRefused for it, so that one is thrown again as PaidRefused, its
+ *  words the same. A read answers a refusal's words either way. */
 export function parallelExtract(apiKey: string, send: typeof fetch = fetch): Extract {
-  return web.parallelExtract(apiKey, send, paidRequest);
+  const client = web.parallelExtract(apiKey, send, paidRequest);
+  const post: Extract["post"] = (url, body, signal) =>
+    client.post(url, body, signal).catch((error: unknown) => {
+      throw error instanceof web.PayRefused && !(error instanceof PaidRefused) ? new PaidRefused(error.message) : error;
+    });
+  return { live: client.live, read: client.read, post };
 }
 
 /** The server's log, where a web_fetch notes what the model is not told (browser-cost.ts' lines go there too). */
