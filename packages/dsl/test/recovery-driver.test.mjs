@@ -99,6 +99,7 @@ test('a tool effect is admitted with the external call it makes, before it is di
   assert.deepEqual(journal.effects.map(({ id, status, intent }) => [id, status, intent]), [[effect(step(1)), 'unknown', gatewayIntentOf('registry_lookup', { id: 7 })]]);
   // Through a fetch wrapper the continuation names the same call by the same key.
   assert.deepEqual(journal.effects[0].intent, gatewayIntentOf('fetch', { tool: 'registry_lookup', args: { id: 7 } }));
+  assert.equal(gatewayIntentOf('fetch', { tool: 'registry_lookup', args: [7] }).tool, 'fetch', 'a fetch whose args are a list names no gateway call');
   const done = memoryStore();
   await run(done, workflow, { runEffect: async ({ node }) => { if (node.via !== 'shell') return { ok: true }; writeFileSync(join(cwd, 'out.txt'), 'bytes'); return { code: 0, stdout: '', stderr: '' }; } }, { files });
   journal = await operator(done, workflow);
@@ -813,6 +814,9 @@ test('a checkpoint is opened only when the driver could have written it for this
     (journal, state) => journal.save({ ...state, pin: { ...state.pin, done: ['/root/steps/9'] } }), (journal, state) => journal.save({ ...state, status: 'finished' })]) {
     await assert.rejects(open(await doctored(change), workflow), fault('FROZEN_CHECKPOINT_INVALID', 'Invalid frozen recovery checkpoint'));
   }
+  const listed = await doctored((journal, state) => journal.save({ ...state, clocks: [] }));
+  const got = await open(listed, workflow).then(async (opened) => { await opened.close(); return 'the run opened'; }, (error) => `${error.code}: ${error.message}`);
+  assert.equal(got, 'FROZEN_CHECKPOINT_INVALID: Invalid frozen recovery checkpoint', `a clocks table stored as a list is refused at open: it ended with ${got}`);
   // A key the driver no longer writes opens, and the open's own save drops it.
   const retired = await doctored((journal, state) => journal.save({ ...state, effectCalls: 7, lookSpendUsd: 0.25 }));
   assert.equal((await operator(retired, workflow)).state.effectCalls, 7);
