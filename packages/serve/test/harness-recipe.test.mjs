@@ -1148,6 +1148,19 @@ test("--harness-sign-in starts only one owner's own server on their own machine:
   await assert.rejects(startServe({ data, port: 0, host: "0.0.0.0", harnessSignIn: true }), new RegExp(`${HARNESS_SIGN_IN_NOT_LOCAL}: .*past loopback`));
 });
 
+test("accounts off (AGENTRUN_ACCOUNTS=0) refuses --harness-sign-in alone: the machine is still its owner's own, so the Ollama at the default address stays its model", async (t) => {
+  const { harnessSignInRefusal, whyNotOwnMachine } = await import("../dist/server.js");
+  const { ollamaHostOf } = await import("../dist/ollama-provider.js");
+  const data = join(await scratch(t), "agents");
+  for (const accounts of [false, undefined]) {
+    assert.deepEqual(whyNotOwnMachine({ accounts }, data, true), [], `accounts ${accounts}: one owner's own machine`);
+    assert.equal(ollamaHostOf({}, whyNotOwnMachine({ accounts }, data, true).length === 0), "127.0.0.1:11434", `accounts ${accounts}: the default address`);
+    assert.match(harnessSignInRefusal({ accounts }, data, true) ?? "", /has no owner's account \(AGENTRUN_ACCOUNTS=0\)/, `accounts ${accounts}: the sign-in refused`);
+  }
+  assert.deepEqual(whyNotOwnMachine({ accounts: true }, data, true), []);
+  assert.equal(harnessSignInRefusal({ accounts: true }, data, true), undefined);
+});
+
 test("a server started with --harness-recipe says so in the store, so a runner apart without the recipe fails its check", async (t) => {
   const file = await recipeFile(t, recipeOf());
   const { store } = await serve(t, { harnessRecipes: [file], runner: false });
