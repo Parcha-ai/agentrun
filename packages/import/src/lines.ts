@@ -110,6 +110,13 @@ async function markOf(handle: FileHandle, offset: number): Promise<string> {
   return bytes.subarray(0, bytesRead).toString("base64");
 }
 
+/** A read started ahead of its turn: a failure the read never gets to (a line too long ends it first) is not unhandled;
+ *  awaited, it still throws. */
+const ahead = <T>(read: Promise<T>): Promise<T> => {
+  read.catch(() => {});
+  return read;
+};
+
 /** The records seen, as a source asks: `extra` over `base`, so a line read that is not kept leaves `base` as it was. */
 const overlay = (base: Set<string>): Set<string> => {
   const extra = new Set<string>();
@@ -171,13 +178,19 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, file: stri
       if (bytes > maxLine) throw new LineTooLong(file, offset, bytes, maxLine);
     };
     if (stats.size > start) {
-      // The open handle, so the bytes read are the file stat described, whatever the path names now. One buffer for the
-      // whole read: a new one a chunk leaves freed native memory behind on every thread that reads (the read pool's).
-      const buffer = Buffer.allocUnsafeSlow(CHUNK);
+      // The open handle, so the bytes read are the file stat described, whatever the path names now. Two buffers for the
+      // whole read, taken in turn: the next chunk is read into one while this one's lines are read (a new buffer a chunk
+      // leaves freed native memory behind on every thread that reads, the read pool's).
+      const buffers = [Buffer.allocUnsafeSlow(CHUNK), Buffer.allocUnsafeSlow(CHUNK)] as const;
+      let which = 0;
+      let next = ahead(handle.read(buffers[0], 0, CHUNK, start));
       for (let at = start; ; ) {
-        const { bytesRead } = await handle.read(buffer, 0, CHUNK, at);
+        const { bytesRead } = await next;
         if (!bytesRead) break;
+        const buffer = buffers[which]!;
         at += bytesRead;
+        which ^= 1;
+        next = ahead(handle.read(buffers[which]!, 0, CHUNK, at));
         const chunk = buffer.subarray(0, bytesRead);
         read += chunk.length;
         let from = 0;
