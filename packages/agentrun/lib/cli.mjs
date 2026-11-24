@@ -6,9 +6,9 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
-// package folder) is export.mjs's, share (what sharing a run would send, shown with --dry-run) is share.mjs's, and
-// deploy (an agent's package sent to another AgentRun, with its lock, rollback and delete) is deploy.mjs's. Any other
-// word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// package folder) is export.mjs's, share (a run's bundle published to a share host with --to, or shown with --dry-run)
+// and share delete are share.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
+// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -75,7 +75,8 @@ const HELP = () => {
     "with its token there; AGENTRUN_TOKEN goes to no other address); it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600), or on a terminal signs in with a",
     "device code when the server offers one; agentrun login --to URL (or cloud) signs in with a device code when the",
-    "server offers one, else reads the token from stdin; agentrun logout removes it.",
+    "server offers one, else reads the token from stdin; agentrun logout removes it. agentrun login --share URL keeps a",
+    "share host's token in its own entry of the same file, which agentrun share --to and share delete alone read.",
     "Keys and other secrets are set in the console, signed in: the token can't write one, so no command does.",
     "Output: the response's JSON on stdout, a file's bytes as they are; an error's on stderr. Exit codes: 0 ok, 1 the",
     "server refused, 2 bad usage (a bad base URL among it), 3 the server cannot be reached, 4 no token, the token was",

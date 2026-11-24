@@ -8,4 +8,4 @@ kind: feature
 - `--restore ID,ID` asks the server to put restorable cuts back. A refused id is printed as the server says it, and nothing is written or opened.
 - `--expect SHA` refuses a bundle whose sha256 differs (exit 1). The page's publish command carries it.
 - A run that has not ended or does not exist exits 2. A withheld run exits 1, and so does an export that failed closed on the server (500), which says nothing of the run was shown.
-- Without `--dry-run` or `--out` it exits 2: publishing comes with a share host.
+- Without `--dry-run` or `--out` (or `--to`, which publishes: changes/share-publish-cli.md) it exits 2 and sends nothing.

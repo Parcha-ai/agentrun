@@ -6,10 +6,11 @@
 // nothing opens. Synthetic data only.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import { main, runLocal } from "../lib/cli.mjs";
 import { shareOf } from "../lib/share.mjs";
@@ -87,10 +88,12 @@ async function portProbe(port) {
 const sendBundle = (body) => (res) => res.writeHead(200, { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) }).end(body);
 const sendError = (status, code, message) => (res) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ error: { code, message, retryable: false, request_id: "req_test" } }));
 
-const ioOf = () => {
+/** An io for the CLI in this process: what it prints, kept; `input`, when given, its stdin (never a terminal). */
+const ioOf = (input) => {
   const out = [];
   const err = [];
-  return { io: { stdout: { write: (text) => out.push(String(text)), on() {}, isTTY: false }, stderr: { write: (text) => err.push(String(text)) } }, out, err };
+  const stdin = Object.assign(Readable.from(input === undefined ? [] : [Buffer.from(input)]), { isTTY: false });
+  return { io: { stdin, stdout: { write: (text) => out.push(String(text)), on() {}, isTTY: false }, stderr: { write: (text) => err.push(String(text)) } }, out, err };
 };
 
 /** `agentrun share ...` as the CLI runs it (its flags, its target, its client), with the opener injected: `opened` is
@@ -329,17 +332,23 @@ test("share refuses a bundle that does not hash to the sha256 it names: nothing 
   assert.deepEqual(result.opened, []);
 });
 
-test("share without --dry-run publishes nothing: exit 2, the design's words, nothing asked of the server", async (t) => {
+test("share with none of --to, --dry-run or --out sends nothing: exit 2, words naming --to, nothing asked of the server", async (t) => {
   const run = `run_share_${nonce()}`;
   const fake = await fakeServer(t, run, sendBundle(bundleOf(run, "synthetic").body));
   const result = await share([run], { data: fake.data });
   assert.equal(result.code, 2, result.err);
-  assert.match(result.err, /^publishing comes with a share host; --dry-run shows the page/m);
+  assert.match(result.err, /^agentrun share RUN takes --to URL \(publish it to a share host\), --dry-run \(preview its page\) or --out FILE \(write its bundle\)\. Nothing was sent\./m);
   assert.deepEqual(result.opened, []);
   // Through the CLI's own table too: share is one of its commands.
   const { io, err } = ioOf();
   assert.equal(await main(["share", run, "--data", fake.data], { XDG_CONFIG_HOME: fresh() }, io), 2);
-  assert.match(err.join(""), /publishing comes with a share host/);
+  assert.match(err.join(""), /takes --to URL/);
+  // --to publishes; --dry-run and --out show or write: one at a time.
+  for (const other of [["--dry-run"], ["--out", join(fresh(), "bundle.json")]]) {
+    const both = await share([run, "--to", "http://127.0.0.1:9", ...other], { data: fake.data });
+    assert.equal(both.code, 2, both.err);
+    assert.match(both.err, /--to publishes the bundle; --dry-run and --out show or write it: one at a time/);
+  }
   assert.equal(fake.got.length, 0);
 });
 
@@ -378,5 +387,321 @@ test("share maps the server's 409, 403, 404 and 500 to plain messages and non-ze
 test("share --help names its flags", async () => {
   const { io, out } = ioOf();
   assert.equal(await main(["share", "--help"], {}, io), 0);
-  for (const flag of ["--dry-run", "--out FILE", "--restore IDS", "--expect SHA", "--no-open"]) assert.ok(out.join("").includes(flag), flag);
+  for (const flag of ["--to URL", "--dry-run", "--out FILE", "--restore IDS", "--expect SHA", "--no-open"]) assert.ok(out.join("").includes(flag), flag);
+  const deleting = ioOf();
+  assert.equal(await main(["share", "delete", "--help"], {}, deleting.io), 0);
+  assert.match(deleting.out.join(""), /Usage: agentrun share delete URL/);
+});
+
+// ---------- publishing: `agentrun login --share URL`, `agentrun share RUN --to URL`, `agentrun share delete URL`
+//
+// The share host's token is kept in a `share` entry of the same config file (0600), beside the server's base_url and
+// api_key, which it never changes: every other command still goes where it went. A fake share host on loopback answers
+// its own API under /r/v2 alone (anything else, a port probe among it, is a 404 it neither reads nor keeps).
+
+/** A token of the test's own for the share host: made at random, never a real one. */
+const shareToken = () => `share-host-test-${randomBytes(20).toString("hex")}`;
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+/** A share id as a share host makes them: 26 base32 letters. */
+const shareId = () => Array.from(randomBytes(26), (byte) => BASE32[byte & 31]).join("");
+const hostJson = (res, status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+const hostError = (status, code, message, details) => (res) => hostJson(res, status, { error: { code, message, retryable: false, request_id: "req_test", ...(details ? { details } : {}) } });
+
+/** A share host on loopback. Its own routes alone are kept, in `got` by method: GET /r/v2/shares (the login's check,
+ *  answered for `token` alone), POST /r/v2/shares (answered by `post`, else 201 with a new id) and DELETE
+ *  /r/v2/shares/<id> (answered by `del`, else 204). */
+async function fakeHost(t, { token, post, del } = {}) {
+  const got = { GET: [], POST: [], DELETE: [] };
+  let base;
+  const server = createServer((req, res) => {
+    const { pathname } = new URL(req.url, "http://h");
+    const own = (["GET", "POST"].includes(req.method) && pathname === "/r/v2/shares") || (req.method === "DELETE" && /^\/r\/v2\/shares\/[^/]+$/.test(pathname));
+    if (!own) {
+      req.resume();
+      return void res.writeHead(404).end();
+    }
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const seen = { path: pathname, authorization: req.headers.authorization, type: req.headers["content-type"], body: Buffer.concat(chunks) };
+      got[req.method].push(seen);
+      if (req.method === "GET") return req.headers.authorization === `Bearer ${token}` ? hostJson(res, 200, { shares: [], quota: { limit: 100, used: 0 } }) : hostError(401, "unauthenticated", "the share host's API takes one of its tokens as a Bearer header")(res);
+      if (req.method === "POST") {
+        if (post) return post(res, seen);
+        const id = shareId();
+        return hostJson(res, 201, { id, url: `${base}/r/${id}`, sha256: JSON.parse(seen.body.toString("utf8")).sha256 });
+      }
+      return del ? del(res, seen) : void res.writeHead(204).end();
+    });
+  });
+  await new Promise((done) => server.listen(0, HOST, done));
+  t.after(() => new Promise((done) => (server.closeAllConnections(), server.close(() => done()))));
+  const port = server.address().port;
+  base = `http://${HOST}:${port}`;
+  return { got, base, port };
+}
+
+/** A config folder whose config.json (0600, in a 0700 folder) holds `config`; the XDG_CONFIG_HOME that names it. */
+function configHome(config) {
+  const home = fresh();
+  const dir = join(home, "agentrun");
+  mkdirSync(dir, { mode: 0o700 });
+  if (config !== undefined) writeFileSync(join(dir, "config.json"), `${JSON.stringify(config)}\n`, { mode: 0o600 });
+  return { home, file: join(dir, "config.json") };
+}
+
+/** `agentrun ARGV` in this process, with `env` and `input` on its stdin. */
+async function agentrun(argv, env, input) {
+  const { io, out, err } = ioOf(input);
+  const code = await main(argv, env, io);
+  return { code, out: out.join(""), err: err.join("") };
+}
+
+/** A fake AgentRun server's agents list on loopback, for a plain `agentrun login --base-url`: GET /v2/agents for `token`. */
+async function fakeAgents(t, token) {
+  const server = createServer((req, res) => {
+    if (req.method !== "GET" || new URL(req.url, "http://h").pathname !== "/v2/agents") return void (req.resume(), res.writeHead(404).end());
+    return req.headers.authorization === `Bearer ${token}` ? hostJson(res, 200, { agents: [], next_cursor: null }) : hostError(401, "unauthenticated", "no")(res);
+  });
+  await new Promise((done) => server.listen(0, HOST, done));
+  t.after(() => new Promise((done) => (server.closeAllConnections(), server.close(() => done()))));
+  return `http://${HOST}:${server.address().port}`;
+}
+
+test("login --share checks a token from stdin at the share host and keeps it in a share entry; the server's entry is untouched, and a later login keeps it", async (t) => {
+  const token = shareToken();
+  const host = await fakeHost(t, { token });
+  assert.equal(await portProbe(host.port), 404, "a port probe is answered 404");
+  const server = { base_url: "http://127.0.0.1:1/v2", api_key: CANARY };
+  const { home, file } = configHome(server);
+  const env = { XDG_CONFIG_HOME: home };
+
+  const wrong = await agentrun(["login", "--share", host.base], env, "another-token\n");
+  assert.equal(wrong.code, 4, wrong.err);
+  assert.match(wrong.err, /refused the token; nothing was written/);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), server, "a refused token changes nothing");
+
+  // The share host's own address, or a link under its /r/: the entry keeps the address.
+  const taken = await agentrun(["login", "--share", `${host.base}/r/`], env, `${token}\n`);
+  assert.equal(taken.code, 0, taken.err);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { ...server, share: { base_url: host.base, api_key: token } });
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(taken.out), { share: { base_url: host.base }, config_file: file });
+  assert.deepEqual(host.got.GET.map((seen) => [seen.path, seen.authorization]), [["/r/v2/shares", "Bearer another-token"], ["/r/v2/shares", `Bearer ${token}`]], "the check is the share host's own list, the probe not counted");
+  for (const said of [wrong, taken]) assert.ok(![said.out, said.err].some((text) => text.includes(token) || text.includes(CANARY)), "no token printed");
+
+  // --share names the share host; --to and --base-url name a server: one at a time.
+  const both = await agentrun(["login", "--share", host.base, "--base-url", host.base], env, `${token}\n`);
+  assert.equal(both.code, 2, both.err);
+
+  // A server login afterwards keeps the share entry, as the share login kept the server's.
+  const agentsToken = `agents-test-${randomBytes(12).toString("hex")}`;
+  const agents = await fakeAgents(t, agentsToken);
+  const server2 = await agentrun(["login", "--base-url", agents], env, `${agentsToken}\n`);
+  assert.equal(server2.code, 0, server2.err);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { base_url: `${agents}/v2`, api_key: agentsToken, share: { base_url: host.base, api_key: token } });
+
+  // logout --share drops the share entry alone; logout, the file.
+  const out = await agentrun(["logout", "--share"], env);
+  assert.equal(out.code, 0, out.err);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { base_url: `${agents}/v2`, api_key: agentsToken });
+  assert.equal((await agentrun(["logout"], env)).code, 0);
+  assert.equal(existsSync(file), false);
+});
+
+test("share --to needs the share host's login: refused before the export, with the command that signs in", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const fake = await fakeServer(t, run, sendBundle(bundleOf(run, "synthetic").body));
+  const host = await fakeHost(t, { token: shareToken() });
+  const other = await fakeHost(t, { token: shareToken() });
+  for (const config of [undefined, { base_url: "http://127.0.0.1:1/v2", api_key: CANARY }, { share: { base_url: other.base, api_key: shareToken() } }]) {
+    const { home } = configHome(config);
+    const result = await share([run, "--to", host.base], { data: fake.data, env: { XDG_CONFIG_HOME: home } });
+    assert.equal(result.code, 4, result.err);
+    assert.ok(result.err.includes(`agentrun login --share ${host.base} < TOKEN_FILE`), result.err);
+    assert.match(result.err, /Nothing was sent/);
+    assert.equal(result.out, "");
+  }
+  // A --to that is no http(s) address, or carries a user, query or fragment: bad usage, nothing asked.
+  for (const bad of ["ftp://127.0.0.1/", "http://user:pw@127.0.0.1/", "http://127.0.0.1/?q=1", "not a url"]) {
+    const result = await share([run, "--to", bad], { data: fake.data });
+    assert.equal(result.code, 2, `${bad}: ${result.err}`);
+    assert.ok(!result.err.includes("pw@"), "never echoed");
+  }
+  assert.equal(fake.got.length, 0, "no export");
+  assert.equal(host.got.POST.length + other.got.POST.length, 0, "no upload");
+});
+
+test("share --to exports again with the restores, posts the bundle's bytes with the share token alone, and prints the share's URL", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const planted = `planted-share-value-${nonce()}`;
+  const restored = [{ id: cutId(1), at: "/rows/0/text", start: 4, end: 7, rule: "pg-password", kind: "label" }];
+  const { body, sha256 } = bundleOf(run, planted, { restored });
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const token = shareToken();
+  const host = await fakeHost(t, { token });
+  assert.equal(await portProbe(host.port), 404);
+  const { home } = configHome({ share: { base_url: host.base, api_key: token } });
+
+  const result = await share([run, "--to", host.base, "--restore", cutId(1), "--expect", sha256], { data: fake.data, env: { XDG_CONFIG_HOME: home } });
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(fake.got, [{ query: `?restore=${cutId(1)}`, authorization: `Bearer ${CANARY}` }], "one export with the restores, the local token to the local server alone");
+  assert.equal(host.got.POST.length, 1);
+  const [posted] = host.got.POST;
+  assert.ok(posted.body.equals(Buffer.from(body)), "the bundle's bytes as the server sent them");
+  assert.equal(posted.authorization, `Bearer ${token}`, "the share entry's token to the share host alone");
+  assert.match(posted.type, /^application\/json/);
+  const printed = JSON.parse(result.out);
+  assert.match(printed.id, /^[a-z2-7]{26}$/);
+  assert.equal(printed.url, `${host.base}/r/${printed.id}`);
+  assert.equal(printed.sha256, sha256);
+  assert.equal(printed.restored, 1);
+  assert.ok(result.err.includes(`Shared: ${printed.url}`), result.err);
+  assert.ok(result.err.includes(`agentrun share delete ${printed.url}`), "says how to take it down");
+  silent(result, planted, token);
+});
+
+test("share --to --expect refuses a bundle whose sha256 changed since the page showed it, before any POST", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const { body } = bundleOf(run, "synthetic");
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const token = shareToken();
+  const host = await fakeHost(t, { token });
+  const { home } = configHome({ share: { base_url: host.base, api_key: token } });
+  const result = await share([run, "--to", host.base, "--expect", sha256Of("the page's bundle")], { data: fake.data, env: { XDG_CONFIG_HOME: home } });
+  assert.equal(result.code, 1, result.err);
+  assert.match(result.err, /changed since the page showed it/);
+  assert.ok(result.err.includes(`agentrun share ${run} --dry-run`), "says to open the page again");
+  assert.match(result.err, /Nothing was sent/);
+  assert.equal(result.out, "");
+  assert.equal(fake.got.length, 1);
+  assert.equal(host.got.POST.length, 0, "refused before any POST");
+  silent(result, token);
+});
+
+test("a share host's refusal prints counts by rule and never a value: 422, 400 and 413; 401 and a full quota say what to do", async (t) => {
+  const run = `run_share_${nonce()}`;
+  const planted = `planted-host-value-${nonce()}`;
+  const { body } = bundleOf(run, "synthetic");
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const token = shareToken();
+  let now;
+  // Each refusal quotes the planted value where a careless client would print it: its message, a rule's name, a detail.
+  const answers = {
+    422: hostError(422, "input_invalid", `The share host's scrub found ${planted}.`, { reason: "scrub_found", counts: { "pg-password": 2, "home-path": 1, [planted]: 1 }, unmatched: { "pg-password": 1 } }),
+    400: hostError(400, "bad_request", `This is not a share bundle the host takes: run has a field "${planted}" the format does not name.`),
+    413: hostError(413, "payload_too_large", `Too many strings: ${planted}`, { reason: "share_strings", limit: 50000, strings: 60001, note: planted }),
+    401: hostError(401, "unauthenticated", planted),
+    403: hostError(403, "forbidden", planted, { reason: "share_quota", limit: 100, used: 100 }),
+    500: hostError(500, "internal", planted),
+  };
+  const host = await fakeHost(t, { token, post: (res) => answers[now](res) });
+  const { home } = configHome({ share: { base_url: host.base, api_key: token } });
+  const cases = [
+    [422, 1, [/refused the bundle \(422 scrub_found\)/, /by rule: pg-password 2, home-path 1, unknown 1/, /no restore declares/, /restored records it could not match, by rule: pg-password 1/]],
+    [400, 1, [/refused the bundle \(400\)/, /does not take/]],
+    [413, 1, [/60001 distinct strings, over the 50000/]],
+    [401, 4, [/refused the token \(401\)/, new RegExp(`agentrun login --share ${host.base.replace(/[.]/g, "\\.")} < TOKEN_FILE`)]],
+    [403, 1, [/keeps 100 shares, its most \(100\)/, /agentrun share delete/]],
+    [500, 1, [/refused it: 500 internal/]],
+  ];
+  for (const [status, exit, said] of cases) {
+    now = status;
+    const result = await share([run, "--to", host.base], { data: fake.data, env: { XDG_CONFIG_HOME: home } });
+    assert.equal(result.code, exit, `${status}: ${result.err}`);
+    for (const line of said) assert.match(result.err, line, `${status}`);
+    assert.match(result.err, /Nothing was stored/, `${status}`);
+    assert.equal(result.out, "", `${status}`);
+    assert.doesNotMatch(result.err, /"error"/, `${status}: never the host's JSON`);
+    silent(result, planted, token);
+  }
+  assert.equal(host.got.POST.length, cases.length);
+});
+
+test("share delete URL deletes the share with the share token: 204 says so; 404, 403 and 410 in plain words; no login refuses", async (t) => {
+  const token = shareToken();
+  const answers = new Map();
+  const host = await fakeHost(t, { token, del: (res, seen) => (answers.get(seen.path.split("/").pop()) ?? ((r) => void r.writeHead(204).end()))(res) });
+  assert.equal(await portProbe(host.port), 404);
+  const { home } = configHome({ base_url: "http://127.0.0.1:1/v2", api_key: CANARY, share: { base_url: host.base, api_key: token } });
+  const env = { XDG_CONFIG_HOME: home };
+
+  const live = shareId();
+  const deleted = await agentrun(["share", "delete", `${host.base}/r/${live}`], env);
+  assert.equal(deleted.code, 0, deleted.err);
+  assert.deepEqual(JSON.parse(deleted.out), { url: `${host.base}/r/${live}`, id: live, deleted: true });
+  assert.match(deleted.err, /Deleted .*: its page now answers 410 Gone/);
+  assert.deepEqual(host.got.DELETE.map((seen) => [seen.path, seen.authorization]), [[`/r/v2/shares/${live}`, `Bearer ${token}`]]);
+
+  const missing = shareId();
+  answers.set(missing, hostError(404, "not_found", `There is no share ${missing} on this host.`));
+  const theirs = shareId();
+  answers.set(theirs, hostError(403, "forbidden", "made with another token"));
+  const gone = shareId();
+  answers.set(gone, hostError(410, "purged", "deleted"));
+  for (const [id, exit, said] of [[missing, 1, /has no share/], [theirs, 4, /made with another token; only that token deletes it/], [gone, 0, /already deleted/]]) {
+    const result = await agentrun(["share", "delete", `${host.base}/r/${id}`], env);
+    assert.equal(result.code, exit, `${id}: ${result.err}`);
+    assert.match(result.err, said);
+    silent(result, token);
+  }
+
+  // No share login for that host: refused, nothing sent. A URL that is no share's: bad usage.
+  const before = host.got.DELETE.length;
+  const none = await agentrun(["share", "delete", `${host.base}/r/${shareId()}`], { XDG_CONFIG_HOME: configHome().home });
+  assert.equal(none.code, 4, none.err);
+  assert.ok(none.err.includes(`agentrun login --share ${host.base} < TOKEN_FILE`), none.err);
+  for (const bad of [`${host.base}/share/run_1`, `${host.base}/r/NOT-AN-ID`, "nonsense"]) {
+    const result = await agentrun(["share", "delete", bad], env);
+    assert.equal(result.code, 2, `${bad}: ${result.err}`);
+    assert.match(result.err, /a share's URL/);
+  }
+  assert.equal(host.got.DELETE.length, before, "nothing sent");
+});
+
+test("share --to and share delete against a real share host: 201, the stored bytes are the export's, then 410 once deleted", { timeout: 120_000 }, async (t) => {
+  const { startServe } = await import("../../serve/dist/index.js");
+  const { exportBundle } = await import("../../serve/dist/run-export.js");
+  const run = `run_share_${nonce()}`;
+  const content = "# Report\n\nSix times seven is 42.\n";
+  const { body } = await exportBundle({
+    runId: run,
+    agent: { name: "share-e2e-agent" },
+    view: { kind: "agentic", status: "succeeded", state: "succeeded", title: `Multiply two numbers ${nonce()}`, created_at: "2026-11-23T00:00:00.000Z", ended_at: "2026-11-23T00:01:00.000Z", result: { final_answer: "The answer is 42.", output: null, output_error: null } },
+    rows: [{ type: "message", role: "user", text: "What is six times seven?" }, { type: "message", role: "assistant", text: "The answer is 42." }],
+    graph: null,
+    files: [{ path: "out/report.md", size: Buffer.byteLength(content), read: async () => Buffer.from(content) }],
+    filesTruncated: false,
+    held: [],
+    restore: [],
+    version: "0.0.0-share-e2e",
+  });
+  const fake = await fakeServer(t, run, sendBundle(body));
+  const token = shareToken();
+  const data = fresh();
+  const hostServer = await startServe({ data, port: 0, shareHost: true, tokens: [{ id: "publisher", token }], drainTimeout: "5s" });
+  t.after(() => hostServer.close());
+  const host = new URL(hostServer.baseUrl).origin;
+  const { home } = configHome();
+  const env = { XDG_CONFIG_HOME: home };
+
+  const login = await agentrun(["login", "--share", host], env, `${token}\n`);
+  assert.equal(login.code, 0, login.err);
+  const shared = await share([run, "--to", host, "--expect", JSON.parse(body).sha256], { data: fake.data, env });
+  assert.equal(shared.code, 0, shared.err);
+  const { url, id } = JSON.parse(shared.out);
+  assert.equal(url, `${host}/r/${id}`);
+  const stored = await fetch(`${url}/bundle.json`);
+  assert.equal(stored.status, 200);
+  assert.ok(Buffer.from(await stored.arrayBuffer()).equals(Buffer.from(body)), "the host serves the export's bytes");
+
+  const deleted = await agentrun(["share", "delete", url], env);
+  assert.equal(deleted.code, 0, deleted.err);
+  for (const at of [url, `${url}/bundle.json`]) {
+    const after = await fetch(at);
+    await after.arrayBuffer();
+    assert.equal(after.status, 410, at);
+  }
+  silent(shared, token);
+  silent(deleted, token);
 });
