@@ -61,6 +61,7 @@
         "fields": [
           "calls",
           "ok",
+          "ourAsks",
           "permissionAsks",
           "resultReachedModel",
           "turn"
@@ -162,6 +163,7 @@
           "calls",
           "error",
           "ok",
+          "ourAsks",
           "permissionAsks",
           "resultReachedModel",
           "turn"
@@ -268,6 +270,7 @@
           "calls",
           "error",
           "ok",
+          "ourAsks",
           "permissionAsks",
           "resultReachedModel",
           "turn"

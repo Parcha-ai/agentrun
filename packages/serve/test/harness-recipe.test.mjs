@@ -428,13 +428,16 @@ test("harness-check fails an agent whose own tools are on: its model request is 
 });
 
 test("harness-check fails an agent that asks permission for our tool on a recipe with no allowFile and no title tie: refused at the host's gate, and mcp_tool says it asked", { skip: linux, timeout: 120_000 }, async (t) => {
-  // Before: the adapter answered allow_once on the title (`agentrun__check_echo`) and the check passed.
-  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined }));
+  // Before: the adapter answered allow_once on the title (`agentrun__check_echo`) and the check passed. The stand-in
+  // runs check_echo after the refusal (ask-anyway), under the toolCallId it asked with: that id is how the check knows
+  // the request was for our tool.
+  const { data, file, env } = await installed(t, recipeOf(undefined, { allowFile: undefined, env: { MODEL_AGENT_MODE: "ask-anyway" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   assert.match(run.stdout, /stage 3 mcp_tool: FAIL/);
-  assert.equal(run.report.stage3.mcp_tool.calls, 0, "the check echo call never ran");
+  assert.equal(run.report.stage3.mcp_tool.calls, 1, "the check echo call ran after the refused request");
   assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.equal(run.report.stage3.mcp_tool.ourAsks, 1);
   assert.match(run.report.stage3.mcp_tool.problem, /asked permission for our tool/);
   assert.ok(run.report.gate.asked.some((g) => g.tool === "acp_other" && g.answer === "deny"), JSON.stringify(run.report.gate.asked));
 });
@@ -460,6 +463,7 @@ test("harness-check passes an agent that asks for each of our calls on a recipe 
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   assert.equal(run.report.facts.tool_gate, "permission");
   assert.equal(run.report.stage3.mcp_tool.permissionAsks, 1);
+  assert.equal(run.report.stage3.mcp_tool.ourAsks, 1, "the request was for our tool, and the tie answers it");
   assert.equal(run.report.stage3.mcp_tool.problem, undefined);
 });
 

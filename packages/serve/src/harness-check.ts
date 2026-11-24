@@ -253,10 +253,15 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   ];
   // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
   // server's gate answers them: a permission request for a call of ours, on a recipe with no title tie or one whose title
-  // the adapter can't tie, is one of those, so it fails mcp_tool.
+  // the adapter can't tie, is one of those: refused, so check_echo never runs and mcp_tool fails, or it runs anyway under
+  // the request's id and mcp_tool fails on ourAsks.
   const gateAsked: { tool: string; answer: string }[] = [];
-  const gate = async (call: { tool: string }) => {
+  // The ids of check_echo's MCP calls, as the gate got them: the agent's announced toolCallId where the adapter matched
+  // the call to one. A permission request under one of these ids was for our tool.
+  const echoIds = new Set<string>();
+  const gate = async (call: { tool: string; callId: string }) => {
     const answer = call.tool === "check_echo" ? "allow" : "deny";
+    if (call.tool === "check_echo") echoIds.add(call.callId);
     gateAsked.push({ tool: call.tool, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
@@ -368,17 +373,22 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     say(`${recipe.label}: turn 1, a call of our check_echo tool over MCP`);
     const first = await sessionOn(join(work, "runner-a"));
     const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce} and the path argument set to proof.txt. Then reply with exactly what it returned and nothing else.`);
-    // Every permission the agent asked for in turn 1, which calls check_echo alone: a request for our tool. The adapter
-    // answers one only where the recipe declares the title tie (quirks.permissionTie, Cursor's); any other agent must
-    // ask nothing for our tools (an allowFile, Goose's), since the server's gate asks at the MCP call.
-    const permissionAsks = asked().length;
+    // The permissions the agent asked for in turn 1 (permissionAsks), and of those the ones for our tool (ourAsks): a
+    // request whose toolCallId is the id a check_echo MCP call reached the gate under. Matched by id, never by title. The
+    // adapter answers a request for our tool only where the recipe declares the title tie (quirks.permissionTie,
+    // Cursor's); any other agent must ask nothing for our tools (an allowFile, Goose's), since the server's gate asks at
+    // the MCP call. A request under any other id is the agent's own call: the gate denied it and lists it
+    // (gate.permissionsAsked), and it fails no stage.
+    const turnAsks = asked();
+    const permissionAsks = turnAsks.length;
+    const ourAsks = turnAsks.filter((l) => typeof l.toolCallId === "string" && echoIds.has(l.toolCallId)).length;
     const tied = recipe.quirks.permissionTie === "title";
-    const askedProblem = permissionAsks > 0 && !tied ? `the agent asked permission for our tool ${permissionAsks} time(s): its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
+    const askedProblem = ourAsks > 0 && !tied ? `the agent asked permission for our tool ${ourAsks} time(s), under the id it then called check_echo with: its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
     const firstOpen = opened()[0];
     // The environment while the agent runs.
     const environ = firstOpen?.pid ? environOf(firstOpen.pid) : undefined;
     const echoReached = messages().some((r) => r.text.includes(`ECHO:${nonce}`));
-    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached) && !askedProblem, turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null, permissionAsks, ...(askedProblem ? { problem: askedProblem } : {}) };
+    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached) && !askedProblem, turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null, permissionAsks, ourAsks, ...(askedProblem ? { problem: askedProblem } : {}) };
 
     // Stage 2: the tools the agent offered its model on its first request. The proxy refuses a request that offers a tool
     // its policy does not allow, so one that reached the provider at all passed that rule: the stage is whether one did.
