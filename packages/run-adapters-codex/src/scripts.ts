@@ -250,10 +250,11 @@ function fitted(told: readonly Told[], build: (cap: number) => string, budget?: 
   const least = build(0);
   if (least.length > max) {
     const { text, kept } = cut(least, max);
-    // A window too small for even the lines (cut keeps a short last line past its cap): held to the kernel's bound, which
-    // refuses it in words, and then it tells no call's outcome.
-    const bounded = boundResult(text, budget);
-    return bounded.truncated ? { output: bounded.text, shown: [] } : at(0, text, kept);
+    // A window too small for even the lines, where cut keeps a short last line past its cap: held to the kernel's bound
+    // (which refuses it in words), and then it tells no call's outcome. With no window binding this is never taken, and
+    // the output and the calls it tells are exactly as they always were.
+    if (max < EXEC_RECOVERY_MAX_CHARS && text.length > max) return { output: boundResult(text, budget).text, shown: [] };
+    return at(0, text, kept);
   }
   let lo = 0;
   let hi = whole.length;
