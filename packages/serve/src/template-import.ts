@@ -38,8 +38,8 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 /** A path part that is not plain, or a character no package path holds (a control character, a backslash). */
 const NOT_PLAIN = (path: string) => /[\0-\x1f\x7f\\]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..");
 
-/** An upload's files ({path, encoding, content}) as the package's bytes by path: 422 under files.<i> for one that is not
- *  that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
+/** An upload's files ({path, encoding, content}) as the package's bytes by path, each hidden path left out: 422 under
+ *  files.<i> for one that is not that shape; the GitHub import's own refusals (ImportRefused "package") for a path that is not plain or is there twice,
  *  over its count and over the bytes it keeps. */
 function uploadFiles(raw: unknown): Map<string, Buffer> {
   const shape = "files is a list of {path, encoding, content}: each file of the package, its encoding utf8 or base64";
@@ -59,6 +59,9 @@ function uploadFiles(raw: unknown): Map<string, Buffer> {
   let kept = 0;
   for (const [path, data] of read) {
     if (NOT_PLAIN(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)}, a path that is not plain: refused.`);
+    // A hidden file or folder (.env, .DS_Store, .cache/) is no part of a package (templates.ts reads none): left out here,
+    // before anything is counted, stored or hashed, so a client's .env is never kept.
+    if (path.split("/").some((part) => part.startsWith("."))) continue;
     if (files.has(path)) throw new ImportRefused("package", `The package holds ${JSON.stringify(path)} twice: refused.`);
     kept += data.length;
     if (kept > IMPORT_LIMITS.packageBytes) throw new ImportRefused("package", `The package's files are over the ${IMPORT_LIMITS.packageBytes} bytes an import keeps.`);
@@ -154,17 +157,23 @@ function bodyOf(body: Json, apiOnly: boolean): { source: GithubSource; dryRun: b
 
 /** An upload: its files checked as an import's are, its id `upload:<name>` (its manifest's name), its sha the package's
  *  sha256; a dry run answers it, storing nothing; else it is stored and served (201), in place of the one of its name. */
-async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
-  let pkg: Package;
-  let files: Map<string, Buffer>;
+/** An upload's files ({files} of POST /v2/templates/import) checked as the import checks them, storing nothing: the
+ *  package's bytes by path (each hidden path left out) and the package read from them; else the refusal the route answers
+ *  (422). `agentrun deploy` runs this on the body it is about to send (agentrun-serve check-upload), so a package a target
+ *  refuses is refused before anything is sent, by this one check. */
+export function checkUpload(raw: unknown): { files: Map<string, Buffer>; pkg: Package } {
   try {
-    files = uploadFiles(raw);
+    const files = uploadFiles(raw);
     const name = manifestOf(files.get(MANIFEST)?.toString("utf8") ?? "")?.name;
     const id = `${UPLOAD_PREFIX}${typeof name === "string" ? name : ""}`;
-    pkg = importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files);
+    return { files, pkg: importedPackage(id, { source: id, sha: uploadSha(files), publisher: "" }, files) };
   } catch (error) {
     refusalOf(error);
   }
+}
+
+async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: boolean): Promise<{ status: 200 | 201; pkg: Package; trusted: boolean; replaced: string | null }> {
+  const { files, pkg } = checkUpload(raw);
   const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
   await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });

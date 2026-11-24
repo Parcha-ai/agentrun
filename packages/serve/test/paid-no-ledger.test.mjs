@@ -9,8 +9,8 @@ import { FAUX_ENV } from "../dist/model.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV } from "../dist/monid.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { monidForClaim } from "../dist/runner/monid-run.js";
-import { parallelExtract } from "../dist/web-fetch.js";
-import { webSearch } from "../dist/web-search.js";
+import { parallelExtract } from "./fixtures/serve-web.mjs";
+import { parallelSearched } from "@parcha/agentrun-web";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import { calls as monidCalls, KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 
@@ -33,7 +33,7 @@ test("a monid endpoint's call with no run's ledger is refused unsent: outside an
 test("a search through Parallel inside a call whose ledger has no RunTools is refused unsent, in words that say so", async () => {
   const sent = [];
   const client = parallelExtract(CANARY, async (url, init) => (sent.push(String(url)), fakeParallel(url, init)));
-  const answer = await bookedIn({ call: "c1" }, () => webSearch({ query: "widgets" }, client));
+  const answer = await bookedIn({ call: "c1" }, async () => (await parallelSearched({ query: "widgets" }, client)).answer);
   assert.match(answer.error, UNBOOKED);
   assert.deepEqual(sent, [], "nothing reached Parallel");
 });

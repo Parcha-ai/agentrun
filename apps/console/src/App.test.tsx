@@ -56,6 +56,7 @@ describe("route", () => {
   it("opens Settings → API Keys at its own address, and at #/settings", () => {
     expect(route("#/settings/keys")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/harness-keys")).toEqual({ section: "settings", settings: "harness-keys" });
+    expect(route("#/settings/api-keys")).toEqual({ section: "settings", settings: "api-keys" });
     expect(route("#/settings")).toEqual({ section: "settings", settings: "keys" });
     expect(route("#/settings/webhook")).toEqual({ section: "settings", settings: "webhook" });
     expect(route("#/settings/email")).toEqual({ section: "settings", settings: "email" });
@@ -259,6 +260,7 @@ describe("App, Settings", () => {
       if (path === "/v2/settings/tools") return json(200, { web_search: { provider: "auto" }, web_fetch: { provider: "kernel" } });
       if (path === "/v2/settings/tool-keys") return json(200, keys);
       if (path === "/v2/settings/harness-keys") return json(200, { harnesses: [{ id: "model-agent", label: "Model Agent", ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }] }] });
+      if (path === "/v2/settings/api-keys") return json(200, { keys: [{ id: "01a20b30-b53a-7000-9abd-64340ac132cb", name: "billing app", created_at: "2026-11-03T12:00:00.000Z", last_used_at: null, secret: { name: "api-key:01a20b30-b53a-7000-9abd-64340ac132cb", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" } }], limit: 50 });
       if (path === "/v2/settings/webhook") return json(200, { configured: false });
       if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: [] });
       if (path === "/v2/settings/mcp-servers") return json(200, { servers: [] });
@@ -324,6 +326,20 @@ describe("App, Settings", () => {
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")])).toEqual([["API Keys", null], ["Tools", "page"], ["MCP servers", null], ["GitHub", null], ["Email", null], ["Computers", null], ["Workspace", null], ["Demo", null]]);
     expect(page.host.querySelector('tr[data-tool="web_search"] button[aria-haspopup=listbox]')).toBeTruthy();
     expect(page.asked).toContain("GET /v2/settings/tools");
+  });
+
+  it("#/settings/api-keys opens AgentRun API keys, a tab only on a server that makes them", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, api_keys: { routes: true, limit: 50, at_rest: "hashed" } }, "#/settings/api-keys");
+    expect(page.host.querySelector("h1")?.textContent).toBe("AgentRun API keys");
+    expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["AgentRun API keys", "page"]]);
+    expect(page.asked).toContain("GET /v2/settings/api-keys");
+    expect(page.host.querySelector('[aria-label="Keys"]')?.textContent).toContain("billing app");
+    // The owner's session (the session read's secrets_writable) makes one here.
+    expect([...page.host.querySelectorAll("button")].some((b) => b.textContent === "Create key")).toBe(true);
+    act(() => root?.unmount());
+    document.body.innerHTML = "";
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("AgentRun API keys");
   });
 
   it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {

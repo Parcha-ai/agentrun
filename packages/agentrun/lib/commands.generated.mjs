@@ -737,6 +737,26 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "api-keys",
+      "list"
+    ],
+    "operationId": "listApiKeys",
+    "method": "GET",
+    "path": "/settings/api-keys",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The API keys made for this server's apps; never a key"
+  },
+  {
+    "command": [
       "capabilities",
       "get-capacity"
     ],

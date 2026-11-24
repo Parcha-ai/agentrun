@@ -204,6 +204,12 @@ export type ChatGPTStart = Answer<"startChatGPTSignIn">;
 /** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
 export type ChatGPTSignOut = Answer<"signOutChatGPT">;
 
+/** The API keys made for this server's apps (GET /v2/settings/api-keys, a serve extension). Never a key. */
+export type ApiKeys = Answer<"listApiKeys">;
+export type ApiKey = ApiKeys["keys"][number];
+/** A create's answer (POST /v2/settings/api-keys): the key, with its value as `api_key`, shown this once. */
+export type ApiKeyMade = Answer<"createApiKey">;
+
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
