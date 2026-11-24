@@ -23,7 +23,7 @@ import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } f
 import { OLLAMA_PROVIDER, type OllamaAsks } from "../ollama-provider.js";
 import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
-import { responsesFetch } from "./responses-fetch.js";
+import { type EdgeAsks, responsesFetch } from "./responses-fetch.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
 /** What a request on a model costs, USD per million tokens, as pi-ai's catalog lists it (tiers included). */
@@ -191,7 +191,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     providerIds.set(safe, id);
     return safe;
   };
-  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal } = {}) => {
+  return (async (_url: unknown, init: { body?: unknown; signal?: AbortSignal; edgeAsks?: EdgeAsks } = {}) => {
     const body = JSON.parse(String(init.body ?? "{}")) as MessagesRequest;
     const built = contextOf(body, target, (id) => providerIds.get(id) ?? id) as PiContext;
     // A model that takes its tools as text (its catalog entry's toolsAs): its tools in its system prompt, every call and
@@ -205,7 +205,7 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
     // empty id is a caller that asked for no cache hint.
     const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
-    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama ? ollamaAsks(body) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(ollama && init.edgeAsks ? ollamaAsks(init.edgeAsks) : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -556,10 +556,8 @@ type MessagesBlock = { type: string; text?: string; thinking?: string; id?: stri
 type MessagesRequest = {
   model?: string;
   max_tokens?: number;
-  temperature?: unknown;
-  top_p?: unknown;
   thinking?: { type?: string };
-  output_config?: { effort?: unknown; format?: { type?: unknown; schema?: unknown } };
+  output_config?: { effort?: unknown };
   metadata?: { user_id?: string };
   system?: string | MessagesBlock[];
   messages?: { role: "user" | "assistant"; content: string | MessagesBlock[] }[];
@@ -579,20 +577,16 @@ function levelOf(body: MessagesRequest): (typeof NAMED_LEVELS)[number] | undefin
   return body.thinking?.type === "adaptive" && (NAMED_LEVELS as readonly unknown[]).includes(effort) ? (effort as (typeof NAMED_LEVELS)[number]) : undefined;
 }
 
-/** What a Messages request asks an Ollama model past pi-ai's own options, as ollama-provider.ts chatBody reads it: the
- *  JSON schema its answer is held to (`output_config.format`, Anthropic's json_schema), its temperature and top_p (top_p
- *  as pi-ai's samplingParams), and no thinking (`output_config.effort` "none", which the Responses edge sends for its
- *  effort "none"; pi's own thinking off sends no effort, so Ollama's default stays its). Read on an Ollama model alone:
- *  every other route's requests go as they did. */
-function ollamaAsks(body: MessagesRequest): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
-  const format = body.output_config?.format;
-  const schema = format?.type === "json_schema" && typeof format.schema === "object" && format.schema !== null && !Array.isArray(format.schema) ? (format.schema as Record<string, unknown>) : undefined;
-  const number = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+/** What the Responses edge asks an Ollama model past the Messages body (responses-fetch.ts EdgeAsks, on the in-process
+ *  call's init, never the body) as pi-ai's options and ollama-provider.ts chatBody read them: the format and think as
+ *  they are, temperature as pi-ai's own, top_p as its samplingParams. Read on an Ollama model alone; a Messages client's
+ *  own request carries none, so the Messages wire is as it was. */
+function ollamaAsks(asks: EdgeAsks): OllamaAsks & { temperature?: number; samplingParams?: { top_p: number } } {
   return {
-    ...(schema ? { format: schema } : {}),
-    ...(number(body.temperature) ? { temperature: body.temperature } : {}),
-    ...(number(body.top_p) ? { samplingParams: { top_p: body.top_p } } : {}),
-    ...(body.output_config?.effort === "none" ? { think: false as const } : {}),
+    ...(asks.format ? { format: asks.format } : {}),
+    ...(asks.temperature === undefined ? {} : { temperature: asks.temperature }),
+    ...(asks.top_p === undefined ? {} : { samplingParams: { top_p: asks.top_p } }),
+    ...(asks.think === false ? { think: false as const } : {}),
   };
 }
 

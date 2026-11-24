@@ -13,7 +13,8 @@
 //     beside tools sent it is refused, since the model could call none. temperature and top_p reach Ollama's options;
 //     `reasoning.effort` is a thinking model's level (Ollama's think), and "none" asks it not to think. An effort or a
 //     format this route does not know is refused. parallel_tool_calls false keeps an answer's first call alone, since
-//     Ollama's chat has no switch for one call per answer.
+//     Ollama's chat has no switch for one call per answer, and warns the names of those it drops. What this asks Ollama
+//     past the Messages body rides the in-process call (EdgeAsks), never the body: the Messages wire stays as it is.
 //   Answer: the Messages stream becomes a Responses stream: response.created, an output item for each block (message,
 //     reasoning, function_call) with its deltas and its done events, then response.completed, or response.incomplete
 //     with `incomplete_details.reason: "max_output_tokens"` where the model stopped at its output limit, both carrying
@@ -93,9 +94,9 @@ function refuseForcedChoice(choice: unknown): void {
 /**
  * A Responses request as one Messages request (see the head of this file). `reasons`: whether the model reasons, so a
  * `reasoning.effort` reaches it as the Messages translation's named level; a model that does not is asked none.
- * Throws a ResponsesRefusal for what it does not take.
+ * Returns the Messages body and what it asks Ollama past it (EdgeAsks). Throws a ResponsesRefusal for what it does not take.
  */
-export function messagesOfResponses(body: Json, reasons: boolean): Json {
+export function messagesOfResponses(body: Json, reasons: boolean): { request: Json; asks: EdgeAsks } {
   if (body.store === true) throw new ResponsesRefusal("store: true is not taken on this model's route: nothing is stored here, so send store: false and the whole conversation");
   if (body.previous_response_id !== undefined && body.previous_response_id !== null) throw new ResponsesRefusal("previous_response_id is not taken on this model's route: no response is stored here, so send the whole conversation");
   refuseForcedChoice(body.tool_choice);
@@ -152,31 +153,34 @@ export function messagesOfResponses(body: Json, reasons: boolean): Json {
   if (effort !== undefined && effort !== null && !(typeof effort === "string" && (EFFORTS.has(effort) || effort === "none"))) throw new ResponsesRefusal(`reasoning.effort ${JSON.stringify(effort)} is not taken on this model's route: "none", ${[...EFFORTS].map((each) => `"${each}"`).join(", ")} only`);
   const level = reasons && typeof effort === "string" && EFFORTS.has(effort) ? effort : undefined;
   // "none" on a model that reasons: Ollama is asked not to think (think: false), where its own default would have the
-  // model think. It travels as output_config.effort "none", which the route reads on an Ollama model alone (model-route.ts
-  // ollamaAsks), so pi's own thinking off (thinking disabled, no effort) stays as it was.
+  // model think.
   const off = reasons && effort === "none";
-  const config = { ...(level ? { effort: level } : off ? { effort: "none" } : {}), ...(schema ? { format: { type: "json_schema", schema } } : {}) };
-  return {
+  const request = {
     model: typeof body.model === "string" ? body.model : "route",
     stream: true,
     ...(typeof body.max_output_tokens === "number" ? { max_tokens: body.max_output_tokens } : {}),
-    ...numberOf(body, "temperature"),
-    ...numberOf(body, "top_p"),
     ...(system.length ? { system: system.join("\n\n") } : {}),
     messages,
     ...(sendsTools ? { tools: functions } : {}),
-    ...(level ? { thinking: { type: "adaptive" } } : off ? { thinking: { type: "disabled" } } : {}),
-    ...(Object.keys(config).length ? { output_config: config } : {}),
+    ...(level ? { thinking: { type: "adaptive" }, output_config: { effort: level } } : {}),
   };
+  const asks: EdgeAsks = { ...(schema ? { format: schema } : {}), ...numberOf(body, "temperature"), ...numberOf(body, "top_p"), ...(off ? { think: false as const } : {}) };
+  return { request, asks };
 }
 
-/** `field` of `body` (temperature, top_p) as the Messages body carries it: a number as it is, null or absent as none (the
- *  model's own default). Anything else is refused, never dropped. */
-function numberOf(body: Json, field: "temperature" | "top_p"): Json {
+/** What this edge asks an Ollama model past the Messages body: the JSON schema its answer is held to (Ollama's `format`),
+ *  its temperature and top_p, and no thinking (effort "none"). Handed to the route's Messages fetch on the in-process
+ *  call's init (`edgeAsks`; model-route.ts messagesFetch reads it on an Ollama model alone), never in the body, so the
+ *  Messages wire a Messages client speaks stays as it is: its own fields of these names reach Ollama as before, not at all. */
+export type EdgeAsks = { format?: Json; temperature?: number; top_p?: number; think?: false };
+
+/** `field` of `body` (temperature, top_p) as this edge asks it of Ollama (EdgeAsks): a number as it is, null or absent as
+ *  none (the model's own default). Anything else is refused, never dropped. */
+function numberOf(body: Json, field: "temperature" | "top_p"): { temperature?: number; top_p?: number } {
   const value = body[field];
   if (value === undefined || value === null) return {};
   if (typeof value !== "number" || !Number.isFinite(value)) throw new ResponsesRefusal(`${field} ${JSON.stringify(value)} is not taken on this model's route: a number, or null for the model's default`);
-  return { [field]: value };
+  return field === "temperature" ? { temperature: value } : { top_p: value };
 }
 
 /** The JSON schema `text.format` holds the answer to: json_schema's own, json_object's any object; none for a text format
@@ -189,7 +193,7 @@ function schemaOf(text: unknown, sendsTools: boolean): Json | undefined {
   if (type !== "json_schema" && type !== "json_object") throw new ResponsesRefusal(`text.format ${JSON.stringify(type ?? format)} is not taken on this model's route: "text", "json_schema" and "json_object" only`);
   const schema = type === "json_object" ? { type: "object" } : (format as Json).schema;
   if (!isPlain(schema)) throw new ResponsesRefusal("text.format json_schema with no schema object is not taken on this model's route");
-  if (sendsTools) throw new ResponsesRefusal(`text.format ${type} beside tools is not taken on this model's route: Ollama holds the whole answer to the format, which leaves the model no way to call a tool, so send it with no tools (or tool_choice "none"), or with no format`);
+  if (sendsTools) throw new ResponsesRefusal(`text.format ${type} beside tools is not taken on this model's route: Ollama holds the whole answer to the format, which leaves the model no way to call a tool, so drop the output schema, or use a model route that takes tools with a format (or send tool_choice "none")`);
   return schema;
 }
 
@@ -259,23 +263,26 @@ type Open = { index: number; item: Json; text: string; kind: "message" | "reason
 /**
  * A fetch that answers OpenAI Responses requests through `messages` (a Messages fetch: the route's own translation,
  * model-route.ts messagesFetch). `reasons`: whether the model reasons (messagesOfResponses). A request it does not take
- * is answered 400 and never reaches `messages`.
+ * is answered 400 and never reaches `messages`. `warn`: where a line on what the edge did to an answer goes (the calls
+ * parallel_tool_calls false kept from the client, by count and tool name, never their arguments); stderr by default,
+ * which the run's own log keeps.
  */
-export function responsesFetch(messages: typeof fetch, { reasons = false }: { reasons?: boolean } = {}): typeof fetch {
+export function responsesFetch(messages: typeof fetch, { reasons = false, warn = (line: string) => console.warn(line) }: { reasons?: boolean; warn?: (line: string) => void } = {}): typeof fetch {
   return (async (url: unknown, init: { body?: unknown; signal?: AbortSignal; headers?: unknown } = {}) => {
     let body: Json;
     let request: Json;
+    let asks: EdgeAsks;
     try {
       const parsed = JSON.parse(String(init.body ?? "{}")) as unknown;
       if (!isPlain(parsed)) throw new ResponsesRefusal("the request body is not a JSON object");
       body = parsed;
-      request = messagesOfResponses(body, reasons);
+      ({ request, asks } = messagesOfResponses(body, reasons));
     } catch (error) {
       const message = error instanceof ResponsesRefusal ? error.message : "the request body is not JSON";
       return new Response(JSON.stringify({ error: { message, type: "invalid_request_error", param: null, code: null } }), { status: 400, headers: { "content-type": "application/json" } });
     }
     const target = String(url).replace(/\/v1\/responses(?=$|\?)/, "/v1/messages");
-    const answer = await messages(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), ...(init.signal ? { signal: init.signal } : {}) });
+    const answer = await messages(target, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request), edgeAsks: asks, ...(init.signal ? { signal: init.signal } : {}) } as RequestInit);
     if (!answer.ok || !answer.body) {
       const text = await answer.text().catch(() => "");
       return new Response(JSON.stringify({ error: { message: text || `the model's request failed (${answer.status})`, type: "server_error", param: null, code: null } }), { status: answer.status >= 400 ? answer.status : 500, headers: { "content-type": "application/json" } });
@@ -300,11 +307,16 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
       metadata: {},
     };
     const events = messagesEvents(answer.body);
-    const oneCall = body.parallel_tool_calls === false;
+    // parallel_tool_calls false: the answer's first call alone; the names of those it loses, said once it ends.
+    const dropped: string[] | undefined = body.parallel_tool_calls === false ? [] : undefined;
+    const said = () => {
+      if (dropped?.length) warn(`responses edge: parallel_tool_calls false kept the answer's first tool call and dropped ${dropped.length} more: ${dropped.join(", ")}`);
+    };
     // OpenAI's own default: a body streams only when it asks to; one that names no stream is answered whole.
     if (body.stream !== true) {
       // The whole answer, then its final response as one body.
-      await translate(events, response, () => {}, oneCall);
+      await translate(events, response, () => {}, dropped);
+      said();
       if (response.status === "failed") {
         // 500 for a failed answer, as the Messages side answers one asked whole (model-route.ts wholeOf: Anthropic's
         // api_error is a 500, OpenAI's server_error too); a rate limit 429.
@@ -321,7 +333,8 @@ export function responsesFetch(messages: typeof fetch, { reasons = false }: { re
         try {
           // translate never throws on the Messages stream (a part that does not read is its own failed end); what throws
           // here is the client gone, whose stream takes nothing more.
-          await translate(events, response, send, oneCall);
+          await translate(events, response, send, dropped);
+          said();
           controller.close();
         } catch {
           // Its loop has already let go of the Messages stream (for await returns it), which ends the route's request.
@@ -338,9 +351,10 @@ const snapshot = (response: Json): Json => ({ ...response, output: [...(response
 /**
  * The Messages events as Responses events, each given to `send`, the response filled as they come: its output items,
  * then its end (completed, incomplete at the output limit, or failed, each with the usage the Messages stream stated).
- * `oneCall` (the request's parallel_tool_calls false): the answer's first function_call alone.
+ * `dropped` (given for the request's parallel_tool_calls false): the answer's first function_call alone, the name of each
+ * later one pushed onto it.
  */
-async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, send: (event: Json) => void, oneCall = false): Promise<void> {
+async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, send: (event: Json) => void, dropped?: string[]): Promise<void> {
   const output = response.output as Json[];
   const open = new Map<number, Open>();
   let usage: Json | undefined;
@@ -388,9 +402,12 @@ async function translate(events: AsyncGenerator<MessagesEvent>, response: Json, 
           output.push(item);
           send({ type: "response.output_item.added", output_index: index, item: { ...item, summary: [] } });
           send({ type: "response.reasoning_summary_part.added", item_id: item.id, output_index: index, summary_index: 0, part: { type: "summary_text", text: "" } });
-        } else if (block.type === "tool_use" && !(oneCall && output.some((item) => item.type === "function_call"))) {
+        } else if (block.type === "tool_use" && dropped && output.some((item) => item.type === "function_call")) {
           // parallel_tool_calls false: the answer's first call alone (a later one is never opened, so its deltas and its
-          // stop find nothing), since Ollama's chat has no switch for one call per answer.
+          // stop find nothing), since Ollama's chat has no switch for one call per answer. Its name is said, never dropped
+          // in silence.
+          dropped.push(String(block.name ?? "(no name)"));
+        } else if (block.type === "tool_use") {
           const item: Json = { id: idOf("fc"), type: "function_call", status: "in_progress", call_id: String(block.id ?? ""), name: String(block.name ?? ""), arguments: "" };
           open.set(json.index, { index, item, text: "", kind: "function_call" });
           output.push(item);

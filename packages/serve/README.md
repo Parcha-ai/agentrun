@@ -1624,10 +1624,10 @@ seconds), and a run on any other model, a key's default included, never asks Oll
   on these models. A `tool_choice` that forces a call (`"required"`, or one naming a function) is refused too: Ollama
   can't be made to call a tool. `"auto"` and `"none"` are taken. `text.format` `json_schema` is Ollama's own `format`
   (the answer held to the schema; `json_object` to any object), refused beside tools sent, since a model held to it
-  can't call one. `temperature` and `top_p` reach Ollama's options (on the Messages wire too, with
-  `output_config.format`); `reasoning.effort` turns a thinking model's thinking on, `"none"` off. An effort or a format
-  the route doesn't know is refused. `parallel_tool_calls: false` gets an answer's first call alone. A request streams
-  only with `stream: true`; one that names no stream is answered whole. Replayed reasoning, OpenAI's encrypted reasoning
+  can't call one. `temperature` and `top_p` reach Ollama's options; `reasoning.effort` turns a thinking model's
+  thinking on, `"none"` off. An effort or a format the route doesn't know is refused. `parallel_tool_calls: false` gets
+  an answer's first call alone, and the calls it drops are logged by tool name. A request streams only with
+  `stream: true`; one that names no stream is answered whole. Replayed reasoning, OpenAI's encrypted reasoning
   included, is dropped, not refused. An answer cut at its output limit ends `response.incomplete` with its usage, so it
   is booked and codex ends the turn rather than asking again. Every model id the client sends (a title or compaction
   request's too) runs the one tag. codex and opencode are given the model's window as the route runs it (its `num_ctx`,
