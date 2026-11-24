@@ -1,0 +1,74 @@
+[
+  {
+    "id": "R1 health",
+    "result": "PASS",
+    "said": "GET /v2/health 200",
+    "shot": "R1-health.txt"
+  },
+  {
+    "id": "R2 audit 1440px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: it was held. Its check: 15 of 17 agreed (bar 80%)",
+    "shot": "R2-1440.png"
+  },
+  {
+    "id": "R3 first 1440px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: it was held. Its check: 11 of 16 agreed (bar 80%)",
+    "shot": "R3-1440.png"
+  },
+  {
+    "id": "R4 none 1440px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: no check yet",
+    "shot": "R4-1440.png"
+  },
+  {
+    "id": "R2 audit 390px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: it was held. Its check: 15 of 17 agreed (bar 80%)",
+    "shot": "R2-390.png"
+  },
+  {
+    "id": "R3 first 390px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: it was held. Its check: 11 of 16 agreed (bar 80%)",
+    "shot": "R3-390.png"
+  },
+  {
+    "id": "R4 none 390px",
+    "result": "PASS",
+    "said": "4 · CheaperDone7.7x cheaperagreement not claimed: no check yet",
+    "shot": "R4-390.png"
+  },
+  {
+    "id": "R5 share line 1440px",
+    "result": "PASS",
+    "said": "Who finished each runLast 20 runs: 85% by the learned workflow0%50%100%Execution mix in blocks of 5 runs. Runs 1 to 5: by the agent 5. Runs 6 to 10: by the agen",
+    "shot": "R5-1440.png"
+  },
+  {
+    "id": "R5 share line 390px",
+    "result": "PASS",
+    "said": "Who finished each run, by 5Last 20 runs: 85% by the learned workflow0%50%100%Execution mix in blocks of 5 runs. Runs 1 to 5: by the agent 5. Runs 6 to 10: by th",
+    "shot": "R5-390.png"
+  },
+  {
+    "id": "R6 share line 1440px",
+    "result": "PASS",
+    "said": "Who finished each runLast 3 runs: 67% by the agent, 33% handed back0%50%100%Execution mix in blocks of 1 runs. Run 1: by the agent 1. Run 2: by the agent 1. Run",
+    "shot": "R6-1440.png"
+  },
+  {
+    "id": "R6 share line 390px",
+    "result": "PASS",
+    "said": "Who finished each runLast 3 runs: 67% by the agent, 33% handed back0%50%100%Execution mix in blocks of 1 runs. Run 1: by the agent 1. Run 2: by the agent 1. Run",
+    "shot": "R6-390.png"
+  },
+  {
+    "id": "R7 page errors",
+    "result": "PASS",
+    "said": "no console errors",
+    "shot": null
+  }
+]
