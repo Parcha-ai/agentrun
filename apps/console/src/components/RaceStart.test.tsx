@@ -2,7 +2,9 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RaceStart } from "./RaceStart";
+import { toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
+import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
@@ -19,12 +21,21 @@ const HARNESSES = [
   { id: "codex", available: true, default_model: "openai/gpt-6.1-sol", models: ["openai/gpt-6.1-sol"] },
   { id: "opencode", available: false, reason: "No key here.", default_model: null, models: [] },
 ];
+// The tools this server runs (capabilities `tools`): a lane gets a new agent's, by its harness and the server's place.
+const TOOLS = toolOffers([
+  { name: "read", available: true, harnesses: ["pi", "codex"] },
+  { name: "write", available: true, harnesses: ["pi", "codex"] },
+  { name: "bash", available: true, sandbox_only: true, harnesses: ["pi", "codex"] },
+  { name: "web_search", available: true, harnesses: ["pi"] },
+]);
+const BOXED: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], defaultPlace: { mode: "sandbox", box: "local" } };
 const LABEL = "20261123-1004-1f2e";
 const TASK = "Fix the failing test in the parser";
 
 type Sent = { lane: string; body: Record<string, unknown>; key: string };
-/** A fake server: every POST /v2/runs recorded, answered by `answer` (202 with a run, or a refusal). */
-function mount(answer: (sent: Sent) => Response | Promise<Response>) {
+/** A fake server: every POST /v2/runs recorded, answered by `answer` (202 with a run, or a refusal). `places`: the
+ *  server's (capabilities `places`), none by default. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null) {
   const sent: Sent[] = [];
   const went: string[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -37,7 +48,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>) {
   }) as typeof globalThis.fetch;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses: HARNESSES, go: (to: string) => void went.push(to), label: LABEL })));
+  act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses: HARNESSES, tools: TOOLS, places, go: (to: string) => void went.push(to), label: LABEL })));
   return { host, sent, went };
 }
 const started = (sent: Sent) => json(202, { run_id: `run-${sent.lane}`, agent_id: `agent-${sent.lane}`, status: "queued", state: "working", labels: sent.body.labels });
@@ -60,12 +71,24 @@ describe("RaceStart", () => {
     await type(host, TASK);
     await act(async () => { button(host, "Start the race")!.click(); });
     await settle();
+    // Each lane with the tools its harness runs here (no box on this server: no shell), so a lane can do the task.
     expect(sent.map((s) => s.body)).toEqual([
-      laneStart(LABEL, 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, TASK, 1),
-      laneStart(LABEL, 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, TASK, 1),
+      laneStart(LABEL, 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, TASK, 1, { tools: ["read", "write", "web_search"] }),
+      laneStart(LABEL, 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, TASK, 1, { tools: ["read", "write"] }),
     ]);
     expect(new Set(sent.map((s) => s.key)).size).toBe(2);
     expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("on a server with a box, every lane runs in it, with the shell a new agent gets there", async () => {
+    const { host, sent } = mount(started, BOXED);
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(sent.map((s) => (s.body.definition as Record<string, unknown>))).toEqual([
+      expect.objectContaining({ harness: "pi", tools: ["read", "write", "bash", "web_search"], computer: { kind: "sandbox", provider: "local" } }),
+      expect.objectContaining({ harness: "codex", tools: ["read", "write", "bash"], computer: { kind: "sandbox", provider: "local" } }),
+    ]);
   });
 
   it("a lane the server refuses says why in its own place; the others start, and Start again sends only that lane, under the key it had", async () => {
@@ -124,7 +147,7 @@ describe("RaceStart", () => {
     const none = HARNESSES.map((h) => ({ ...h, available: false }));
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    const render = (harnesses: typeof HARNESSES) => act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch: globalThis.fetch }), harnesses, go: () => {}, label: LABEL })));
+    const render = (harnesses: typeof HARNESSES) => act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch: globalThis.fetch }), harnesses, tools: TOOLS, places: null, go: () => {}, label: LABEL })));
     render(none);
     expect(host.querySelectorAll("[data-race-lane]")).toHaveLength(0);
     render(HARNESSES);

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { LANE_WAIT_MS, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, RACE_PAGES, raceFilter, readRace } from "./race";
+import { toolOffers } from "./agentForm";
+import type { Places } from "./place";
+import { LANE_WAIT_MS, laneKit, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, RACE_PAGES, raceFilter, readRace } from "./race";
 import type { Run, TimelineRow } from "./v2";
 
 const run = (id: string, labels: Record<string, string>, created_at = "2026-11-23T10:00:00Z"): Run => ({
@@ -109,18 +111,40 @@ describe("a lane's stats, from its run and its followed timeline", () => {
 
 describe("starting a race: one inline run per lane", () => {
   it("a lane's start is its own agent (external race-<label>-<n>, one revision per harness and model), the race's task and cap, and the labels the race view reads", () => {
-    const body = laneStart("bench-1", 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, "Fix the failing test", 1.5);
+    const kit = { tools: ["read", "write", "bash"], computer: { kind: "sandbox", provider: "local" } } as const;
+    const body = laneStart("bench-1", 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, "Fix the failing test", 1.5, { ...kit, tools: [...kit.tools] });
     expect(body).toEqual({
       external: { source: "console", kind: "race", id: "race-bench-1-2", version: "codex openai/gpt-6.1-sol" },
       // POST /v2/runs takes a definition with instructions or a workflow (packages/serve's inline-run test sends this
-      // same body to a server).
-      definition: { name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "codex", model: "openai/gpt-6.1-sol" },
+      // same body to a server). The inline route gives no tools and no place of its own: the lane names both.
+      definition: { name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "codex", model: "openai/gpt-6.1-sol", tools: ["read", "write", "bash"], computer: { kind: "sandbox", provider: "local" } },
       input: { content: "Fix the failing test" },
       max_cost_usd: 1.5,
       labels: { race: "bench-1", lane: "2", harness: "codex", model: "openai/gpt-6.1-sol" },
     });
+    // On a server with no box, no computer: the lane runs where a new agent would, on the runner.
+    expect(laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1, { tools: ["read"] }).definition).not.toHaveProperty("computer");
     // The race view orders and names it from those labels.
-    expect(lanesOf([run("r2", body.labels!), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1).labels!)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
+    expect(lanesOf([run("r2", body.labels!), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1, { tools: [] }).labels!)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
+  });
+
+  it("a lane's tools and place are a new agent's on this server: every tool its harness runs here, and the box when there is one", () => {
+    const offers = toolOffers([
+      { name: "read", available: true, harnesses: ["pi", "codex"] },
+      { name: "write", available: true, harnesses: ["pi"] },
+      { name: "web_search", available: false, reason: "No key.", harnesses: ["pi"] },
+      { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "browser", available: true, harnesses: ["pi"] },
+    ]);
+    // No box: the runner's tools (no shell), and no computer named.
+    expect(laneKit("pi", offers, null)).toEqual({ tools: ["read", "write", "browser"] });
+    const runnerOnly: Places = { modes: ["runner"], boxes: [], defaultPlace: { mode: "runner" } };
+    expect(laneKit("pi", offers, runnerOnly)).toEqual({ tools: ["read", "write", "browser"] });
+    // A box: the shell too (no browser, which runs on the runner only), in that box.
+    const boxed: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], defaultPlace: { mode: "sandbox", box: "local" } };
+    expect(laneKit("pi", offers, boxed)).toEqual({ tools: ["read", "write", "bash"], computer: { kind: "sandbox", provider: "local" } });
+    // Each harness its own: codex runs read alone here.
+    expect(laneKit("codex", offers, boxed)).toEqual({ tools: ["read"], computer: { kind: "sandbox", provider: "local" } });
   });
 
   it("a new race's label is a label value the server takes, and two races get two labels", () => {

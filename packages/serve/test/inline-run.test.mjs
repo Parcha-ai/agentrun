@@ -109,22 +109,36 @@ test("a different definition under a version already run is 409 external_body_co
 });
 
 // The console's race lane (apps/console/src/lib/race.ts laneStart, whose test pins this same body): its harness and
-// model are a harness this server offers, on its default model, as the start form picks them.
-test("a race lane's start, as the console's race form sends it, is taken and runs", { timeout: 120_000 }, async (t) => {
+// model are a harness this server offers, on its default model, as the start form picks them. The inline route gives a
+// definition no tools and no place of its own, so the lane names a new agent's (race.ts laneKit, by the console's rule
+// over capabilities: every tool its harness runs here, a shell only in the server's default box, and that box), and its
+// task is one that takes tools: a file written, then read back.
+test("a race lane's start, as the console's race form sends it, is taken, and the lane does a task with its tools", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t);
-  const offered = (await api("GET", "/capabilities")).body.harnesses.find((h) => h.available && h.default_model);
+  const caps = (await api("GET", "/capabilities")).body;
+  const offered = caps.harnesses.find((h) => h.available && h.default_model);
   assert.ok(offered, "a harness this server runs");
   const lane = { harness: offered.id, model: offered.default_model };
+  const place = caps.places?.default_place;
+  const boxed = place?.mode === "sandbox";
+  const tools = caps.tools
+    .filter((tool) => !tool.meta && !tool.call_only && tool.available && tool.harnesses.includes(lane.harness) && (boxed ? tool.name !== "browser" : !tool.sandbox_only))
+    .map((tool) => tool.name);
+  assert.ok(tools.includes("write") && tools.includes("read"), JSON.stringify(tools));
   const started = await api("POST", "/runs", {
     external: { source: "console", kind: "race", id: "race-20261123-1004-1f2e-1", version: `${lane.harness} ${lane.model}` },
-    definition: { name: "Race 20261123-1004-1f2e, lane 1", instructions: "Do the task you are given.", harness: lane.harness, model: lane.model },
-    input: { content: "Reply with the word ready." },
+    definition: { name: "Race 20261123-1004-1f2e, lane 1", instructions: "Do the task you are given.", harness: lane.harness, model: lane.model, tools, ...(boxed ? { computer: { kind: "sandbox", provider: place.box } } : {}) },
+    input: { content: "Keep LANE-READY everywhere." },
     max_cost_usd: 1,
     labels: { race: "20261123-1004-1f2e", lane: "1", harness: lane.harness, model: lane.model },
   });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   assert.deepEqual(started.body.labels, { race: "20261123-1004-1f2e", lane: "1", harness: lane.harness, model: lane.model });
-  await follow(api, started.body.run_id, ["completed"]);
+  const { rows } = await follow(api, started.body.run_id, ["completed"]);
+  // The model's write and read each ran: neither is a tool the lane lacks.
+  const results = rows.filter((row) => row.kind === "tool_result").map((row) => [row.tool_name, row.tool_status]);
+  assert.deepEqual(results, [["write", "success"], ["read", "success"]], JSON.stringify(rows.filter((row) => row.kind === "tool_result")));
+  assert.equal(rows.findLast((row) => row.kind === "final_answer")?.text, "Kept LANE-READY.");
 });
 
 test("an inline definition is refused in POST /agents' own words, and the external reference and run fields are checked", { timeout: 120_000 }, async (t) => {
