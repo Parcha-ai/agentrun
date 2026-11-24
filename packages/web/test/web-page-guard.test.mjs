@@ -3,10 +3,12 @@
 // an AI reader. The receipt carries the verdicts and their scores. A judged wall or injection adds one plain `warning`
 // to the answer and the page's text is kept: a hint, never a gate. A page the guard cannot judge adds nothing.
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
 import { createWeb, deciderFrom, webFetchText } from "../dist/index.js";
-import { decideWeb, LONG, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
+import { decideWeb, LONG, policySteps, PUBLIC, scoringProvider, SCORES, TASK } from "./fixtures/decide-runs.mjs";
 
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const choice = (probabilities) => ({ type: "choice", choice: Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0][0], probabilities });
@@ -127,4 +129,40 @@ test("a looking_for answer is warned of too; a page not read is not asked about"
   const { asked, web: w } = guardedWeb(LOGIN);
   const refused = await w.fetch("http://evil.example/", { task: TASK });
   assert.deepEqual([refused.receipt.wall, refused.receipt.injection, asked.length], [{ verdict: "unjudged" }, "unjudged", 0]);
+});
+
+test("with the page guard off, every answer, model text and receipt under every policy is byte for byte as before the guard", async () => {
+  const golden = JSON.parse(readFileSync(new URL("./fixtures/decide-runs-pre-guard.golden.json", import.meta.url), "utf8"));
+  const sha = (value) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
+  const now = await policySteps();
+  assert.deepEqual(Object.keys(now), Object.keys(golden));
+  for (const [policy, steps] of Object.entries(now)) {
+    assert.equal(steps.length, golden[policy].length);
+    for (const [i, step] of steps.entries()) {
+      for (const part of ["answer", "text", "receipt"]) assert.equal(sha(step[part]), golden[policy][i][part], `${policy} step ${i + 1}: ${part}`);
+    }
+  }
+});
+
+test("the guard is asked beside the step, not after it, and the fee lines go in one order: the step's, then the guard's", async () => {
+  // The step's answer waits for the guard's request to arrive: asked one after the other, the step would time out.
+  let arrived;
+  const guardAsked = new Promise((resolve) => (arrived = resolve));
+  const provider = {
+    id: "fake",
+    needs: [],
+    async decide(request) {
+      const guard = Object.hasOwn(request.questions, "wall");
+      if (guard) arrived();
+      else await guardAsked;
+      const answers = guard ? LOGIN : Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: "noul", noul: 0.9 }]));
+      return { answers: Object.fromEntries(Object.entries(answers).map(([id, a]) => [id, typeof a === "number" ? { type: "noul", noul: a } : a])), evidence: [], model: "fake-1", usage: null, cost_usd: 0.0001, cost_basis: "estimate", provider_request_id: null };
+    },
+  };
+  const w = decideWeb({ decider: priced(provider), pageGuard: true, bounds: { decideMs: 2_000 } });
+  const { answer, receipt } = await w.fetch(PUBLIC, { task: TASK });
+  assert.equal(receipt.classifier.ran, true, receipt.classifier.error?.message);
+  assert.equal(receipt.wall.verdict, "login_wall");
+  assert.match(answer.warning, /login wall/);
+  assert.deepEqual(receipt.cost.lines.filter((line) => line.by === "fake").map((line) => line.name), ["fake's decision", "fake's page guard"]);
 });
