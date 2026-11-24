@@ -100,8 +100,8 @@ const systemLookup: Lookup = async (host) => (await dns.lookup(host, { all: true
  *  port is 80 or 443. Answers the addresses, the first of which the hop dials; throws the refusal otherwise. */
 async function hopAddresses(target: URL, lookup: Lookup, signal: AbortSignal | undefined): Promise<string[]> {
   const host = target.hostname.replace(/^\[|\]$/g, "");
-  // A trailing dot names the same host (WHATWG keeps it): the name checks read the host without it.
-  const name = host.replace(/\.$/, "");
+  // Trailing dots name the same host (WHATWG keeps them): the name checks read the host without any.
+  const name = host.replace(/\.+$/, "");
   if (name === "localhost" || name.endsWith(".localhost") || name.endsWith(".local") || name.endsWith(".internal")) throw refusedError(`refused: ${host} is not a public host`);
   const addresses = net.isIP(host) ? [host] : await untilAborted(() => lookup(host), signal);
   if (!addresses.length || addresses.some(isPrivateAddress)) throw refusedError(`refused: ${host} is not a public host`);
