@@ -1,4 +1,4 @@
-// Under --faux only: Parallel's search as a call node's web_search reaches it (web-search.ts webSearch over
+// Under --faux only: Parallel's search as a call node's web_search reaches it (parallelSearched over
 // web-fetch.ts parallelOf), in place of Parallel's API. Each request is counted on globalThis.fauxParallelSearches (the
 // runner runs in the test's own process), and answered with one result. A test that sets globalThis.fauxParallelHold (a
 // promise) holds each search until it settles, and is told each arrival on globalThis.fauxParallelArrived. One that sets

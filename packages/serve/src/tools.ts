@@ -21,7 +21,8 @@ import { registerTurnEnding, webCut } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
-import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
+import { HTML_READ_CHARS, TEXT_CAP } from "@parcha/agentrun-web";
+import { fetchOptions } from "./web-run.js";
 import { harnessIds, onAdapter } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
@@ -35,7 +36,7 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { sessionEnds } from "./browser-sessions.js";
 import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
-import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
 import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
@@ -260,9 +261,9 @@ const webFetchEntry = (name: string): ToolEntry => ({
     return { tools: [tool], extensions: [extension] };
   },
   // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
-  // the run read (pagesOf(run.env)) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
+  // the run read (its Web's pages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
   // (paid-calls.ts); a part from what the run read makes none and books nothing.
-  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, signal: run.signal })),
 });
 
 /** A file or shell tool: listed here for its words and its rules, bound by the run's workspace registry

@@ -1,3 +1,4 @@
+import { modelsInFlight } from "./in-flight.js";
 import { CALLS_PAGE_ROWS } from "./timeline/index.js";
 import { prepareProjectSkillEdit } from "./source-sync/skill-edits.js";
 import { sourceSyncOf } from "./source-sync/types.js";
@@ -54,10 +55,8 @@ import { uuidv7 } from "./ids.js";
 import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
-import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
+import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV } from "./web-run.js";
 import { FAUX_MONID_ENV, MONID_KEY_ENV, pinMonid, PRICED_BY_USAGE } from "./monid.js";
-import { FAUX_EXA_ENV } from "./exa-keyless.js";
-import { FAUX_FIRECRAWL_ENV } from "./firecrawl-keyless.js";
 import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView } from "./tools.js";
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
@@ -84,6 +83,7 @@ import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPl
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
+import { API_KEYS_LIMIT, ApiKeys } from "./api-keys.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
 import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownerCookieName, ownOrigin, sessionsAtEveryPort, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
 import { hostFix, hostName, isLoopbackName, loopbackNames, movedFix } from "./host-check.js";
@@ -152,7 +152,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loopback, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -418,10 +418,10 @@ export type ServeOptions = {
    *  place of their APIs, for web_search's own request to the provider the revision's model names (model.ts). */
   fauxUpstream?: string;
   /** With `faux` only: a module whose default export is the fetch web_search's keyless Exa search sends through, in place
-   *  of Exa's MCP endpoint (exa-keyless.ts). */
+   *  of Exa's MCP endpoint (web-run.ts FAUX_EXA_ENV). */
   fauxExa?: string;
   /** With `faux` only: the URL of a fake MCP server (a test's, on loopback) that web_search's and web_fetch's keyless
-   *  Firecrawl ask in place of Firecrawl's endpoint (firecrawl-keyless.ts). A URL, not a module: it is passed as given.
+   *  Firecrawl ask in place of Firecrawl's endpoint (web-run.ts FAUX_FIRECRAWL_ENV). A URL, not a module: it is passed as given.
    *  Under `faux` with none, keyless Firecrawl is never asked. */
   fauxFirecrawl?: string;
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
@@ -831,6 +831,11 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/mcp-servers\/oauth\/private-hosts$/, name: "putMcpPrivateHosts" },
   { method: "GET", pattern: /^\/settings\/tools$/, name: "getToolSettings" },
   { method: "PUT", pattern: /^\/settings\/tools$/, name: "putToolSettings" },
+  // The API keys a person makes for their apps (api-keys.ts): a read with any token; making and revoking one are secret
+  // writes, so the one secret-write check takes them from the owner's session alone.
+  { method: "GET", pattern: /^\/settings\/api-keys$/, name: "listApiKeys" },
+  { method: "POST", pattern: /^\/settings\/api-keys$/, name: "createApiKey" },
+  { method: "DELETE", pattern: /^\/settings\/api-keys\/([^/]+)$/, name: "revokeApiKey" },
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
@@ -1145,6 +1150,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key. */
       // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
+      /** /settings/api-keys: the keys a person makes in the console for their apps (api-keys.ts), each shown once and
+       *  kept as a keyed hash alone; `limit`, the most a server keeps. */
+      api_keys: { routes: true, limit: API_KEYS_LIMIT, at_rest: "hashed" },
       /** /settings/slack: one Slack incoming-webhook URL each of `events` is posted to as a readable message (slack.ts); the
        *  URL kept sealed, never shown. */
       slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
@@ -1198,6 +1206,9 @@ function integerParam(value: string | null, name: string, max: number): number {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new ApiError("bad_request", `${name} is an integer from 0 to ${max}`);
   return Number(value);
 }
+
+/** Why a server started on its owner's own sign-in makes no API key for an app, in one line. */
+export const HARNESS_SIGN_IN_REFUSES_API_KEYS = "This server runs on its owner's own sign-in (--harness-sign-in), which is one person's: it creates no API key for an app, and a key created before opens nothing here. Revoke the ones listed that you no longer want.";
 
 /** A start with --harness-sign-in on a server that is not one owner's own, on their own machine. */
 export const HARNESS_SIGN_IN_NOT_LOCAL = "HARNESS_SIGN_IN_NOT_LOCAL";
@@ -1531,8 +1542,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
   // loopback, off past it. A setting kept where the mode is now off or refused goes first.
   const loginOff = claudeLoginSwitchedOff(base, options.host ?? DEFAULT_HOST);
-  const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
-  await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  // The API keys made in the console (api-keys.ts), read once here: this process is the store's one server, so the keys
+  // it holds are the store's. No value is kept, so none joins the server's secrets: a key in a text is cut by its shape
+  // (redact/match.ts).
+  // On two servers the keys are dormant, so a key made on this store before opens nothing there and their tokens are the
+  // ones they were started with: an API-only server (api-only.ts), which has no owner and serves none of the keys'
+  // routes, and one started on its owner's own sign-in (--harness-sign-in), which is one person's. Dormant keys are
+  // still read: the owner of the second sees and revokes them, and they count for the one-owner rule below, so none
+  // waits unseen for a start that takes keys again.
+  const apiKeys = new ApiKeys(store, seal.key, {
+    say: (fields) => (log ? log(logLine("api_key", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("api_key", fields)}\n`)),
+    dormant: options.apiOnly === true || options.harnessSignIn === true,
+  });
+  stops.push(() => apiKeys.close());
+  await apiKeys.load();
+  // A key is one more caller that starts runs, as a second token is: counted each time the login's refusal is asked,
+  // since keys are made and revoked while the server runs, and the login's turn-on takes the keys' turn (oneOwnerDeps).
+  const oneOwner = oneOwnerDeps({ apiOnly: options.apiOnly === true, tokens: tokens.length, keysDormant: options.harnessSignIn === true }, apiKeys);
+  /** Why this server makes no API key now, in words; undefined when it does. The one-owner rule from its other side: a
+   *  recipe on the owner's own sign-in, and Claude Code's login on this machine while it is on, are one person's. */
+  const apiKeysRefused = async (): Promise<string | undefined> =>
+    options.harnessSignIn ? HARNESS_SIGN_IN_REFUSES_API_KEYS : (await claudeLoginSetting(store.settings)) ? LOGIN_REFUSES_API_KEYS : undefined;
+  // Making a key, revoking one and turning the login on each take a turn (ApiKeys.inTurn; the login's is taken in
+  // turnOnClaudeLogin, through oneOwnerDeps' `turn`), one at a time: each decides by what the others left once their writes
+  // landed or were undone, never by a key taken out for a removal that then fails.
+  await dropRefusedLogin(store.settings, loginOff ?? oneOwner.refused(), (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
   // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
   // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
@@ -1634,7 +1668,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     data,
     env: base,
     pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
-    refused: loginRefused,
+    // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
+    ...oneOwner,
     sameMachine: isLoopback(host) && !options.publicUrl,
     claude: () => import("@parcha/agentrun-harness-claude"),
     changed: async () => {
@@ -2222,6 +2257,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // from its journal, which keeps what the run said whole.
     timelineRows: (forStore, runId, context, calls) => servedTimelineRows(servedTimelineDeps, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
+    // A live run's model requests sent and not answered (in-flight.ts), from its booking's records in its journal.
+    inFlight: async (forStore, runId, context) => modelsInFlight(await runEntries(forStore, runId, context)),
   });
   const triggerDeps: TriggerTargetDeps = {
     ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}),
@@ -2253,10 +2290,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // of the one that opened a request is kept with it for its log line (tokenUsed), never the secret.
   const bearerOf = bearerCheck(tokens);
   const tokenUsed = new WeakMap<IncomingMessage, string>();
-  const bearer = (header: string | undefined, req?: IncomingMessage): boolean => {
+  /** Whether `header` carries a token this server was started with: the one credential that stands in for the setup
+   *  code (ownerRoute). A key made in the console never does. */
+  const startToken = (header: string | undefined, req?: IncomingMessage): boolean => {
     const id = bearerOf(header);
     if (id !== undefined && req) tokenUsed.set(req, id);
     return id !== undefined;
+  };
+  // A key made in the console (api-keys.ts) opens what a token opens, but for setup. Its id is kept for the log line too.
+  const keyUsed = new WeakMap<IncomingMessage, string>();
+  const bearer = (header: string | undefined, req?: IncomingMessage): boolean => {
+    // Both are checked whatever the first says, so the time taken does not say which kind was presented.
+    const started = startToken(header, req);
+    const key = apiKeys.used(header);
+    if (key !== undefined && req) keyUsed.set(req, key);
+    return started || key !== undefined;
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
@@ -4427,7 +4475,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     switch (path) {
       case "/setup": {
         const byToken = req.headers.authorization !== undefined;
-        if (byToken && !bearer(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
+        if (byToken && !startToken(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
         // The owner's choice: the projects to import, by the ids the offer named them with (GET /v2/setup/import's
@@ -4443,7 +4491,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const along = takes ? { keep: () => writeDurable(importAsked, chosen ? JSON.stringify({ projects: chosen }) : ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
-        const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`, req);
+        const tokenAsCode = typeof body.code === "string" && body.code !== "" && startToken(`Bearer ${body.code}`, req);
         const made = await me.setFirst(password, body.code, byToken || tokenAsCode, along);
         if (made === "exists") throw new ApiError("forbidden", "this server has its owner, or is being set up: sign in");
         if (made === "missing") throw new ApiError("forbidden", "this server's setup takes the setup code in its log: send it as code");
@@ -4627,7 +4675,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly } });
+      // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
+      return send(res, 200, { ...answer, ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: !loginOff && !options.apiOnly, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -6105,6 +6154,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // run's one cut, and refused for a withheld run, as its learning is (run-learning-served.ts).
         return send(res, 200, await servedRunDiff({ serverSecrets, signIns }, store, data, run.id));
       }
+      case "listApiKeys":
+        return send(res, 200, apiKeys.list(await apiKeysRefused()));
+      case "createApiKey": {
+        // A secret write: the dispatch's one check let only the owner's session this far (api-keys.ts). Never through
+        // `idempotent`, whose record would keep the answer, and the answer holds the key. Refused, in words, where the
+        // server is one person's (apiKeysRefused), asked in the create's own turn.
+        return send(res, 201, await apiKeys.create(await bodyOf(req), apiKeysRefused));
+      }
+      case "revokeApiKey":
+        await apiKeys.revoke(id);
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "getWebhook":
         return send(res, 200, webhooks.view());
       case "saveWebhook": {
@@ -6347,10 +6407,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const started = performance.now();
       const method = req.method ?? "GET";
       const path = (req.url ?? "/").split("?")[0]!;
-      // Who the request was answered for: the owner's or the console's session, or the id of the API token it carried
-      // (api-token.ts), never a secret. A request opened by neither has no such field.
+      // Who the request was answered for: the owner's or the console's session, the id of the API token it carried
+      // (api-token.ts), or the id of the key made in the console (api-keys.ts): never a secret. A request opened by none
+      // has no such field.
       res.once("finish", () => {
-        const by: Record<string, string> = byOwnerSession(req) ? { session: "owner" } : byConsoleSession(req) ? { session: "console" } : tokenUsed.has(req) ? { token: tokenUsed.get(req)! } : {};
+        const by: Record<string, string> = byOwnerSession(req) ? { session: "owner" } : byConsoleSession(req) ? { session: "console" } : tokenUsed.has(req) ? { token: tokenUsed.get(req)! } : keyUsed.has(req) ? { api_key: keyUsed.get(req)! } : {};
         log(logLine("request", { method, path, status: res.statusCode, ms: Math.round(performance.now() - started), ...by }));
       });
     }
@@ -6806,6 +6867,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     viewers.close();
     await attach.close();
     await new Promise((done) => (server.close(done), server.closeAllConnections()));
+    // No request is left to use a key: its last-use writes end before the store they write to closes.
+    await apiKeys.close();
     await mcpStopped;
     await githubStopped;
     // --faux-github's fake GitHub API, once nothing asks it anything.
