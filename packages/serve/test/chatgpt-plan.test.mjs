@@ -105,6 +105,8 @@ function fakeOpenAI(t) {
     if (url.href === "https://auth.openai.com/oauth/revoke") {
       const form = new URLSearchParams(text);
       o.revoked.push({ token: form.get("token"), hint: form.get("token_type_hint"), client: form.get("client_id") });
+      // `holdRevoke`: a promise the revocation waits on before it answers, so a test acts while it is out.
+      if (o.holdRevoke) await o.holdRevoke;
       if (o.revokeStatus !== 200) return Response.json({ error: "server_error" }, { status: o.revokeStatus });
       o.live.delete(form.get("token"));
       return new Response(null, { status: 200 });
@@ -545,14 +547,14 @@ test(`the renewal lease across two processes on one ${STORE_KIND} store, on the 
   await assert.rejects(new two.ChatGPTPlan({ store: runnerStore, sealKey }).token(), (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message), "the next token() says signed out");
 });
 
-test("a sign-out while a sign-in is finishing (its model list still out) wins: the sign-in is dropped and revoked, the row stays gone", { timeout: 30_000 }, async (t) => {
+test("a sign-out while a saved sign-in still settles (its model list out) wins: the sign-in is revoked, the row stays gone", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
   const store = mapStore();
   const { sealed } = store;
   const plan = new ChatGPTPlan({ store, sealKey: randomBytes(32) });
   t.after(() => plan.close());
-  // OpenAI's model list answers slowly: the sign-in has its tokens and is still listing the plan's models.
+  // OpenAI's model list answers slowly: the sign-in is saved (keep) and its settle is still listing the plan's models.
   openai.modelsDelayMs = 500;
   const { authorize_url } = await plan.startSignIn();
   const finishing = plan.finishSignIn(callbackFor(authorize_url));
@@ -746,6 +748,13 @@ async function openRow(store, sealKey) {
  *  one it carries to revoke (`retired`). */
 const noneUnsaved = (openai, row) => [...openai.live].every((refresh) => row?.credential.refresh === refresh || (row?.retired ?? []).some((old) => old.refresh === refresh));
 
+/** `plan` started as the server starts its own (server.ts): loaded, then what a stop left settled out of the way. */
+const startOf = async (plan) => {
+  await plan.load();
+  plan.settleLeft();
+  return plan;
+};
+
 test("a second sign-in takes the first's place and revokes it: the row then holds the second alone", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
@@ -797,7 +806,7 @@ test("a sign-in is saved as soon as OpenAI answers its code: cut off by a stop w
   assert.ok(noneUnsaved(openai, left), "every pair live at OpenAI is in the row");
   // The next start: its models listed, the first revoked and dropped from the row.
   openai.holdModels = undefined;
-  const next = await new ChatGPTPlan({ store, sealKey }).load();
+  const next = await startOf(new ChatGPTPlan({ store, sealKey }));
   t.after(() => next.close());
   await until(() => openai.revocationsOf(first.refresh) === 1, "the next start revokes the sign-in the second replaced");
   await next.close();
@@ -828,7 +837,7 @@ test("a replaced sign-in whose revocation OpenAI doesn't confirm stays in the ro
   assert.deepEqual((await openRow(store, sealKey)).retired.map((old) => old.refresh), [first.refresh], "unconfirmed: still carried");
   // The next start, with OpenAI answering again.
   openai.revokeStatus = 200;
-  const next = await new ChatGPTPlan({ store, sealKey }).load();
+  const next = await startOf(new ChatGPTPlan({ store, sealKey }));
   t.after(() => next.close());
   await until(() => openai.revocationsOf(first.refresh) === 2, "the next start revokes it again");
   await next.close();
@@ -848,9 +857,9 @@ test("a replaced sign-in whose revocation OpenAI doesn't confirm stays in the ro
 
 /** A sign-in kept and cut off before it settled, sealed as the row in `store`: a new pair, its models unlisted, carrying
  *  `old` (retired). Its credential. */
-async function seatUnsettled(store, sealKey, old) {
+async function seatUnsettled(store, sealKey, old, endsIn = 3_600_000) {
   const { putSealedKey } = await import("../dist/server-keys.js");
-  const credential = await seatRow(store, sealKey);
+  const credential = await seatRow(store, sealKey, endsIn);
   await putSealedKey(store, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"], unlisted: true, retired: [old] }));
   return credential;
 }
@@ -902,6 +911,68 @@ test("a sign-in whose models OpenAI doesn't list keeps the fallback list, still 
   const row = await openRow(store, sealKey);
   assert.equal(row.unlisted, true, "OpenAI's list was never read");
   assert.deepEqual(plan.view().models, row.models);
+  // The next start lists them.
+  openai.modelsStatus = 0;
+  const next = await startOf(new ChatGPTPlan({ store, sealKey }));
+  await next.close();
+  const listed = await openRow(store, sealKey);
+  assert.equal(listed.unlisted, undefined);
+  assert.deepEqual(listed.models, ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]);
+});
+
+test("a start's settle leaves a row under a live renewal lease alone: the renewal's write-back lands, and the pair the row carries stays for the next settle", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  // Its access token has ended: a reader renews it under a lease, held at OpenAI while the server starts.
+  await seatUnsettled(store, sealKey, old, -1_000);
+  let release;
+  openai.holdRefresh = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const renewing = new ChatGPTPlan({ store, sealKey }).token();
+  renewing.catch(() => undefined);
+  await until(() => openai.refreshes === 1, "the renewal at OpenAI");
+  assert.ok((await openRow(store, sealKey)).lease, "the row is leased");
+  const leased = Buffer.from(store.sealed.get(PLAN_ROW));
+  const server = await startOf(new ChatGPTPlan({ store, sealKey }));
+  await server.close();
+  assert.ok(Buffer.from(store.sealed.get(PLAN_ROW)).equals(leased), "a settle never writes over a live lease");
+  openai.holdRefresh = undefined;
+  release();
+  const token = await renewing;
+  const renewed = openai.issued.at(-1);
+  assert.equal(token, renewed.access, "the renewal's write-back lands: its pair is handed out");
+  const row = await openRow(store, sealKey);
+  assert.equal(row.credential.refresh, renewed.refresh);
+  assert.equal(row.lease, undefined);
+  assert.deepEqual(row.retired.map((carried) => carried.refresh), [old.refresh], "still carried, for the next settle");
+  assert.equal(row.unlisted, true);
+  assert.equal(openai.revocationsOf(renewed.refresh), 0, "the renewed pair is not revoked");
+});
+
+test("a start never waits for its settle: while OpenAI holds a carried pair's revocation, the plan reads and hands out its token", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  const current = await seatUnsettled(store, sealKey, old);
+  let release;
+  openai.holdRevoke = new Promise((resolve) => (release = resolve));
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey }));
+  t.after(() => {
+    release();
+    return plan.close();
+  });
+  await until(() => openai.revocationsOf(old.refresh) === 1, "the start's settle is revoking the carried pair");
+  assert.equal(plan.view().state, "signed_in");
+  assert.equal(await plan.token(), current.access);
+  openai.holdRevoke = undefined;
+  release();
+  await plan.close();
+  assert.equal((await openRow(store, sealKey)).retired, undefined, "then it settles");
 });
 
 /** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */

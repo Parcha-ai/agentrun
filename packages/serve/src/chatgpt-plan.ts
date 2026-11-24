@@ -190,7 +190,8 @@ const flights = new Map<string, Promise<string>>();
 type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; answered?: boolean };
 
 export interface ChatGPTPlanDeps {
-  /** `settings`: where a server keeps its host id, for a sign-in; a runner, which never signs in, has none. */
+  /** `settings`: where a server keeps its host id, for a sign-in. A runner's reader may be given a store with settings
+   *  too (its whole store): it never signs in, and never settles (settleLeft). */
   readonly store: { readonly sealedKeys: Pick<SealedKeys, "get" | "put" | "replaceIf" | "removeIf" | "clock">; readonly settings?: Pick<Settings, "putIfAbsent"> };
   readonly sealKey: Buffer;
   readonly now?: () => number;
@@ -233,8 +234,6 @@ export class ChatGPTPlan implements PlanReader {
   #refreshing: Promise<void> | undefined;
   /** The last settle queued (settle): each waits for the one before it. */
   #settling: Promise<boolean | undefined> | undefined;
-  /** Whether this plan was loaded once: the server's first load settles what a stop left in the row. */
-  #loaded = false;
   /** The ends of the sign-ins cancelled and not yet ended (close waits for them). */
   readonly #ending = new Set<Promise<void>>();
   readonly #watchers = new Set<(tokens: string[]) => void>();
@@ -314,12 +313,14 @@ export class ChatGPTPlan implements PlanReader {
     this.#writes += 1;
   }
 
-  /** The row sealed as `bytes`, opened (its tokens held for redaction); none when they do not open. */
+  /** The row sealed as `bytes`, opened (its tokens held for redaction, and those of each pair it carries); none when they
+   *  do not open. */
   private open(bytes: Uint8Array): Row | undefined {
     try {
       const row = JSON.parse(unsealColumn(this.#deps.sealKey, sealedAt.sealedKey(CHATGPT_PLAN_ROW), bytes).toString("utf8")) as Row;
       if (row?.v !== 1 || !row.credential?.access || !row.credential.refresh) return undefined;
       this.hold(row.credential);
+      for (const old of row.retired ?? []) this.hold(old);
       return row;
     } catch {
       return undefined;
@@ -338,13 +339,17 @@ export class ChatGPTPlan implements PlanReader {
     return (await this.#deps.store.sealedKeys.replaceIf(CHATGPT_PLAN_ROW, was, bytes)) ? bytes : undefined;
   }
 
-  /** Reads the sealed row into the state a reader sees. Returns this. */
+  /** Reads the sealed row into the state a reader sees. Returns this. A read never settles (settleLeft). */
   async load(): Promise<this> {
     await this.readTaken();
-    // The server's start: a sign-in a stop cut off after its save is finished here, out of the start's way.
-    if (!this.#loaded) void this.settle();
-    this.#loaded = true;
     return this;
+  }
+
+  /** What a stop left in the row (a sign-in it cut off after its save: keep) settled, out of the caller's way: the
+   *  server's, once, at its start. A runner's reader (planReaderOf, at each claim) never calls it, so no runner lists the
+   *  plan's models or sends a refresh token to OpenAI's revocation endpoint. */
+  settleLeft(): void {
+    void this.settle();
   }
 
   view(): PlanView {
@@ -511,12 +516,11 @@ export class ChatGPTPlan implements PlanReader {
 
   /** What a saved sign-in leaves (keep), done: its models listed (`unlisted`), and each pair it carries (`retired`)
    *  revoked at OpenAI and dropped from the row once OpenAI confirms it. Whether every carried pair was confirmed; none
-   *  when the row carried none. The server's alone (it holds the store's settings: a runner never signs in), one at a
-   *  time. The row is written only while it holds what was read and no renewal's lease is live (a renewal writes back
-   *  over the row it leased, and carries these fields); what is left stays for the server's next start (load). Never
-   *  throws. */
+   *  when the row carried none. The server's alone, one at a time: only a sign-in (keep) and the server's start
+   *  (settleLeft) settle, and a runner does neither. The row is written only while it holds what was read and no
+   *  renewal's lease is live (a renewal writes back over the row it leased, and carries these fields); what is left
+   *  stays for the server's next start. Never throws. */
   private settle(): Promise<boolean | undefined> {
-    if (!this.#deps.store.settings) return Promise.resolve(undefined);
     const run = (this.#settling ?? Promise.resolve(undefined)).then(() => this.settleOnce()).catch(() => undefined);
     this.#settling = run;
     void run.then(() => (this.#settling === run ? (this.#settling = undefined) : undefined));
@@ -581,17 +585,17 @@ export class ChatGPTPlan implements PlanReader {
     })().finally(() => (this.#refreshing = undefined)));
   }
 
-  /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families; the fallback
-   *  list when it can't be read. */
-  private async listModels(token: string): Promise<string[]> {
+  /** The plan's models from OpenAI's list (GET /v1/models with the token), those of the current families (the fallback
+   *  list when it names none); none when the list can't be read, so the row stays `unlisted`. */
+  private async listModels(token: string): Promise<string[] | undefined> {
     try {
       const response = await fetch(`${PLAN_ORIGIN}/v1/models`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
-      if (!response.ok) return [...PLAN_FALLBACK_MODELS];
+      if (!response.ok) return undefined;
       const body = (await response.json()) as { data?: { id?: unknown }[] };
       const ids = (body.data ?? []).map((model) => model.id).filter((id): id is string => typeof id === "string" && /^gpt-6(?:[.-]|$)/.test(id));
       return ids.length ? [...new Set(ids)] : [...PLAN_FALLBACK_MODELS];
     } catch {
-      return [...PLAN_FALLBACK_MODELS];
+      return undefined;
     }
   }
 
