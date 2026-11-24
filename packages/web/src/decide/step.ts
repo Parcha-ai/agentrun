@@ -125,6 +125,8 @@ function ran(decider: WebDecider, op: DecisionRecord["op"], got: Verdicts, ms: n
 
 const since = (start: number) => Math.round(performance.now() - start);
 const shown = (p: number) => String(Math.round(p * 1000) / 1000);
+/** An item's label under label, rerank+label and looking_for: `relevance`, its score to two places; none where refused. */
+const relevanceOf = (score: number | null): { relevance?: number } => (score === null ? {} : { relevance: Math.round(score * 100) / 100 });
 /** Whether drop leaves out an item scored `score`: never a refused one. */
 const drops = (score: number | null) => score !== null && 1 - score >= THRESHOLD;
 /** The scored items drop leaves out, as the record names them. */
@@ -152,7 +154,7 @@ export async function siftSearch(decider: WebDecider, answer: Search, options: S
 function labelled(id: string, answer: Extract<Search, { results: unknown }>, scored: Scored[], task: string | undefined, rerank: boolean): Search & { sift: string } {
   const pairs = answer.results.map((hit, i) => ({ hit, score: scored[i]!.score }));
   if (rerank) pairs.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
-  const results = pairs.map(({ hit, score }) => (score === null ? hit : { ...hit, relevance: Math.round(score * 100) / 100 }));
+  const results = pairs.map(({ hit, score }) => ({ ...hit, ...relevanceOf(score) }));
   const best = Math.max(...scored.map((item) => item.score ?? 0));
   const miss = best < LOW_RELEVANCE ? `; nothing here looks relevant to ${JSON.stringify(clip(task ?? answer.query, QUERY_MAX))}; consider rephrasing` : "";
   const done = rerank ? `ordered ${results.length} results by relevance` : `labelled ${results.length} results with their relevance`;
@@ -184,7 +186,7 @@ export async function judgePart(decider: WebDecider, url: string, page: WebPage 
 export const FIND_CHUNKS_MAX = 200;
 export const FOUND_CHUNKS = 8;
 /** A chunk of a page looking_for shows: where it starts in the page (web_fetch's offset), and its text. */
-export type FoundChunk = { offset: number; text: string };
+export type FoundChunk = { offset: number; relevance?: number; text: string };
 /** A page as looking_for answers it: the chunks most likely to hold what the agent is looking for, in page order. */
 export type FoundPage = Pick<Page, "ok" | "url" | "status" | "title" | "original_chars" | "beyond_read"> & Pick<WebPage, "via" | "parallel"> & { found: FoundChunk[]; sift: string };
 
@@ -211,10 +213,10 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
     title: read.title,
     ...(read.length === undefined ? {} : { original_chars: read.length }),
     ...(read.beyond ? { beyond_read: true as const } : {}),
-    found: shown.map((i) => ({ offset: spans[i]![0], text: chunks[i]! })),
+    found: shown.map((i) => ({ offset: spans[i]![0], ...relevanceOf(scored[i]!.score), text: chunks[i]! })),
     via: read.via,
     ...(read.parallel ? { parallel: read.parallel } : {}),
-    sift: `${decider.id} showed the ${shown.length} of ${spans.length} chunks of the page most likely to hold what you are looking for, in page order; to read on from one, call web_fetch with its offset and no looking_for`,
+    sift: `${decider.id} showed the ${shown.length} of ${spans.length} chunks of the page most likely to hold what you are looking for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no looking_for`,
   };
   return { answer, classifier: ran(decider, "fetch", got, since(start), requests, scored, [], shown.length) };
 }
